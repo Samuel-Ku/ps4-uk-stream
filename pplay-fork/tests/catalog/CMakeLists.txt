@@ -10,3 +10,14 @@ target_include_directories(test_json PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../external/cJSON
 )
 # target_link_libraries(test_json cross2d)  # full build only
+
+add_executable(test_catalog_api test_catalog_api.cpp
+    ../../src/catalog/Json.cpp
+    ../../src/catalog/CatalogApi.cpp
+    ../../external/cJSON/cJSON.c
+)
+target_include_directories(test_catalog_api PRIVATE
+    ../../src/catalog
+    ../../external/cJSON
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../external/cJSON
+)
