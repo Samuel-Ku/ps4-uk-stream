@@ -1,0 +1,445 @@
+<html>
+	<head>
+<!-- Global site tag (gtag.js) - Google Analytics -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-7L6XV4FCMY"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-7L6XV4FCMY');
+</script>
+
+		<style>
+		  html {height: 100%; overflow: hidden;} body {height: 100%; margin: 0; padding: 0; overflow: hidden; background: black;}
+		  .invisible {display:none !important}
+		</style>
+		<script src="https://ashdi.vip/player/playerjs.js?v=2.5" type="text/javascript"></script>
+	</head>
+	<body>
+		<div id="videoplayer3942" style="width:100%;height:100%"></div></div>
+		<script type="text/javascript">
+            var player = null;
+            var playerjs_vast_status = '';
+            var playerjs_vast_num = 0;
+            var ashdi_session_id = Date.now() + '_' + Math.random().toString(36).slice(2);
+            var ashdi_ad_seq = 0;
+            var ashdi_player_init_sent = false;
+            var ashdi_video_play_sent = false;
+            var ashdi_vast_error_count = 0;
+            var ashdi_vast_error_seen = {};
+            var ashdi_vast_context = {};
+            var ashdi_video_error_sent = false;
+            var ashdi_modads_debug = window.location.search.indexOf('modads_debug=1') !== -1;
+            var ashdi_ad_plan = {"preroll_1":[{"slot":"preroll_1","campaign_id":5,"campaign_name":"Adwise ASHDI Preroll 1","partner_name":"Adwise","configured_vast_id":"adwise7271","base_vast_id":"adwise7271"},{"slot":"preroll_1","campaign_id":44,"campaign_name":"KINGS ASHDI PREROLL","partner_name":"KINGS ADS","configured_vast_id":"vast7260","base_vast_id":"vast7260"},{"slot":"preroll_1","campaign_id":12,"campaign_name":"ViewTraff ASHDI Preroll","partner_name":"ViewTraff","configured_vast_id":"vast7252","base_vast_id":"vast7252"},{"slot":"preroll_1","campaign_id":7,"campaign_name":"Adwise ASHDI Extra 1","partner_name":"Adwise","configured_vast_id":"adwise12050","base_vast_id":"adwise12050"},{"slot":"preroll_1","campaign_id":45,"campaign_name":"VADIDEO NOT UA PREROLL","partner_name":"VADIDEO","configured_vast_id":"vadideo12220","base_vast_id":"vadideo12220"},{"slot":"preroll_1","campaign_id":15,"campaign_name":"WIZARDS ASHDI Preroll","partner_name":"WIZARDS","configured_vast_id":"vast12054","base_vast_id":"vast12054"}],"preroll_2":[{"slot":"preroll_2","campaign_id":6,"campaign_name":"Adwise ASHDI Preroll 2","partner_name":"Adwise","configured_vast_id":"adwise7272","base_vast_id":"adwise7272"},{"slot":"preroll_2","campaign_id":44,"campaign_name":"KINGS ASHDI PREROLL","partner_name":"KINGS ADS","configured_vast_id":"vast7260","base_vast_id":"vast7260"},{"slot":"preroll_2","campaign_id":12,"campaign_name":"ViewTraff ASHDI Preroll","partner_name":"ViewTraff","configured_vast_id":"vast7252","base_vast_id":"vast7252"},{"slot":"preroll_2","campaign_id":8,"campaign_name":"Adwise ASHDI Extra 2","partner_name":"Adwise","configured_vast_id":"adwise12051","base_vast_id":"adwise12051"},{"slot":"preroll_2","campaign_id":45,"campaign_name":"VADIDEO NOT UA PREROLL","partner_name":"VADIDEO","configured_vast_id":"vadideo12220","base_vast_id":"vadideo12220"},{"slot":"preroll_2","campaign_id":15,"campaign_name":"WIZARDS ASHDI Preroll","partner_name":"WIZARDS","configured_vast_id":"vast12054","base_vast_id":"vast12054"}],"midroll":[{"slot":"midroll","campaign_id":11,"campaign_name":"Adwise ASHDI Midroll","partner_name":"Adwise","configured_vast_id":"adwise11705","base_vast_id":"adwise11705"}]};
+
+            function AshdiAdblockValue() {
+                try {
+                    if (player && player.api) {
+                        return player.api("adblock") ? 1 : 0;
+                    }
+                } catch(e) {}
+                return 0;
+            }
+
+            function AshdiNormalizeVastId(value) {
+                value = value || '';
+                value = String(value).trim();
+                return value.replace(/^id:\s*/i, '');
+            }
+
+            function AshdiResolveAdMeta(adType, adSeq, reportedVastId) {
+                var slot = '';
+                var vastId = AshdiNormalizeVastId(reportedVastId);
+
+                if (adType === 'preroll') {
+                    slot = adSeq === 2 ? 'preroll_2' : 'preroll_1';
+                } else if (adType === 'midroll') {
+                    slot = 'midroll';
+                }
+
+                var list = slot && ashdi_ad_plan && ashdi_ad_plan[slot] ? ashdi_ad_plan[slot] : [];
+                var fallback = list && list.length === 1 ? list[0] : null;
+
+                for (var i = 0; i < list.length; i++) {
+                    if (AshdiNormalizeVastId(list[i].configured_vast_id) === vastId || AshdiNormalizeVastId(list[i].base_vast_id) === vastId) {
+                        fallback = list[i];
+                        break;
+                    }
+                }
+
+                return {
+                    slot: slot,
+                    campaign_id: fallback ? (parseInt(fallback.campaign_id || 0, 10) || 0) : 0,
+                    campaign_name: fallback ? (fallback.campaign_name || '') : '',
+                    partner_name: fallback ? (fallback.partner_name || '') : '',
+                    configured_vast_id: fallback ? (fallback.configured_vast_id || '') : ''
+                };
+            }
+
+            function AshdiParseVastInfo(info) {
+                if (!info || typeof info !== 'string') {
+                    return null;
+                }
+
+                try {
+                    return JSON.parse(info);
+                } catch(e) {}
+
+                return null;
+            }
+
+            function AshdiVastAdTypeFromString(value) {
+                value = (value === undefined || value === null) ? '' : String(value).toLowerCase();
+
+                if (value.indexOf('midroll') !== -1) {
+                    return 'midroll';
+                }
+
+                if (value.indexOf('preroll') !== -1) {
+                    return 'preroll';
+                }
+
+                if (value.indexOf('postroll') !== -1) {
+                    return 'postroll';
+                }
+
+                return '';
+            }
+
+            function AshdiUrlHost(value) {
+                value = (value === undefined || value === null) ? '' : String(value).trim();
+
+                if (value === '') {
+                    return '';
+                }
+
+                try {
+                    return (new URL(value, document.location.href)).host || '';
+                } catch(e) {}
+
+                var match = value.match(/^https?:\/\/([^\/?#]+)/i);
+                return match ? match[1] : '';
+            }
+
+            function AshdiVastIdFromInfo(infoObj) {
+                if (!infoObj || !infoObj.id) {
+                    return '';
+                }
+
+                var rawAdId = String(infoObj.id).trim();
+                var parts = rawAdId.split('->');
+
+                if (parts.length > 1) {
+                    return (parts[0] || '').trim();
+                }
+
+                if (/^(pre|mid|post|pause)roll_\d+/i.test(rawAdId)) {
+                    return '';
+                }
+
+                if (rawAdId === 'null') {
+                    return '';
+                }
+
+                return rawAdId;
+            }
+
+            function AshdiRememberVastLoad(info) {
+                var adType = AshdiVastAdTypeFromString(info);
+
+                if (!adType) {
+                    return;
+                }
+
+                ashdi_vast_context = {
+                    ad_type: adType,
+                    error_text: 'load:' + String(info)
+                };
+            }
+
+            function AshdiRememberVastUrl(info, type) {
+                var value = (info === undefined || info === null) ? '' : String(info).trim();
+
+                if (value === '') {
+                    return;
+                }
+
+                if (!ashdi_vast_context || typeof ashdi_vast_context !== 'object') {
+                    ashdi_vast_context = {};
+                }
+
+                var host = AshdiUrlHost(value);
+                var key = type === 'wrapper' ? 'wrapper_url' : 'vast_url';
+                var hostKey = type === 'wrapper' ? 'wrapper_host' : 'vast_url_host';
+
+                ashdi_vast_context[key] = value;
+                ashdi_vast_context[hostKey] = host;
+
+                if (!ashdi_vast_context.error_text) {
+                    ashdi_vast_context.error_text = type + ':' + value;
+                }
+            }
+
+            function AshdiRememberVastContext(info) {
+                var infoObj = AshdiParseVastInfo(info);
+
+                if (!infoObj) {
+                    return;
+                }
+
+                var adType = infoObj.is || '';
+                var vastId = AshdiVastIdFromInfo(infoObj);
+
+                ashdi_vast_context = {
+                    ad_type: adType,
+                    vast_id: vastId,
+                    ad_system: infoObj.system || '',
+                    vast_url: infoObj.url || ashdi_vast_context.vast_url || '',
+                    vast_url_host: AshdiUrlHost(infoObj.url || ashdi_vast_context.vast_url || ''),
+                    wrapper_url: ashdi_vast_context.wrapper_url || '',
+                    wrapper_host: ashdi_vast_context.wrapper_host || '',
+                    error_code: ashdi_vast_context.error_code || '',
+                    error_text: info || ''
+                };
+            }
+
+            function AshdiRememberVastErrorCode(info) {
+                if (info !== undefined && info !== null && String(info).trim() !== '') {
+                    ashdi_vast_context.error_code = String(info).trim();
+                }
+            }
+
+            function AshdiSendVastError(info) {
+                if (ashdi_vast_error_count >= 20) {
+                    return;
+                }
+
+                var adType = ashdi_vast_context.ad_type || (typeof info === 'string' ? info : '') || 'unknown';
+                var vastId = ashdi_vast_context.vast_id || '';
+                var sourceHost = ashdi_vast_context.wrapper_host || ashdi_vast_context.vast_url_host || '';
+                var adSystem = ashdi_vast_context.ad_system || (sourceHost ? ('host:' + sourceHost).substring(0, 80) : '');
+                var adMeta = AshdiResolveAdMeta(adType, 0, vastId);
+                var errorCode = ashdi_vast_context.error_code || '';
+                var key = [adType, vastId, adSystem, errorCode, adMeta.slot, ashdi_vast_context.vast_url || '', ashdi_vast_context.wrapper_url || ''].join('|');
+
+                if (ashdi_vast_error_seen[key]) {
+                    return;
+                }
+
+                ashdi_vast_error_seen[key] = true;
+                ashdi_vast_error_count++;
+
+                AshdiStatsSend('vast_error', {
+                    ad_type: adType || 'unknown',
+                    slot: adMeta.slot,
+                    campaign_id: adMeta.campaign_id,
+                    campaign_name: adMeta.campaign_name,
+                    partner_name: adMeta.partner_name,
+                    configured_vast_id: adMeta.configured_vast_id,
+                    vast_id: vastId,
+                    ad_system: adSystem,
+                    error_text: [
+                        errorCode ? ('code:' + errorCode) : '',
+                        ashdi_vast_context.error_text || info || '',
+                        ashdi_vast_context.vast_url ? ('vast_url:' + ashdi_vast_context.vast_url) : '',
+                        ashdi_vast_context.wrapper_url ? ('wrapper:' + ashdi_vast_context.wrapper_url) : ''
+                    ].filter(Boolean).join(' | ')
+                });
+            }
+
+            function AshdiStatsSend(eventName, extra) {
+                try {
+                    var payload = Object.assign({
+                        event: eventName,
+                        time: Date.now(),
+                        session_id: ashdi_session_id,
+                        referrer: document.referrer || 'direct',
+                        parent_domain: "",
+                        player: document.location.href,
+                        content_id: 3942,
+                        content_type: "serial",
+                        server: 0,
+                        country: "PL",
+                        asn: 5617,
+                        adblock: AshdiAdblockValue()
+                    }, extra || {});
+
+                    fetch('/player/vod-mod/stats_collect.php', {
+                        method: 'POST',
+                        keepalive: true,
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(payload)
+                    }).catch(function(){});
+                } catch(e) {}
+            }
+
+            function PlayerjsEvents(event, id, info) {
+                if (ashdi_modads_debug && (event === 'error' || event === 'loaderror' || (event && event.indexOf('vast_') === 0))) {
+                    console.log('[ASHDI PLAYER EVENT]', event, id, info);
+                }
+
+                if (event === 'init' && !ashdi_player_init_sent) {
+                    ashdi_player_init_sent = true;
+
+                    setTimeout(function() {
+                        AshdiStatsSend('player_init', {
+                            adblock: AshdiAdblockValue()
+                        });
+                    }, 500);
+                }
+
+								if (event === 'play' && !ashdi_video_play_sent) {
+					ashdi_video_play_sent = true;
+
+					setTimeout(function() {
+						AshdiStatsSend('video_play', {
+							adblock: AshdiAdblockValue()
+						});
+
+						if (ashdi_modads_debug) {
+							console.log('[ASHDI ADBLOCK video_play]', {
+								adblock: AshdiAdblockValue(),
+								api_available: !!(player && player.api)
+							});
+						}
+					}, 1800);
+				}
+
+                if ((event === 'loaderror' || event === 'error') && !ashdi_video_error_sent) {
+                    ashdi_video_error_sent = true;
+                    AshdiStatsSend('video_error', {
+                        error_text: info || ''
+                    });
+                }
+
+                if (!event || event.indexOf('vast_') !== 0) {
+                    return;
+                }
+
+                if (event === 'vast_load') {
+                    AshdiRememberVastLoad(info);
+                    return;
+                }
+
+                if (event === 'vast_url') {
+                    AshdiRememberVastUrl(info, 'url');
+                    return;
+                }
+
+                if (event === 'vast_wrapper') {
+                    AshdiRememberVastUrl(info, 'wrapper');
+                    return;
+                }
+
+                if (event === 'vast_empty') {
+                    AshdiRememberVastContext(info);
+                    return;
+                }
+
+                if (event === 'vast_Error') {
+                    AshdiRememberVastErrorCode(info);
+                    return;
+                }
+
+                if (event === 'vast_error') {
+                    AshdiSendVastError(info);
+                    return;
+                }
+
+                if (event == 'vast_complete' || event == 'vast_skip') {
+                    var atype = 'wtf';
+                    var infoObj = null;
+
+                    if (info && typeof info === 'string') {
+                        try {
+                            infoObj = JSON.parse(info);
+                            if (infoObj && infoObj.is) {
+                                atype = infoObj.is;
+                            }
+                        } catch(e) {}
+                    }
+
+                    var shouldsend = false;
+
+                    if (atype === 'preroll' && playerjs_vast_num < 2) {
+                        shouldsend = true;
+                        playerjs_vast_num++;
+                    }
+
+                    if (atype === 'midroll') {
+                        shouldsend = true;
+                    }
+
+                    if (shouldsend) {
+                        ashdi_ad_seq++;
+
+                        var vastId = '';
+                        var creativeId = '';
+                        var adSystem = '';
+                        var adDuration = 0;
+
+                        if (infoObj) {
+                            adSystem = infoObj.system || '';
+                            adDuration = parseInt(infoObj.duration || 0);
+
+                            if (infoObj.id) {
+                                var rawAdId = String(infoObj.id).trim();
+                                var parts = rawAdId.split('->');
+
+                                if (parts.length > 1) {
+                                    vastId = (parts[0] || '').trim();
+                                    creativeId = (parts[1] || '').trim();
+                                } else if (/^(pre|mid|post|pause)roll_\d+/i.test(rawAdId)) {
+                                    creativeId = rawAdId;
+                                    vastId = '';
+                                } else {
+                                    vastId = rawAdId;
+                                }
+                            }
+                        }
+
+                        var adMeta = AshdiResolveAdMeta(atype, ashdi_ad_seq, vastId);
+
+                        AshdiStatsSend('vast_show', {
+                            ad_type: atype,
+                            ad_seq: ashdi_ad_seq,
+                            slot: adMeta.slot,
+                            campaign_id: adMeta.campaign_id,
+                            campaign_name: adMeta.campaign_name,
+                            partner_name: adMeta.partner_name,
+                            configured_vast_id: adMeta.configured_vast_id,
+                            vast_id: vastId,
+                            creative_id: creativeId,
+                            ad_system: adSystem,
+                            ad_duration: adDuration
+                        });
+
+                        try {
+                            fetch('https://base.ashdi.vip/stats/stats_vast.php', {
+                                method: 'POST',
+                                body: JSON.stringify({
+                                    time: Date.now(),
+                                    referrer: document.referrer || 'direct',
+                                    sform: atype,
+                                    player: document.location.href
+                                })
+                            }).catch(function(){});
+                        } catch(e) {}
+                    }
+                }
+            }
+
+
+            player = new Playerjs({
+				id:"videoplayer3942",
+				file:'[{"title":" FanVoxUA","folder":[{"title":" Сезон 1","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video01/2/serials/fanvoxua_dandadan/dandadan01online_144735/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/fanvoxua_dandadan/dandadan01online_144735/screen.jpg", "subtitle": "", "id": "144735", "vid": "144735"},{"title":"Серія 2","file":"https://ashdi.vip/video01/2/serials/fanvoxua_dandadan/dandadan02online_145792/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/fanvoxua_dandadan/dandadan02online_145792/screen.jpg", "subtitle": "", "id": "145792", "vid": "145792"},{"title":"Серія 3","file":"https://ashdi.vip/video01/2/serials/fanvoxua_dandadan/dandadan03online_146841/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/fanvoxua_dandadan/dandadan03online_146841/screen.jpg", "subtitle": "", "id": "146841", "vid": "146841"},{"title":"Серія 4","file":"https://ashdi.vip/video01/2/serials/fanvoxua_dandadan/dandadan04online_147777/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/fanvoxua_dandadan/dandadan04online_147777/screen.jpg", "subtitle": "", "id": "147777", "vid": "147777"},{"title":"Серія 5","file":"https://ashdi.vip/video01/2/serials/fanvoxua_dandadan/dandadan05online_149164/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/fanvoxua_dandadan/dandadan05online_149164/screen.jpg", "subtitle": "", "id": "149164", "vid": "149164"},{"title":"Серія 6","file":"https://ashdi.vip/video01/2/serials/fanvoxua_dandadan/dandadan06online_150023/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/fanvoxua_dandadan/dandadan06online_150023/screen.jpg", "subtitle": "", "id": "150023", "vid": "150023"},{"title":"Серія 7","file":"https://ashdi.vip/video01/2/serials/fanvoxua_dandadan/dandadan07online_151132/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/fanvoxua_dandadan/dandadan07online_151132/screen.jpg", "subtitle": "", "id": "151132", "vid": "151132"},{"title":"Серія 8","file":"https://ashdi.vip/video01/2/serials/fanvoxua_dandadan/dandadan08online_152363/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/fanvoxua_dandadan/dandadan08online_152363/screen.jpg", "subtitle": "", "id": "152363", "vid": "152363"},{"title":"Серія 9","file":"https://ashdi.vip/video01/2/serials/fanvoxua_dandadan/dandadan09online_153405/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/fanvoxua_dandadan/dandadan09online_153405/screen.jpg", "subtitle": "", "id": "153405", "vid": "153405"},{"title":"Серія 10","file":"https://ashdi.vip/video01/2/serials/fanvoxua_dandadan/dandadan10online_154192/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/fanvoxua_dandadan/dandadan10online_154192/screen.jpg", "subtitle": "", "id": "154192", "vid": "154192"},{"title":"Серія 11","file":"https://ashdi.vip/video01/1/serials/fanvoxua_dandadan/dandadan11online_155137/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/serials/fanvoxua_dandadan/dandadan11online_155137/screen.jpg", "subtitle": "", "id": "155137", "vid": "155137"},{"title":"Серія 12","file":"https://ashdi.vip/video01/1/serials/fanvoxua_dandadan/dandadan12online_156206/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/serials/fanvoxua_dandadan/dandadan12online_156206/screen.jpg", "subtitle": "", "id": "156206", "vid": "156206"}]},{"title":" Сезон 2","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video01/3/serials/fanvox_dandadan_2/dandadan2_01online_187241/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/fanvox_dandadan_2/dandadan2_01online_187241/screen.jpg", "subtitle": "", "id": "187241", "vid": "187241"},{"title":"Серія 2","file":"https://ashdi.vip/video01/3/serials/fanvox_dandadan_2/dandadan2_02online_188159/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/fanvox_dandadan_2/dandadan2_02online_188159/screen.jpg", "subtitle": "", "id": "188159", "vid": "188159"},{"title":"Серія 3","file":"https://ashdi.vip/video01/3/serials/fanvox_dandadan_2/dandadan2_03online_189057/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/fanvox_dandadan_2/dandadan2_03online_189057/screen.jpg", "subtitle": "", "id": "189057", "vid": "189057"},{"title":"Серія 4","file":"https://ashdi.vip/video01/3/serials/fanvox_dandadan_2/dandadan2_04onlin2e_190020/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/fanvox_dandadan_2/dandadan2_04onlin2e_190020/screen.jpg", "subtitle": "", "id": "190020", "vid": "190020"},{"title":"Серія 5","file":"https://ashdi.vip/video01/3/serials/fanvox_dandadan_2/dandadan2_05online_191122/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/fanvox_dandadan_2/dandadan2_05online_191122/screen.jpg", "subtitle": "", "id": "191122", "vid": "191122"},{"title":"Серія 6","file":"https://ashdi.vip/video01/3/serials/fanvox_dandadan_2/dandadan2_06online_192249/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/fanvox_dandadan_2/dandadan2_06online_192249/screen.jpg", "subtitle": "", "id": "192249", "vid": "192249"},{"title":"Серія 7","file":"https://ashdi.vip/video01/3/serials/fanvox_dandadan_2/dandadan2_07online_193352/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/fanvox_dandadan_2/dandadan2_07online_193352/screen.jpg", "subtitle": "", "id": "193352", "vid": "193352"},{"title":"Серія 8","file":"https://ashdi.vip/video01/2/serials/fanvox_dandadan_2/dandadan2_08online_197747/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/fanvox_dandadan_2/dandadan2_08online_197747/screen.jpg", "subtitle": "", "id": "197747", "vid": "197747"},{"title":"Серія 9","file":"https://ashdi.vip/video01/2/serials/fanvox_dandadan_2/dandadan2_09online_195277/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/fanvox_dandadan_2/dandadan2_09online_195277/screen.jpg", "subtitle": "", "id": "195277", "vid": "195277"},{"title":"Серія 10","file":"https://ashdi.vip/video01/2/serials/fanvox_dandadan_2/dandadan2_10online_196207/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/fanvox_dandadan_2/dandadan2_10online_196207/screen.jpg", "subtitle": "", "id": "196207", "vid": "196207"},{"title":"Серія 11","file":"https://ashdi.vip/video01/2/serials/fanvox_dandadan_2/dandadan2_11online_196817/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/fanvox_dandadan_2/dandadan2_11online_196817/screen.jpg", "subtitle": "", "id": "196817", "vid": "196817"},{"title":"Серія 12","file":"https://ashdi.vip/video01/2/serials/fanvox_dandadan_2/dandadan2_12online_197740/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/fanvox_dandadan_2/dandadan2_12online_197740/screen.jpg", "subtitle": "", "id": "197740", "vid": "197740"}]}]},{"title":" субтитри | AniKappa","folder":[{"title":" Сезон 1","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video01/2/new/dandadan.s01ep01_144754/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01ep01_144754/screen.jpg", "subtitle": "", "id": "144754", "vid": "144754"},{"title":"Серія 2","file":"https://ashdi.vip/video01/2/new/dandadan.s01ep02_145863/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01ep02_145863/screen.jpg", "subtitle": "", "id": "145863", "vid": "145863"},{"title":"Серія 3","file":"https://ashdi.vip/video01/2/new/dandadan.s01ep03_147077/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01ep03_147077/screen.jpg", "subtitle": "", "id": "147077", "vid": "147077"},{"title":"Серія 4","file":"https://ashdi.vip/video01/2/new/dandadan.s01ep04_147979/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01ep04_147979/screen.jpg", "subtitle": "", "id": "147979", "vid": "147979"},{"title":"Серія 5","file":"https://ashdi.vip/video01/2/new/dandadan.s01ep05_149163/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01ep05_149163/screen.jpg", "subtitle": "", "id": "149163", "vid": "149163"},{"title":"Серія 6","file":"https://ashdi.vip/video01/2/new/dandadan.s01ep06_150040/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01ep06_150040/screen.jpg", "subtitle": "", "id": "150040", "vid": "150040"}]}]},{"title":" Студія Качур","folder":[{"title":" Сезон 1","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video01/2/serials/kachur_dandadan/dandadan_1_serya_2_144916/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/kachur_dandadan/dandadan_1_serya_2_144916/screen.jpg", "subtitle": "", "id": "144916", "vid": "144916"},{"title":"Серія 2","file":"https://ashdi.vip/video01/2/serials/kachur_dandadan/dandadan_2_serya_2_146324/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/kachur_dandadan/dandadan_2_serya_2_146324/screen.jpg", "subtitle": "", "id": "146324", "vid": "146324"},{"title":"Серія 3","file":"https://ashdi.vip/video01/2/serials/kachur_dandadan/dandadan_3_serya_2_147044/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/kachur_dandadan/dandadan_3_serya_2_147044/screen.jpg", "subtitle": "", "id": "147044", "vid": "147044"},{"title":"Серія 4","file":"https://ashdi.vip/video01/2/serials/kachur_dandadan/dadadan_4_serya_147896/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/kachur_dandadan/dadadan_4_serya_147896/screen.jpg", "subtitle": "", "id": "147896", "vid": "147896"},{"title":"Серія 5","file":"https://ashdi.vip/video01/2/serials/kachur_dandadan/kachur_dandadan_5_serya_2_149233/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/kachur_dandadan/kachur_dandadan_5_serya_2_149233/screen.jpg", "subtitle": "", "id": "149233", "vid": "149233"},{"title":"Серія 6","file":"https://ashdi.vip/video01/2/serials/kachur_dandadan/dadadan_6_serya_150158/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/kachur_dandadan/dadadan_6_serya_150158/screen.jpg", "subtitle": "", "id": "150158", "vid": "150158"},{"title":"Серія 7","file":"https://ashdi.vip/video01/2/new/dandadan_2024_1080p_s01e07_ukr_kachur_151906/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_2024_1080p_s01e07_ukr_kachur_151906/screen.jpg", "subtitle": "", "id": "151906", "vid": "151906"},{"title":"Серія 8","file":"https://ashdi.vip/video01/2/serials/kachur_dandadan/dandadan_8_serya_152850/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/kachur_dandadan/dandadan_8_serya_152850/screen.jpg", "subtitle": "", "id": "152850", "vid": "152850"},{"title":"Серія 9","file":"https://ashdi.vip/video01/2/serials/kachur_dandadan/dandadan_9_serya_153742/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/kachur_dandadan/dandadan_9_serya_153742/screen.jpg", "subtitle": "", "id": "153742", "vid": "153742"},{"title":"Серія 10","file":"https://ashdi.vip/video01/1/serials/kachur_dandadan/dandadan_10_serya_kachur_154773/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/serials/kachur_dandadan/dandadan_10_serya_kachur_154773/screen.jpg", "subtitle": "", "id": "154773", "vid": "154773"},{"title":"Серія 11","file":"https://ashdi.vip/video01/1/serials/kachur_dandadan/dandadan_11_serya_2_155688/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/serials/kachur_dandadan/dandadan_11_serya_2_155688/screen.jpg", "subtitle": "", "id": "155688", "vid": "155688"},{"title":"Серія 12","file":"https://ashdi.vip/video01/1/serials/kachur_dandadan/dandadan_12_serya_156467/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/serials/kachur_dandadan/dandadan_12_serya_156467/screen.jpg", "subtitle": "", "id": "156467", "vid": "156467"}]},{"title":" Сезон 2","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video01/3/serials/kachur_dandadan/dandadan_1_serya_2_sezon_187510/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/kachur_dandadan/dandadan_1_serya_2_sezon_187510/screen.jpg", "subtitle": "", "id": "187510", "vid": "187510"},{"title":"Серія 2","file":"https://ashdi.vip/video01/3/serials/kachur_dandadan/dandadan_2_serya_2_sezon_188162/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/kachur_dandadan/dandadan_2_serya_2_sezon_188162/screen.jpg", "subtitle": "", "id": "188162", "vid": "188162"},{"title":"Серія 3","file":"https://ashdi.vip/video01/3/serials/kachur_dandadan/dandadan_15_serya_192919/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/kachur_dandadan/dandadan_15_serya_192919/screen.jpg", "subtitle": "", "id": "192919", "vid": "192919"},{"title":"Серія 4","file":"https://ashdi.vip/video01/3/serials/kachur_dandadan/dandadan_2_sezon_4_serya_190833/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/kachur_dandadan/dandadan_2_sezon_4_serya_190833/screen.jpg", "subtitle": "", "id": "190833", "vid": "190833"},{"title":"Серія 5","file":"https://ashdi.vip/video01/3/serials/kachur_dandadan/kachur_andadan2sezon5serya_191507/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/kachur_dandadan/kachur_andadan2sezon5serya_191507/screen.jpg", "subtitle": "", "id": "191507", "vid": "191507"},{"title":"Серія 6","file":"https://ashdi.vip/video01/3/serials/kachur_dandadan/dandadan_6_serya_2_sezon_193009/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/kachur_dandadan/dandadan_6_serya_2_sezon_193009/screen.jpg", "subtitle": "", "id": "193009", "vid": "193009"},{"title":"Серія 7","file":"https://ashdi.vip/video01/3/serials/kachur_dandadan/dandadan_s02_e07_193713/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/kachur_dandadan/dandadan_s02_e07_193713/screen.jpg", "subtitle": "", "id": "193713", "vid": "193713"},{"title":"Серія 8","file":"https://ashdi.vip/video01/2/serials/kachur_dandadan/dandadan_s02e08_194506/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/kachur_dandadan/dandadan_s02e08_194506/screen.jpg", "subtitle": "", "id": "194506", "vid": "194506"},{"title":"Серія 9","file":"https://ashdi.vip/video01/2/serials/kachur_dandadan/dandadan_2_sezon_9_serya_196195/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/kachur_dandadan/dandadan_2_sezon_9_serya_196195/screen.jpg", "subtitle": "", "id": "196195", "vid": "196195"},{"title":"Серія 10","file":"https://ashdi.vip/video01/2/serials/kachur_dandadan/dandadan_s02_e10_ukr_big_196196/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/kachur_dandadan/dandadan_s02_e10_ukr_big_196196/screen.jpg", "subtitle": "", "id": "196196", "vid": "196196"},{"title":"Серія 11","file":"https://ashdi.vip/video01/2/serials/kachur_dandadan/dandadan_s02_e11_ukr_big_197068/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/kachur_dandadan/dandadan_s02_e11_ukr_big_197068/screen.jpg", "subtitle": "", "id": "197068", "vid": "197068"},{"title":"Серія 12","file":"https://ashdi.vip/video01/2/serials/kachur_dandadan/dandadan_s02_e12_ukr_big_198061/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/kachur_dandadan/dandadan_s02_e12_ukr_big_198061/screen.jpg", "subtitle": "", "id": "198061", "vid": "198061"}]}]},{"title":" Amanogawa","folder":[{"title":" Сезон 1","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video01/2/serials/amanogawa_dandadan/dandadan__01_1080p_amanogawa_144946/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/amanogawa_dandadan/dandadan__01_1080p_amanogawa_144946/screen.jpg", "subtitle": "", "id": "144946", "vid": "144946"},{"title":"Серія 2","file":"https://ashdi.vip/video01/2/serials/amanogawa_dandadan/dandadan__02_1080p_amanogawa_145958/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/amanogawa_dandadan/dandadan__02_1080p_amanogawa_145958/screen.jpg", "subtitle": "", "id": "145958", "vid": "145958"},{"title":"Серія 3","file":"https://ashdi.vip/video01/2/serials/amanogawa_dandadan/dandadan__03_1080p_amanogawa_147012/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/amanogawa_dandadan/dandadan__03_1080p_amanogawa_147012/screen.jpg", "subtitle": "", "id": "147012", "vid": "147012"},{"title":"Серія 4","file":"https://ashdi.vip/video01/2/serials/amanogawa_dandadan/dandadan__04_1080p_amanogawa_147897/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/amanogawa_dandadan/dandadan__04_1080p_amanogawa_147897/screen.jpg", "subtitle": "", "id": "147897", "vid": "147897"},{"title":"Серія 5","file":"https://ashdi.vip/video01/2/serials/amanogawa_dandadan/dandadan__05_1080p_amanogawa_149225/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/amanogawa_dandadan/dandadan__05_1080p_amanogawa_149225/screen.jpg", "subtitle": "", "id": "149225", "vid": "149225"},{"title":"Серія 6","file":"https://ashdi.vip/video01/2/serials/amanogawa_dandadan/dandadan__06_1080p_amanogawa_150142/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/amanogawa_dandadan/dandadan__06_1080p_amanogawa_150142/screen.jpg", "subtitle": "", "id": "150142", "vid": "150142"},{"title":"Серія 7","file":"https://ashdi.vip/video01/2/new/dandadan__07_1080p_amanogawa_151198/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan__07_1080p_amanogawa_151198/screen.jpg", "subtitle": "[Українські]https://ashdi.vip/player/subtitle/151198_ua.vtt", "id": "151198", "vid": "151198"},{"title":"Серія 8","file":"https://ashdi.vip/video01/2/new/dandadan_1080p_amanogawa/dandadan__08_1080p_amanogawa_152513/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_1080p_amanogawa/dandadan__08_1080p_amanogawa_152513/screen.jpg", "subtitle": "[Українські]https://ashdi.vip/player/subtitle/152513_ua.vtt", "id": "152513", "vid": "152513"},{"title":"Серія 9","file":"https://ashdi.vip/video01/2/serials/dandadan_1080p_amanogawa/dandadan__09_1080p_amanogawa_154193/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/dandadan_1080p_amanogawa/dandadan__09_1080p_amanogawa_154193/screen.jpg", "subtitle": "", "id": "154193", "vid": "154193"},{"title":"Серія 10","file":"https://ashdi.vip/video01/1/serials/dandadan_1080p_amanogawa/dandadan__10_1080p_amanogawa_154783/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/serials/dandadan_1080p_amanogawa/dandadan__10_1080p_amanogawa_154783/screen.jpg", "subtitle": "", "id": "154783", "vid": "154783"},{"title":"Серія 11","file":"https://ashdi.vip/video01/1/serials/amanogawa_dandadan/dandadan__11_1080p_amanogawa_155369/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/serials/amanogawa_dandadan/dandadan__11_1080p_amanogawa_155369/screen.jpg", "subtitle": "", "id": "155369", "vid": "155369"},{"title":"Серія 12","file":"https://ashdi.vip/video01/1/serials/amanogawa_dandadan/dandadan__12_1080p_amanogawa_156249/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/serials/amanogawa_dandadan/dandadan__12_1080p_amanogawa_156249/screen.jpg", "subtitle": "", "id": "156249", "vid": "156249"}]},{"title":" Сезон 2","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video01/3/serials/amanogawa_dandadan/dandadan_2__01_1080p_amanogawa_187261/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/amanogawa_dandadan/dandadan_2__01_1080p_amanogawa_187261/screen.jpg", "subtitle": "", "id": "187261", "vid": "187261"},{"title":"Серія 2","file":"https://ashdi.vip/video01/3/serials/amanogawa_dandadan/dandadan_2__02_1080p_amanogawa_189444/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/amanogawa_dandadan/dandadan_2__02_1080p_amanogawa_189444/screen.jpg", "subtitle": "", "id": "189444", "vid": "189444"},{"title":"Серія 3","file":"https://ashdi.vip/video01/3/serials/amanogawa_dandadan/dandadan_2__03_1080p_amanogawa_189206/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/amanogawa_dandadan/dandadan_2__03_1080p_amanogawa_189206/screen.jpg", "subtitle": "", "id": "189206", "vid": "189206"},{"title":"Серія 4","file":"https://ashdi.vip/video01/3/serials/amanogawa_dandadan/dandadan_2__04_1080p_amanogawa_190043/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/amanogawa_dandadan/dandadan_2__04_1080p_amanogawa_190043/screen.jpg", "subtitle": "", "id": "190043", "vid": "190043"},{"title":"Серія 5","file":"https://ashdi.vip/video01/3/serials/amanogawa_dandadan/dandadan_2__05_1080p_amanogawa_191120/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/amanogawa_dandadan/dandadan_2__05_1080p_amanogawa_191120/screen.jpg", "subtitle": "", "id": "191120", "vid": "191120"},{"title":"Серія 6","file":"https://ashdi.vip/video01/3/serials/amanogawa_dandadan/dandadan_2__06_1080p_amanogawa_193307/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/amanogawa_dandadan/dandadan_2__06_1080p_amanogawa_193307/screen.jpg", "subtitle": "", "id": "193307", "vid": "193307"},{"title":"Серія 7","file":"https://ashdi.vip/video01/3/serials/amanogawa_dandadan/dandadan_2__07_1080p_amanogawa_193521/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/amanogawa_dandadan/dandadan_2__07_1080p_amanogawa_193521/screen.jpg", "subtitle": "", "id": "193521", "vid": "193521"},{"title":"Серія 8","file":"https://ashdi.vip/video01/2/serials/amanogawa_dandadan/dandadan_2__08_1080p_amanogawa_194541/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/amanogawa_dandadan/dandadan_2__08_1080p_amanogawa_194541/screen.jpg", "subtitle": "", "id": "194541", "vid": "194541"},{"title":"Серія 9","file":"https://ashdi.vip/video01/2/new/dandadan_2__09_1080p_amanogawa_195950/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_2__09_1080p_amanogawa_195950/screen.jpg", "subtitle": "[Українські]https://ashdi.vip/player/subtitle/195950_ua.vtt", "id": "195950", "vid": "195950"},{"title":"Серія 10","file":"https://ashdi.vip/video01/2/serials/amanogawa_dandadan/dandadan_2__10_1080p_amanogawa_196224/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/amanogawa_dandadan/dandadan_2__10_1080p_amanogawa_196224/screen.jpg", "subtitle": "", "id": "196224", "vid": "196224"},{"title":"Серія 11","file":"https://ashdi.vip/video01/2/serials/amanogawa_dandadan/dandadan_2__11_1080p_amanogawa_196822/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/amanogawa_dandadan/dandadan_2__11_1080p_amanogawa_196822/screen.jpg", "subtitle": "", "id": "196822", "vid": "196822"},{"title":"Серія 12","file":"https://ashdi.vip/video01/2/serials/amanogawa_dandadan/dandadan_2__12_1080p_amanogawa_197749/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/amanogawa_dandadan/dandadan_2__12_1080p_amanogawa_197749/screen.jpg", "subtitle": "", "id": "197749", "vid": "197749"}]}]},{"title":" ІnariОkami","folder":[{"title":" Сезон 1","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video01/2/serials/inariokami_dandadan/inariokami_dandadan_1_serya_144934/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/inariokami_dandadan/inariokami_dandadan_1_serya_144934/screen.jpg", "subtitle": "", "id": "144934", "vid": "144934"},{"title":"Серія 2","file":"https://ashdi.vip/video01/2/serials/inariokami_dandadan/dandadan_2_serya_145794/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/inariokami_dandadan/dandadan_2_serya_145794/screen.jpg", "subtitle": "", "id": "145794", "vid": "145794"},{"title":"Серія 3","file":"https://ashdi.vip/video01/2/serials/inariokami_dandadan/inariokami_dandadan_3_serya_147004/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/inariokami_dandadan/inariokami_dandadan_3_serya_147004/screen.jpg", "subtitle": "", "id": "147004", "vid": "147004"},{"title":"Серія 4","file":"https://ashdi.vip/video01/2/serials/inariokami_dandadan/dandadan_4_serya_147783/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/inariokami_dandadan/dandadan_4_serya_147783/screen.jpg", "subtitle": "", "id": "147783", "vid": "147783"},{"title":"Серія 5","file":"https://ashdi.vip/video01/2/serials/inariokami_dandadan/dandadan_5_serya_149223/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/inariokami_dandadan/dandadan_5_serya_149223/screen.jpg", "subtitle": "", "id": "149223", "vid": "149223"},{"title":"Серія 6","file":"https://ashdi.vip/video01/2/serials/inariokami_dandadan/dandadan_6_serya__151053/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/inariokami_dandadan/dandadan_6_serya__151053/screen.jpg", "subtitle": "", "id": "151053", "vid": "151053"},{"title":"Серія 7","file":"https://ashdi.vip/video01/2/serials/inariokami_dandadan/dandadan_7_serya1_151319/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/inariokami_dandadan/dandadan_7_serya1_151319/screen.jpg", "subtitle": "", "id": "151319", "vid": "151319"},{"title":"Серія 8","file":"https://ashdi.vip/video01/2/serials/inariokami_dandadan/dandadan_8_serya_153677/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/inariokami_dandadan/dandadan_8_serya_153677/screen.jpg", "subtitle": "", "id": "153677", "vid": "153677"},{"title":"Серія 9","file":"https://ashdi.vip/video01/2/serials/inariokami_dandadan/dandadan_9_serya_153678/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/inariokami_dandadan/dandadan_9_serya_153678/screen.jpg", "subtitle": "", "id": "153678", "vid": "153678"},{"title":"Серія 10","file":"https://ashdi.vip/video01/1/serials/inariokami_dandadan/dandadan_10_serya_154459/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/serials/inariokami_dandadan/dandadan_10_serya_154459/screen.jpg", "subtitle": "", "id": "154459", "vid": "154459"},{"title":"Серія 11","file":"https://ashdi.vip/video01/1/serials/inariokami_dandadan/dandadan_11_serya_155483/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/serials/inariokami_dandadan/dandadan_11_serya_155483/screen.jpg", "subtitle": "", "id": "155483", "vid": "155483"},{"title":"Серія 12","file":"https://ashdi.vip/video01/1/serials/inariokami_dandadan/dandadan_12_serya_156372/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/serials/inariokami_dandadan/dandadan_12_serya_156372/screen.jpg", "subtitle": "", "id": "156372", "vid": "156372"}]}]},{"title":" Glass Moon","folder":[{"title":" Сезон 1","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video01/2/serials/gm_dandadan/01_dandadan__dub_144936/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/gm_dandadan/01_dandadan__dub_144936/screen.jpg", "subtitle": "", "id": "144936", "vid": "144936"},{"title":"Серія 2","file":"https://ashdi.vip/video01/2/serials/gm_dandadan/02_dandadan__dub_145956/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/gm_dandadan/02_dandadan__dub_145956/screen.jpg", "subtitle": "", "id": "145956", "vid": "145956"},{"title":"Серія 3","file":"https://ashdi.vip/video01/2/serials/gm_dandadan/03_dandadan__dub_147011/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/gm_dandadan/03_dandadan__dub_147011/screen.jpg", "subtitle": "", "id": "147011", "vid": "147011"},{"title":"Серія 4","file":"https://ashdi.vip/video01/2/serials/gm_dandadan/04_dandadan__dub_147895/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/gm_dandadan/04_dandadan__dub_147895/screen.jpg", "subtitle": "", "id": "147895", "vid": "147895"},{"title":"Серія 5","file":"https://ashdi.vip/video01/2/serials/gm_dandadan/05_dandadan__dub_149224/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/gm_dandadan/05_dandadan__dub_149224/screen.jpg", "subtitle": "", "id": "149224", "vid": "149224"},{"title":"Серія 6","file":"https://ashdi.vip/video01/2/serials/gm_dandadan/06_dandadan__dub_150155/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/gm_dandadan/06_dandadan__dub_150155/screen.jpg", "subtitle": "", "id": "150155", "vid": "150155"},{"title":"Серія 7","file":"https://ashdi.vip/video01/2/new/dandandan__07_webdl_1080p_hevc_aac_ukr_dvo_sub_151191/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandandan__07_webdl_1080p_hevc_aac_ukr_dvo_sub_151191/screen.jpg", "subtitle": "[Українські]https://ashdi.vip/player/subtitle/151191_ua.vtt", "id": "151191", "vid": "151191"},{"title":"Серія 8","file":"https://ashdi.vip/video01/2/new/dandandan_webdl_1080p_hevc/dandandan__08_webdl_1080p_hevc_aac_ukr_dvo_sub_152392/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandandan_webdl_1080p_hevc/dandandan__08_webdl_1080p_hevc_aac_ukr_dvo_sub_152392/screen.jpg", "subtitle": "[Українські]https://ashdi.vip/player/subtitle/152392_ua.vtt", "id": "152392", "vid": "152392"},{"title":"Серія 9","file":"https://ashdi.vip/video01/2/serials/gm_dandadan/09_dandadan__dub_153446/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/gm_dandadan/09_dandadan__dub_153446/screen.jpg", "subtitle": "", "id": "153446", "vid": "153446"},{"title":"Серія 10","file":"https://ashdi.vip/video01/1/serials/gm_dandadan/10_dandadan__dub_155089/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/serials/gm_dandadan/10_dandadan__dub_155089/screen.jpg", "subtitle": "", "id": "155089", "vid": "155089"},{"title":"Серія 11","file":"https://ashdi.vip/video01/1/serials/gm_dandadan/11_dandadan__dub_156283/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/serials/gm_dandadan/11_dandadan__dub_156283/screen.jpg", "subtitle": "", "id": "156283", "vid": "156283"},{"title":"Серія 12","file":"https://ashdi.vip/video01/1/serials/gm_dandadan/12_dandadan__dub_156250/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/serials/gm_dandadan/12_dandadan__dub_156250/screen.jpg", "subtitle": "", "id": "156250", "vid": "156250"}]},{"title":" Сезон 2","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video01/3/serials/glass_moon_dandadan_2/01_dandadan_chastina_2__dub_187239/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/glass_moon_dandadan_2/01_dandadan_chastina_2__dub_187239/screen.jpg", "subtitle": "", "id": "187239", "vid": "187239"},{"title":"Серія 2","file":"https://ashdi.vip/video01/3/serials/glass_moon_dandadan_2/02_dandadan_chastina_2__dub_190183/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/glass_moon_dandadan_2/02_dandadan_chastina_2__dub_190183/screen.jpg", "subtitle": "", "id": "190183", "vid": "190183"},{"title":"Серія 3","file":"https://ashdi.vip/video01/3/serials/glass_moon_dandadan_2/03_dandadan_chastina_2__dub_190184/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/glass_moon_dandadan_2/03_dandadan_chastina_2__dub_190184/screen.jpg", "subtitle": "", "id": "190184", "vid": "190184"},{"title":"Серія 4","file":"https://ashdi.vip/video01/3/serials/glass_moon_dandadan_2/04_dandadan_chastina_2__dub_190185/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/glass_moon_dandadan_2/04_dandadan_chastina_2__dub_190185/screen.jpg", "subtitle": "", "id": "190185", "vid": "190185"},{"title":"Серія 5","file":"https://ashdi.vip/video01/3/serials/glass_moon_dandadan_2/05_dandadan_chastina_2__dub_191102/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/glass_moon_dandadan_2/05_dandadan_chastina_2__dub_191102/screen.jpg", "subtitle": "", "id": "191102", "vid": "191102"},{"title":"Серія 6","file":"https://ashdi.vip/video01/3/serials/glass_moon_dandadan_2/06_dandadan_chastina_2__dub_192248/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/glass_moon_dandadan_2/06_dandadan_chastina_2__dub_192248/screen.jpg", "subtitle": "", "id": "192248", "vid": "192248"},{"title":"Серія 7","file":"https://ashdi.vip/video01/3/serials/glass_moon_dandadan_2/07_dandadan_chastina_2__dub_193366/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/glass_moon_dandadan_2/07_dandadan_chastina_2__dub_193366/screen.jpg", "subtitle": "", "id": "193366", "vid": "193366"},{"title":"Серія 8","file":"https://ashdi.vip/video01/2/new/dandadan_part_2__08_webdl_1080p_hevc_aac_ukr_dvo_sub_194566/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_part_2__08_webdl_1080p_hevc_aac_ukr_dvo_sub_194566/screen.jpg", "subtitle": "[Українські]https://ashdi.vip/player/subtitle/194566_ua.vtt", "id": "194566", "vid": "194566"},{"title":"Серія 9","file":"https://ashdi.vip/video01/2/serials/glass_moon_dandadan_2/09_dandadan_chastina_2__dub_195919/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/glass_moon_dandadan_2/09_dandadan_chastina_2__dub_195919/screen.jpg", "subtitle": "", "id": "195919", "vid": "195919"},{"title":"Серія 10","file":"https://ashdi.vip/video01/2/serials/glass_moon_dandadan_2/10_dandadan_chastina_2__dub_195920/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/glass_moon_dandadan_2/10_dandadan_chastina_2__dub_195920/screen.jpg", "subtitle": "", "id": "195920", "vid": "195920"},{"title":"Серія 11","file":"https://ashdi.vip/video01/2/serials/glass_moon_dandadan_2/11_dandadan_chastina_2__dub_197017/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/glass_moon_dandadan_2/11_dandadan_chastina_2__dub_197017/screen.jpg", "subtitle": "", "id": "197017", "vid": "197017"},{"title":"Серія 12","file":"https://ashdi.vip/video01/2/new/dandadan_part_2__12_webdl_1080p_hevc_aac_ukr_dvo_sub_197972/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_part_2__12_webdl_1080p_hevc_aac_ukr_dvo_sub_197972/screen.jpg", "subtitle": "[Українські]https://ashdi.vip/player/subtitle/197972_ua.vtt", "id": "197972", "vid": "197972"}]}]},{"title":" Unimay","folder":[{"title":" Сезон 1","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video01/2/new/dandadan_s01e01_unimay_145049/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s01e01_unimay_145049/screen.jpg", "subtitle": "", "id": "145049", "vid": "145049"},{"title":"Серія 2","file":"https://ashdi.vip/video01/2/new/dandadan_s01e02_unimay_145821/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s01e02_unimay_145821/screen.jpg", "subtitle": "", "id": "145821", "vid": "145821"},{"title":"Серія 3","file":"https://ashdi.vip/video01/2/new/dandadan_s01e03_unimay_146918/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s01e03_unimay_146918/screen.jpg", "subtitle": "", "id": "146918", "vid": "146918"},{"title":"Серія 4","file":"https://ashdi.vip/video01/2/new/dandadan_s01e04_unimay_147867/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s01e04_unimay_147867/screen.jpg", "subtitle": "", "id": "147867", "vid": "147867"},{"title":"Серія 5","file":"https://ashdi.vip/video01/2/new/dandadan_s01e05_unimay_149269/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s01e05_unimay_149269/screen.jpg", "subtitle": "", "id": "149269", "vid": "149269"},{"title":"Серія 6","file":"https://ashdi.vip/video01/2/new/dandadan_s01e06_unimay_150156/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s01e06_unimay_150156/screen.jpg", "subtitle": "", "id": "150156", "vid": "150156"},{"title":"Серія 7","file":"https://ashdi.vip/video01/2/new/dandadan_s01e07_unimay_152096/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s01e07_unimay_152096/screen.jpg", "subtitle": "", "id": "152096", "vid": "152096"},{"title":"Серія 8","file":"https://ashdi.vip/video01/1/new/dandadan_s01e08_unimay_153665/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s01e08_unimay_153665/screen.jpg", "subtitle": "", "id": "153665", "vid": "153665"},{"title":"Серія 9","file":"https://ashdi.vip/video01/1/new/dandadan_s01e09_unimay_153963/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s01e09_unimay_153963/screen.jpg", "subtitle": "", "id": "153963", "vid": "153963"},{"title":"Серія 10","file":"https://ashdi.vip/video01/2/new/dandadan_s01e10_unimay_166580/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s01e10_unimay_166580/screen.jpg", "subtitle": "", "id": "166580", "vid": "166580"},{"title":"Серія 11","file":"https://ashdi.vip/video01/2/new/dandadan_s01e11_unimay_166578/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s01e11_unimay_166578/screen.jpg", "subtitle": "", "id": "166578", "vid": "166578"},{"title":"Серія 12","file":"https://ashdi.vip/video01/2/new/dandadan_s01e12_unimay_166579/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s01e12_unimay_166579/screen.jpg", "subtitle": "", "id": "166579", "vid": "166579"}]}]},{"title":" Клан Кайзоку","folder":[{"title":" Сезон 1","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video01/2/new/ck_dandadan__s01ep01_144933/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/ck_dandadan__s01ep01_144933/screen.jpg", "subtitle": "", "id": "144933", "vid": "144933"},{"title":"Серія 2","file":"https://ashdi.vip/video01/2/new/ck_dandadan__02_ukr_146023/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/ck_dandadan__02_ukr_146023/screen.jpg", "subtitle": "", "id": "146023", "vid": "146023"},{"title":"Серія 3","file":"https://ashdi.vip/video01/2/new/ck_dandadan__03_ukr_146867/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/ck_dandadan__03_ukr_146867/screen.jpg", "subtitle": "", "id": "146867", "vid": "146867"},{"title":"Серія 4","file":"https://ashdi.vip/video01/2/new/ck_dandadan__04_ukr_147818/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/ck_dandadan__04_ukr_147818/screen.jpg", "subtitle": "", "id": "147818", "vid": "147818"},{"title":"Серія 5","file":"https://ashdi.vip/video01/2/new/dandadan_s01e05_07_clan_kaizoku/dandadan__05_1080pclan_kaizoku_152003/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s01e05_07_clan_kaizoku/dandadan__05_1080pclan_kaizoku_152003/screen.jpg", "subtitle": "[Українські]https://ashdi.vip/player/subtitle/152003_ua.vtt", "id": "152003", "vid": "152003"},{"title":"Серія 6","file":"https://ashdi.vip/video01/2/new/dandadan_s01e05_07_clan_kaizoku/dandadan__06_1080pclan_kaizoku_152004/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s01e05_07_clan_kaizoku/dandadan__06_1080pclan_kaizoku_152004/screen.jpg", "subtitle": "[Українські]https://ashdi.vip/player/subtitle/152004_ua.vtt", "id": "152004", "vid": "152004"},{"title":"Серія 7","file":"https://ashdi.vip/video01/2/new/dandadan_s01e05_07_clan_kaizoku/dandadan__07_1080pclan_kaizoku_152005/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s01e05_07_clan_kaizoku/dandadan__07_1080pclan_kaizoku_152005/screen.jpg", "subtitle": "[Українські]https://ashdi.vip/player/subtitle/152005_ua.vtt", "id": "152005", "vid": "152005"},{"title":"Серія 8","file":"https://ashdi.vip/video01/1/serials/dandadan_s01e05_07_clan_kaizoku/ck_dandadan__08_ukr_155059/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/serials/dandadan_s01e05_07_clan_kaizoku/ck_dandadan__08_ukr_155059/screen.jpg", "subtitle": "", "id": "155059", "vid": "155059"},{"title":"Серія 9","file":"https://ashdi.vip/video01/1/serials/dandadan_s01e05_07_clan_kaizoku/ck_dandadan__09_ukr_v2_155060/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/serials/dandadan_s01e05_07_clan_kaizoku/ck_dandadan__09_ukr_v2_155060/screen.jpg", "subtitle": "", "id": "155060", "vid": "155060"},{"title":"Серія 10","file":"https://ashdi.vip/video01/1/serials/dandadan_s01e05_07_clan_kaizoku/ck_dandadan__10_ukr_155061/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/serials/dandadan_s01e05_07_clan_kaizoku/ck_dandadan__10_ukr_155061/screen.jpg", "subtitle": "", "id": "155061", "vid": "155061"},{"title":"Серія 11","file":"https://ashdi.vip/video01/1/new/dandadan__11_1080pclan_kaizoku_157894/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan__11_1080pclan_kaizoku_157894/screen.jpg", "subtitle": "[Українські]https://ashdi.vip/player/subtitle/157894_ua.vtt", "id": "157894", "vid": "157894"},{"title":"Серія 12","file":"https://ashdi.vip/video01/1/new/dandadan__12_1080pclan_kaizoku_157895/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan__12_1080pclan_kaizoku_157895/screen.jpg", "subtitle": "[Українські]https://ashdi.vip/player/subtitle/157895_ua.vtt", "id": "157895", "vid": "157895"}]},{"title":" Сезон 2","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video01/3/new/ck_dandadan__s02ep01_ukr_187257/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/new/ck_dandadan__s02ep01_ukr_187257/screen.jpg", "subtitle": "", "id": "187257", "vid": "187257"},{"title":"Серія 2","file":"https://ashdi.vip/video01/3/new/ck_dandadan__s02ep02_ukr_188189/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/new/ck_dandadan__s02ep02_ukr_188189/screen.jpg", "subtitle": "", "id": "188189", "vid": "188189"},{"title":"Серія 3","file":"https://ashdi.vip/video01/3/new/ck_dandadan__s02ep03_ukr__189045/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/new/ck_dandadan__s02ep03_ukr__189045/screen.jpg", "subtitle": "", "id": "189045", "vid": "189045"},{"title":"Серія 4","file":"https://ashdi.vip/video01/3/new/ck_dandadan__s02ep04_ukr_190152/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/new/ck_dandadan__s02ep04_ukr_190152/screen.jpg", "subtitle": "", "id": "190152", "vid": "190152"},{"title":"Серія 5","file":"https://ashdi.vip/video01/2/new/dandadan__s02ep05_1080pclan_kaizoku_194238/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan__s02ep05_1080pclan_kaizoku_194238/screen.jpg", "subtitle": "[Українські]https://ashdi.vip/player/subtitle/194238_ua.vtt", "id": "194238", "vid": "194238"},{"title":"Серія 6","file":"https://ashdi.vip/video01/2/new/dandadan__s02ep06_1080pclan_kaizoku_194239/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan__s02ep06_1080pclan_kaizoku_194239/screen.jpg", "subtitle": "[Українські]https://ashdi.vip/player/subtitle/194239_ua.vtt", "id": "194239", "vid": "194239"},{"title":"Серія 7","file":"https://ashdi.vip/video01/2/new/dandadan__s02ep07_1080pclan_kaizoku_196480/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan__s02ep07_1080pclan_kaizoku_196480/screen.jpg", "subtitle": "[Українські]https://ashdi.vip/player/subtitle/196480_ua.vtt", "id": "196480", "vid": "196480"},{"title":"Серія 8","file":"https://ashdi.vip/video01/2/new/dandadan__s02ep08_1080pclan_kaizoku_196481/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan__s02ep08_1080pclan_kaizoku_196481/screen.jpg", "subtitle": "[Українські]https://ashdi.vip/player/subtitle/196481_ua.vtt", "id": "196481", "vid": "196481"},{"title":"Серія 9","file":"https://ashdi.vip/video01/2/new/dandadan__s02ep09_1080pclan_kaizoku_196482/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan__s02ep09_1080pclan_kaizoku_196482/screen.jpg", "subtitle": "[Українські]https://ashdi.vip/player/subtitle/196482_ua.vtt", "id": "196482", "vid": "196482"},{"title":"Серія 10","file":"https://ashdi.vip/video01/2/new/dandadan__s02ep10_1080pclan_kaizoku_196700/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan__s02ep10_1080pclan_kaizoku_196700/screen.jpg", "subtitle": "[Українські]https://ashdi.vip/player/subtitle/196700_ua.vtt", "id": "196700", "vid": "196700"},{"title":"Серія 11","file":"https://ashdi.vip/video01/2/new/dandadan__s02ep11_1080pclan_kaizoku_198871/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan__s02ep11_1080pclan_kaizoku_198871/screen.jpg", "subtitle": "[Українські]https://ashdi.vip/player/subtitle/198871_ua.vtt", "id": "198871", "vid": "198871"},{"title":"Серія 12","file":"https://ashdi.vip/video01/2/new/dandadan__s02ep12_1080pclan_kaizoku_198872/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan__s02ep12_1080pclan_kaizoku_198872/screen.jpg", "subtitle": "[Українські]https://ashdi.vip/player/subtitle/198872_ua.vtt", "id": "198872", "vid": "198872"}]}]},{"title":" субтитри | Робота Голосом","folder":[{"title":" Сезон 1","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video01/2/new/dandadan.s01e01_144919/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01e01_144919/screen.jpg", "subtitle": "", "id": "144919", "vid": "144919"},{"title":"Серія 2","file":"https://ashdi.vip/video01/2/new/dandadan.s01e02_145795/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01e02_145795/screen.jpg", "subtitle": "", "id": "145795", "vid": "145795"},{"title":"Серія 3","file":"https://ashdi.vip/video01/2/new/dandadan.s01e03_146846/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01e03_146846/screen.jpg", "subtitle": "", "id": "146846", "vid": "146846"},{"title":"Серія 4","file":"https://ashdi.vip/video01/2/new/dandadan.s01e04_147781/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01e04_147781/screen.jpg", "subtitle": "", "id": "147781", "vid": "147781"},{"title":"Серія 5","file":"https://ashdi.vip/video01/2/new/dandadan.s01e05_149152/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01e05_149152/screen.jpg", "subtitle": "", "id": "149152", "vid": "149152"},{"title":"Серія 6","file":"https://ashdi.vip/video01/2/new/dandadan.s01e06_150027/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01e06_150027/screen.jpg", "subtitle": "", "id": "150027", "vid": "150027"},{"title":"Серія 7","file":"https://ashdi.vip/video01/2/new/dandadan.s01e07_151159/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01e07_151159/screen.jpg", "subtitle": "", "id": "151159", "vid": "151159"},{"title":"Серія 8","file":"https://ashdi.vip/video01/2/new/dandadan.s01e08_152361/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01e08_152361/screen.jpg", "subtitle": "", "id": "152361", "vid": "152361"},{"title":"Серія 9","file":"https://ashdi.vip/video01/1/new/dandadan.s01e09_153391/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01e09_153391/screen.jpg", "subtitle": "", "id": "153391", "vid": "153391"},{"title":"Серія 10","file":"https://ashdi.vip/video01/1/new/dandadan.s01e10_154175/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01e10_154175/screen.jpg", "subtitle": "", "id": "154175", "vid": "154175"},{"title":"Серія 11","file":"https://ashdi.vip/video01/1/new/dandadan.s01e11_155129/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01e11_155129/screen.jpg", "subtitle": "", "id": "155129", "vid": "155129"},{"title":"Серія 12","file":"https://ashdi.vip/video01/1/new/dandadan.s01e12_156201/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01e12_156201/screen.jpg", "subtitle": "", "id": "156201", "vid": "156201"}]},{"title":" Сезон 2","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video01/3/new/dandadan_s02e01_187186/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s02e01_187186/screen.jpg", "subtitle": "", "id": "187186", "vid": "187186"},{"title":"Серія 2","file":"https://ashdi.vip/video01/3/new/dandadan_s02e02_188047/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s02e02_188047/screen.jpg", "subtitle": "", "id": "188047", "vid": "188047"},{"title":"Серія 3","file":"https://ashdi.vip/video01/2/new/rg_dandadan_chastina_2_03_194223/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/rg_dandadan_chastina_2_03_194223/screen.jpg", "subtitle": "[Українські]https://ashdi.vip/player/subtitle/194223_ua.vtt", "id": "194223", "vid": "194223"},{"title":"Серія 4","file":"https://ashdi.vip/video01/3/new/dandadan_s02e04_189944/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s02e04_189944/screen.jpg", "subtitle": "", "id": "189944", "vid": "189944"},{"title":"Серія 5","file":"https://ashdi.vip/video01/3/new/dandadan_s02e05_191046/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s02e05_191046/screen.jpg", "subtitle": "", "id": "191046", "vid": "191046"},{"title":"Серія 6","file":"https://ashdi.vip/video01/3/new/dandadan_s02e06_192234/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s02e06_192234/screen.jpg", "subtitle": "", "id": "192234", "vid": "192234"},{"title":"Серія 7","file":"https://ashdi.vip/video01/3/new/dandadan_s02e07_193326/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s02e07_193326/screen.jpg", "subtitle": "", "id": "193326", "vid": "193326"},{"title":"Серія 8","file":"https://ashdi.vip/video01/2/new/dandadan_s02e08_194251/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s02e08_194251/screen.jpg", "subtitle": "", "id": "194251", "vid": "194251"},{"title":"Серія 9","file":"https://ashdi.vip/video01/2/new/dandadan_s02e09_195173/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s02e09_195173/screen.jpg", "subtitle": "", "id": "195173", "vid": "195173"},{"title":"Серія 10","file":"https://ashdi.vip/video01/2/new/dandadan_s02e10_195833/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s02e10_195833/screen.jpg", "subtitle": "", "id": "195833", "vid": "195833"},{"title":"Серія 11","file":"https://ashdi.vip/video01/2/new/dandadan_s02e11_197695/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s02e11_197695/screen.jpg", "subtitle": "", "id": "197695", "vid": "197695"},{"title":"Серія 12","file":"https://ashdi.vip/video01/2/new/dandadan_s02e12_197692/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s02e12_197692/screen.jpg", "subtitle": "", "id": "197692", "vid": "197692"}]}]},{"title":" Робота Голосом","folder":[{"title":" Сезон 1","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video01/2/serials/dandadan_rg/dandadan.s01e01_145177/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/dandadan_rg/dandadan.s01e01_145177/screen.jpg", "subtitle": "", "id": "145177", "vid": "145177"},{"title":"Серія 2","file":"https://ashdi.vip/video01/2/new/dandadan.s01e02_145796/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01e02_145796/screen.jpg", "subtitle": "", "id": "145796", "vid": "145796"},{"title":"Серія 3","file":"https://ashdi.vip/video01/2/new/dandadan.s01e03_146847/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01e03_146847/screen.jpg", "subtitle": "", "id": "146847", "vid": "146847"},{"title":"Серія 4","file":"https://ashdi.vip/video01/2/new/dandadan.s01e04_147909/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01e04_147909/screen.jpg", "subtitle": "", "id": "147909", "vid": "147909"},{"title":"Серія 5","file":"https://ashdi.vip/video01/2/new/dandadan.s01e05_149153/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01e05_149153/screen.jpg", "subtitle": "", "id": "149153", "vid": "149153"},{"title":"Серія 6","file":"https://ashdi.vip/video01/2/new/dandadan.s01e06_150028/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01e06_150028/screen.jpg", "subtitle": "", "id": "150028", "vid": "150028"},{"title":"Серія 7","file":"https://ashdi.vip/video01/2/new/dandadan.s01e07_151155/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01e07_151155/screen.jpg", "subtitle": "", "id": "151155", "vid": "151155"},{"title":"Серія 8","file":"https://ashdi.vip/video01/2/new/dandadan.s01e08_152362/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01e08_152362/screen.jpg", "subtitle": "", "id": "152362", "vid": "152362"},{"title":"Серія 9","file":"https://ashdi.vip/video01/1/new/dandadan.s01e09_153415/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01e09_153415/screen.jpg", "subtitle": "", "id": "153415", "vid": "153415"},{"title":"Серія 10","file":"https://ashdi.vip/video01/1/new/dandadan.s01e10_154189/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01e10_154189/screen.jpg", "subtitle": "", "id": "154189", "vid": "154189"},{"title":"Серія 11","file":"https://ashdi.vip/video01/1/new/dandadan.s01e11_155136/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01e11_155136/screen.jpg", "subtitle": "", "id": "155136", "vid": "155136"},{"title":"Серія 12","file":"https://ashdi.vip/video01/1/new/dandadan.s01e12_156203/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk19ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan.s01e12_156203/screen.jpg", "subtitle": "", "id": "156203", "vid": "156203"}]},{"title":" Сезон 2","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video01/3/new/dandadan_s02e01_187224/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s02e01_187224/screen.jpg", "subtitle": "", "id": "187224", "vid": "187224"},{"title":"Серія 2","file":"https://ashdi.vip/video01/3/new/dandadan_s02e02_188051/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s02e02_188051/screen.jpg", "subtitle": "", "id": "188051", "vid": "188051"},{"title":"Серія 3","file":"https://ashdi.vip/video01/3/new/dandadan_s02e03_189041/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s02e03_189041/screen.jpg", "subtitle": "", "id": "189041", "vid": "189041"},{"title":"Серія 4","file":"https://ashdi.vip/video01/3/new/dandadan_s02e04_189959/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s02e04_189959/screen.jpg", "subtitle": "", "id": "189959", "vid": "189959"},{"title":"Серія 5","file":"https://ashdi.vip/video01/3/new/dandadan_s02e05_191096/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s02e05_191096/screen.jpg", "subtitle": "", "id": "191096", "vid": "191096"},{"title":"Серія 6","file":"https://ashdi.vip/video01/3/new/dandadan_s02e06_192242/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s02e06_192242/screen.jpg", "subtitle": "", "id": "192242", "vid": "192242"},{"title":"Серія 7","file":"https://ashdi.vip/video01/3/new/dandadan_s02e07_193351/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s02e07_193351/screen.jpg", "subtitle": "", "id": "193351", "vid": "193351"},{"title":"Серія 8","file":"https://ashdi.vip/video01/2/new/dandadan_s02e08_194258/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s02e08_194258/screen.jpg", "subtitle": "", "id": "194258", "vid": "194258"},{"title":"Серія 9","file":"https://ashdi.vip/video01/2/new/dandadan_s02e09_195214/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s02e09_195214/screen.jpg", "subtitle": "", "id": "195214", "vid": "195214"},{"title":"Серія 10","file":"https://ashdi.vip/video01/2/new/dandadan_s02e10_195866/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s02e10_195866/screen.jpg", "subtitle": "", "id": "195866", "vid": "195866"},{"title":"Серія 11","file":"https://ashdi.vip/video01/2/new/dandadan_s02e11_196850/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s02e11_196850/screen.jpg", "subtitle": "", "id": "196850", "vid": "196850"},{"title":"Серія 12","file":"https://ashdi.vip/video01/2/new/dandadan_s02e12_197698/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/dandadan_s02e12_197698/screen.jpg", "subtitle": "", "id": "197698", "vid": "197698"}]}]}]',
+				plstart: '197692',
+				forbidden_quality:"Авто",
+				default_quality:"480p",
+preroll:"id:adwise7271 or id:vast7260 or id:vast7252 or id:adwise12050 or id:vadideo12220 or id:vast12054 and id:adwise7272 or id:vast7260 or id:vast7252 or id:adwise12051 or id:vadideo12220 or id:vast12054",
+prerollnew:1			});
+
+		</script>
+	</body>
+</html>

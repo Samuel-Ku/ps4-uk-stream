@@ -17,3 +17,11 @@ eboot.bin
 *.egg-info/
 .venv/
 venv/
+
+# Nested git directories (reference clones, not part of our repo)
+**/.git
+**/.git/**
+
+# Local developer tooling (reference clones, scratch artifacts)
+backend/tools/
+backend/tools/**
