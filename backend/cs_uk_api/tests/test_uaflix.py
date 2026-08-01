@@ -226,3 +226,47 @@ def test_uaflix_external_id_round_trips_to_url():
     ext_id = _external_id_from_url(href)
     rebuilt = _episode_content_url(ext_id, "s1e1")
     assert rebuilt.rstrip("/") == href.rstrip("/"), (ext_id, rebuilt, href)
+
+
+@pytest.mark.asyncio
+async def test_uaflix_content_bad_external_id_raises_not_found():
+    """REGRESSION: `content()` must validate the external_id slug
+    before building the URL. A slug containing `/` or `..` would
+    otherwise turn into a path-traversal request that
+    `follow_redirects=True` (in `stream()`) could steer into a
+    hostile host."""
+    from cs_uk_api.providers.base import ProviderError
+
+    bad_ids = (
+        "../../etc/passwd",
+        "films-../../etc/passwd",
+        "-bad",
+        "films-",
+        "evil-",
+        "filmy-djuna-1984",  # section id (filmy), not URL path (films)
+    )
+    with respx.mock(assert_all_called=False):
+        for bad in bad_ids:
+            with pytest.raises(ProviderError) as exc:
+                await UAFlixProvider().content(bad, httpx.AsyncClient())
+            assert exc.value.code == "not_found", (bad, exc.value.code)
+
+
+@pytest.mark.asyncio
+async def test_uaflix_stream_bad_content_id_raises_not_found():
+    """REGRESSION: `stream()` must validate the external_id portion
+    of the content_id before following any redirect. Same SSRF
+    surface as the content test, exercised through the stream path."""
+    from cs_uk_api.providers.base import ProviderError
+
+    bad_ids = (
+        "../../etc/passwd:bad",
+        "films-../etc/passwd",
+        "serialy-djuna:bad",
+        "evil-bad:s1e1",
+    )
+    with respx.mock(assert_all_called=False):
+        for bad in bad_ids:
+            with pytest.raises(ProviderError) as exc:
+                await UAFlixProvider().stream(bad, None, httpx.AsyncClient())
+            assert exc.value.code == "not_found", (bad, exc.value.code)
