@@ -39,7 +39,7 @@ once they pass the live gate (search → content → stream → plays in mpv).
 | hentaiukr | [HentaiUkrProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/HentaiUkrProvider) | `HentaiUkrProvider.kt` (5.3 KB) | HTML | TBD | TBD | TBD (in scope per spec; no hiding) |
 | doramyworld | [DoramyWorldProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/DoramyWorldProvider) | `DoramyWorldProvider.kt` (8.3 KB), `JSONModel.kt` | HTML + JSON | TBD | mild | TBD |
 | cikavaideya | [CikavaIdeyaProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/CikavaIdeyaProvider) | `CikavaIdeyaProvider.kt` (8.2 KB) | HTML | TBD | TBD | TBD |
-| ufdub | [UFDubProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UFDubProvider) | `UFDubProvider.kt` (6.1 KB) | HTML | TBD | TBD | TBD |
+| ufdub | [UFDubProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UFDubProvider) | `UFDubProvider.kt` (6.1 KB) | HTML | iframe → regex | none | **ready** |
 | unimay | [UnimayProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UnimayProvider) | `UnimayProvider.kt` (6.6 KB) | HTML | TBD | TBD | TBD |
 | serialno | [SerialnoProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/SerialnoProvider) | `SerialnoProvider.kt` (10.1 KB) | HTML | TBD | TBD | TBD |
 | simpsonsuatv | [SimpsonsUATvProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/SimpsonsUATvProvider) | `SimpsonsUATvProvider.kt` (29.3 KB) | HTML | TBD | TBD | TBD |
@@ -47,19 +47,24 @@ once they pass the live gate (search → content → stream → plays in mpv).
 ## Per-provider "owner" field (suggested order)
 
 Group 1 (simple, HTML-based, `<15 KB`):
-1. `uaflix` — drop-in next; uses our sections/browse + regex pipeline already
-2. `kinovezha`, `bambooua`, `cikavaideya`, `ufdub`, `unimay`, `kinotron`
-3. `coaninet`, `animeua`
+
+1. `ufdub` — landed in `backend/cs_uk_api/providers/ufdub.py` (6 tests, ready)
+2. `uaflix` — drop-in next; uses our sections/browse + regex pipeline already
+3. `kinovezha`, `bambooua`, `cikavaideya`, `unimay`, `kinotron`
+4. `coaninet`, `animeua`
 
 Group 2 (medium, 10–25 KB):
-4. `klontv`, `serialno`, `banderakino`, `doramyworld`
+
+1. `klontv`, `serialno`, `banderakino`, `doramyworld`
 
 Group 3 (heavy, needs deeper triage):
-5. `uaserialspro`, `eneyida`, `anitubeinua`, `simpsonsuatv`
-6. `animeon` — read the source before committing; packed JS risk
+
+1. `uaserialspro`, `eneyida`, `anitubeinua`, `simpsonsuatv`
+2. `animeon` — read the source before committing; packed JS risk
 
 Group 4:
-7. `hentaiukr` — in scope per spec (no hiding); small file, should be straightforward
+
+1. `hentaiukr` — in scope per spec (no hiding); small file, should be straightforward
 
 ## How to triage one provider
 

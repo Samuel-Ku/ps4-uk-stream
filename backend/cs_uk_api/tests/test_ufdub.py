@@ -1,0 +1,160 @@
+"""Tests for the UFDub provider (issue #17, Group 1)."""
+from __future__ import annotations
+
+import pathlib
+
+import httpx
+import pytest
+import respx
+
+from cs_uk_api.providers.ufdub import UFDubProvider
+
+FIX = pathlib.Path(__file__).parent / "fixtures" / "ufdub"
+
+
+def _fixture(name: str) -> str:
+    return (FIX / name).read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_ufdub_search_parses_results():
+    search_html = _fixture("search.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.post("https://ufdub.com/index.php").respond(200, text=search_html)
+        async with httpx.AsyncClient() as http:
+            results = await UFDubProvider().search("one piece", http)
+    # Real search response contains 4 distinct cards (anime, anime,
+    # cartoon-serial, dorama). Replaces the previous test that asserted
+    # on a homepage-shaped fixture.
+    assert len(results) == 4
+    titles = [r.title for r in results]
+    assert any("Net-juu no Susume" in t for t in titles)
+    assert all(r.provider == "ufdub" for r in results)
+    anime_one = next(r for r in results if "Net-juu no Susume" in r.title)
+    assert anime_one.id.startswith("ufdub:anime-")
+    assert anime_one.type == "anime"
+    assert anime_one.url.startswith("https://ufdub.com/anime/")
+
+
+@pytest.mark.asyncio
+async def test_ufdub_search_classifies_types_by_url_path():
+    search_html = _fixture("search.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.post("https://ufdub.com/index.php").respond(200, text=search_html)
+        async with httpx.AsyncClient() as http:
+            results = await UFDubProvider().search("one piece", http)
+    # The id is `ufdub:<kind>-<slug>`. For hyphened kinds like
+    # `cartoon-serial`, splitting on `-` gives `cartoon` as the first
+    # chunk, so we use the URL path segment instead.
+    types_by_url_kind = {r.url.split("/")[3]: r.type for r in results}
+    # Regression: `/cartoon-serial/` must classify as `series`, not
+    # `movie` (caught by the code-reviewer — `cartoon` was matching
+    # before `cartoon-serial`).
+    assert types_by_url_kind.get("cartoon-serial") == "series"
+    assert types_by_url_kind.get("anime") == "anime"
+    assert types_by_url_kind.get("dorama") == "dorama"
+
+
+@pytest.mark.asyncio
+async def test_ufdub_browse_anime_section_parses_results():
+    listing_html = _fixture("anime_listing.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ufdub.com/anime/").respond(200, text=listing_html)
+        async with httpx.AsyncClient() as http:
+            results, has_next = await UFDubProvider().browse("anime", 1, http)
+    # Regression: `.short-text, .short` selector returned each card
+    # twice (32 results for 16 cards). Use only the inner `.short-text`.
+    assert len(results) == 16
+    assert all(r.type == "anime" for r in results)
+    assert all(r.id.startswith("ufdub:anime-") for r in results)
+    # Regression: DLE pagination is `<span class="navigation">`, not
+    # `<div class="navigation">`, and the marker link is `/page/N/`.
+    assert has_next is True
+
+
+@pytest.mark.asyncio
+async def test_ufdub_browse_film_page1_has_next_true():
+    listing_html = _fixture("film_listing.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ufdub.com/film/").respond(200, text=listing_html)
+        async with httpx.AsyncClient() as http:
+            results, has_next = await UFDubProvider().browse("filmy", 1, http)
+    assert len(results) == 16
+    # The film section shows related content (3 anime, 12 film, 1
+    # serial) — UFDub is not strictly partitioned. The page
+    # classification is the URL's path, not the section's declared
+    # type.
+    assert has_next is True
+
+
+@pytest.mark.asyncio
+async def test_ufdub_browse_film_page_last_has_next_false():
+    """When we are on the last page (>= all listed page numbers),
+    has_next must be False so the client stops paging."""
+    listing_html = _fixture("film_listing.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ufdub.com/film/page/99/").respond(200, text=listing_html)
+        async with httpx.AsyncClient() as http:
+            _, has_next = await UFDubProvider().browse("filmy", 99, http)
+    assert has_next is False
+
+
+@pytest.mark.asyncio
+async def test_ufdub_content_movie_parses_title_poster():
+    content_html = _fixture("content_movie.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ufdub.com/film/48-fokus-pokus-hocus-pocus.html").respond(
+            200, text=content_html
+        )
+        async with httpx.AsyncClient() as http:
+            c = await UFDubProvider().content("film-48-fokus-pokus-hocus-pocus", http)
+    assert "Фокус" in c.title
+    assert c.type == "movie"
+    assert c.poster is not None
+    assert c.poster.startswith("https://ufdub.com")
+
+
+@pytest.mark.asyncio
+async def test_ufdub_content_anime_classifies_as_anime():
+    content_html = _fixture("content_anime.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ufdub.com/anime/23-rekomendaciji-dlja-chudovogo-zhittja-onlajn-net-juu-no-susume.html").respond(
+            200, text=content_html
+        )
+        async with httpx.AsyncClient() as http:
+            c = await UFDubProvider().content("anime-23-rekomendaciji-dlja-chudovogo-zhittja-onlajn-net-juu-no-susume", http)
+    assert c.type == "anime"
+
+
+@pytest.mark.asyncio
+async def test_ufdub_stream_resolves_to_player_url():
+    """Regression: `content_id` is the external_id (`film-48-...`), not
+    a URL. The old implementation called `http.get(content_id)` which
+    raised `ValueError: unknown url type` on every call."""
+    content_html = _fixture("content_movie.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ufdub.com/film/48-fokus-pokus-hocus-pocus.html").respond(
+            200, text=content_html
+        )
+        async with httpx.AsyncClient() as http:
+            s = await UFDubProvider().stream("film-48-fokus-pokus-hocus-pocus", None, http)
+    assert s.url.startswith("https://video.ufdub.com/")
+    assert s.type == "m3u8"
+    assert s.headers["Referer"] == "https://ufdub.com/"
+
+
+@pytest.mark.asyncio
+async def test_ufdub_sections_lists_six():
+    sections = UFDubProvider().sections
+    ids = [s.id for s in sections]
+    # Per the upstream Kotlin source.
+    assert ids == ["filmy", "serialy", "doramy", "cartoons", "multserialy", "anime"]
+
+
+@pytest.mark.asyncio
+async def test_ufdub_browse_unknown_section_raises():
+    from cs_uk_api.providers.base import ProviderError
+
+    with respx.mock(assert_all_called=False):
+        with pytest.raises(ProviderError):
+            await UFDubProvider().browse("nonexistent", 1, httpx.AsyncClient())

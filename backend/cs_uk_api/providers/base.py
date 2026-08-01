@@ -12,7 +12,7 @@ from ..models import (
     StreamResponse,
 )
 
-MediaTypeStr = Literal["movie", "series"]
+MediaTypeStr = Literal["movie", "series", "anime", "cartoon", "dorama"]
 
 
 class ProviderError(Exception):
