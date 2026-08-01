@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+*.o
+*.elf
+*.oelf
+eboot.bin
+*.pkg
+*.gp4
+.vscode/
+.idea/
