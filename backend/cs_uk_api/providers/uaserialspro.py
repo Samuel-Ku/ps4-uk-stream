@@ -32,8 +32,6 @@ URL form: ``https://uaserials.com/<external_id>.html``.
 
 from __future__ import annotations
 
-import base64
-import binascii
 import json
 import re
 from typing import Any, cast
@@ -41,8 +39,6 @@ from urllib.parse import quote, urljoin
 
 import httpx
 from bs4 import BeautifulSoup, Tag
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import unpad
 
 from ..models import (
     ContentResponse,
@@ -53,6 +49,8 @@ from ..models import (
     StreamResponse,
     Translation,
 )
+from ._crypto import decrypt_player_data
+from ._tortuga import tortuga_decode
 from .base import BaseProvider, ProviderError
 
 BASE_URL = "https://uaserials.com"
@@ -61,7 +59,7 @@ BASE_URL = "https://uaserials.com"
 _PLAYER_PASSWORD = "297796CCB81D255125"
 # tortuga.tw serves the HLS manifest with this Referer (mirrors the
 # upstream Kotlin source).
-TORTUGA_REFERER = "https://tortuga.wtf/"
+TORTUGA_REFERER = "https://tortuga.tw/"
 # User-Agent for the content-page fetch (matches the upstream).
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64; rv:144.0) Gecko/20100101 Firefox/144.0"
 
@@ -145,33 +143,6 @@ def _section_url(section: str, page: int) -> str:
     return f"{base}page/{page}/"
 
 
-def _tortuga_decode(encoded: str) -> str:
-    """Mirror the upstream Kotlin `Decoder.tortugaDecode`.
-
-    1. Strip trailing ``=`` and re-pad to a multiple of 4 (Android's
-       ``Base64.DEFAULT`` is lenient about trailing padding).
-    2. Base64-decode. The first byte is the salt; every subsequent
-       byte is XORed with ``(salt + 7*i + 13) % 256`` for i = 0, 1, …
-    3. UTF-8 decode the resulting bytes.
-    """
-    if not encoded:
-        return ""
-    clean = encoded.rstrip("=")
-    pad = (4 - len(clean) % 4) % 4
-    try:
-        decoded = base64.b64decode(clean + "=" * pad)
-    except (ValueError, binascii.Error):
-        return ""
-    if len(decoded) < 2:
-        return ""
-    salt = decoded[0]
-    out = bytearray(len(decoded) - 1)
-    for i in range(1, len(decoded)):
-        key = (salt + 7 * (i - 1) + 13) % 256
-        out[i - 1] = decoded[i] ^ key
-    return out.decode("utf-8", errors="replace")
-
-
 def _decrypt_player_data(data_tag1: str) -> list[dict[str, Any]]:
     """AES-decrypt the ``<player-control data-tag1='...'>`` blob.
 
@@ -179,48 +150,7 @@ def _decrypt_player_data(data_tag1: str) -> list[dict[str, Any]]:
     Raises ``ProviderError`` for malformed payloads so the caller can
     surface an explicit ``parse_failed``.
     """
-    try:
-        payload = json.loads(data_tag1)
-    except json.JSONDecodeError as e:
-        raise ProviderError("parse_failed", "data-tag1 not JSON") from e
-    salt_hex = payload.get("salt", "")
-    iv_hex = payload.get("iv", "")
-    ct_b64 = payload.get("ciphertext", "")
-    if not (salt_hex and iv_hex and ct_b64):
-        raise ProviderError("parse_failed", "data-tag1 missing fields")
-    try:
-        salt = bytes.fromhex(salt_hex)
-        iv = bytes.fromhex(iv_hex)
-        ct = base64.b64decode(ct_b64)
-    except (ValueError, binascii.Error) as e:
-        raise ProviderError("parse_failed", "data-tag1 bytes bad") from e
-    # PBKDF2-HMAC-SHA512 with 999 iterations, 32-byte derived key
-    # (mirrors the upstream Kotlin SecretKeyFactory PBKDF2WithHmacSHA512).
-    import hashlib
-
-    key = hashlib.pbkdf2_hmac(
-        "sha512",
-        _PLAYER_PASSWORD.encode("utf-8"),
-        salt,
-        999,
-        dklen=32,
-    )
-    try:
-        cipher = AES.new(key, AES.MODE_CBC, iv)
-        plain = unpad(cipher.decrypt(ct), 16)
-    except (ValueError, KeyError) as e:
-        raise ProviderError("parse_failed", "AES decrypt failed") from e
-    text = plain.decode("utf-8", errors="replace").replace("\\", "")
-    # Upstream trims after the last `]` to drop any trailing garbage
-    # that the upstream serializer may have appended.
-    last_bracket = text.rfind("]")
-    if last_bracket != -1:
-        text = text[: last_bracket + 1]
-    try:
-        parsed = cast(list[dict[str, Any]], json.loads(text))
-    except json.JSONDecodeError as e:
-        raise ProviderError("parse_failed", "decrypted data not JSON") from e
-    return parsed
+    return decrypt_player_data(data_tag1, _PLAYER_PASSWORD)
 
 
 def _select_player_url(tabs: list[dict[str, Any]]) -> str | None:
@@ -470,7 +400,7 @@ class UASerialsProProvider(BaseProvider):
         if encoded.startswith("http"):
             decoded = encoded
         else:
-            decoded = _tortuga_decode(encoded)
+            decoded = tortuga_decode(encoded)
         if not decoded:
             return None
         if decoded.startswith("["):
@@ -555,7 +485,7 @@ class UASerialsProProvider(BaseProvider):
         if encoded.startswith("http"):
             decoded = encoded
         else:
-            decoded = _tortuga_decode(encoded)
+            decoded = tortuga_decode(encoded)
         if not decoded:
             raise ProviderError("parse_failed", "tortuga decode empty")
         # Movies: the decoded value is the m3u8 URL. Series: the decoded

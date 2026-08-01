@@ -14,7 +14,6 @@ The real type is resolved authoritatively by ``/api/content`` from
 the Жанр list on the content page."""
 from __future__ import annotations
 
-import base64
 import json
 import re
 from typing import Any, cast
@@ -33,6 +32,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
+from ._tortuga import tortuga_decode
 from .base import BaseProvider, ProviderError
 
 BASE_URL = "https://kinovezha.tv"
@@ -187,35 +187,11 @@ def _parse_cards(html: str, provider_id: str) -> list[SearchResult]:
 
 
 def _tor_decrypt(encoded: str) -> str | None:
-    """Resolve the obfuscated `file:` payload via the upstream
-    ``Decoder.torDecrypt`` algorithm — XOR-decode a base64 payload
-    whose first byte is the salt. The Android-side uses
-    ``android.util.Base64.DEFAULT`` (standard alphabet with padding)
-    so we mirror that.
-
-    Returns ``None`` when no branch produces a usable value so the
-    caller can surface ``parse_failed``."""
-    if not encoded:
-        return None
-    cleaned = re.sub(r"[^A-Za-z0-9+/]", "", encoded)
-    pad = len(cleaned) % 4
-    if pad > 1:
-        cleaned = cleaned + "=" * (4 - pad)
-    try:
-        decoded = base64.b64decode(cleaned, validate=False)
-    except (ValueError, base64.binascii.Error):  # type: ignore[attr-defined]
-        return None
-    if len(decoded) < 2:
-        return None
-    salt = decoded[0] & 0xFF
-    out = bytearray(len(decoded) - 1)
-    for i in range(1, len(decoded)):
-        f = (salt + 7 * (i - 1) + 13) % 256
-        out[i - 1] = decoded[i] ^ f
-    try:
-        return out.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
+    """Backwards-compatible alias for :func:`tortuga_decode` (the
+    shared Tortuga XOR/Base64 decoder). Returns ``None`` when the
+    payload is undecodable so the caller can surface ``parse_failed``."""
+    out = tortuga_decode(encoded)
+    return out or None
 
 
 def _resolve_file_value(html: str) -> str | None:

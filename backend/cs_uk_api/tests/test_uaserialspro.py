@@ -296,8 +296,8 @@ async def test_stream_movie_resolves_to_m3u8():
     assert s.url.endswith(".m3u8")
     assert s.type == "m3u8"
     # tortuga.tw serves the HLS manifest via Referer (upstream uses
-    # `referer = "https://tortuga.wtf/"`).
-    assert s.headers.get("Referer") == "https://tortuga.wtf/"
+    # `referer = "https://tortuga.tw/"`).
+    assert s.headers.get("Referer") == "https://tortuga.tw/"
 
 
 @pytest.mark.asyncio
