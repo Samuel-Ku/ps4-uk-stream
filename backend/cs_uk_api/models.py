@@ -62,6 +62,26 @@ class ProviderInfo(BaseModel):
     types: list[MediaType]
 
 
+class Section(BaseModel):
+    id: str
+    title: str
+    type: MediaType
+
+
+class ProviderSections(BaseModel):
+    id: str
+    name: str
+    sections: list[Section]
+
+
+class BrowseResponse(BaseModel):
+    provider: str
+    section: str
+    page: int = Field(ge=1)
+    has_next: bool
+    results: list[SearchResult]
+
+
 class ErrorResponse(BaseModel):
     error: str
     message: str

@@ -5,7 +5,12 @@ from typing import Literal
 
 import httpx
 
-from ..models import ContentResponse, SearchResult, StreamResponse
+from ..models import (
+    ContentResponse,
+    SearchResult,
+    Section,
+    StreamResponse,
+)
 
 MediaTypeStr = Literal["movie", "series"]
 
@@ -21,6 +26,12 @@ class BaseProvider(abc.ABC):
     id: str
     name: str
     types: tuple[MediaTypeStr, ...]
+    # Subclasses set this to a non-empty tuple to opt into /api/sections
+    # and /api/browse. Default: no section browsing.
+    sections: tuple[Section, ...] = ()
+
+    def has_section(self, section_id: str) -> bool:
+        return any(s.id == section_id for s in self.sections)
 
     @abc.abstractmethod
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]: ...
@@ -34,3 +45,13 @@ class BaseProvider(abc.ABC):
     async def stream(
         self, content_id: str, translation: str | None, http: httpx.AsyncClient
     ) -> StreamResponse: ...
+
+    async def browse(
+        self, section: str, page: int, http: httpx.AsyncClient
+    ) -> tuple[list[SearchResult], bool]:
+        """Return one page of results for a section.
+
+        Default implementation: raises NotImplementedError. Providers that
+        declare `sections` must override this.
+        """
+        raise NotImplementedError(f"{self.id} does not support browse")

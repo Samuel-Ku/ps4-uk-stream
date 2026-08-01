@@ -13,9 +13,11 @@ from .cache import TtlCache
 from .config import SETTINGS
 from .http_client import close_client, get_client
 from .models import (
+    BrowseResponse,
     ContentResponse,
     ErrorResponse,
     ProviderInfo,
+    ProviderSections,
     SearchResponse,
     StreamResponse,
 )
@@ -28,6 +30,7 @@ log = logging.getLogger("cs_uk_api")
 
 _search_cache = TtlCache(default_ttl_s=SETTINGS.cache_search_s)
 _content_cache = TtlCache(default_ttl_s=SETTINGS.cache_content_s)
+_browse_cache = TtlCache(default_ttl_s=SETTINGS.cache_search_s)
 
 
 @asynccontextmanager
@@ -63,6 +66,43 @@ async def list_providers() -> list[ProviderInfo]:
         ProviderInfo(id=p.id, name=p.name, types=list(p.types))  # type: ignore[arg-type]
         for p in PROVIDERS.values()
     ]
+
+
+@app.get("/api/sections")
+async def list_sections() -> list[ProviderSections]:
+    """Return only providers that opt into section browsing."""
+    return [
+        ProviderSections(id=p.id, name=p.name, sections=list(p.sections))
+        for p in PROVIDERS.values()
+        if p.sections
+    ]
+
+
+@app.get("/api/browse")
+async def browse(
+    provider: str = Query(...),
+    section: str = Query(...),
+    page: int = Query(1, ge=1),
+) -> BrowseResponse:
+    if provider not in PROVIDERS:
+        raise HTTPException(400, detail=ErrorResponse(error="unknown_provider", message=provider).model_dump())
+    p = PROVIDERS[provider]
+    if not p.sections:
+        raise HTTPException(400, detail=ErrorResponse(error="not_browsable", message=provider).model_dump())
+    if not p.has_section(section):
+        raise HTTPException(404, detail=ErrorResponse(error="unknown_section", message=section).model_dump())
+    cache_key = f"browse:{provider}:{section}:{page}"
+    cached = _browse_cache.get(cache_key)
+    if cached is not None:
+        return cached  # type: ignore[return-value]
+    try:
+        results, has_next = await p.browse(section, page, get_client())
+    except Exception as e:
+        log.warning("browse failed provider=%s section=%s page=%d err=%s", provider, section, page, e)
+        raise HTTPException(502, detail=ErrorResponse(error="upstream_unreachable", message=str(e)).model_dump()) from e
+    resp = BrowseResponse(provider=provider, section=section, page=page, has_next=has_next, results=results)
+    _browse_cache.set(cache_key, resp)
+    return resp
 
 
 @app.get("/api/search")

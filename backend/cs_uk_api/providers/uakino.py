@@ -6,10 +6,31 @@ from urllib.parse import quote, urljoin
 import httpx
 from bs4 import BeautifulSoup
 
-from ..models import ContentResponse, Episode, SearchResult, Season, StreamResponse, Translation
+from ..models import (
+    ContentResponse,
+    Episode,
+    SearchResult,
+    Season,
+    Section,
+    StreamResponse,
+    Translation,
+)
 from .base import BaseProvider, ProviderError
 
 BASE_URL = "https://uakino.club"
+
+# Sections exposed by Uakino's main navigation. The /animeukr URL is the
+# anime sub-site (Ukrainian-dubbed anime). Section ids are stable; titles
+# are user-facing and may change.
+UAKINO_SECTIONS: tuple[Section, ...] = (
+    Section(id="filmy", title="Фільми", type="movie"),
+    Section(id="serials", title="Серіали", type="series"),
+    Section(id="animeukr", title="Аніме", type="series"),
+    Section(id="cartoons", title="Мультфільми", type="movie"),
+)
+
+# Pagination: how many cards per listing page. Uakino's default block is 12.
+_PAGE_SIZE = 12
 
 
 def _external_id_from_url(href: str) -> str:
@@ -23,10 +44,77 @@ def _is_series(href: str) -> bool:
     return "/serial/" in href
 
 
+def _section_url(section: str, page: int) -> str:
+    """Build the listing URL for a Uakino section + page.
+
+    Anime is served from a different host; everything else uses the main
+    site. Pagination on Uakino uses /page/N/.
+    """
+    if section == "animeukr":
+        base = "https://animeukr.info"
+        path = "/filmy"
+    elif section == "filmy":
+        base = BASE_URL
+        path = "/filmy"
+    elif section == "serials":
+        base = BASE_URL
+        path = "/serials"
+    elif section == "cartoons":
+        base = BASE_URL
+        path = "/cartoons"
+    else:
+        raise ProviderError("not_found", f"unknown section: {section}")
+    if page <= 1:
+        return f"{base}{path}/"
+    return f"{base}{path}/page/{page}/"
+
+
+def _parse_listing(html: str, provider_id: str, default_type: str) -> tuple[list[SearchResult], bool]:
+    """Parse a Uakino listing page.
+
+    Returns (results, has_next). `has_next` is True if the pagination block
+    contains a link to a higher page number, signalling more results.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    results: list[SearchResult] = []
+    for card in soup.select("div.short-story"):
+        a = card.select_one("h3.short-title a")
+        img = card.select_one("div.short-img img")
+        meta = card.select_one("div.short-meta")
+        if a is None or a.get("href") is None or a.text is None:
+            continue
+        href = str(a["href"])
+        title = a.get_text(strip=True)
+        year_match = re.search(r"\b(19|20)\d{2}\b", title + " " + (meta.get_text() if meta else ""))
+        year = int(year_match.group(0)) if year_match else None
+        poster = urljoin(BASE_URL, str(img["src"])) if img and img.get("src") else None
+        kind = "series" if _is_series(href) else default_type
+        try:
+            external_id = _external_id_from_url(href)
+        except ProviderError:
+            continue
+        results.append(
+            SearchResult(
+                id=f"{provider_id}:{external_id}",
+                provider=provider_id,
+                type=kind,  # type: ignore[arg-type]
+                title=title,
+                year=year,
+                poster=poster,
+                url=urljoin(BASE_URL, href),
+            )
+        )
+    # "has_next" detection: any link in the pagination block whose URL
+    # contains a page number > current page.
+    has_next = bool(soup.select("div.navigation a[href*='/page/']"))
+    return results, has_next
+
+
 class UakinoProvider(BaseProvider):
     id = "uakino"
     name = "Uakino"
     types = ("movie", "series")
+    sections = UAKINO_SECTIONS
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         url = f"{BASE_URL}/search/?q={quote(query)}"
@@ -142,3 +230,16 @@ class UakinoProvider(BaseProvider):
             type=kind,
             headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/0.1"},
         )
+
+    async def browse(
+        self, section: str, page: int, http: httpx.AsyncClient
+    ) -> tuple[list[SearchResult], bool]:
+        url = _section_url(section, page)
+        try:
+            resp = await http.get(url)
+        except httpx.HTTPError as e:
+            raise ProviderError("unreachable", str(e)) from e
+        if resp.status_code != 200:
+            raise ProviderError("not_found", f"status {resp.status_code}")
+        default_type = "series" if section in {"serials", "animeukr"} else "movie"
+        return _parse_listing(resp.text, self.id, default_type)

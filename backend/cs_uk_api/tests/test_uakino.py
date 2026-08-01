@@ -1,5 +1,6 @@
 import pathlib
 
+import httpx
 import pytest
 import respx
 
@@ -67,3 +68,31 @@ async def test_uakino_stream_resolves_iframe_url():
     assert s.url == "https://cdn.uakino.club/player/abc123/index.m3u8"
     assert s.type == "m3u8"
     assert s.headers.get("Referer", "").startswith("https://uakino.club")
+
+
+BROWSE_HTML = (pathlib.Path(__file__).parent / "fixtures" / "uakino" / "browse_filmy.html").read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_uakino_browse_parses_listing_and_detects_next():
+    import httpx
+    from cs_uk_api.providers.uakino import UAKINO_SECTIONS, _section_url
+
+    filmy_id = UAKINO_SECTIONS[0].id
+    with respx.mock(assert_all_called=True) as router:
+        router.get(_section_url(filmy_id, 1)).respond(200, text=BROWSE_HTML)
+        async with httpx.AsyncClient(headers={"User-Agent": "test"}) as http:
+            results, has_next = await UakinoProvider().browse(filmy_id, 1, http)
+    assert has_next is True
+    assert len(results) == 2
+    assert all(r.id.startswith("uakino:film-") for r in results)
+    assert all(r.type == "movie" for r in results)
+
+
+@pytest.mark.asyncio
+async def test_uakino_browse_unknown_section_raises():
+    from cs_uk_api.providers.base import ProviderError
+
+    with respx.mock(assert_all_called=False):
+        with pytest.raises(ProviderError):
+            await UakinoProvider().browse("nonexistent", 1, httpx.AsyncClient())
