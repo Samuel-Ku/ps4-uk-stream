@@ -12,6 +12,7 @@ from .kinotron import KinoTronProvider
 from .kinovezha import KinoVezhaProvider
 from .klontv import KlonTVProvider
 from .serialno import SerialnoProvider
+from .uaserialspro import UASerialsProProvider
 from .uaflix import UAFlixProvider
 from .uakino import UakinoProvider
 from .ufdub import UFDubProvider
@@ -33,6 +34,7 @@ def bootstrap() -> None:
     register(KlonTVProvider())
     register(SerialnoProvider())
     register(DoramyWorldProvider())
+    register(UASerialsProProvider())
 
 
 bootstrap()

@@ -10,6 +10,7 @@ dependencies = [
   "lxml>=5.0",
   "pydantic>=2.6",
   "cachetools>=5.3",
+  "pycryptodome>=3.20",
 ]
 
 [project.optional-dependencies]
