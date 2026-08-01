@@ -38,9 +38,9 @@ once they pass the live gate (search → content → stream → plays in mpv).
 | kinotron | [KinoTronProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/KinoTronProvider) | `KinoTronProvider.kt` (7.9 KB) | HTML | iframe → inline JSON | mild | **ready** |
 | hentaiukr | [HentaiUkrProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/HentaiUkrProvider) | `HentaiUkrProvider.kt` (5.3 KB) | HTML | TBD | TBD | TBD (in scope per spec; no hiding) |
 | doramyworld | [DoramyWorldProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/DoramyWorldProvider) | `DoramyWorldProvider.kt` (8.3 KB), `JSONModel.kt` | HTML + JSON | TBD | mild | TBD |
-| cikavaideya | [CikavaIdeyaProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/CikavaIdeyaProvider) | `CikavaIdeyaProvider.kt` (8.2 KB) | HTML | TBD | TBD | TBD |
+| cikavaideya | [CikavaIdeyaProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/CikavaIdeyaProvider) | `CikavaIdeyaProvider.kt` (8.2 KB) | HTML | regex (ashdi.vip `file:`) | mild | **ready** |
 | ufdub | [UFDubProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UFDubProvider) | `UFDubProvider.kt` (6.1 KB) | HTML | iframe → regex | none | **ready** |
-| unimay | [UnimayProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UnimayProvider) | `UnimayProvider.kt` (6.6 KB) | HTML | TBD | TBD | TBD |
+| unimay | [UnimayProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UnimayProvider) | `UnimayProvider.kt` (6.6 KB) | JSON | hls.master URL | none | **ready** |
 | serialno | [SerialnoProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/SerialnoProvider) | `SerialnoProvider.kt` (10.1 KB) | HTML | TBD | TBD | TBD |
 | simpsonsuatv | [SimpsonsUATvProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/SimpsonsUATvProvider) | `SimpsonsUATvProvider.kt` (29.3 KB) | HTML | TBD | TBD | TBD |
 
@@ -48,11 +48,13 @@ once they pass the live gate (search → content → stream → plays in mpv).
 
 Group 1 (simple, HTML-based, `<15 KB`):
 
-1. `ufdub` — landed in `backend/cs_uk_api/providers/ufdub.py` (6 tests, ready)
-2. `kinotron` — landed in `backend/cs_uk_api/providers/kinotron.py` (9 tests, ready)
-3. `uaflix` — drop-in next; uses our sections/browse + regex pipeline already
-4. `kinovezha`, `bambooua`, `cikavaideya`, `unimay`
-5. `coaninet`, `animeua`
+1. `ufdub` — landed in `backend/cs_uk_api/providers/ufdub.py` (10 tests, ready)
+2. `unimay` — landed in `backend/cs_uk_api/providers/unimay.py` (13 tests, ready; JSON API, not HTML)
+3. `kinotron` — landed in `backend/cs_uk_api/providers/kinotron.py` (9 tests, ready)
+4. `cikavaideya` — landed in `backend/cs_uk_api/providers/cikavaideya.py` (12 tests, ready)
+5. `uaflix` — drop-in next; uses our sections/browse + regex pipeline already
+6. `kinovezha`, `bambooua`
+7. `coaninet`, `animeua`
 
 Group 2 (medium, 10–25 KB):
 

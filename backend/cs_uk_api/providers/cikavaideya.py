@@ -1,0 +1,346 @@
+"""CikavaIdeya provider (https://cikava-ideya.top) — Ukrainian-dubbed
+films, serials, cartoons (Мультсеріали) and arthaus. Issue #17, Group 1."""
+from __future__ import annotations
+
+import json
+import re
+from typing import Any, cast
+from urllib.parse import quote, urljoin
+
+import httpx
+from bs4 import BeautifulSoup, Tag
+
+from ..extractors import RegexExtractor
+from ..models import (
+    ContentResponse,
+    Episode,
+    SearchResult,
+    Season,
+    Section,
+    StreamResponse,
+    Translation,
+)
+from .base import BaseProvider, ProviderError
+
+BASE_URL = "https://cikava-ideya.top"
+# ashdi.vip hosts the HLS manifest for each episode. The upstream
+# Kotlin source sets the Referer to "https://tortuga.wtf/" so that the
+# CDN serves the manifest.
+ASHDI_REFERER = "https://tortuga.wtf/"
+
+# Sections exposed by CikavaIdeya's main navigation. Per the upstream
+# `mainPage = mainPageOf(...)` in CikavaIdeyaProvider.kt.
+CIKAVA_SECTIONS: tuple[Section, ...] = (
+    Section(id="filmy", title="Фільми", type="movie"),
+    Section(id="serialy", title="Серіали", type="series"),
+    Section(id="cartoon", title="Мультсеріали", type="series"),
+    Section(id="arthaus", title="Артхаус", type="movie"),
+)
+
+# Per-card type classifier mirrors the upstream Kotlin conditional:
+#   if (tags.contains("Фільми") or tags.contains("Артхаус")) Movie
+#   else TvSeries
+# Order matters: longest first so "Мультсеріали" beats "Серіали" and
+# "Фільми" beats "Анімаційні" when both appear in the same card.
+# Needles are pre-lowered to skip `.lower()` on every call.
+_TAG_TYPE: tuple[tuple[str, str], ...] = (
+    ("мультсеріали", "series"),
+    ("фільми", "movie"),
+    ("артхаус", "movie"),
+    ("серіали", "series"),
+    ("анімаційні", "series"),
+)
+
+# The upstream Kotlin feeds `JSONObject(script.substring("Object(", ");"))`
+# for player json. The wrapper `Object(...)` is purely cosmetic.
+_PLAYER_JSON_RE = re.compile(
+    r"switches\s*=\s*Object\((\{.*?\})\)\s*;",
+    re.DOTALL,
+)
+
+# Sentinel episode-id suffix for movies (whose Player1 is a single URL
+# rather than a season/episode map).
+MOVIE_SUFFIX = ":__movie__"
+
+
+def _page_number(href: str) -> int:
+    """Pull the `/page/N/` integer out of a DLE pagination link."""
+    m = re.search(r"/page/(\d+)/?", href)
+    return int(m.group(1)) if m else 0
+
+
+def _numeric_sort_key(label: str) -> int:
+    """Sort key for labels like "1 сезон", "2 серія" — leading integer
+    wins. Python's `sorted` is stable, so tied labels keep their
+    insertion order."""
+    m = re.match(r"\s*(\d+)", label)
+    return int(m.group(1)) if m else 0
+
+
+def _classify_from_tags(tags_text: str) -> str:
+    """Map the .th-subtitle (or content-page Жанр) text to a MediaType."""
+    lower = tags_text.lower()
+    for needle, t in _TAG_TYPE:
+        if needle in lower:
+            return t
+    return "series"  # safe default, matches the upstream "else TvSeries"
+
+
+def _section_url(section: str, page: int) -> str:
+    paths = {
+        "filmy": "/filmy/",
+        "serialy": "/serialy/",
+        "cartoon": "/cartoon/",
+        "arthaus": "/arthaus/",
+    }
+    if section not in paths:
+        raise ProviderError("not_found", f"unknown section: {section}")
+    base = f"{BASE_URL}{paths[section]}"
+    if page <= 1:
+        return base
+    return f"{base}page/{page}/"
+
+
+def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
+    """Parse one `.th-item` listing card."""
+    a = card.select_one("a.th-in")
+    if a is None or not a.get("href"):
+        return None
+    href = str(a["href"])
+    title_el = card.select_one(".th-title")
+    title = title_el.get_text(strip=True) if title_el else ""
+    img = card.select_one(".img-fit img")
+    poster_src = str(img["src"]) if img and img.get("src") else None
+    poster = urljoin(BASE_URL, poster_src) if poster_src else None
+    # The .th-subtitle block carries year + one or more category tags
+    # (e.g. "2021 • Серіали / Анімаційні").
+    sub = card.select_one(".th-subtitle")
+    subtitle_text = sub.get_text(" ", strip=True) if sub else ""
+    year_m = re.search(r"\b(19|20)\d{2}\b", subtitle_text)
+    year = int(year_m.group(0)) if year_m else None
+    # CikavaIdeya URLs have no kind prefix — derive external_id directly
+    # from the path: "226-jak-vlashtovanij-vsesvit".
+    m = re.search(r"/(\d+-[a-z0-9-]+?)(?:\.html)?/?$", href)
+    if not m:
+        return None
+    return SearchResult(
+        id=f"{provider_id}:{m.group(1)}",
+        provider=provider_id,
+        type=_classify_from_tags(subtitle_text),  # type: ignore[arg-type]
+        title=title,
+        year=year,
+        poster=poster,
+        url=urljoin(BASE_URL, href),
+    )
+
+
+def _parse_player_json(soup: BeautifulSoup) -> dict[str, Any] | None:
+    """Pull `switches = Object({...});` out of the inline scripts.
+
+    The upstream Kotlin extracts the substring between `Object(` and
+    the final `);`, then feeds it to `JSONObject()`. We do the same
+    but accept either a movie (Player1 is a single URL string) or a
+    series (Player1 is `{season: {episode: url}}`).
+    """
+    for script in soup.select("script"):
+        m = _PLAYER_JSON_RE.search(script.get_text())
+        if m:
+            try:
+                return cast(dict[str, Any], json.loads(m.group(1)))
+            except json.JSONDecodeError:
+                return None
+    return None
+
+
+class CikavaIdeyaProvider(BaseProvider):
+    id = "cikavaideya"
+    name = "Цікава Ідея"
+    types = ("movie", "series")
+    sections = CIKAVA_SECTIONS
+
+    async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
+        # DLE (CikavaIdeya's CMS) accepts a POST with the same fields
+        # the upstream Kotlin uses. `quote()` handles non-ASCII Cyrillic
+        # and reserved characters; httpx then url-form-encodes the rest.
+        try:
+            resp = await http.post(
+                BASE_URL,
+                data={"do": "search", "subaction": "search", "story": quote(query)},
+            )
+        except httpx.HTTPError as e:
+            raise ProviderError("unreachable", str(e)) from e
+        if resp.status_code != 200:
+            raise ProviderError("upstream_unreachable", f"status {resp.status_code}")
+        soup = BeautifulSoup(resp.text, "lxml")
+        results: list[SearchResult] = []
+        for card in soup.select(".th-item"):
+            parsed = _parse_card(card, self.id)
+            if parsed is not None:
+                results.append(parsed)
+        return results
+
+    async def browse(
+        self, section: str, page: int, http: httpx.AsyncClient
+    ) -> tuple[list[SearchResult], bool]:
+        url = _section_url(section, page)
+        try:
+            resp = await http.get(url)
+        except httpx.HTTPError as e:
+            raise ProviderError("unreachable", str(e)) from e
+        if resp.status_code != 200:
+            raise ProviderError("not_found", f"status {resp.status_code}")
+        soup = BeautifulSoup(resp.text, "lxml")
+        results: list[SearchResult] = []
+        for card in soup.select(".th-item"):
+            parsed = _parse_card(card, self.id)
+            if parsed is not None:
+                results.append(parsed)
+        # has_next: DLE pagination is `<div class="navigation">` with
+        # `<a href="/section/page/N/">` siblings. Any link to a higher
+        # page than `page` means there is a next page.
+        has_next = any(
+            _page_number(str(a.get("href") or "")) > page
+            for a in soup.select("div.navigation a[href*='/page/']")
+        )
+        return results, has_next
+
+    async def content(
+        self, external_id: str, http: httpx.AsyncClient
+    ) -> ContentResponse:
+        url = f"{BASE_URL}/{external_id}.html"
+        try:
+            resp = await http.get(url)
+        except httpx.HTTPError as e:
+            raise ProviderError("unreachable", str(e)) from e
+        if resp.status_code != 200:
+            raise ProviderError("not_found", f"status {resp.status_code}")
+        soup = BeautifulSoup(resp.text, "lxml")
+        title_el = soup.select_one(".full h1")
+        if title_el is None:
+            raise ProviderError("parse_failed", "title missing")
+        img = soup.select_one(".img-fit img")
+        poster_src = str(img["src"]) if img and img.get("src") else None
+        poster = urljoin(BASE_URL, poster_src) if poster_src else None
+        desc_el = soup.select_one(".fdesc")
+        description = desc_el.get_text(strip=True) if desc_el else ""
+        # The Жанр row is `fullInfo[2]` per the upstream Kotlin; it
+        # contains "Фільми", "Серіали", "Артхаус", or "Мультсеріали"
+        # (sometimes more than one tag, separated by " / ").
+        flist = soup.select(".flist li")
+        tags_text = flist[2].get_text(" ", strip=True) if len(flist) >= 3 else ""
+        player_json = _parse_player_json(soup)
+        seasons: list[Season] | None = None
+        if player_json and "Player1" in player_json:
+            seasons = self._build_seasons(player_json["Player1"], external_id)
+        return ContentResponse(
+            id=f"cikavaideya:{external_id}",
+            type=_classify_from_tags(tags_text),  # type: ignore[arg-type]
+            title=title_el.get_text(strip=True),
+            description=description,
+            poster=poster,
+            translations=[Translation(id="uk", label="Українська")],
+            seasons=seasons,
+        )
+
+    @staticmethod
+    def _build_seasons(player1: str | dict[str, Any], external_id: str) -> list[Season]:
+        """Convert the upstream `Player1` value into our `Season[]`.
+
+        Movies surface as season 1, episode 1 with id suffix `__movie__`
+        so `stream()` can resolve the single URL. Series surface in
+        order; each episode's id encodes its (season, episode) position
+        so the same resolver can pick the right ashdi URL.
+        """
+        if isinstance(player1, str):
+            return [Season(number=1, episodes=[Episode(
+                number=1, id=f"{external_id}{MOVIE_SUFFIX}", title="Фільм",
+            )])]
+        seasons: list[Season] = []
+        for s_idx, season_key in enumerate(
+            sorted(player1.keys(), key=_numeric_sort_key), start=1
+        ):
+            episodes_raw = player1[season_key] or {}
+            ep_keys = sorted(episodes_raw.keys(), key=_numeric_sort_key)
+            episodes = [
+                Episode(
+                    number=e_idx,
+                    id=f"{external_id}:s{s_idx}e{e_idx}",
+                    title=k.strip(),
+                )
+                for e_idx, k in enumerate(ep_keys, start=1)
+            ]
+            seasons.append(Season(number=s_idx, episodes=episodes))
+        return seasons
+
+    async def stream(
+        self, content_id: str, translation: str | None, http: httpx.AsyncClient
+    ) -> StreamResponse:
+        # `content_id` arrives as either "<external_id>:__movie__" (movie)
+        # or "<external_id>:s<N>e<M>" (series episode). `/api/stream`
+        # strips the `<provider>:` prefix before calling us.
+        if MOVIE_SUFFIX in content_id:
+            ext_id = content_id.split(MOVIE_SUFFIX, 1)[0]
+            ep_suffix = ""
+        else:
+            ext_id, _, ep_suffix = content_id.rpartition(":")
+        content_url = f"{BASE_URL}/{ext_id}.html"
+        try:
+            resp = await http.get(content_url)
+        except httpx.HTTPError as e:
+            raise ProviderError("unreachable", str(e)) from e
+        if resp.status_code != 200:
+            raise ProviderError("not_found", f"status {resp.status_code}")
+        player_json = _parse_player_json(BeautifulSoup(resp.text, "lxml"))
+        if not player_json or "Player1" not in player_json:
+            raise ProviderError("parse_failed", "no player json on content page")
+        player_url = self._select_player_url(player_json["Player1"], ep_suffix)
+        if player_url is None:
+            raise ProviderError("parse_failed", f"no player url for {ep_suffix!r}")
+        # The player URL lives on ashdi.vip; the upstream Kotlin calls
+        # M3u8Helper.generateM3u8 which hits the page and pulls the
+        # `file: "https://.../index.m3u8"` URL out of an inline script.
+        try:
+            ashdi_resp = await http.get(player_url, headers={"Referer": ASHDI_REFERER})
+        except httpx.HTTPError as e:
+            raise ProviderError("unreachable", str(e)) from e
+        if ashdi_resp.status_code != 200:
+            raise ProviderError("not_found", f"status {ashdi_resp.status_code}")
+        extracted = RegexExtractor().extract(ashdi_resp.text)
+        if extracted is None or not extracted.url:
+            raise ProviderError("parse_failed", "no m3u8 in ashdi page")
+        return StreamResponse(
+            url=extracted.url,
+            type=extracted.type,
+            headers={"Referer": ASHDI_REFERER, "User-Agent": "cs-uk-api/0.1"},
+        )
+
+    @staticmethod
+    def _select_player_url(player1: str | dict[str, Any], ep_suffix: str) -> str | None:
+        """Resolve the ashdi URL for either a movie or a series episode.
+
+        Returns None when the suffix is malformed or out of range so the
+        caller can surface an explicit `parse_failed`. There is no
+        silent "first available episode" fallback — that would mask a
+        missing suffix in the caller.
+        """
+        if isinstance(player1, str):
+            return player1 if not ep_suffix else None
+        if not ep_suffix:
+            return None
+        m = re.match(r"s(\d+)e(\d+)", ep_suffix)
+        if not m:
+            return None
+        s_idx, e_idx = int(m.group(1)), int(m.group(2))
+        seasons = sorted(player1.keys(), key=_numeric_sort_key)
+        if not (1 <= s_idx <= len(seasons)):
+            return None
+        episodes_raw = player1[seasons[s_idx - 1]]
+        if not isinstance(episodes_raw, dict):
+            return None
+        ep_keys = sorted(episodes_raw.keys(), key=_numeric_sort_key)
+        if not (1 <= e_idx <= len(ep_keys)):
+            return None
+        return str(episodes_raw[ep_keys[e_idx - 1]])
+
+
+__all__ = ["CikavaIdeyaProvider"]
