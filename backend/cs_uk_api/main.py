@@ -73,7 +73,7 @@ async def list_providers() -> list[ProviderInfo]:
 async def list_sections() -> list[ProviderSections]:
     """Return only providers that opt into section browsing."""
     return [
-        ProviderSections(id=p.id, name=p.name, sections=list(p.sections))
+        ProviderSections(provider=p.id, name=p.name, sections=list(p.sections))
         for p in PROVIDERS.values()
         if p.sections
     ]
@@ -137,7 +137,7 @@ async def search(
     return resp
 
 
-@app.get("/api/content/{content_id}")
+@app.get("/api/content/{content_id:path}")
 async def content(content_id: str) -> ContentResponse:
     cache_key = f"content:{content_id}"
     cached = _content_cache.get(cache_key)
@@ -156,7 +156,7 @@ async def content(content_id: str) -> ContentResponse:
     return resp
 
 
-@app.get("/api/stream/{content_id}")
+@app.get("/api/stream/{content_id:path}")
 async def stream(content_id: str, translation: str | None = None) -> StreamResponse:
     provider_id, _, rest = content_id.partition(":")
     if provider_id not in PROVIDERS or not rest:

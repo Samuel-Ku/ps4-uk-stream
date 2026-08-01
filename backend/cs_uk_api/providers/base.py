@@ -61,7 +61,7 @@ class BaseProvider(abc.ABC):
     ) -> list[str] | None:
         """Return allowed translation ids for an episode, or None.
 
-        Providers that support per-episode translations (translation_level
+        Providers that support per-episode translations (translations_level
         == "episode") override this. Returning None means "not applicable"
         — the caller falls back to content-level translations. Returning a
         list (possibly empty) means the caller should validate against it.

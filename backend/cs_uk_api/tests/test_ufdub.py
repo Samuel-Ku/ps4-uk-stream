@@ -132,15 +132,66 @@ async def test_ufdub_stream_resolves_to_player_url():
     a URL. The old implementation called `http.get(content_id)` which
     raised `ValueError: unknown url type` on every call."""
     content_html = _fixture("content_movie.html")
+    player_html = _fixture("player.html")
     with respx.mock(assert_all_called=True) as router:
         router.get("https://ufdub.com/film/48-fokus-pokus-hocus-pocus.html").respond(
             200, text=content_html
         )
+        router.get(
+            "https://video.ufdub.com/AT/VP.php?ID=2780",
+            headers={"Referer": "https://ufdub.com/"},
+        ).respond(200, text=player_html)
         async with httpx.AsyncClient() as http:
             s = await UFDubProvider().stream("film-48-fokus-pokus-hocus-pocus", None, http)
-    assert s.url.startswith("https://video.ufdub.com/")
-    assert s.type == "m3u8"
+    assert s.url.startswith("https://ufdub.com/video/VIDEOS.php?")
+    assert s.type == "mp4"
     assert s.headers["Referer"] == "https://ufdub.com/"
+
+
+@pytest.mark.asyncio
+async def test_ufdub_stream_follows_player_page_to_media_url():
+    """Live-gate regression (2026-08-01): the stream URL returned by the
+    content page (`VP.php?ID=...`) is an HTML player page, not media. The
+    media URL lives in its `var a = [['Серія 1','mp4', url]]` array.
+    Returning the player page as `m3u8` made mpv fail on every title."""
+    content_html = _fixture("content_movie.html")
+    player_html = _fixture("player.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ufdub.com/film/48-fokus-pokus-hocus-pocus.html").respond(
+            200, text=content_html
+        )
+        router.get(
+            "https://video.ufdub.com/AT/VP.php?ID=2780",
+            headers={"Referer": "https://ufdub.com/"},
+        ).respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            s = await UFDubProvider().stream("film-48-fokus-pokus-hocus-pocus", None, http)
+    assert s.url.startswith("https://ufdub.com/video/VIDEOS.php?")
+    assert s.type == "mp4"
+    assert s.headers["Referer"] == "https://ufdub.com/"
+
+
+@pytest.mark.asyncio
+async def test_ufdub_extract_media_url_accepts_quality_labels():
+    """Regression (issue #40): the codec position of the `var a=` array
+    must tolerate quality-bearing labels (`'720p'`, `'HD'`, `'source'`),
+    not just the literal `mp4`/`web` the live site currently emits."""
+    cases = [
+        ("var a=[['Серія 1','mp4','https://x/v.mp4']];", "https://x/v.mp4"),
+        ("var a=[['Фільм','720p','https://x/q720.mp4']];", "https://x/q720.mp4"),
+        ("var a=[['Серія 1','HD','https://x/hd.mp4']];", "https://x/hd.mp4"),
+        ("var a=[['Серія 1','source','https://x/src.mp4']];", "https://x/src.mp4"),
+        ("var a=[['Серія 1','web','https://x/w.webm']];", "https://x/w.webm"),
+    ]
+    for script, expected in cases:
+        html = f"<html><script>{script}</script></html>"
+        assert UFDubProvider._extract_media_url(html) == expected
+
+
+@pytest.mark.asyncio
+async def test_ufdub_extract_media_url_returns_none_on_missing_array():
+    html = "<html><script>var b = 1;</script></html>"
+    assert UFDubProvider._extract_media_url(html) is None
 
 
 @pytest.mark.asyncio

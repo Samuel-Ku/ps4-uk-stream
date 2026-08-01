@@ -10,10 +10,10 @@ def test_sections_lists_uakino_with_sections():
     assert r.status_code == 200
     data = r.json()
     assert isinstance(data, list)
-    by_id = {p["id"]: p for p in data}
-    assert "uakino" in by_id
-    assert by_id["uakino"]["name"] == "Uakino"
-    sections = by_id["uakino"]["sections"]
+    by_provider = {p["provider"]: p for p in data}
+    assert "uakino" in by_provider
+    assert by_provider["uakino"]["name"] == "Uakino"
+    sections = by_provider["uakino"]["sections"]
     assert isinstance(sections, list)
     assert len(sections) > 0
     s0 = sections[0]
@@ -49,8 +49,8 @@ def test_sections_omits_providers_without_sections():
     PROVIDERS["empty-test"] = _Empty()  # type: ignore[assignment]
     try:
         r = client.get("/api/sections")
-        ids = [p["id"] for p in r.json()]
-        assert "empty-test" not in ids
+        providers = [p["provider"] for p in r.json()]
+        assert "empty-test" not in providers
     finally:
         del PROVIDERS["empty-test"]
 

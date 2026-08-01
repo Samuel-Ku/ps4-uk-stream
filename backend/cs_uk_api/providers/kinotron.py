@@ -95,7 +95,7 @@ class KinoTronProvider(BaseProvider):
         try:
             raw = json.loads(match.group(1))
         except json.JSONDecodeError:
-            return []
+            return [{"dub": "", "season": "", "title": "", "file": match.group(1)}]
         files: list[dict[str, object]] = []
         for dub in raw if isinstance(raw, list) else []:
             for season in dub.get("folder", []) if isinstance(dub, dict) else []:
@@ -147,7 +147,7 @@ class KinoTronProvider(BaseProvider):
         player_url = self._player_url(soup)
         seasons = None
         translations = [Translation(id="uk", label="Українська")]
-        translation_level: TranslationLevel = "content"
+        translations_level: TranslationLevel = "content"
         if kind in {"series", "cartoon", "anime"} and player_url:
             player = await self._get(player_url, http)
             files = self._files(player.text)
@@ -158,7 +158,9 @@ class KinoTronProvider(BaseProvider):
                 dub = str(item.get("dub", "")).strip() or "Українська"
                 grouped.setdefault(season, {}).setdefault(episode, []).append(dub)
             all_dubs = list(dict.fromkeys(str(item.get("dub", "")).strip() for item in files))
-            translations = [Translation(id=dub, label=dub) for dub in all_dubs if dub]
+            translations = [
+                Translation(id=dub, label=dub) for dub in all_dubs if dub
+            ] or [Translation(id="uk", label="Українська")]
             seasons = [
                 Season(
                     number=season_number,
@@ -174,11 +176,11 @@ class KinoTronProvider(BaseProvider):
                 )
                 for season_number, episodes in enumerate(grouped.values(), 1)
             ]
-            translation_level = "episode"
+            translations_level = "episode"
         description_el = soup.select_one(".full-text")
         return ContentResponse(id=f"{self.id}:{external_id}", type=kind, title=title_el.get_text(" ", strip=True),
             description=description_el.get_text(" ", strip=True) if description_el else "",
-            poster=poster, translations=translations, seasons=seasons, translation_level=translation_level)
+            poster=poster, translations=translations, seasons=seasons, translations_level=translations_level)
 
     async def stream(self, content_id: str, translation: str | None, http: httpx.AsyncClient) -> StreamResponse:
         parts = content_id.split(":")

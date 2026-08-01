@@ -82,7 +82,7 @@ async def test_kinotron_series_parses_seasons_and_type():
     assert content.seasons and len(content.seasons) == 2
     assert len(content.seasons[0].episodes) == 22
     assert content.seasons[1].episodes[0].number == 1
-    assert content.translation_level == "episode"
+    assert content.translations_level == "episode"
     assert len(content.seasons[0].episodes[0].translations or []) == 3
 
 
@@ -95,6 +95,37 @@ async def test_kinotron_stream_rebuilds_url_from_external_id():
             stream = await KinoTronProvider().stream("3663-pervorodn-pradavn-pershonarodzhenn", None, http)
     assert stream.url.endswith("index.m3u8")
     assert stream.type == "m3u8"
+
+
+@pytest.mark.asyncio
+async def test_kinotron_stream_movie_player_with_direct_m3u8():
+    """Live-gate regression (2026-08-01): ashdi movie players stopped
+    returning the `file: '[{...}]'` JSON array and now return a direct
+    m3u8: `file: 'https://.../index.m3u8'`. The stream must still resolve."""
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://kinotron.tv/9728-djuna.html").respond(200, text=_fixture("content_movie_vod.html"))
+        router.get("https://ashdi.vip/vod/176240").respond(200, text=_fixture("player_movie.html"))
+        async with httpx.AsyncClient() as http:
+            stream = await KinoTronProvider().stream("kinotron:9728-djuna", None, http)
+    assert stream.url.startswith("https://ashdi.vip/video01/")
+    assert stream.url.endswith("index.m3u8")
+    assert stream.type == "m3u8"
+
+
+@pytest.mark.asyncio
+async def test_kinotron_series_with_dead_player_keeps_default_translation():
+    """Live-gate regression (2026-08-01): a series whose player page no
+    longer exposes any playable files (dead ashdi vod) must not crash with
+    an empty translations list — content stays readable with the default
+    Ukrainian track."""
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://kinotron.tv/3663-pervorodn-pradavn-pershonarodzhenn.html").respond(200, text=_fixture("content_series.html"))
+        router.get("https://ashdi.vip/serial/3329").respond(200, text=_fixture("player_movie.html"))
+        async with httpx.AsyncClient() as http:
+            content = await KinoTronProvider().content("3663-pervorodn-pradavn-pershonarodzhenn", http)
+    assert content.type == "series"
+    assert content.translations and len(content.translations) == 1
+    assert content.translations[0].id == "uk"
 
 
 @pytest.mark.asyncio

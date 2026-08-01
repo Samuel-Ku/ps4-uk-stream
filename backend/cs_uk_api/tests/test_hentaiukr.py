@@ -273,6 +273,27 @@ async def test_hentaiukr_stream_unknown_episode_raises_not_found():
 
 
 @pytest.mark.asyncio
+async def test_hentaiukr_stream_bare_id_defaults_to_first_episode():
+    """Live-gate regression (2026-08-01): search results carry a bare
+    id (``hentaiukr:113``, no episode index), and the gate streams
+    straight from search. A bare id must resolve to episode 1 — the
+    upstream Kotlin's default index — instead of raising
+    ``bad content_id``."""
+    cfg_json = _fixture("plur_cfg_159.json")
+    with respx.mock(assert_all_called=True) as router:
+        _objects_route(router)
+        router.get(
+            "https://hentaiukr.com/video/159_velychezni_tsyts_ky_nagaj/plur.cfg.json"
+        ).respond(200, text=cfg_json)
+        async with httpx.AsyncClient() as http:
+            s = await HentaiUkrProvider().stream("159", None, http)
+    assert s.type == "mp4"
+    assert s.url == (
+        "https://hentaiukr.com/video/159_velychezni_tsyts_ky_nagaj/1080/01.mp4"
+    )
+
+
+@pytest.mark.asyncio
 async def test_hentaiukr_stream_rejects_url_as_content_id():
     """REGRESSION (UFDub): ``stream()`` receives the external_id
     (``"159:1"``), NOT a URL. Passing a URL must not crash; it must

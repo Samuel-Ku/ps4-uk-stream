@@ -71,10 +71,9 @@ def _project_url(code: str) -> str:
 
 
 def _search_url(query: str) -> str:
-    # Upstream: `findUrl = "$apiUrl/v1/release/search?title="`. The
-    # `&page=0` is appended by the Kotlin but appears to be ignored
-    # (the response is the same with or without it). We drop it.
-    return f"{API_URL}/v1/release/search?title={quote(query)}"
+    # Live-gate regression (2026-08-01): the API no longer answers
+    # `title=` (always 0 hits); `query=` is the working param.
+    return f"{API_URL}/v1/release/search?query={quote(query)}"
 
 
 def _projects_url(page: int) -> str:

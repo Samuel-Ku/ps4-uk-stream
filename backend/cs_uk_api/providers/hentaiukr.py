@@ -198,19 +198,24 @@ class HentaiUkrProvider(BaseProvider):
     async def stream(
         self, content_id: str, translation: str | None, http: httpx.AsyncClient
     ) -> StreamResponse:
-        # ``content_id`` arrives as ``<external_id>:<episode_number>``.
+        # ``content_id`` arrives as ``<external_id>:<episode_number>``,
+        # or as a bare ``<external_id>`` straight from a search result —
+        # in that case the upstream default (episode 1) applies.
         # The upstream Kotlin uses ``<url>, <index>`` with the URL
         # carried alongside the index; we replace the URL with the
         # integer id because the URL slug is not part of the
         # `SearchResult.id` we exposed to clients. 1-based indices.
         _ = translation  # single-dub site; translation is ignored
         external_id, _, ep_raw = content_id.partition(":")
-        if not external_id or not ep_raw:
+        if not external_id:
             raise ProviderError("parse_failed", f"bad content_id: {content_id}")
-        try:
-            episode_number = int(ep_raw)
-        except ValueError as e:
-            raise ProviderError("parse_failed", f"bad content_id: {content_id}") from e
+        if ep_raw:
+            try:
+                episode_number = int(ep_raw)
+            except ValueError as e:
+                raise ProviderError("parse_failed", f"bad content_id: {content_id}") from e
+        else:
+            episode_number = 1
         data = await _fetch_objects(http)
         item = next(
             (v for v in (data.get("video") or []) if str(v.get("id")) == external_id),

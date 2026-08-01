@@ -30,30 +30,30 @@ def test_episode_can_carry_translations():
     assert [t.id for t in ep.translations] == ["uk", "sub"]
 
 
-def test_content_response_translation_level_default_is_content():
+def test_content_response_translations_level_default_is_content():
     cr = ContentResponse(
         id="x:y",
         type="series",
         title="X",
         translations=[Translation(id="uk", label="Українська")],
         seasons=[Season(number=1, episodes=[Episode(number=1, id="x:s1e1", title="E1")])],
-        translation_level="content",
+        translations_level="content",
     )
-    assert cr.translation_level == "content"
+    assert cr.translations_level == "content"
 
 
-def test_content_response_translation_level_can_be_episode():
+def test_content_response_translations_level_can_be_episode():
     cr = ContentResponse(
         id="x:y",
         type="series",
         title="X",
         translations=[Translation(id="uk", label="Українська")],
-        translation_level="episode",
+        translations_level="episode",
     )
-    assert cr.translation_level == "episode"
+    assert cr.translations_level == "episode"
 
 
-def test_content_response_rejects_unknown_translation_level():
+def test_content_response_rejects_unknown_translations_level():
     import pytest
 
     with pytest.raises(ValidationError):
@@ -62,7 +62,7 @@ def test_content_response_rejects_unknown_translation_level():
             type="series",
             title="X",
             translations=[Translation(id="uk", label="Українська")],
-            translation_level="bogus",  # type: ignore[arg-type]
+            translations_level="bogus",  # type: ignore[arg-type]
         )
 
 
@@ -89,8 +89,8 @@ def test_translations_field_present_on_round_trip():
                 ],
             )
         ],
-        translation_level="episode",
+        translations_level="episode",
     )
     dumped = cr.model_dump()
-    assert dumped["translation_level"] == "episode"
+    assert dumped["translations_level"] == "episode"
     assert dumped["seasons"][0]["episodes"][0]["translations"][0]["id"] == "dub"

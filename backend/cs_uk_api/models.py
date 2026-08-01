@@ -54,7 +54,7 @@ class ContentResponse(BaseModel):
     seasons: list[Season] | None = None
     # Where dub/sub choices live: "content" (whole series, default) or
     # "episode" (each episode carries its own list).
-    translation_level: TranslationLevel = "content"
+    translations_level: TranslationLevel = "content"
 
 
 class StreamResponse(BaseModel):
@@ -76,7 +76,7 @@ class Section(BaseModel):
 
 
 class ProviderSections(BaseModel):
-    id: str
+    provider: str
     name: str
     sections: list[Section]
 

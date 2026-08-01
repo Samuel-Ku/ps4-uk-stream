@@ -202,6 +202,27 @@ async def test_cikavaideya_stream_resolves_to_m3u8():
 
 
 @pytest.mark.asyncio
+async def test_cikavaideya_stream_bare_movie_id_without_movie_suffix():
+    """Live-gate regression (2026-08-01): the gate calls
+    `/api/stream/{content_id}` straight from a search result, whose id
+    is the bare external_id (`279-zhnka-z-vtrini`) — no `:__movie__`
+    suffix. `rpartition(":")` on a colon-less string returns
+    `("", "", content_id)`, which previously produced the URL
+    `https://cikava-ideya.top/.html` (403)."""
+    content_html = _fixture("content_movie.html")
+    ashdi_html = _fixture("ashdi_movie.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://cikava-ideya.top/279-zhnka-z-vtrini.html").respond(
+            200, text=content_html
+        )
+        router.get("https://ashdi.vip/vod/228698").respond(200, text=ashdi_html)
+        async with httpx.AsyncClient() as http:
+            s = await CikavaIdeyaProvider().stream("279-zhnka-z-vtrini", None, http)
+    assert s.url.startswith("https://ashdi.vip/")
+    assert s.type == "m3u8"
+
+
+@pytest.mark.asyncio
 async def test_cikavaideya_stream_episode_resolves_series_episode():
     """Series episodes: `content_id` includes the s{N}e{M} suffix. The
     provider must split it, look up the right Player1 URL, then follow

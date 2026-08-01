@@ -256,6 +256,18 @@ async def test_unimay_stream_for_movie_uses_playlist_index_zero():
 
 
 @pytest.mark.asyncio
+async def test_unimay_search_url_uses_query_param():
+    """Live-gate regression (2026-08-01): the API stopped answering
+    `title=` (always 0 hits) and now answers `query=`. The URL builder
+    must use the working param so search returns results."""
+    from cs_uk_api.providers.unimay import _search_url
+
+    url = _search_url("Дюна")
+    assert "query=%D0%94%D1%8E%D0%BD%D0%B0" in url
+    assert "title=" not in url
+
+
+@pytest.mark.asyncio
 async def test_unimay_browse_unknown_section_raises():
     with respx.mock(assert_all_called=False):
         with pytest.raises(ProviderError):

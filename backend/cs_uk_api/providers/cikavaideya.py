@@ -275,14 +275,18 @@ class CikavaIdeyaProvider(BaseProvider):
     async def stream(
         self, content_id: str, translation: str | None, http: httpx.AsyncClient
     ) -> StreamResponse:
-        # `content_id` arrives as either "<external_id>:__movie__" (movie)
-        # or "<external_id>:s<N>e<M>" (series episode). `/api/stream`
+        # `content_id` arrives as either "<external_id>" (movie, bare
+        # id straight from a search result), "<external_id>:__movie__"
+        # (movie, explicit suffix from the content listing), or
+        # "<external_id>:s<N>e<M>" (series episode). `/api/stream`
         # strips the `<provider>:` prefix before calling us.
         if MOVIE_SUFFIX in content_id:
             ext_id = content_id.split(MOVIE_SUFFIX, 1)[0]
             ep_suffix = ""
-        else:
+        elif ":" in content_id:
             ext_id, _, ep_suffix = content_id.rpartition(":")
+        else:
+            ext_id, ep_suffix = content_id, ""
         content_url = f"{BASE_URL}/{ext_id}.html"
         try:
             resp = await http.get(content_url)

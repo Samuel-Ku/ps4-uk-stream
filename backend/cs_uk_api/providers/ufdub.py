@@ -241,12 +241,10 @@ class UFDubProvider(BaseProvider):
     async def stream(
         self, content_id: str, translation: str | None, http: httpx.AsyncClient
     ) -> StreamResponse:
-        # UFDub's player is a second-level page on `video.ufdub.com`. We
-        # resolve the content page to find the player URL, then return
-        # that. The m3u8 itself is loaded by JS on the player page —
-        # per spec ground rule #4 (HTML+iframe+regex only) we report the
-        # player URL back to the client, which fetches it with the
-        # correct Referer.
+        # UFDub's player is a second-level page on `video.ufdub.com`. The
+        # content page references it via `input_player=...`, and the real
+        # media URL lives in that page's `var a = [['Серія 1','mp4', url]]`
+        # array. Follow both hops (HTML + regex only, spec ground rule #4).
         kind, _, slug = content_id.partition("-")
         content_url = f"{BASE_URL}/{kind}/{content_id[len(kind) + 1:]}.html"
         try:
@@ -263,11 +261,33 @@ class UFDubProvider(BaseProvider):
             raise ProviderError(
                 "parse_failed", "no player iframe found on content page"
             )
+        try:
+            player_resp = await http.get(
+                player_url, headers={"Referer": f"{BASE_URL}/"}, follow_redirects=True
+            )
+        except httpx.HTTPError as e:
+            raise ProviderError("unreachable", str(e)) from e
+        if player_resp.status_code != 200:
+            raise ProviderError("not_found", f"status {player_resp.status_code}")
+        media_url = self._extract_media_url(player_resp.text)
+        if media_url is None:
+            raise ProviderError(
+                "parse_failed", "no media URL found in player page"
+            )
         return StreamResponse(
-            url=player_url,
-            type="m3u8",
+            url=media_url,
+            type="mp4",
             headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/0.1"},
         )
+
+    @staticmethod
+    def _extract_media_url(player_html: str) -> str | None:
+        scripts = BeautifulSoup(player_html, "lxml").select("script")
+        text = next((item.get_text() for item in scripts if "var a=" in item.get_text()), "")
+        match = re.search(r"\[[^\]]*,\s*['\"][^'\"]+['\"]\s*,\s*['\"]([^'\"]+)['\"]", text)
+        if not match:
+            return None
+        return match.group(1)
 
 
 __all__ = ["UFDubProvider"]
