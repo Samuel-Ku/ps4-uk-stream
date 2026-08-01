@@ -41,7 +41,7 @@ once they pass the live gate (search → content → stream → plays in mpv).
 | cikavaideya | [CikavaIdeyaProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/CikavaIdeyaProvider) | `CikavaIdeyaProvider.kt` (8.2 KB) | HTML | regex (ashdi.vip `file:`) | mild | **ready** |
 | ufdub | [UFDubProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UFDubProvider) | `UFDubProvider.kt` (6.1 KB) | HTML | iframe → regex | none | **ready** |
 | unimay | [UnimayProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UnimayProvider) | `UnimayProvider.kt` (6.6 KB) | JSON | hls.master URL | none | **ready** |
-| serialno | [SerialnoProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/SerialnoProvider) | `SerialnoProvider.kt` (10.1 KB) | HTML | TBD | TBD | TBD |
+| serialno | [SerialnoProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/SerialnoProvider) | `SerialnoProvider.kt` (10.1 KB) | HTML | iframe → torDecrypt | mild | **ready** |
 | simpsonsuatv | [SimpsonsUATvProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/SimpsonsUATvProvider) | `SimpsonsUATvProvider.kt` (29.3 KB) | HTML | TBD | TBD | TBD |
 
 ## Per-provider "owner" field (suggested order)
@@ -60,7 +60,8 @@ Group 1 (simple, HTML-based, `<15 KB`):
 Group 2 (medium, 10–25 KB):
 
 1. `klontv` — landed in `backend/cs_uk_api/providers/klontv.py` (10 tests, ready; DLE + ashdi.vip iframe chain)
-2. `serialno`, `banderakino`, `doramyworld`
+2. `serialno` — landed in `backend/cs_uk_api/providers/serialno.py` (12 tests, ready; homepage-as-listing, tortuga.tw iframe + torDecrypt — code-duplication with KinoVezha noted as follow-up)
+3. `banderakino`, `doramyworld`
 
 Group 3 (heavy, needs deeper triage):
 
