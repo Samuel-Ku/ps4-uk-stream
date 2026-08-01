@@ -5,6 +5,7 @@ from .animeua import AnimeUAProvider
 from .bambooua import BambooUAProvider
 from .cikavaideya import CikavaIdeyaProvider
 from .coaninet import CoaninetProvider
+from .doramyworld import DoramyWorldProvider
 from .eneyida import EneyidaProvider
 from .hentaiukr import HentaiUkrProvider
 from .kinotron import KinoTronProvider
@@ -31,6 +32,7 @@ def bootstrap() -> None:
     register(EneyidaProvider())
     register(KlonTVProvider())
     register(SerialnoProvider())
+    register(DoramyWorldProvider())
 
 
 bootstrap()
