@@ -12,3 +12,6 @@ eboot.bin
 *.gp4
 .vscode/
 .idea/
+*.egg-info/
+.venv/
+venv/
