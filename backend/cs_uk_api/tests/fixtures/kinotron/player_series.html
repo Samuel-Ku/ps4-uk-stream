@@ -1,0 +1,445 @@
+<html>
+	<head>
+<!-- Global site tag (gtag.js) - Google Analytics -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-7L6XV4FCMY"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-7L6XV4FCMY');
+</script>
+
+		<style>
+		  html {height: 100%; overflow: hidden;} body {height: 100%; margin: 0; padding: 0; overflow: hidden; background: black;}
+		  .invisible {display:none !important}
+		</style>
+		<script src="https://ashdi.vip/player/playerjs.js?v=2.5" type="text/javascript"></script>
+	</head>
+	<body>
+		<div id="videoplayer3329" style="width:100%;height:100%"></div></div>
+		<script type="text/javascript">
+            var player = null;
+            var playerjs_vast_status = '';
+            var playerjs_vast_num = 0;
+            var ashdi_session_id = Date.now() + '_' + Math.random().toString(36).slice(2);
+            var ashdi_ad_seq = 0;
+            var ashdi_player_init_sent = false;
+            var ashdi_video_play_sent = false;
+            var ashdi_vast_error_count = 0;
+            var ashdi_vast_error_seen = {};
+            var ashdi_vast_context = {};
+            var ashdi_video_error_sent = false;
+            var ashdi_modads_debug = window.location.search.indexOf('modads_debug=1') !== -1;
+            var ashdi_ad_plan = {"preroll_1":[{"slot":"preroll_1","campaign_id":5,"campaign_name":"Adwise ASHDI Preroll 1","partner_name":"Adwise","configured_vast_id":"adwise7271","base_vast_id":"adwise7271"},{"slot":"preroll_1","campaign_id":44,"campaign_name":"KINGS ASHDI PREROLL","partner_name":"KINGS ADS","configured_vast_id":"vast7260","base_vast_id":"vast7260"},{"slot":"preroll_1","campaign_id":12,"campaign_name":"ViewTraff ASHDI Preroll","partner_name":"ViewTraff","configured_vast_id":"vast7252","base_vast_id":"vast7252"},{"slot":"preroll_1","campaign_id":7,"campaign_name":"Adwise ASHDI Extra 1","partner_name":"Adwise","configured_vast_id":"adwise12050","base_vast_id":"adwise12050"},{"slot":"preroll_1","campaign_id":45,"campaign_name":"VADIDEO NOT UA PREROLL","partner_name":"VADIDEO","configured_vast_id":"vadideo12220","base_vast_id":"vadideo12220"},{"slot":"preroll_1","campaign_id":15,"campaign_name":"WIZARDS ASHDI Preroll","partner_name":"WIZARDS","configured_vast_id":"vast12054","base_vast_id":"vast12054"}],"preroll_2":[{"slot":"preroll_2","campaign_id":6,"campaign_name":"Adwise ASHDI Preroll 2","partner_name":"Adwise","configured_vast_id":"adwise7272","base_vast_id":"adwise7272"},{"slot":"preroll_2","campaign_id":44,"campaign_name":"KINGS ASHDI PREROLL","partner_name":"KINGS ADS","configured_vast_id":"vast7260","base_vast_id":"vast7260"},{"slot":"preroll_2","campaign_id":12,"campaign_name":"ViewTraff ASHDI Preroll","partner_name":"ViewTraff","configured_vast_id":"vast7252","base_vast_id":"vast7252"},{"slot":"preroll_2","campaign_id":8,"campaign_name":"Adwise ASHDI Extra 2","partner_name":"Adwise","configured_vast_id":"adwise12051","base_vast_id":"adwise12051"},{"slot":"preroll_2","campaign_id":45,"campaign_name":"VADIDEO NOT UA PREROLL","partner_name":"VADIDEO","configured_vast_id":"vadideo12220","base_vast_id":"vadideo12220"},{"slot":"preroll_2","campaign_id":15,"campaign_name":"WIZARDS ASHDI Preroll","partner_name":"WIZARDS","configured_vast_id":"vast12054","base_vast_id":"vast12054"}],"midroll":[{"slot":"midroll","campaign_id":11,"campaign_name":"Adwise ASHDI Midroll","partner_name":"Adwise","configured_vast_id":"adwise11705","base_vast_id":"adwise11705"}]};
+
+            function AshdiAdblockValue() {
+                try {
+                    if (player && player.api) {
+                        return player.api("adblock") ? 1 : 0;
+                    }
+                } catch(e) {}
+                return 0;
+            }
+
+            function AshdiNormalizeVastId(value) {
+                value = value || '';
+                value = String(value).trim();
+                return value.replace(/^id:\s*/i, '');
+            }
+
+            function AshdiResolveAdMeta(adType, adSeq, reportedVastId) {
+                var slot = '';
+                var vastId = AshdiNormalizeVastId(reportedVastId);
+
+                if (adType === 'preroll') {
+                    slot = adSeq === 2 ? 'preroll_2' : 'preroll_1';
+                } else if (adType === 'midroll') {
+                    slot = 'midroll';
+                }
+
+                var list = slot && ashdi_ad_plan && ashdi_ad_plan[slot] ? ashdi_ad_plan[slot] : [];
+                var fallback = list && list.length === 1 ? list[0] : null;
+
+                for (var i = 0; i < list.length; i++) {
+                    if (AshdiNormalizeVastId(list[i].configured_vast_id) === vastId || AshdiNormalizeVastId(list[i].base_vast_id) === vastId) {
+                        fallback = list[i];
+                        break;
+                    }
+                }
+
+                return {
+                    slot: slot,
+                    campaign_id: fallback ? (parseInt(fallback.campaign_id || 0, 10) || 0) : 0,
+                    campaign_name: fallback ? (fallback.campaign_name || '') : '',
+                    partner_name: fallback ? (fallback.partner_name || '') : '',
+                    configured_vast_id: fallback ? (fallback.configured_vast_id || '') : ''
+                };
+            }
+
+            function AshdiParseVastInfo(info) {
+                if (!info || typeof info !== 'string') {
+                    return null;
+                }
+
+                try {
+                    return JSON.parse(info);
+                } catch(e) {}
+
+                return null;
+            }
+
+            function AshdiVastAdTypeFromString(value) {
+                value = (value === undefined || value === null) ? '' : String(value).toLowerCase();
+
+                if (value.indexOf('midroll') !== -1) {
+                    return 'midroll';
+                }
+
+                if (value.indexOf('preroll') !== -1) {
+                    return 'preroll';
+                }
+
+                if (value.indexOf('postroll') !== -1) {
+                    return 'postroll';
+                }
+
+                return '';
+            }
+
+            function AshdiUrlHost(value) {
+                value = (value === undefined || value === null) ? '' : String(value).trim();
+
+                if (value === '') {
+                    return '';
+                }
+
+                try {
+                    return (new URL(value, document.location.href)).host || '';
+                } catch(e) {}
+
+                var match = value.match(/^https?:\/\/([^\/?#]+)/i);
+                return match ? match[1] : '';
+            }
+
+            function AshdiVastIdFromInfo(infoObj) {
+                if (!infoObj || !infoObj.id) {
+                    return '';
+                }
+
+                var rawAdId = String(infoObj.id).trim();
+                var parts = rawAdId.split('->');
+
+                if (parts.length > 1) {
+                    return (parts[0] || '').trim();
+                }
+
+                if (/^(pre|mid|post|pause)roll_\d+/i.test(rawAdId)) {
+                    return '';
+                }
+
+                if (rawAdId === 'null') {
+                    return '';
+                }
+
+                return rawAdId;
+            }
+
+            function AshdiRememberVastLoad(info) {
+                var adType = AshdiVastAdTypeFromString(info);
+
+                if (!adType) {
+                    return;
+                }
+
+                ashdi_vast_context = {
+                    ad_type: adType,
+                    error_text: 'load:' + String(info)
+                };
+            }
+
+            function AshdiRememberVastUrl(info, type) {
+                var value = (info === undefined || info === null) ? '' : String(info).trim();
+
+                if (value === '') {
+                    return;
+                }
+
+                if (!ashdi_vast_context || typeof ashdi_vast_context !== 'object') {
+                    ashdi_vast_context = {};
+                }
+
+                var host = AshdiUrlHost(value);
+                var key = type === 'wrapper' ? 'wrapper_url' : 'vast_url';
+                var hostKey = type === 'wrapper' ? 'wrapper_host' : 'vast_url_host';
+
+                ashdi_vast_context[key] = value;
+                ashdi_vast_context[hostKey] = host;
+
+                if (!ashdi_vast_context.error_text) {
+                    ashdi_vast_context.error_text = type + ':' + value;
+                }
+            }
+
+            function AshdiRememberVastContext(info) {
+                var infoObj = AshdiParseVastInfo(info);
+
+                if (!infoObj) {
+                    return;
+                }
+
+                var adType = infoObj.is || '';
+                var vastId = AshdiVastIdFromInfo(infoObj);
+
+                ashdi_vast_context = {
+                    ad_type: adType,
+                    vast_id: vastId,
+                    ad_system: infoObj.system || '',
+                    vast_url: infoObj.url || ashdi_vast_context.vast_url || '',
+                    vast_url_host: AshdiUrlHost(infoObj.url || ashdi_vast_context.vast_url || ''),
+                    wrapper_url: ashdi_vast_context.wrapper_url || '',
+                    wrapper_host: ashdi_vast_context.wrapper_host || '',
+                    error_code: ashdi_vast_context.error_code || '',
+                    error_text: info || ''
+                };
+            }
+
+            function AshdiRememberVastErrorCode(info) {
+                if (info !== undefined && info !== null && String(info).trim() !== '') {
+                    ashdi_vast_context.error_code = String(info).trim();
+                }
+            }
+
+            function AshdiSendVastError(info) {
+                if (ashdi_vast_error_count >= 20) {
+                    return;
+                }
+
+                var adType = ashdi_vast_context.ad_type || (typeof info === 'string' ? info : '') || 'unknown';
+                var vastId = ashdi_vast_context.vast_id || '';
+                var sourceHost = ashdi_vast_context.wrapper_host || ashdi_vast_context.vast_url_host || '';
+                var adSystem = ashdi_vast_context.ad_system || (sourceHost ? ('host:' + sourceHost).substring(0, 80) : '');
+                var adMeta = AshdiResolveAdMeta(adType, 0, vastId);
+                var errorCode = ashdi_vast_context.error_code || '';
+                var key = [adType, vastId, adSystem, errorCode, adMeta.slot, ashdi_vast_context.vast_url || '', ashdi_vast_context.wrapper_url || ''].join('|');
+
+                if (ashdi_vast_error_seen[key]) {
+                    return;
+                }
+
+                ashdi_vast_error_seen[key] = true;
+                ashdi_vast_error_count++;
+
+                AshdiStatsSend('vast_error', {
+                    ad_type: adType || 'unknown',
+                    slot: adMeta.slot,
+                    campaign_id: adMeta.campaign_id,
+                    campaign_name: adMeta.campaign_name,
+                    partner_name: adMeta.partner_name,
+                    configured_vast_id: adMeta.configured_vast_id,
+                    vast_id: vastId,
+                    ad_system: adSystem,
+                    error_text: [
+                        errorCode ? ('code:' + errorCode) : '',
+                        ashdi_vast_context.error_text || info || '',
+                        ashdi_vast_context.vast_url ? ('vast_url:' + ashdi_vast_context.vast_url) : '',
+                        ashdi_vast_context.wrapper_url ? ('wrapper:' + ashdi_vast_context.wrapper_url) : ''
+                    ].filter(Boolean).join(' | ')
+                });
+            }
+
+            function AshdiStatsSend(eventName, extra) {
+                try {
+                    var payload = Object.assign({
+                        event: eventName,
+                        time: Date.now(),
+                        session_id: ashdi_session_id,
+                        referrer: document.referrer || 'direct',
+                        parent_domain: "",
+                        player: document.location.href,
+                        content_id: 3329,
+                        content_type: "serial",
+                        server: 0,
+                        country: "PL",
+                        asn: 5617,
+                        adblock: AshdiAdblockValue()
+                    }, extra || {});
+
+                    fetch('/player/vod-mod/stats_collect.php', {
+                        method: 'POST',
+                        keepalive: true,
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(payload)
+                    }).catch(function(){});
+                } catch(e) {}
+            }
+
+            function PlayerjsEvents(event, id, info) {
+                if (ashdi_modads_debug && (event === 'error' || event === 'loaderror' || (event && event.indexOf('vast_') === 0))) {
+                    console.log('[ASHDI PLAYER EVENT]', event, id, info);
+                }
+
+                if (event === 'init' && !ashdi_player_init_sent) {
+                    ashdi_player_init_sent = true;
+
+                    setTimeout(function() {
+                        AshdiStatsSend('player_init', {
+                            adblock: AshdiAdblockValue()
+                        });
+                    }, 500);
+                }
+
+								if (event === 'play' && !ashdi_video_play_sent) {
+					ashdi_video_play_sent = true;
+
+					setTimeout(function() {
+						AshdiStatsSend('video_play', {
+							adblock: AshdiAdblockValue()
+						});
+
+						if (ashdi_modads_debug) {
+							console.log('[ASHDI ADBLOCK video_play]', {
+								adblock: AshdiAdblockValue(),
+								api_available: !!(player && player.api)
+							});
+						}
+					}, 1800);
+				}
+
+                if ((event === 'loaderror' || event === 'error') && !ashdi_video_error_sent) {
+                    ashdi_video_error_sent = true;
+                    AshdiStatsSend('video_error', {
+                        error_text: info || ''
+                    });
+                }
+
+                if (!event || event.indexOf('vast_') !== 0) {
+                    return;
+                }
+
+                if (event === 'vast_load') {
+                    AshdiRememberVastLoad(info);
+                    return;
+                }
+
+                if (event === 'vast_url') {
+                    AshdiRememberVastUrl(info, 'url');
+                    return;
+                }
+
+                if (event === 'vast_wrapper') {
+                    AshdiRememberVastUrl(info, 'wrapper');
+                    return;
+                }
+
+                if (event === 'vast_empty') {
+                    AshdiRememberVastContext(info);
+                    return;
+                }
+
+                if (event === 'vast_Error') {
+                    AshdiRememberVastErrorCode(info);
+                    return;
+                }
+
+                if (event === 'vast_error') {
+                    AshdiSendVastError(info);
+                    return;
+                }
+
+                if (event == 'vast_complete' || event == 'vast_skip') {
+                    var atype = 'wtf';
+                    var infoObj = null;
+
+                    if (info && typeof info === 'string') {
+                        try {
+                            infoObj = JSON.parse(info);
+                            if (infoObj && infoObj.is) {
+                                atype = infoObj.is;
+                            }
+                        } catch(e) {}
+                    }
+
+                    var shouldsend = false;
+
+                    if (atype === 'preroll' && playerjs_vast_num < 2) {
+                        shouldsend = true;
+                        playerjs_vast_num++;
+                    }
+
+                    if (atype === 'midroll') {
+                        shouldsend = true;
+                    }
+
+                    if (shouldsend) {
+                        ashdi_ad_seq++;
+
+                        var vastId = '';
+                        var creativeId = '';
+                        var adSystem = '';
+                        var adDuration = 0;
+
+                        if (infoObj) {
+                            adSystem = infoObj.system || '';
+                            adDuration = parseInt(infoObj.duration || 0);
+
+                            if (infoObj.id) {
+                                var rawAdId = String(infoObj.id).trim();
+                                var parts = rawAdId.split('->');
+
+                                if (parts.length > 1) {
+                                    vastId = (parts[0] || '').trim();
+                                    creativeId = (parts[1] || '').trim();
+                                } else if (/^(pre|mid|post|pause)roll_\d+/i.test(rawAdId)) {
+                                    creativeId = rawAdId;
+                                    vastId = '';
+                                } else {
+                                    vastId = rawAdId;
+                                }
+                            }
+                        }
+
+                        var adMeta = AshdiResolveAdMeta(atype, ashdi_ad_seq, vastId);
+
+                        AshdiStatsSend('vast_show', {
+                            ad_type: atype,
+                            ad_seq: ashdi_ad_seq,
+                            slot: adMeta.slot,
+                            campaign_id: adMeta.campaign_id,
+                            campaign_name: adMeta.campaign_name,
+                            partner_name: adMeta.partner_name,
+                            configured_vast_id: adMeta.configured_vast_id,
+                            vast_id: vastId,
+                            creative_id: creativeId,
+                            ad_system: adSystem,
+                            ad_duration: adDuration
+                        });
+
+                        try {
+                            fetch('https://base.ashdi.vip/stats/stats_vast.php', {
+                                method: 'POST',
+                                body: JSON.stringify({
+                                    time: Date.now(),
+                                    referrer: document.referrer || 'direct',
+                                    sform: atype,
+                                    player: document.location.href
+                                })
+                            }).catch(function(){});
+                        } catch(e) {}
+                    }
+                }
+            }
+
+
+            player = new Playerjs({
+				id:"videoplayer3329",
+				file:'[{"title":" AniUA","folder":[{"title":" Сезон 1","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video01/3/serials/ser/pervorodn___drevn_2013_the_originals_s01e01_119015/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/ser/pervorodn___drevn_2013_the_originals_s01e01_119015/screen.jpg", "subtitle": "", "id": "119015", "vid": "119015"},{"title":"Серія 2","file":"https://ashdi.vip/video01/3/serials/ser/pervorodn___drevn_2013_the_originals_s01e02_119016/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/ser/pervorodn___drevn_2013_the_originals_s01e02_119016/screen.jpg", "subtitle": "", "id": "119016", "vid": "119016"}]}]},{"title":" Субтитри | В один голос","folder":[{"title":" Сезон 1","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video01/2/serials/the_originals_sezon_1_serya_1_168444/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/the_originals_sezon_1_serya_1_168444/screen.jpg", "subtitle": "", "id": "168444", "vid": "168444"},{"title":"Серія 2","file":"https://ashdi.vip/video01/2/serials/the_originals_sezon_1_serya_2_168445/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/the_originals_sezon_1_serya_2_168445/screen.jpg", "subtitle": "", "id": "168445", "vid": "168445"},{"title":"Серія 3","file":"https://ashdi.vip/video01/2/new/the_originals_sezon_1_serya_3_168446/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_sezon_1_serya_3_168446/screen.jpg", "subtitle": "", "id": "168446", "vid": "168446"}]}]},{"title":" Bezro Studio","folder":[{"title":" Сезон 1","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video01/2/new/the_originals_s01e01_244301/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s01e01_244301/screen.jpg", "subtitle": "", "id": "244301", "vid": "244301"},{"title":"Серія 2","file":"https://ashdi.vip/video01/2/new/the_originals_s01e02_244619/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s01e02_244619/screen.jpg", "subtitle": "", "id": "244619", "vid": "244619"},{"title":"Серія 3","file":"https://ashdi.vip/video01/2/new/the_originals_s01e03_245930/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s01e03_245930/screen.jpg", "subtitle": "", "id": "245930", "vid": "245930"},{"title":"Серія 4","file":"https://ashdi.vip/video01/2/new/the_originals_s01e04_246973/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s01e04_246973/screen.jpg", "subtitle": "", "id": "246973", "vid": "246973"},{"title":"Серія 5","file":"https://ashdi.vip/video01/2/new/the_originals_s01e05_247035/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s01e05_247035/screen.jpg", "subtitle": "", "id": "247035", "vid": "247035"},{"title":"Серія 6","file":"https://ashdi.vip/video01/2/new/the_originals_s01e06_247036/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s01e06_247036/screen.jpg", "subtitle": "", "id": "247036", "vid": "247036"},{"title":"Серія 7","file":"https://ashdi.vip/video01/2/new/the_originals_s01e07_247946/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s01e07_247946/screen.jpg", "subtitle": "", "id": "247946", "vid": "247946"},{"title":"Серія 8","file":"https://ashdi.vip/video01/2/new/the_originals_s01e08_248460/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s01e08_248460/screen.jpg", "subtitle": "", "id": "248460", "vid": "248460"},{"title":"Серія 9","file":"https://ashdi.vip/video01/2/new/the_originals_s01e09_250232/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s01e09_250232/screen.jpg", "subtitle": "", "id": "250232", "vid": "250232"},{"title":"Серія 10","file":"https://ashdi.vip/video01/2/new/the_originals_s01e10_250248/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s01e10_250248/screen.jpg", "subtitle": "", "id": "250248", "vid": "250248"},{"title":"Серія 11","file":"https://ashdi.vip/video01/2/new/the_originals_s01e11_255200/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s01e11_255200/screen.jpg", "subtitle": "", "id": "255200", "vid": "255200"},{"title":"Серія 12","file":"https://ashdi.vip/video01/2/new/the_originals_s01e12_255201/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s01e12_255201/screen.jpg", "subtitle": "", "id": "255201", "vid": "255201"},{"title":"Серія 13","file":"https://ashdi.vip/video01/2/new/the_originals_s01e13_257145/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s01e13_257145/screen.jpg", "subtitle": "", "id": "257145", "vid": "257145"},{"title":"Серія 14","file":"https://ashdi.vip/video01/2/new/the_originals_s01e14_257174/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s01e14_257174/screen.jpg", "subtitle": "", "id": "257174", "vid": "257174"},{"title":"Серія 15","file":"https://ashdi.vip/video01/2/new/the_originals_s01e15_259095/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s01e15_259095/screen.jpg", "subtitle": "", "id": "259095", "vid": "259095"},{"title":"Серія 16","file":"https://ashdi.vip/video01/2/new/the_originals_s01e16_259100/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s01e16_259100/screen.jpg", "subtitle": "", "id": "259100", "vid": "259100"},{"title":"Серія 17","file":"https://ashdi.vip/video01/2/new/the_originals_s01e17_260198/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s01e17_260198/screen.jpg", "subtitle": "", "id": "260198", "vid": "260198"},{"title":"Серія 18","file":"https://ashdi.vip/video01/2/new/the_originals_s01e18_260694/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s01e18_260694/screen.jpg", "subtitle": "", "id": "260694", "vid": "260694"},{"title":"Серія 19","file":"https://ashdi.vip/video01/2/new/the_originals_s01e19_261799/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s01e19_261799/screen.jpg", "subtitle": "", "id": "261799", "vid": "261799"},{"title":"Серія 20","file":"https://ashdi.vip/video01/2/new/the_originals_s01e20_261798/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s01e20_261798/screen.jpg", "subtitle": "", "id": "261798", "vid": "261798"},{"title":"Серія 21","file":"https://ashdi.vip/video01/2/new/the_originals_s01e21_263452/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s01e21_263452/screen.jpg", "subtitle": "", "id": "263452", "vid": "263452"},{"title":"Серія 22","file":"https://ashdi.vip/video01/2/new/the_originals_s01e22_263451/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s01e22_263451/screen.jpg", "subtitle": "", "id": "263451", "vid": "263451"}]},{"title":" Сезон 2","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video01/2/new/the_originals_s02e01_265578/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s02e01_265578/screen.jpg", "subtitle": "", "id": "265578", "vid": "265578"},{"title":"Серія 2","file":"https://ashdi.vip/video01/2/new/the_originals_s02e02_265584/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s02e02_265584/screen.jpg", "subtitle": "", "id": "265584", "vid": "265584"},{"title":"Серія 3","file":"https://ashdi.vip/video01/2/new/the_originals_s02e03_266912/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s02e03_266912/screen.jpg", "subtitle": "", "id": "266912", "vid": "266912"},{"title":"Серія 4","file":"https://ashdi.vip/video01/2/new/the_originals_s02e04_266945/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s02e04_266945/screen.jpg", "subtitle": "", "id": "266945", "vid": "266945"},{"title":"Серія 5","file":"https://ashdi.vip/video01/2/new/the_originals_s02e05_267803/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s02e05_267803/screen.jpg", "subtitle": "", "id": "267803", "vid": "267803"},{"title":"Серія 6","file":"https://ashdi.vip/video01/2/new/the_originals_s02e06_268023/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s02e06_268023/screen.jpg", "subtitle": "", "id": "268023", "vid": "268023"},{"title":"Серія 7","file":"https://ashdi.vip/video01/2/new/the_originals_s02e07_269306/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s02e07_269306/screen.jpg", "subtitle": "", "id": "269306", "vid": "269306"},{"title":"Серія 8","file":"https://ashdi.vip/video01/2/new/the_originals_s02e08_269562/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s02e08_269562/screen.jpg", "subtitle": "", "id": "269562", "vid": "269562"},{"title":"Серія 9","file":"https://ashdi.vip/video01/2/new/the_originals_s02e09_271857/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s02e09_271857/screen.jpg", "subtitle": "", "id": "271857", "vid": "271857"},{"title":"Серія 10","file":"https://ashdi.vip/video01/2/new/the_originals_s02e10_271851/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s02e10_271851/screen.jpg", "subtitle": "", "id": "271851", "vid": "271851"},{"title":"Серія 11","file":"https://ashdi.vip/video01/3/new/the_originals_s02e11_273085/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s02e11_273085/screen.jpg", "subtitle": "", "id": "273085", "vid": "273085"},{"title":"Серія 12","file":"https://ashdi.vip/video01/3/new/the_originals_s02e12_273479/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/new/the_originals_s02e12_273479/screen.jpg", "subtitle": "", "id": "273479", "vid": "273479"}]}]}]',
+				plstart: '273479',
+				forbidden_quality:"Авто",
+				default_quality:"480p",
+preroll:"id:adwise7271 or id:vast7260 or id:vast7252 or id:adwise12050 or id:vadideo12220 or id:vast12054 and id:adwise7272 or id:vast7260 or id:vast7252 or id:adwise12051 or id:vadideo12220 or id:vast12054",
+prerollnew:1			});
+
+		</script>
+	</body>
+</html>

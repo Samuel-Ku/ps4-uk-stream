@@ -35,7 +35,7 @@ once they pass the live gate (search → content → stream → plays in mpv).
 | eneyida | [EneyidaProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/EneyidaProvider) | `EneyidaProvider.kt` (20.6 KB) | HTML | TBD | TBD | TBD |
 | anitubeinua | [AnitubeinuaProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/AnitubeinuaProvider) | `AnitubeinuaProvider.kt` (23.4 KB) | HTML | TBD | TBD | TBD |
 | animeon | [AnimeONProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/AnimeONProvider) | `AnimeONProvider.kt` (56.7 KB) | HTML | TBD | TBD | TBD (heavy file → likely packed JS) |
-| kinotron | [KinoTronProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/KinoTronProvider) | `KinoTronProvider.kt` (7.9 KB) | HTML | TBD | TBD | TBD |
+| kinotron | [KinoTronProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/KinoTronProvider) | `KinoTronProvider.kt` (7.9 KB) | HTML | iframe → inline JSON | mild | **ready** |
 | hentaiukr | [HentaiUkrProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/HentaiUkrProvider) | `HentaiUkrProvider.kt` (5.3 KB) | HTML | TBD | TBD | TBD (in scope per spec; no hiding) |
 | doramyworld | [DoramyWorldProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/DoramyWorldProvider) | `DoramyWorldProvider.kt` (8.3 KB), `JSONModel.kt` | HTML + JSON | TBD | mild | TBD |
 | cikavaideya | [CikavaIdeyaProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/CikavaIdeyaProvider) | `CikavaIdeyaProvider.kt` (8.2 KB) | HTML | TBD | TBD | TBD |
@@ -49,9 +49,10 @@ once they pass the live gate (search → content → stream → plays in mpv).
 Group 1 (simple, HTML-based, `<15 KB`):
 
 1. `ufdub` — landed in `backend/cs_uk_api/providers/ufdub.py` (6 tests, ready)
-2. `uaflix` — drop-in next; uses our sections/browse + regex pipeline already
-3. `kinovezha`, `bambooua`, `cikavaideya`, `unimay`, `kinotron`
-4. `coaninet`, `animeua`
+2. `kinotron` — landed in `backend/cs_uk_api/providers/kinotron.py` (9 tests, ready)
+3. `uaflix` — drop-in next; uses our sections/browse + regex pipeline already
+4. `kinovezha`, `bambooua`, `cikavaideya`, `unimay`
+5. `coaninet`, `animeua`
 
 Group 2 (medium, 10–25 KB):
 
