@@ -184,6 +184,8 @@ async def stream(content_id: str, translation: str | None = None) -> StreamRespo
     except ProviderError as e:
         if e.code == "invalid_translation":
             raise HTTPException(400, detail=ErrorResponse(error=e.code, message=e.message).model_dump()) from e
+        if e.code == "translation_missing":
+            raise HTTPException(404, detail=ErrorResponse(error=e.code, message=e.message).model_dump()) from e
         log.warning("stream failed id=%s err=%s", content_id, e)
         raise HTTPException(502, detail=ErrorResponse(error="upstream_unreachable", message=str(e)).model_dump()) from e
     except Exception as e:

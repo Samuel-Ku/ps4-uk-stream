@@ -36,9 +36,11 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import logging
 import re
 from datetime import datetime
 from typing import Any
+from urllib.parse import quote_plus
 
 import httpx
 
@@ -58,6 +60,8 @@ MOON_BASE = "https://moonanime.art"
 ASHDI_REFERER = "https://ashdi.vip/"
 MOON_REFERER = "https://moonanime.art/"
 
+logger = logging.getLogger(__name__)
+
 # v2 sections mirror the upstream `mainPageOf(...)` slots:
 #  * "seasons"   -> /api/anime/seasons                 (List<LocalResult>)
 #  * "popular"   -> /api/stats/anime/<date>?withView=false
@@ -72,11 +76,12 @@ ANIMEON_SECTIONS: tuple[Section, ...] = (
 # substringAfterLast("/").substringBefore("-").toIntOrNull()).
 _EXTERNAL_ID_RE = re.compile(r"\d{1,8}")
 
-# Episode suffix inside `content_id`: "<id>:e<n>". Simpler than v1's
-# dataJson-encoded EpisodeSource list because we re-fetch the
-# translations + episodes lists in stream() exactly like anitubeinua
-# does its playlist re-fetch.
-_CONTENT_ID_RE = re.compile(r"(\d{1,8}):e(\d{1,5})")
+# Slug shape returned by the bare-id redirect at /api/anime/<id>:
+# upstream joins the numeric id with the URL-safe title via ``-``.
+# Anything that doesn't match this pattern is an untrusted value
+# (path traversal, JSON injection in the next URL we build) and must
+# surface as ``not_found`` before we issue the follow-up GET.
+_SLUG_RE = re.compile(r"\d{1,8}-[a-z0-9][a-z0-9-]{0,80}")
 
 # Playerjs iframe's obfuscation payload:
 #   atob("...==")                            (outer, moonOuterDecode)
@@ -226,7 +231,10 @@ class AnimeONProvider(BaseProvider):
         return response.text
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
-        data = await self._get_json(f"{BASE_URL}/api/anime?search={query}", http)
+        # quote_plus escapes every URL-unsafe char (including &, ?, #,
+        # space) so the upstream never sees an injected query parameter.
+        encoded = quote_plus(query, safe="")
+        data = await self._get_json(f"{BASE_URL}/api/anime?search={encoded}", http)
         results = (data or {}).get("results", []) if isinstance(data, dict) else []
         return [
             SearchResult(
@@ -316,24 +324,7 @@ class AnimeONProvider(BaseProvider):
                 for entry in entries
             }
         )
-        season = Season(
-            number=1,
-            episodes=[
-                self._build_episode(
-                    anime_id=anime_id,
-                    episode_num=ep_num,
-                    entries=sorted(
-                        entries,
-                        key=lambda e: (
-                            str(e["translation_name"]),
-                            str(e["player_name"]),
-                        ),
-                    ),
-                    translations=all_translations,
-                )
-                for ep_num, entries in sorted(episodes_by_num.items())
-            ],
-        )
+        season = self._build_season(anime_id, episodes_by_num, all_translations)
         return ContentResponse(
             id=f"{self.id}:{external_id}",
             type="anime",
@@ -348,6 +339,31 @@ class AnimeONProvider(BaseProvider):
             translations_level="episode",
         )
 
+    @staticmethod
+    def _build_season(
+        anime_id: int,
+        episodes_by_num: dict[int, list[dict[str, Any]]],
+        all_translations: list[str],
+    ) -> Season:
+        return Season(
+            number=1,
+            episodes=[
+                AnimeONProvider._build_episode(
+                    anime_id=anime_id,
+                    episode_num=ep_num,
+                    entries=sorted(
+                        entries,
+                        key=lambda e: (
+                            str(e["translation_name"]),
+                            str(e["player_name"]),
+                        ),
+                    ),
+                    translations=all_translations,
+                )
+                for ep_num, entries in sorted(episodes_by_num.items())
+            ],
+        )
+
     async def _load_content_info(
         self, anime_id: int, external_id: str, http: httpx.AsyncClient
     ) -> tuple[dict[str, Any], int | None]:
@@ -357,8 +373,8 @@ class AnimeONProvider(BaseProvider):
         first = await self._get_json(f"{BASE_URL}/api/anime/{anime_id}", http)
         if isinstance(first, dict) and first.get("moved") is True:
             slug = str(first.get("slug") or first.get("redirectTo") or "")
-            if not slug:
-                raise ProviderError("parse_failed", "redirect without slug")
+            if not _SLUG_RE.fullmatch(slug):
+                raise ProviderError("not_found", "bad redirect slug")
         else:
             slug = external_id
 
@@ -430,37 +446,83 @@ class AnimeONProvider(BaseProvider):
             f"{BASE_URL}/api/player/{anime_id}/episodes"
             f"?take=100&playerId={player_id}&translationId={translation_id}"
         )
-        try:
-            ep_doc = await self._get_json(f"{base}&skip=-1", http)
-            for ep in (ep_doc or {}).get("episodes", []) or []:
-                if int(ep.get("episode") or 0) <= 0:
-                    ep_id = int(ep.get("id") or 0)
-                    if ep_id and ep_id not in collected:
-                        collected[ep_id] = self._build_entry(
-                            ep, translation_name, player_name
-                        )
-        except ProviderError:
-            pass
+        # Specials at skip=-1 are optional — a 4xx means the endpoint
+        # isn't supported (no specials for this show), which is a valid
+        # empty state. A 5xx, on the other hand, means the upstream is
+        # actually broken and we must let it bubble up so the caller
+        # sees ``upstream_unreachable`` instead of a misleading
+        # ``parse_failed`` further down.
+        specials = await self._fetch_specials_page(base, http)
+        if specials is not None:
+            self._absorb_collected(
+                collected, specials, translation_name, player_name, specials_only=True
+            )
+        await self._fetch_episode_pages(
+            base, max_skip, collected, translation_name, player_name, http
+        )
+        return list(collected.values())
 
+    async def _fetch_specials_page(
+        self, base: str, http: httpx.AsyncClient
+    ) -> dict[str, Any] | None:
+        """GET ``?skip=-1`` and return the JSON, or None on 4xx (no
+        specials for this show). 5xx propagates so the caller surfaces
+        ``upstream_unreachable``."""
+        try:
+            return await self._get_json(f"{base}&skip=-1", http)
+        except ProviderError as e:
+            if e.code in {"unreachable", "upstream_unreachable"}:
+                raise
+            logger.debug("animeon skip=-1 specials unavailable: %s", e)
+            return None
+
+    def _absorb_collected(
+        self,
+        collected: dict[int, dict[str, Any]],
+        doc: dict[str, Any],
+        translation_name: str,
+        player_name: str,
+        *,
+        specials_only: bool,
+    ) -> None:
+        for ep in (doc or {}).get("episodes") or []:
+            if specials_only and int(ep.get("episode") or 0) > 0:
+                continue
+            ep_id = int(ep.get("id") or 0)
+            if ep_id and ep_id not in collected:
+                collected[ep_id] = self._build_entry(
+                    ep, translation_name, player_name
+                )
+
+    async def _fetch_episode_pages(
+        self,
+        base: str,
+        max_skip: int,
+        collected: dict[int, dict[str, Any]],
+        translation_name: str,
+        player_name: str,
+        http: httpx.AsyncClient,
+    ) -> None:
+        """Walk ``/api/player/<id>/episodes?skip=N`` pages from skip=0
+        upward until the page is short or empty."""
         skip = 0
         while skip <= max_skip:
             try:
                 doc = await self._get_json(f"{base}&skip={skip}", http)
-            except ProviderError:
+            except ProviderError as e:
+                if e.code in {"unreachable", "upstream_unreachable"}:
+                    raise
+                logger.debug("animeon episodes skip=%d unavailable: %s", skip, e)
                 break
             episodes = (doc or {}).get("episodes") or []
             if not episodes:
                 break
-            for ep in episodes:
-                ep_id = int(ep.get("id") or 0)
-                if ep_id and ep_id not in collected:
-                    collected[ep_id] = self._build_entry(
-                        ep, translation_name, player_name
-                    )
+            self._absorb_collected(
+                collected, doc, translation_name, player_name, specials_only=False
+            )
             if len(episodes) < 100:
                 break
             skip += 100
-        return list(collected.values())
 
     @staticmethod
     def _build_entry(
@@ -485,7 +547,6 @@ class AnimeONProvider(BaseProvider):
         entries: list[dict[str, Any]],
         translations: list[str],
     ) -> Episode:
-        first_poster = next((e["poster"] for e in entries if e.get("poster")), None)
         ep_translations = [
             Translation(id=name, label=name)
             for name in translations
@@ -548,7 +609,7 @@ class AnimeONProvider(BaseProvider):
                     break
             if chosen is None:
                 raise ProviderError(
-                    "parse_failed",
+                    "translation_missing",
                     f"translation {translation!r} not available",
                 )
         if chosen is None:

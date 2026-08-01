@@ -136,6 +136,29 @@ async def test_search_connection_error_raises_unreachable():
     assert exc.value.code == "unreachable"
 
 
+@pytest.mark.asyncio
+async def test_search_encodes_special_chars():
+    """Special chars (&, ?, #, space) in the search query must be
+    percent-encoded so the upstream receives a single ``search``
+    parameter, not an injected extra path/query fragment."""
+    search_json = _fixture("search.json")
+    with respx.mock(assert_all_called=True) as router:
+        route = router.get(
+            url=re.compile(r"https://animeon\.club/api/anime\?.*")
+        ).respond(200, text=search_json)
+        async with httpx.AsyncClient() as http:
+            await AnimeONProvider().search("a&b?c#d e", http)
+    assert route.call_count == 1
+    raw_url = str(route.calls[0].request.url)
+    # The raw query arrives percent-encoded; the literals must not
+    # appear as extra params (no extra '?', '&b=' as a sibling key,
+    # no '#d' fragment).
+    assert "&b=" not in raw_url
+    assert "?" not in raw_url.split("search=")[1].split("&")[0]
+    assert "a%26b" in raw_url or "a%26" in raw_url
+    assert "d%20e" in raw_url or "+" in raw_url.split("search=")[1]
+
+
 # ---------------------------------------------------------------------------
 # browse()
 # ---------------------------------------------------------------------------
@@ -318,6 +341,112 @@ async def test_content_missing_title_raises_parse_failed():
     assert exc.value.code == "parse_failed"
 
 
+@pytest.mark.asyncio
+async def test_content_bad_redirect_slug_raises_not_found():
+    """A malicious redirect ``slug`` (path traversal, scheme injection)
+    must be rejected with ``not_found`` before we build the next URL.
+    ``assert_all_called=True`` ensures no follow-up GET was issued."""
+    from cs_uk_api.providers.base import ProviderError
+
+    bad_redirect = json.dumps({"moved": True, "slug": "../../etc/passwd"})
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://animeon.club/api/anime/913").respond(
+            200, text=bad_redirect
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await AnimeONProvider().content("913", http)
+    assert exc.value.code == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_content_specials_5xx_propagates_upstream_unreachable():
+    """A 5xx on the optional ``skip=-1`` specials fetch must surface
+    as ``upstream_unreachable`` — not be silently swallowed and
+    misattributed to ``parse_failed`` further down the call stack."""
+    from cs_uk_api.providers.base import ProviderError
+
+    redirect_json = _fixture("content_redirect.json")
+    content_json = _fixture("content.json")
+    translations_json = _fixture("translations.json")
+    episodes_ashdi_json = _fixture("episodes_ashdi.json")
+    episodes_moon_json = _fixture("episodes_moon.json")
+    with respx.mock(assert_all_called=False) as router:
+        router.get("https://animeon.club/api/anime/913").respond(
+            200, text=redirect_json
+        )
+        router.get("https://animeon.club/api/anime/913-naruto").respond(
+            200, text=content_json
+        )
+        router.get("https://animeon.club/api/player/913/translations").respond(
+            200, text=translations_json
+        )
+        # Moon (playerId=3847) gets the 5xx on its specials fetch.
+        router.get(
+            url=re.compile(
+                r"https://animeon\.club/api/player/913/episodes\?.*playerId=3847.*skip=-1.*"
+            )
+        ).respond(503, text="")
+        router.get(
+            url=re.compile(
+                r"https://animeon\.club/api/player/913/episodes\?.*playerId=3847.*skip=0.*"
+            )
+        ).respond(200, text=episodes_moon_json)
+        # Ashdi behaves normally — both specials and the paginated
+        # walk succeed so the test stays isolated to the Moon player.
+        router.get(
+            url=re.compile(
+                r"https://animeon\.club/api/player/913/episodes\?.*playerId=1052.*"
+            )
+        ).respond(200, text=episodes_ashdi_json)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await AnimeONProvider().content("913", http)
+    assert exc.value.code == "upstream_unreachable"
+
+
+@pytest.mark.asyncio
+async def test_content_specials_4xx_is_swallowed_silently():
+    """A 4xx on the optional ``skip=-1`` specials fetch means "no
+    specials for this show" — that is a valid empty state and the
+    caller must not see an error."""
+    redirect_json = _fixture("content_redirect.json")
+    content_json = _fixture("content.json")
+    translations_json = _fixture("translations.json")
+    episodes_ashdi_json = _fixture("episodes_ashdi.json")
+    episodes_moon_json = _fixture("episodes_moon.json")
+    with respx.mock(assert_all_called=False) as router:
+        router.get("https://animeon.club/api/anime/913").respond(
+            200, text=redirect_json
+        )
+        router.get("https://animeon.club/api/anime/913-naruto").respond(
+            200, text=content_json
+        )
+        router.get("https://animeon.club/api/player/913/translations").respond(
+            200, text=translations_json
+        )
+        router.get(
+            url=re.compile(
+                r"https://animeon\.club/api/player/913/episodes\?.*playerId=3847.*skip=-1.*"
+            )
+        ).respond(404, text="")
+        router.get(
+            url=re.compile(
+                r"https://animeon\.club/api/player/913/episodes\?.*playerId=3847.*skip=0.*"
+            )
+        ).respond(200, text=episodes_moon_json)
+        router.get(
+            url=re.compile(
+                r"https://animeon\.club/api/player/913/episodes\?.*playerId=1052.*"
+            )
+        ).respond(200, text=episodes_ashdi_json)
+        async with httpx.AsyncClient() as http:
+            c = await AnimeONProvider().content("913", http)
+    assert c.id == "animeon:913"
+    assert c.seasons is not None
+    assert len(c.seasons[0].episodes) >= 1
+
+
 # ---------------------------------------------------------------------------
 # stream()
 # ---------------------------------------------------------------------------
@@ -329,11 +458,6 @@ async def test_stream_ashdi_returns_m3u8():
     ``.m3u8`` is already final — no iframe fetch, no decoding. The
     header must carry the upstream ashdi.vip Referer so the manifest
     is actually served."""
-    content_json = _fixture("content.json")
-    redirect_json = _fixture("content_redirect.json")
-    translations_json = _fixture("translations.json")
-    episodes_ashdi_json = _fixture("episodes_ashdi.json")
-    episodes_moon_json = _fixture("episodes_moon.json")
     # Build the encoded Episode.id from the same source list the
     # provider would assemble for the QTV Ashdi entry of Narutō e1.
     ep_blob = json.dumps(
@@ -373,12 +497,6 @@ async def test_stream_moon_decodes_iframe_to_m3u8():
     the ``atob("...")`` blob, extract the JS, and apply the inner
     ``_0xd(...)`` decode to reach the `.m3u8`. The captured iframe
     fixture's first `_0xd` blob is the Narutō ep1 manifest URL."""
-    content_json = _fixture("content.json")
-    redirect_json = _fixture("content_redirect.json")
-    translations_json = _fixture("translations.json")
-    episodes_ashdi_json = _fixture("episodes_ashdi.json")
-    episodes_moon_json = _fixture("episodes_moon.json")
-    episodes_info_json = _fixture("episodes_info.json")
     player_html = _fixture("player_moon.html")
     # stream() needs a content() episode blob to encode the per-episode
     # sources. We construct one by hand: episode 1's Moon iframe URL.
@@ -413,10 +531,10 @@ async def test_stream_moon_decodes_iframe_to_m3u8():
 
 
 @pytest.mark.asyncio
-async def test_stream_unknown_translation_raises_parse_failed():
+async def test_stream_unknown_translation_raises_translation_missing():
     """If the requested translation is not in the encoded source list,
-    we surface ``parse_failed`` rather than silently picking a
-    different studio."""
+    we surface ``translation_missing`` (per v2 spec → HTTP 404) rather
+    than silently picking a different studio."""
     from cs_uk_api.providers.base import ProviderError
 
     ep_blob = json.dumps(
@@ -441,7 +559,7 @@ async def test_stream_unknown_translation_raises_parse_failed():
         async with httpx.AsyncClient() as http:
             with pytest.raises(ProviderError) as exc:
                 await AnimeONProvider().stream(encoded_ep_id, "NonexistentStudio", http)
-    assert exc.value.code == "parse_failed"
+    assert exc.value.code == "translation_missing"
 
 
 @pytest.mark.asyncio
