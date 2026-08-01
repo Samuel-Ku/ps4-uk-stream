@@ -26,6 +26,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup, Tag
 
+from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -43,6 +44,10 @@ BASE_URL_HOST = urlparse(BASE_URL).hostname
 # Kotlin sets the Referer to the site root so the CDN serves the
 # manifest.
 ASHDI_REFERER = BASE_URL + "/"
+# Hosts the upstream may legally redirect to. Anything outside this
+# set is treated as a not_found error so a hostile CMS response can't
+# pivot the request to an attacker-controlled host.
+_ALLOWED_HOSTS: frozenset[str] = frozenset({"simpsonsua.tv", "ashdi.vip"})
 
 # Browse surfaces the latest home-page updates and the paginated catalogue.
 SIMPSONSUATV_SECTIONS: tuple[Section, ...] = (
@@ -339,15 +344,16 @@ class SimpsonsUATvProvider(BaseProvider):
         if headers:
             merged.update(headers)
         try:
-            response = await http.get(
+            response = await safe_get(
+                http,
                 url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers=merged,
                 params=params,
-                follow_redirects=False,
             )
         except httpx.HTTPError as error:
             raise ProviderError("unreachable", str(error)) from error
-        if response.url.host != BASE_URL_HOST:
+        if response.url.host not in _ALLOWED_HOSTS:
             raise ProviderError("not_found", "unexpected upstream host")
         if response.status_code != 200:
             raise ProviderError("not_found", f"status {response.status_code}")
