@@ -42,7 +42,7 @@ once they pass the live gate (search → content → stream → plays in mpv).
 | ufdub | [UFDubProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UFDubProvider) | `UFDubProvider.kt` (6.1 KB) | HTML | iframe → regex | none | **ready** |
 | unimay | [UnimayProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UnimayProvider) | `UnimayProvider.kt` (6.6 KB) | JSON | hls.master URL | none | **ready** |
 | serialno | [SerialnoProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/SerialnoProvider) | `SerialnoProvider.kt` (10.1 KB) | HTML | iframe → torDecrypt | mild | **ready** |
-| simpsonsuatv | [SimpsonsUATvProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/SimpsonsUATvProvider) | `SimpsonsUATvProvider.kt` (29.3 KB) | HTML | TBD | TBD | TBD |
+| simpsonsuatv | [SimpsonsUATvProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/SimpsonsUATvProvider) | `SimpsonsUATvProvider.kt` (29.3 KB) | HTML | iframe → ashdi.vip | mild | **ready** (multi-iframe selection + SSRF redirect guard) |
 
 ## Per-provider "owner" field (suggested order)
 
@@ -69,7 +69,7 @@ Group 3 (heavy, needs deeper triage):
 1. `eneyida` — landed in `backend/cs_uk_api/providers/eneyida.py` (12 tests, ready; DLE + PlayerJS JSON season/episode playlists)
 2. `uaserialspro` — landed in `backend/cs_uk_api/providers/uaserialspro.py` (20 tests, ready; AES-256-CBC + PBKDF2 player-config decrypt + Tortuga XOR; adds `pycryptodome>=3.20` dep; Tortuga XOR + AES helpers extracted to shared `_tortuga.py` / `_crypto.py` modules used by serialno/kinovezha too)
 3. `anitubeinua` — landed in `backend/cs_uk_api/providers/anitubeinua.py` (19 tests, ready; DLE + ashdi.vip iframe + `qeruya.cyou` Referer; supports `translations_level="episode"`; per-episode studio dubs from playlist JSON; 764 lines)
-4. `simpsonsuatv`
+4. `simpsonsuatv` — landed in `backend/cs_uk_api/providers/simpsonsuatv.py` (20 tests, ready; DLE + ashdi.vip iframe; 2 sections (`updates` carousel + `multserialy-ukrainskoyu` listing); multi-iframe selection + SSRF redirect guard; TitleMap with upstream-vs-live drift noted)
 5. `animeon` — read the source before committing; packed JS risk
 
 Group 4:
