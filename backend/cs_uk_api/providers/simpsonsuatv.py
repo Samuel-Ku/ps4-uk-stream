@@ -21,7 +21,7 @@ refuse path traversal before any HTTP request is made.
 from __future__ import annotations
 
 import re
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup, Tag
@@ -38,14 +38,15 @@ from ..models import (
 from .base import BaseProvider, ProviderError
 
 BASE_URL = "https://simpsonsua.tv"
+BASE_URL_HOST = urlparse(BASE_URL).hostname
 # ashdi.vip hosts the HLS manifest for every episode. The upstream
 # Kotlin sets the Referer to the site root so the CDN serves the
 # manifest.
 ASHDI_REFERER = BASE_URL + "/"
 
-# The one and only section: the site's multserialy listing at
-# `/multserialy-ukrainskoyu/page/N/`.
+# Browse surfaces the latest home-page updates and the paginated catalogue.
 SIMPSONSUATV_SECTIONS: tuple[Section, ...] = (
+    Section(id="updates", title="Останні оновлення", type="cartoon"),
     Section(id="page", title="Усі мультсеріали", type="cartoon"),
 )
 
@@ -101,15 +102,15 @@ _SPECIAL_SLUGS: frozenset[str] = frozenset(
     }
 )
 
-# Show-slug → human-readable title map. Mirrors `titleMap` in the
-# upstream Kotlin so search results show the canonical Ukrainian label
-# instead of the URL slug.
+# Upstream currently spells this slug `riksanchez`; the live site uses
+# `rick137`, so retain both aliases to avoid drifting from either source.
 _TITLE_MAP: dict[str, str] = {
     "simpsony": "Сімпсони",
     "allfuturama": "Футурама",
     "family-guy": "Гріфіни",
     "pivdennyi-park": "Південний Парк",
-    "ricksanchez": "Рік та Морті",
+    "riksanchez": "Рік та Морті",
+    "rick137": "Рік та Морті",
     "solar-opposites": "Сонячні протилежності",
     "rozcharuvannya": "Розчарування",
     "duncanville": "Дунканвілл",
@@ -219,8 +220,8 @@ def _title_for_slug(slug: str) -> str:
 
 
 def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
-    """Parse one `div.movie_item` listing card."""
-    a = card.select_one("a")
+    """Parse one listing card."""
+    a = card if card.name == "a" else card.select_one("a")
     if a is None or not a.get("href"):
         return None
     href = str(a["href"])
@@ -330,6 +331,7 @@ class SimpsonsUATvProvider(BaseProvider):
         http: httpx.AsyncClient,
         *,
         headers: dict[str, str] | None = None,
+        params: dict[str, str] | None = None,
     ) -> httpx.Response:
         """Shared GET helper. `headers` is concatenated with the
         default `Referer` so callers can override per-request."""
@@ -337,9 +339,16 @@ class SimpsonsUATvProvider(BaseProvider):
         if headers:
             merged.update(headers)
         try:
-            response = await http.get(url, headers=merged)
+            response = await http.get(
+                url,
+                headers=merged,
+                params=params,
+                follow_redirects=False,
+            )
         except httpx.HTTPError as error:
             raise ProviderError("unreachable", str(error)) from error
+        if response.url.host != BASE_URL_HOST:
+            raise ProviderError("not_found", "unexpected upstream host")
         if response.status_code != 200:
             raise ProviderError("not_found", f"status {response.status_code}")
         return response
@@ -348,18 +357,7 @@ class SimpsonsUATvProvider(BaseProvider):
         # The upstream Kotlin hits the site root with `?s=QUERY` (GET).
         # httpx url-encodes the query via `params`, so Cyrillic and
         # reserved characters round-trip without double-encoding.
-        try:
-            response = await http.get(
-                BASE_URL + "/",
-                params={"s": query},
-                headers={"Referer": BASE_URL + "/"},
-            )
-        except httpx.HTTPError as error:
-            raise ProviderError("unreachable", str(error)) from error
-        if response.status_code != 200:
-            raise ProviderError(
-                "upstream_unreachable", f"status {response.status_code}"
-            )
+        response = await self._get(BASE_URL + "/", http, params={"s": query})
         soup = BeautifulSoup(response.text, "lxml")
         results: list[SearchResult] = []
         for card in soup.select("div.movie_item"):
@@ -371,6 +369,18 @@ class SimpsonsUATvProvider(BaseProvider):
     async def browse(
         self, section: str, page: int, http: httpx.AsyncClient
     ) -> tuple[list[SearchResult], bool]:
+        if section == "updates":
+            response = await self._get(BASE_URL + "/", http)
+            soup = BeautifulSoup(response.text, "lxml")
+            cards = soup.select("div.ep_slider div.movie_item")
+            if not cards:
+                cards = soup.select("div.su-updates-grid a.su-card")
+            update_results = [
+                parsed
+                for card in cards[:15]
+                if (parsed := _parse_card(card, self.id)) is not None
+            ]
+            return update_results, False
         if section != "page":
             raise ProviderError("not_found", f"unknown section: {section}")
         if page <= 1:
@@ -530,21 +540,28 @@ class SimpsonsUATvProvider(BaseProvider):
             _EXTERNAL_ID_RE.fullmatch(s) for s in check_segments
         ):
             raise ProviderError("not_found", f"bad content_id: {content_id!r}")
-        try:
-            response = await http.get(content_id, headers={"Referer": BASE_URL + "/"})
-        except httpx.HTTPError as error:
-            raise ProviderError("unreachable", str(error)) from error
-        if response.status_code != 200:
-            raise ProviderError("not_found", f"status {response.status_code}")
+        response = await self._get(content_id, http)
         soup = BeautifulSoup(response.text, "lxml")
-        iframe = soup.select_one("iframe")
-        if iframe is None:
+        iframes = soup.find_all("iframe")
+        if not iframes:
             raise ProviderError("parse_failed", "no iframe on content page")
-        src = iframe.get("src")
-        if not isinstance(src, str) or not src:
-            raise ProviderError("parse_failed", "no iframe src on content page")
-        player_url = src if src.startswith("http") else f"https:{src}"
-        return await self._fetch_m3u8(player_url, http)
+        ordered_iframes = sorted(
+            iframes,
+            key=lambda iframe: "ashdi.vip" not in str(iframe.get("src") or ""),
+        )
+        last_error: ProviderError | None = None
+        for iframe in ordered_iframes:
+            src = iframe.get("src")
+            if not isinstance(src, str) or not src:
+                continue
+            player_url = src if src.startswith("http") else f"https:{src}"
+            try:
+                return await self._fetch_m3u8(player_url, http)
+            except ProviderError as error:
+                last_error = error
+        if last_error is not None:
+            raise last_error
+        raise ProviderError("parse_failed", "no iframe src on content page")
 
     async def _fetch_m3u8(
         self, player_url: str, http: httpx.AsyncClient

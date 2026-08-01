@@ -46,6 +46,7 @@ def test_simpsonsuatv_provider_metadata():
     assert "series" in p.types
     ids = [s.id for s in p.sections]
     assert "page" in ids
+    assert "updates" in ids
 
 
 # ---------------------------------------------------------------------------
@@ -85,8 +86,8 @@ async def test_search_uses_titlemap_for_known_shows():
 
 
 @pytest.mark.asyncio
-async def test_search_5xx_raises_upstream_unreachable():
-    """A 5xx search response must surface as `upstream_unreachable`."""
+async def test_search_5xx_raises_not_found():
+    """A non-200 search response follows the provider `not_found` convention."""
     from cs_uk_api.providers.base import ProviderError
 
     with respx.mock(assert_all_called=True) as router:
@@ -94,7 +95,7 @@ async def test_search_5xx_raises_upstream_unreachable():
         async with httpx.AsyncClient() as http:
             with pytest.raises(ProviderError) as exc:
                 await SimpsonsUATvProvider().search("anything", http)
-    assert exc.value.code == "upstream_unreachable"
+    assert exc.value.code == "not_found"
 
 
 @pytest.mark.asyncio
@@ -115,6 +116,36 @@ async def test_search_connection_error_raises_unreachable():
 # ---------------------------------------------------------------------------
 # browse()
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_browse_updates_returns_home_carousel_cards():
+    """The updates section exposes at most 15 home-page carousel cards."""
+    home_html = _fixture("home.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://simpsonsua.tv/").respond(200, text=home_html)
+        async with httpx.AsyncClient() as http:
+            results, has_next = await SimpsonsUATvProvider().browse(
+                "updates", 1, http
+            )
+    assert 1 <= len(results) <= 15
+    assert all(result.provider == "simpsonsuatv" for result in results)
+    assert has_next is False
+
+
+@pytest.mark.asyncio
+async def test_browse_updates_returns_empty_without_carousel():
+    """A home page without ep_slider returns an empty updates section."""
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://simpsonsua.tv/").respond(
+            200, text="<html><body><div class='movie_item'></div></body></html>"
+        )
+        async with httpx.AsyncClient() as http:
+            results, has_next = await SimpsonsUATvProvider().browse(
+                "updates", 1, http
+            )
+    assert results == []
+    assert has_next is False
 
 
 @pytest.mark.asyncio
@@ -241,6 +272,42 @@ async def test_content_non_200_raises_not_found():
 # ---------------------------------------------------------------------------
 # stream()
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stream_rejects_redirect_to_untrusted_host():
+    """Episode redirects cannot bypass the SimpsonsUA host allowlist."""
+    from cs_uk_api.providers.base import ProviderError
+
+    episode_url = "https://simpsonsua.tv/s37/4441-37-sezon-17-seriya.html"
+    with respx.mock(assert_all_called=True) as router:
+        router.get(episode_url).respond(
+            302, headers={"Location": "https://evil.com/episode"}
+        )
+        async with httpx.AsyncClient(follow_redirects=True) as http:
+            with pytest.raises(ProviderError) as exc:
+                await SimpsonsUATvProvider().stream(episode_url, None, http)
+    assert exc.value.code == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_stream_prefers_ashdi_iframe_among_multiple_players():
+    """When multiple dubs exist, the ashdi player is tried first."""
+    episode_url = "https://simpsonsua.tv/s37/4441-37-sezon-17-seriya.html"
+    content_html = """
+        <html><body>
+          <iframe data-player="fake" src="https://fake.example/player"></iframe>
+          <iframe data-player="ashdi" src="//ashdi.vip/vod/267925"></iframe>
+        </body></html>
+    """
+    player_html = _fixture("player.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(episode_url).respond(200, text=content_html)
+        router.get("https://ashdi.vip/vod/267925").respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            stream = await SimpsonsUATvProvider().stream(episode_url, None, http)
+    assert stream.url.startswith("https://ashdi.vip/")
+    assert stream.url.endswith(".m3u8")
 
 
 @pytest.mark.asyncio
