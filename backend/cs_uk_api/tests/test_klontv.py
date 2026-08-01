@@ -222,3 +222,66 @@ async def test_klontv_browse_unknown_section_raises():
     with respx.mock(assert_all_called=False):
         with pytest.raises(ProviderError):
             await KlonTVProvider().browse("nonexistent", 1, httpx.AsyncClient())
+
+
+@pytest.mark.asyncio
+async def test_klontv_strip_query_param_drops_multivoice_safely():
+    """Regression: `?multivoice.replace("?multivoice", "")` mangled the
+    boundary cases. A naive str.replace loses the leading `?` when
+    other params follow (e.g. `?multivoice&foo=bar` -> `foo=bar`) and
+    leaves dangling `=1` when the param has a value
+    (e.g. `?multivoice=1` -> `=1`). The new helper must produce
+    URL-safe output for all three shapes."""
+    from cs_uk_api.providers.klontv import _strip_query_param
+
+    # Bare `?multivoice` — the trailing `?` collapses cleanly.
+    assert _strip_query_param(
+        "https://ashdi.vip/serial/6212?multivoice", "multivoice"
+    ) == "https://ashdi.vip/serial/6212"
+    # `?multivoice&foo=bar` — keep `?foo=bar`, do NOT lose the `?`.
+    assert _strip_query_param(
+        "https://ashdi.vip/serial/6212?multivoice&foo=bar", "multivoice"
+    ) == "https://ashdi.vip/serial/6212?foo=bar"
+    # `?multivoice=1` — empty query, no dangling `=1`.
+    assert _strip_query_param(
+        "https://ashdi.vip/serial/6212?multivoice=1", "multivoice"
+    ) == "https://ashdi.vip/serial/6212"
+    # Other params stay put when the target param is absent.
+    assert _strip_query_param(
+        "https://ashdi.vip/serial/6212?foo=bar", "multivoice"
+    ) == "https://ashdi.vip/serial/6212?foo=bar"
+
+
+@pytest.mark.asyncio
+async def test_klontv_content_bad_slug_raises():
+    """Regression (HIGH #2, code-reviewer): the provider string-
+    interpolated the slug into a URL without re-validating it. An
+    external_id like `films/../admin` would produce
+    `https://klon.fun/filmy/../admin.html` — a path-traversal escape.
+
+    The slug regex `\\d+-[a-z0-9-]+` must be enforced at the provider
+    boundary so malformed inputs surface as `not_found` BEFORE any
+    HTTP request is made."""
+    from cs_uk_api.providers.base import ProviderError
+
+    with respx.mock(assert_all_called=False):
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await KlonTVProvider().content("films/../admin", http)
+    assert exc_info.value.code == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_klontv_stream_bad_slug_raises():
+    """Same regression as `content`: the `stream()` partition path
+    builds `content_url` from the same unvalidated slug. An invalid
+    slug must raise `not_found` before any HTTP request is made."""
+    from cs_uk_api.providers.base import ProviderError
+
+    with respx.mock(assert_all_called=False):
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await KlonTVProvider().stream(
+                    "films/../admin:__movie__", None, http
+                )
+    assert exc_info.value.code == "not_found"

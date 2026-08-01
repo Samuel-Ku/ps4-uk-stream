@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, cast
-from urllib.parse import quote, urljoin
+from urllib.parse import parse_qsl, quote, urlsplit, urlunsplit, urljoin
 
 import httpx
 from bs4 import BeautifulSoup, Tag
@@ -79,6 +79,29 @@ def _external_id_from_url(href: str) -> str | None:
         return None
     section = "series" if m.group(1) == "serialy" else "films"
     return f"{section}/{m.group(2)}"
+
+
+_SLUG_RE = re.compile(r"\d+-[a-z0-9-]+")
+
+
+def _strip_query_param(url: str, name: str) -> str:
+    """Drop a single query parameter safely, preserving all others.
+
+    Unlike `str.replace`, this handles the boundary cases:
+    - `?multivoice&foo=bar` becomes `?foo=bar` (not `foo=bar`).
+    - `?multivoice=1` becomes `` (empty query, not `=1`).
+    - A bare `?multivoice` (no other params) collapses the trailing `?`.
+    """
+    parts = urlsplit(url)
+    if not parts.query:
+        return url
+    pairs = [
+        (k, v)
+        for k, v in parse_qsl(parts.query, keep_blank_values=True)
+        if k != name
+    ]
+    rebuilt = "&".join(f"{k}={v}" if v else k for k, v in pairs)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, rebuilt, parts.fragment))
 
 
 def _type_from_url(href: str) -> str:
@@ -225,6 +248,8 @@ class KlonTVProvider(BaseProvider):
         kind, _, slug = external_id.partition("/")
         if not kind or not slug:
             raise ProviderError("parse_failed", f"invalid external_id: {external_id!r}")
+        if not _SLUG_RE.fullmatch(slug):
+            raise ProviderError("not_found", f"bad external_id: {external_id!r}")
         path = "filmy" if kind == "films" else "serialy"
         url = f"{BASE_URL}/{path}/{slug}.html"
         try:
@@ -320,7 +345,7 @@ class KlonTVProvider(BaseProvider):
         """
         try:
             resp = await http.get(
-                player_url.replace("?multivoice", ""),
+                _strip_query_param(player_url, "multivoice"),
                 headers={"Referer": BASE_URL + "/"},
             )
         except httpx.HTTPError:
@@ -372,6 +397,8 @@ class KlonTVProvider(BaseProvider):
         kind, _, slug = ext_id.partition("/")
         if not kind or not slug:
             raise ProviderError("parse_failed", f"invalid content_id: {content_id!r}")
+        if not _SLUG_RE.fullmatch(slug):
+            raise ProviderError("not_found", f"bad external_id: {ext_id!r}")
         path = "filmy" if kind == "films" else "serialy"
         content_url = f"{BASE_URL}/{path}/{slug}.html"
         try:
@@ -394,7 +421,7 @@ class KlonTVProvider(BaseProvider):
         # header the upstream Kotlin uses.
         try:
             player_resp = await http.get(
-                player_url.replace("?multivoice", ""),
+                _strip_query_param(player_url, "multivoice"),
                 headers={"Referer": BASE_URL + "/"},
             )
         except httpx.HTTPError as e:

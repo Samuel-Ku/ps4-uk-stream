@@ -61,6 +61,9 @@ def _external_id_from_url(href: str) -> str:
     return f"{m.group(1)}-{m.group(2)}"
 
 
+_SLUG_RE = re.compile(r"\d+-[a-z0-9-]+")
+
+
 def _type_from_url(href: str) -> str:
     """Map the URL's path segment to a MediaType."""
     lower = href.lower()
@@ -177,6 +180,10 @@ class UFDubProvider(BaseProvider):
         self, external_id: str, http: httpx.AsyncClient
     ) -> ContentResponse:
         kind, _, slug = external_id.partition("-")
+        if not kind or not slug:
+            raise ProviderError("parse_failed", f"invalid external_id: {external_id!r}")
+        if not _SLUG_RE.fullmatch(slug):
+            raise ProviderError("not_found", f"bad external_id: {external_id!r}")
         url = f"{BASE_URL}/{kind}/{external_id[len(kind) + 1:]}.html"
         try:
             resp = await http.get(url)
@@ -246,6 +253,10 @@ class UFDubProvider(BaseProvider):
         # media URL lives in that page's `var a = [['Серія 1','mp4', url]]`
         # array. Follow both hops (HTML + regex only, spec ground rule #4).
         kind, _, slug = content_id.partition("-")
+        if not kind or not slug:
+            raise ProviderError("parse_failed", f"invalid content_id: {content_id!r}")
+        if not _SLUG_RE.fullmatch(slug):
+            raise ProviderError("not_found", f"bad external_id: {content_id!r}")
         content_url = f"{BASE_URL}/{kind}/{content_id[len(kind) + 1:]}.html"
         try:
             resp = await http.get(
