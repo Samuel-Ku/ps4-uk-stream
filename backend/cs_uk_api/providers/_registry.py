@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from . import register
+from .animeua import AnimeUAProvider
 from .bambooua import BambooUAProvider
 from .cikavaideya import CikavaIdeyaProvider
 from .hentaiukr import HentaiUkrProvider
@@ -20,6 +21,7 @@ def bootstrap() -> None:
     register(HentaiUkrProvider())
     register(BambooUAProvider())
     register(KinoVezhaProvider())
+    register(AnimeUAProvider())
 
 
 bootstrap()
