@@ -30,7 +30,7 @@ once they pass the live gate (search → content → stream → plays in mpv).
 | banderakino | [BanderakinoProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/BanderakinoProvider) | `BanderakinoProvider.kt` (14.2 KB) | HTML | TBD | TBD | TBD |
 | bambooua | [BambooUAProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/BambooUAProvider) | `BambooUAProvider.kt` (8.9 KB), `JSONModel.kt` | HTML + JSON | TBD | mild | TBD |
 | coaninet | [CoaninetProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/CoaninetProvider) | `CoaninetProvider.kt` (12.3 KB) | JSON API | pre-resolved HLS master | none | **ready** |
-| klontv | [KlonTVProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/KlonTVProvider) | `KlonTVProvider.kt` (10.0 KB), `Tracker.kt` | HTML | TBD | TBD | TBD |
+| klontv | [KlonTVProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/KlonTVProvider) | `KlonTVProvider.kt` (10.0 KB), `Tracker.kt` | HTML | iframe → regex | mild | **ready** |
 | uaserialspro | [UASerialsProProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UASerialsProProvider) | `UASerialsProProvider.kt` (20.5 KB) | HTML | TBD | TBD | TBD |
 | eneyida | [EneyidaProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/EneyidaProvider) | `EneyidaProvider.kt` (20.6 KB) | HTML | TBD | TBD | TBD |
 | anitubeinua | [AnitubeinuaProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/AnitubeinuaProvider) | `AnitubeinuaProvider.kt` (23.4 KB) | HTML | TBD | TBD | TBD |
@@ -59,7 +59,8 @@ Group 1 (simple, HTML-based, `<15 KB`):
 
 Group 2 (medium, 10–25 KB):
 
-1. `klontv`, `serialno`, `banderakino`, `doramyworld`
+1. `klontv` — landed in `backend/cs_uk_api/providers/klontv.py` (10 tests, ready; DLE + ashdi.vip iframe chain)
+2. `serialno`, `banderakino`, `doramyworld`
 
 Group 3 (heavy, needs deeper triage):
 
