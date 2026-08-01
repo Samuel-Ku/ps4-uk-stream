@@ -39,7 +39,7 @@ import json
 import logging
 import re
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote_plus
 
 import httpx
@@ -469,7 +469,7 @@ class AnimeONProvider(BaseProvider):
         specials for this show). 5xx propagates so the caller surfaces
         ``upstream_unreachable``."""
         try:
-            return await self._get_json(f"{base}&skip=-1", http)
+            return cast(dict[str, Any], await self._get_json(f"{base}&skip=-1", http))
         except ProviderError as e:
             if e.code in {"unreachable", "upstream_unreachable"}:
                 raise

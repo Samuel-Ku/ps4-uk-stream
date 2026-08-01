@@ -234,7 +234,7 @@ class UakinoProvider(BaseProvider):
         kind = extracted.type if extracted else ("m3u8" if src.endswith(".m3u8") else "hls")
         return StreamResponse(
             url=url,
-            type=kind,  # type: ignore[arg-type]
+            type=kind,
             headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/0.1"},
         )
 
