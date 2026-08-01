@@ -166,3 +166,28 @@ async def test_animeua_series_with_dead_player_keeps_default_translation():
     assert content.translations_level == "content"
     assert content.translations == [Translation(id="uk", label="Українська")]
     assert content.seasons is None
+
+
+@pytest.mark.asyncio
+async def test_animeua_content_bad_external_id_raises_not_found():
+    r"""Regression: `content()` must reject external_ids that do not
+    match the `\d+-[a-z0-9-]+` slug regex before interpolating into
+    the URL — otherwise a caller-supplied `../../etc/passwd` would
+    escape the upstream URL path."""
+    with respx.mock(assert_all_called=False):
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await AnimeUAProvider().content("../../etc/passwd", http)
+    assert exc.value.code == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_animeua_stream_bad_content_id_raises_not_found():
+    """Regression: `stream()` strips any `s<N>e<M>` suffix and
+    rebuilds the content URL from the embedded external_id; reject
+    payload that escapes the slug charset before the first HTTP call."""
+    with respx.mock(assert_all_called=False):
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await AnimeUAProvider().stream("../../etc/passwd", None, http)
+    assert exc.value.code == "not_found"

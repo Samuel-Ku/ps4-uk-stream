@@ -7,6 +7,7 @@ import httpx
 import pytest
 import respx
 
+from cs_uk_api.providers.base import ProviderError
 from cs_uk_api.providers.kinotron import KinoTronProvider
 
 FIX = pathlib.Path(__file__).parent / "fixtures" / "kinotron"
@@ -149,3 +150,27 @@ async def test_kinotron_stream_selects_requested_episode():
 def test_kinotron_type_classification_checks_mixed_prefixes():
     html = '<div class="fsubtitle">Мультсеріал</div>'
     assert KinoTronProvider._type_from_subtitle(html) == "cartoon"
+
+
+@pytest.mark.asyncio
+async def test_kinotron_content_bad_external_id_raises_not_found():
+    r"""Regression: `content()` must reject external_ids that do not
+    match the `\d+-[a-z0-9-]+` slug regex — otherwise a caller-supplied
+    `../../etc/passwd` would escape the upstream URL path."""
+    with respx.mock(assert_all_called=False):
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await KinoTronProvider().content("../../etc/passwd", http)
+    assert exc.value.code == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_kinotron_stream_bad_content_id_raises_not_found():
+    """Regression: `stream()` splits `content_id` on `:` and rebuilds
+    the content URL from the embedded external_id; reject payload that
+    escapes the slug charset before the first HTTP call."""
+    with respx.mock(assert_all_called=False):
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await KinoTronProvider().stream("../../etc/passwd", None, http)
+    assert exc.value.code == "not_found"

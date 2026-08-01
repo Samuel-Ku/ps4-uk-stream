@@ -43,6 +43,11 @@ ANIMEUA_SECTIONS: tuple[Section, ...] = (
 # JSON array of dubs (series) or a direct m3u8 URL (films).
 _FILE_RE = re.compile(r"file\s*:\s*'([^']+)'")
 
+# external_id is a numeric-prefixed slug (e.g. "7952-dandadan"). Gate
+# content()/stream()/episode_translations() against values that could
+# escape the URL path before interpolation.
+_SLUG_RE = re.compile(r"\d+-[a-z0-9][a-z0-9-]*")
+
 # season title -> episode title -> [(dub name, file url)] in first
 # appearance order. One episode usually appears once per dub.
 _DubsMap = dict[str, dict[str, list[tuple[str, str]]]]
@@ -269,6 +274,8 @@ class AnimeUAProvider(BaseProvider):
         return results, has_next
 
     async def content(self, external_id: str, http: httpx.AsyncClient) -> ContentResponse:
+        if not _SLUG_RE.fullmatch(external_id):
+            raise ProviderError("not_found", "bad external_id")
         response = await self._get(f"{BASE_URL}/{external_id}.html", http)
         soup = BeautifulSoup(response.text, "lxml")
         title_el = soup.select_one(".page__subcol-main h1")
@@ -318,6 +325,8 @@ class AnimeUAProvider(BaseProvider):
             external_id, _, ep_suffix = content_id.rpartition(":")
         else:
             external_id, ep_suffix = content_id, ""
+        if not _SLUG_RE.fullmatch(external_id):
+            raise ProviderError("not_found", "bad external_id")
         response = await self._get(f"{BASE_URL}/{external_id}.html", http)
         player_url = self._player_url(BeautifulSoup(response.text, "lxml"))
         if not player_url:
@@ -347,6 +356,8 @@ class AnimeUAProvider(BaseProvider):
         if ":" not in content_id:
             return None
         external_id, _, ep_suffix = content_id.rpartition(":")
+        if not _SLUG_RE.fullmatch(external_id):
+            return None
         response = await self._get(f"{BASE_URL}/{external_id}.html", http)
         player_url = self._player_url(BeautifulSoup(response.text, "lxml"))
         if not player_url:

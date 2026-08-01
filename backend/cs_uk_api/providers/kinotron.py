@@ -20,6 +20,11 @@ SECTIONS = (
     Section(id="anime", title="Аніме", type="anime"),
 )
 
+# external_id is a numeric-prefixed slug (e.g. "10496-mesniki-..."). Gate
+# the URL interpolation against path-traversal payloads before hitting the
+# upstream HTTP client.
+_SLUG_RE = re.compile(r"\d+-[a-z0-9][a-z0-9-]*")
+
 
 def _external_id(href: str) -> str:
     match = re.search(r"/(\d+-[a-z0-9-]+?)(?:\.html)?/?$", href, re.I)
@@ -136,6 +141,8 @@ class KinoTronProvider(BaseProvider):
         return results, has_next
 
     async def content(self, external_id: str, http: httpx.AsyncClient) -> ContentResponse:
+        if not _SLUG_RE.fullmatch(external_id):
+            raise ProviderError("not_found", "bad external_id")
         response = await self._get(f"{BASE_URL}/{external_id}.html", http)
         soup = BeautifulSoup(response.text, "lxml")
         title_el = soup.select_one(".full h1")
@@ -186,6 +193,8 @@ class KinoTronProvider(BaseProvider):
         parts = content_id.split(":")
         external_id = parts[-2] if len(parts) >= 3 else parts[-1]
         episode_match = re.fullmatch(r"s(\d+)e(\d+)", parts[-1]) if len(parts) >= 3 else None
+        if not _SLUG_RE.fullmatch(external_id):
+            raise ProviderError("not_found", "bad external_id")
         content = await self._get(f"{BASE_URL}/{external_id}.html", http)
         player_url = self._player_url(BeautifulSoup(content.text, "lxml"))
         if not player_url:

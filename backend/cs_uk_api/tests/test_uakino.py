@@ -4,6 +4,7 @@ import httpx
 import pytest
 import respx
 
+from cs_uk_api.providers.base import ProviderError
 from cs_uk_api.providers.uakino import UakinoProvider
 
 FIXTURE = (pathlib.Path(__file__).parent / "fixtures" / "uakino" / "search.html").read_text(
@@ -96,3 +97,28 @@ async def test_uakino_browse_unknown_section_raises():
     with respx.mock(assert_all_called=False):
         with pytest.raises(ProviderError):
             await UakinoProvider().browse("nonexistent", 1, httpx.AsyncClient())
+
+
+@pytest.mark.asyncio
+async def test_uakino_content_bad_external_id_raises_not_found():
+    """Regression: `content()` must reject anything that does not match
+    the `<kind>-<slug>` slug regex before interpolating into the URL —
+    otherwise a caller-supplied `../../etc/passwd` would let httpx
+    fetch from an attacker-controlled path."""
+    with respx.mock(assert_all_called=False):
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await UakinoProvider().content("../../etc/passwd", http)
+    assert exc.value.code == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_uakino_stream_bad_content_id_raises_not_found():
+    """Regression: `stream()` interpolates `content_id` into
+    `/player/{content_id}.html`; reject anything that is not a safe
+    `[a-zA-Z0-9_-]+` episode code."""
+    with respx.mock(assert_all_called=False):
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await UakinoProvider().stream("../../etc/passwd", None, http)
+    assert exc.value.code == "not_found"

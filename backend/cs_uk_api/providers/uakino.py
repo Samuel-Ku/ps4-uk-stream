@@ -33,6 +33,16 @@ UAKINO_SECTIONS: tuple[Section, ...] = (
 # Pagination: how many cards per listing page. Uakino's default block is 12.
 _PAGE_SIZE = 12
 
+# external_id is "<kind>-<slug>" (e.g. "film-dune-2021"). We gate both
+# content() and stream() against anything that escapes the slug charset
+# so a caller-supplied value cannot inject "../" into the URL path.
+_SLUG_RE = re.compile(r"(film|serial)-[a-z0-9][a-z0-9-]*")
+# stream()'s content_id comes straight off the Episode.id field. Captured
+# ids look like "s1e1"; permit `[a-zA-Z0-9_-]+` only so a path-traversal
+# payload (`../../etc/passwd`) is rejected before being interpolated
+# into `/player/{content_id}.html`.
+_STREAM_ID_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_-]*")
+
 
 def _external_id_from_url(href: str) -> str:
     m = re.search(r"/(film|serial)/([\w-]+)", href)
@@ -154,6 +164,8 @@ class UakinoProvider(BaseProvider):
     async def content(
         self, external_id: str, http: httpx.AsyncClient
     ) -> ContentResponse:
+        if not _SLUG_RE.fullmatch(external_id):
+            raise ProviderError("not_found", "bad external_id")
         kind, _, slug = external_id.partition("-")
         # external_id looks like "film-dune-2021" or "serial-breaking-bad-s01"
         # Strip the leading kind so the rest of the slug matches the URL path.
@@ -211,6 +223,8 @@ class UakinoProvider(BaseProvider):
     async def stream(
         self, content_id: str, translation: str | None, http: httpx.AsyncClient
     ) -> StreamResponse:
+        if not _STREAM_ID_RE.fullmatch(content_id):
+            raise ProviderError("not_found", "bad external_id")
         player_url = f"{BASE_URL}/player/{content_id}.html"
         try:
             resp = await http.get(player_url, headers={"Referer": f"{BASE_URL}/"})

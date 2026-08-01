@@ -94,6 +94,11 @@ _FILE_RE = re.compile(r"""file\s*:\s*["']([^"']+)["']""")
 # rather than a season/episode map).
 MOVIE_SUFFIX = ":__movie__"
 
+# external_id is a numeric-prefixed slug (e.g. "2831-enn-droyid"). Gate
+# both content() and stream() against values that could escape the URL
+# path before interpolation.
+_SLUG_RE = re.compile(r"\d+-[a-z0-9][a-z0-9-]*")
+
 
 def _classify_from_tags(tags_text: str) -> str:
     """Map the Жанр list text to a MediaType. Mirrors the upstream
@@ -266,6 +271,8 @@ class KinoVezhaProvider(BaseProvider):
     async def content(
         self, external_id: str, http: httpx.AsyncClient
     ) -> ContentResponse:
+        if not _SLUG_RE.fullmatch(external_id):
+            raise ProviderError("not_found", "bad external_id")
         url = f"{BASE_URL}/{external_id}.html"
         try:
             resp = await http.get(url)
@@ -385,6 +392,8 @@ class KinoVezhaProvider(BaseProvider):
         else:
             ext_id = content_id
             ep_suffix = ""
+        if not _SLUG_RE.fullmatch(ext_id):
+            raise ProviderError("not_found", "bad external_id")
         content_url = f"{BASE_URL}/{ext_id}.html"
         try:
             resp = await http.get(content_url)
