@@ -4,8 +4,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-MediaType = Literal["movie", "series"]
+MediaType = Literal["movie", "series", "anime", "cartoon", "dorama"]
 StreamType = Literal["mp4", "m3u8", "hls", "dash"]
+TranslationLevel = Literal["content", "episode"]
 
 
 class SearchResult(BaseModel):
@@ -32,6 +33,9 @@ class Episode(BaseModel):
     number: int
     id: str
     title: str
+    # Per-episode translations (v2 spec). When None, fall back to the
+    # content-level translations from the parent ContentResponse.
+    translations: list[Translation] | None = None
 
 
 class Season(BaseModel):
@@ -48,6 +52,9 @@ class ContentResponse(BaseModel):
     poster: str | None = None
     translations: list[Translation] = Field(min_length=1)
     seasons: list[Season] | None = None
+    # Where dub/sub choices live: "content" (whole series, default) or
+    # "episode" (each episode carries its own list).
+    translation_level: TranslationLevel = "content"
 
 
 class StreamResponse(BaseModel):

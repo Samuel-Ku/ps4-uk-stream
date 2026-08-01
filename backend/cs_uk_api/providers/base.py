@@ -55,3 +55,15 @@ class BaseProvider(abc.ABC):
         declare `sections` must override this.
         """
         raise NotImplementedError(f"{self.id} does not support browse")
+
+    async def episode_translations(
+        self, content_id: str, http: httpx.AsyncClient
+    ) -> list[str] | None:
+        """Return allowed translation ids for an episode, or None.
+
+        Providers that support per-episode translations (translation_level
+        == "episode") override this. Returning None means "not applicable"
+        — the caller falls back to content-level translations. Returning a
+        list (possibly empty) means the caller should validate against it.
+        """
+        return None

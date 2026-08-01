@@ -23,6 +23,7 @@ from .models import (
 )
 from .poster_proxy import fetch as fetch_poster
 from .providers import PROVIDERS  # noqa: F401  (import for side effects)
+from .providers.base import ProviderError
 import cs_uk_api.providers._registry  # noqa: F401
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -160,9 +161,31 @@ async def stream(content_id: str, translation: str | None = None) -> StreamRespo
     provider_id, _, rest = content_id.partition(":")
     if provider_id not in PROVIDERS or not rest:
         raise HTTPException(404, detail=ErrorResponse(error="not_found", message=content_id).model_dump())
+    provider = PROVIDERS[provider_id]
     http = get_client()
+    # Episode-level translation validation (issue #9): if the provider
+    # reports a known per-episode translation list, reject unknown values
+    # before we even hit the network for the stream URL.
+    if translation is not None:
+        try:
+            allowed = await provider.episode_translations(rest, http)
+        except Exception:
+            allowed = None
+        if allowed is not None and translation not in allowed:
+            raise HTTPException(
+                400,
+                detail=ErrorResponse(
+                    error="invalid_translation",
+                    message=f"{translation} not in {allowed}",
+                ).model_dump(),
+            )
     try:
-        return await PROVIDERS[provider_id].stream(rest, translation, http)
+        return await provider.stream(rest, translation, http)
+    except ProviderError as e:
+        if e.code == "invalid_translation":
+            raise HTTPException(400, detail=ErrorResponse(error=e.code, message=e.message).model_dump()) from e
+        log.warning("stream failed id=%s err=%s", content_id, e)
+        raise HTTPException(502, detail=ErrorResponse(error="upstream_unreachable", message=str(e)).model_dump()) from e
     except Exception as e:
         log.warning("stream failed id=%s err=%s", content_id, e)
         raise HTTPException(502, detail=ErrorResponse(error="upstream_unreachable", message=str(e)).model_dump()) from e
