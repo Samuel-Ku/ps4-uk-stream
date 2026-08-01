@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from . import register
 from .animeua import AnimeUAProvider
+from .anitubeinua import AnitubeinuaProvider
 from .bambooua import BambooUAProvider
 from .cikavaideya import CikavaIdeyaProvider
 from .coaninet import CoaninetProvider
@@ -35,6 +36,7 @@ def bootstrap() -> None:
     register(SerialnoProvider())
     register(DoramyWorldProvider())
     register(UASerialsProProvider())
+    register(AnitubeinuaProvider())
 
 
 bootstrap()
