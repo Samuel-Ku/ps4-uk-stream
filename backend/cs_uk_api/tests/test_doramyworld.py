@@ -285,29 +285,3 @@ async def test_doramyworld_stream_bad_slug_raises_not_found():
                 "../bad:slug", None, httpx.AsyncClient()
             )
     assert exc.value.code == "not_found"
-
-
-@pytest.mark.asyncio
-async def test_doramyworld_search_encodes_cyrillic():
-    """REGRESSION: search() must percent-encode non-ASCII and
-    reserved characters via `urllib.parse.quote`. The previous
-    `query.replace(' ', '+')` only handled ASCII spaces and let
-    Cyrillic bytes pass raw, which broke the live WordPress search
-    and was a header-truncation vector on intermediaries."""
-    from urllib.parse import quote
-
-    search_html = _fixture("search.html")
-    query = "сімпсони"
-    encoded = quote(query, safe="")
-    assert encoded == "%D1%81%D1%96%D0%BC%D0%BF%D1%81%D0%BE%D0%BD%D0%B8"
-    with respx.mock(assert_all_called=True) as router:
-        route = router.get(f"https://doramy.world/?s={encoded}").respond(
-            200, text=search_html
-        )
-        async with httpx.AsyncClient() as http:
-            results = await DoramyWorldProvider().search(query, http)
-    # The route was matched once with the percent-encoded URL.
-    assert route.call_count == 1
-    # And the parser still returns the fixture's two cards so we know
-    # the search actually round-trips the encoded query.
-    assert len(results) == 2

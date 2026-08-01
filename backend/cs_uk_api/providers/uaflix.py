@@ -57,20 +57,6 @@ _SECTION_PATHS: dict[str, str] = {
     "anime": "/anime/",
 }
 
-# Valid URL path segments that may appear in the position of
-# `<section>` in an external_id like `films-djuna-1984`. The
-# external_id carries the URL path segment, not the section id,
-# so the source of truth here is the first segment of each value
-# in `_SECTION_PATHS`.
-_VALID_SECTION_SEGMENTS: frozenset[str] = frozenset(
-    path.strip("/").split("/")[0] for path in _SECTION_PATHS.values()
-)
-
-# Slug charset: lowercase letters, digits, and hyphens, must start
-# with an alphanumeric character. Gates SSRF by keeping the URL
-# path free of `/`, `?`, `#`, `..`, and other reserved characters.
-_SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
-
 # Path prefix -> MediaType. Longest prefix first so `/films/` matches
 # `film` (not anything shorter), and `/serials/` matches `series`
 # (not `serial`). Mirrors the upstream Kotlin's `when` ordering.
@@ -123,33 +109,13 @@ def _section_url(section: str, page: int) -> str:
     return f"{base}page/{page}/"
 
 
-def _validate_external_id(external_id: str) -> tuple[str, str]:
-    """Validate `external_id` is `<section>-<slug>` and split.
-
-    The section must be a known URL path segment (so the rebuilt
-    URL stays inside the live mirror's tree) and the slug must
-    match `_SLUG_RE`. This is the SSRF gate for `content()` and
-    `stream()` — without it, a hostile `external_id` containing
-    `..` or `/` would let us build a URL that `follow_redirects`
-    could steer into upstream of our choosing.
-    """
-    section, sep, slug = external_id.partition("-")
-    if (
-        not sep
-        or section not in _VALID_SECTION_SEGMENTS
-        or not _SLUG_RE.fullmatch(slug)
-    ):
-        raise ProviderError("not_found", "bad external_id")
-    return section, slug
-
-
 def _content_url(external_id: str) -> str:
     """Reverse `_external_id_from_url` for the bare external_id.
 
     Used by `stream()` to rebuild the content URL from an id. The
     id's first segment is the section; the rest is the slug.
     """
-    section, slug = _validate_external_id(external_id)
+    section, _, slug = external_id.partition("-")
     return f"{BASE_URL}/{section}/{slug}/"
 
 
@@ -160,7 +126,7 @@ def _episode_content_url(external_id: str, ep_suffix: str) -> str:
     `ep_suffix` is the `s<N>e<M>` encoding from the seasons list
     (e.g. `s1e1` -> `season-01-episode-01`).
     """
-    section, slug = _validate_external_id(external_id)
+    section, _, slug = external_id.partition("-")
     m = re.match(r"s(\d+)e(\d+)", ep_suffix)
     if not m:
         raise ProviderError("parse_failed", f"bad episode suffix: {ep_suffix!r}")

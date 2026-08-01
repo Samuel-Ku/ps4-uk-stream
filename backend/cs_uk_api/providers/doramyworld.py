@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import re
 from html import unescape
-from urllib.parse import quote, urljoin
+from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup, Tag
@@ -251,11 +251,10 @@ class DoramyWorldProvider(BaseProvider):
     sections = DORAMYWORLD_SECTIONS
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
-        # WordPress search uses `?s=...`; percent-encode the query so
-        # Cyrillic and reserved characters (`#`, `?`, `&`, `+`, `/`,
-        # `=` etc.) cannot bleed into the URL and steer the request
-        # out of the search path. `safe=""` keeps nothing reserved.
-        url = f"{BASE_URL}/?s={quote(query, safe='')}"
+        # WordPress search uses `?s=...` with spaces encoded as `+`. We
+        # hand-roll the URL instead of `quote()` to match the upstream
+        # Kotlin `query.replace(" ", "+")` exactly.
+        url = f"{BASE_URL}/?s={query.replace(' ', '+')}"
         try:
             resp = await http.get(url)
         except httpx.HTTPError as e:
