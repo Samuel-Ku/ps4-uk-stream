@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from . import register
+from .animeon import AnimeONProvider
 from .animeua import AnimeUAProvider
 from .anitubeinua import AnitubeinuaProvider
 from .bambooua import BambooUAProvider
@@ -39,6 +40,7 @@ def bootstrap() -> None:
     register(UASerialsProProvider())
     register(AnitubeinuaProvider())
     register(SimpsonsUATvProvider())
+    register(AnimeONProvider())
 
 
 bootstrap()
