@@ -8,6 +8,11 @@ See `docs/superpowers/specs/2026-08-01-ps4-uk-stream-design.md` for design,
 and `docs/superpowers/plans/2026-08-01-ps4-uk-stream-impl.md` for the
 implementation plan.
 
+## Network addresses (home LAN)
+
+- Backend host `openclaw-home`: `http://192.168.2.223:8000` (LAN IP, `enp1s0`).
+- PS4 FTP (GoldHEN): `192.168.2.105:2121` (for PKG install / payload transfer).
+
 ## Quick start
 
 1. Run the backend on a Linux host in the same LAN as the PS4:
