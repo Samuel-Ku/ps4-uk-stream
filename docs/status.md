@@ -6,20 +6,33 @@ followed the plan at
 
 ## Delivered
 
-### Backend (FastAPI, Python) -- 16/16 tests passing
+### Backend (FastAPI, Python) -- 167 tests passing
 
 - `backend/cs_uk_api/` -- complete package.
-- Endpoints: `GET /api/search`, `GET /api/content/{id}`, `GET /api/stream/{id}`,
+- v1 endpoints: `GET /api/search`, `GET /api/content/{id}`, `GET /api/stream/{id}`,
   `GET /api/poster`, `GET /api/providers`, plus global logging middleware and
   error handler.
+- v2 endpoints (added for issue #17): `GET /api/sections`, `GET /api/browse`.
 - Pydantic models match the API contract in
   [`superpowers/specs/2026-08-01-ps4-uk-stream-design.md`](superpowers/specs/2026-08-01-ps4-uk-stream-design.md).
+  Includes `TranslationLevel` ("content" | "episode") for per-episode dub
+  selection (issue #9).
 - TTL cache (5m search / 30m content / 1h posters) with 12s total budget
   for `/api/search` across all providers.
-- Uakino provider: search, content (movie + series), stream -- all driven
-  by frozen HTML fixtures and `respx` mocks; no network in tests.
-- Live smoke test confirmed `/api/providers` returns the Uakino entry
-  and the validation/404 paths behave correctly.
+- Shared extractors layer (`providers/extractors.py`) for the
+  iframe / PlayerJson / regex pipeline used by v2 stream resolution.
+- **9 providers landed** in `backend/cs_uk_api/providers/` (issue #17,
+  v2 scope of 20):
+  - `uakino` (reference impl), `ufdub`, `unimay`, `kinotron`, `cikavaideya`,
+    `hentaiukr`, `bambooua`, `kinovezha`, `animeua`
+  - Each has its own `test_<id>.py` with 9–15 tests using `respx`-mocked
+    fixtures. 11 v2 providers still to land; see
+    [`docs/provider-triage.md`](provider-triage.md).
+- Live gate tooling (`backend/scripts/live_gate.py`) drives
+  search → content → stream → mpv playback against the real site for
+  smoke-testing.
+- Live smoke test confirmed `/api/providers` returns all registered
+  providers and the validation/404 paths behave correctly.
 
 Run the backend:
 
@@ -118,19 +131,21 @@ should be done on a host that has both.
 
 ## Adding more providers
 
-The plan calls for 17+ providers (UAFlix, AnimeUA, KinoVezha, etc.).
-The Uakino provider is the reference implementation. To add a new
-provider:
+The v2 plan calls for 20 providers (issue #17). 9 are landed; 11
+remain. The Uakino provider is the reference implementation. To add a
+new provider:
 
 1. Create `backend/cs_uk_api/providers/<id>.py` implementing `BaseProvider`
-   (`id`, `name`, `types`, `search`, `content`, `stream`).
+   (`id`, `name`, `types`, `search`, `content`, `stream`, optionally
+   `browse` and `episode_translations`).
 2. Add fixtures in `backend/cs_uk_api/tests/fixtures/<id>/` and a
-   `test_<id>.py` mirroring `test_uakino.py`.
+   `test_<id>.py` mirroring `test_ufdub.py` (the most recent reference).
 3. Register the provider in `backend/cs_uk_api/providers/_registry.py`
    by adding a `register(NewProvider())` line.
-4. Update the spec's provider list in
-   `docs/superpowers/specs/2026-08-01-ps4-uk-stream-design.md` if any
-   scope decisions change.
+4. Update [`docs/provider-triage.md`](provider-triage.md) to flip the
+   row from `TBD` to `ready`.
+5. Smoke-test with `python -m cs_uk_api.scripts.live_gate --provider <id>`
+   to confirm the stream plays in mpv on the live site.
 
 No frontend changes are required for additional providers; the
 `CatalogApi` client only consumes the API contract.
