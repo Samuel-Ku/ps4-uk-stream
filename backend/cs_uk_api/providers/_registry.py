@@ -10,6 +10,7 @@ from .hentaiukr import HentaiUkrProvider
 from .kinotron import KinoTronProvider
 from .kinovezha import KinoVezhaProvider
 from .klontv import KlonTVProvider
+from .serialno import SerialnoProvider
 from .uaflix import UAFlixProvider
 from .uakino import UakinoProvider
 from .ufdub import UFDubProvider
@@ -29,6 +30,7 @@ def bootstrap() -> None:
     register(UAFlixProvider())
     register(EneyidaProvider())
     register(KlonTVProvider())
+    register(SerialnoProvider())
 
 
 bootstrap()
