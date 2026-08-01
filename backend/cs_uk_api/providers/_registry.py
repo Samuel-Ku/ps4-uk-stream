@@ -4,6 +4,7 @@ from . import register
 from .animeua import AnimeUAProvider
 from .bambooua import BambooUAProvider
 from .cikavaideya import CikavaIdeyaProvider
+from .coaninet import CoaninetProvider
 from .hentaiukr import HentaiUkrProvider
 from .kinotron import KinoTronProvider
 from .kinovezha import KinoVezhaProvider
@@ -24,6 +25,7 @@ def bootstrap() -> None:
     register(KinoVezhaProvider())
     register(AnimeUAProvider())
     register(UAFlixProvider())
+    register(CoaninetProvider())
 
 
 bootstrap()
