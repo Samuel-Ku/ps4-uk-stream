@@ -6,6 +6,7 @@ from urllib.parse import quote, urljoin
 import httpx
 from bs4 import BeautifulSoup
 
+from ..extractors import RegexExtractor
 from ..models import (
     ContentResponse,
     Episode,
@@ -217,6 +218,9 @@ class UakinoProvider(BaseProvider):
             raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
             raise ProviderError("not_found", f"status {resp.status_code}")
+        # Uakino embeds an iframe whose src is the actual stream. The
+        # extracted URL is sometimes already a direct .m3u8, sometimes a
+        # landing page that itself contains the media URL via PlayerJS.
         soup = BeautifulSoup(resp.text, "lxml")
         iframe = soup.select_one("iframe")
         if iframe is None or not iframe.get("src"):
@@ -224,10 +228,13 @@ class UakinoProvider(BaseProvider):
         src = str(iframe["src"])
         if src.startswith("/"):
             src = urljoin(BASE_URL, src)
-        kind = "m3u8" if src.endswith(".m3u8") else ("mp4" if src.endswith(".mp4") else "hls")
+        # First try the regex extractor on the player page itself.
+        extracted = RegexExtractor().extract(resp.text)
+        url = extracted.url if extracted and extracted.url else src
+        kind = extracted.type if extracted else ("m3u8" if src.endswith(".m3u8") else "hls")
         return StreamResponse(
-            url=src,
-            type=kind,
+            url=url,
+            type=kind,  # type: ignore[arg-type]
             headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/0.1"},
         )
 
