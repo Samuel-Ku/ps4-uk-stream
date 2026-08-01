@@ -50,6 +50,40 @@ void OnscreenKeyboard::append(char32_t cp) {
     text_ += buf;
 }
 
+void OnscreenKeyboard::appendUtf8(const std::string &utf8) {
+    // Decode the first UTF-8 codepoint and append it. Returns silently
+    // on empty input; on malformed input we fall back to the raw byte
+    // (preserves the old append(label[0]) behaviour as a safety net).
+    if (utf8.empty()) return;
+    const auto *p = reinterpret_cast<const unsigned char *>(utf8.data());
+    char32_t cp = 0;
+    int len = 0;
+    if (p[0] < 0x80) {
+        cp = p[0];
+        len = 1;
+    } else if ((p[0] & 0xE0) == 0xC0) {
+        cp = (static_cast<char32_t>(p[0] & 0x1F) << 6) | (p[1] & 0x3F);
+        len = 2;
+    } else if ((p[0] & 0xF0) == 0xE0) {
+        cp = (static_cast<char32_t>(p[0] & 0x0F) << 12) |
+             (static_cast<char32_t>(p[1] & 0x3F) << 6) |
+             (p[2] & 0x3F);
+        len = 3;
+    } else if ((p[0] & 0xF8) == 0xF0) {
+        cp = (static_cast<char32_t>(p[0] & 0x07) << 18) |
+             (static_cast<char32_t>(p[1] & 0x3F) << 12) |
+             (static_cast<char32_t>(p[2] & 0x3F) << 6) |
+             (p[3] & 0x3F);
+        len = 4;
+    } else {
+        // Malformed: behave like the old buggy code (append first byte).
+        cp = p[0];
+        len = 1;
+    }
+    append(cp);
+    (void)len;  // length available if we want to truncate later
+}
+
 void OnscreenKeyboard::backspace() {
     if (text_.empty()) return;
     size_t i = text_.size() - 1;
