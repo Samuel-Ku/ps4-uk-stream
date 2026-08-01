@@ -32,5 +32,17 @@ function(c2d_add_catalog_test_with_api name)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
+function(c2d_add_catalog_test_widget name)
+    add_executable(${name} ${CMAKE_CURRENT_SOURCE_DIR}/../catalog/${name}.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog/OnscreenKeyboard.cpp
+    )
+    target_include_directories(${name} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog
+    )
+    target_compile_options(${name} PRIVATE -Wall -Wextra)
+    add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
 c2d_add_catalog_test(test_json)
 c2d_add_catalog_test_with_api(test_catalog_api)
+c2d_add_catalog_test_widget(test_keyboard)

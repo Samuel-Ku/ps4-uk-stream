@@ -21,3 +21,10 @@ target_include_directories(test_catalog_api PRIVATE
     ../../external/cJSON
     ${CMAKE_CURRENT_SOURCE_DIR}/../../external/cJSON
 )
+
+add_executable(test_keyboard test_keyboard.cpp
+    ../../src/catalog/OnscreenKeyboard.cpp
+)
+target_include_directories(test_keyboard PRIVATE
+    ../../src/catalog
+)
