@@ -129,6 +129,12 @@ target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-
 target_link_libraries(${CMAKE_PROJECT_NAME} cross2d pscrap ${PPLAY_LDFLAGS})
 
 #####################
+# tests (catalog)
+#####################
+enable_testing()
+add_subdirectory(tests/catalog)
+
+#####################
 # targets
 #####################
 include(libcross2d/cmake/targets.cmake)
