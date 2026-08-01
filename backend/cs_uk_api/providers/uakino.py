@@ -121,5 +121,24 @@ class UakinoProvider(BaseProvider):
 
     async def stream(
         self, content_id: str, translation: str | None, http: httpx.AsyncClient
-    ) -> StreamResponse:  # implemented later
-        raise NotImplementedError
+    ) -> StreamResponse:
+        player_url = f"{BASE_URL}/player/{content_id}.html"
+        try:
+            resp = await http.get(player_url, headers={"Referer": f"{BASE_URL}/"})
+        except httpx.HTTPError as e:
+            raise ProviderError("unreachable", str(e)) from e
+        if resp.status_code != 200:
+            raise ProviderError("not_found", f"status {resp.status_code}")
+        soup = BeautifulSoup(resp.text, "lxml")
+        iframe = soup.select_one("iframe")
+        if iframe is None or not iframe.get("src"):
+            raise ProviderError("parse_failed", "no iframe in player page")
+        src = str(iframe["src"])
+        if src.startswith("/"):
+            src = urljoin(BASE_URL, src)
+        kind = "m3u8" if src.endswith(".m3u8") else ("mp4" if src.endswith(".mp4") else "hls")
+        return StreamResponse(
+            url=src,
+            type=kind,
+            headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/0.1"},
+        )

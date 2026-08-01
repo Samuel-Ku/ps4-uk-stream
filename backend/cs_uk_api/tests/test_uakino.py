@@ -52,3 +52,18 @@ async def test_uakino_content_series_parses_seasons():
     assert c.seasons is not None
     assert c.seasons[0].number == 1
     assert [e.id for e in c.seasons[0].episodes] == ["uakino:s1e1", "uakino:s1e2"]
+
+
+STREAM_HTML = (pathlib.Path(__file__).parent / "fixtures" / "uakino" / "stream.html").read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_uakino_stream_resolves_iframe_url():
+    import httpx
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://uakino.club/player/s1e1.html").respond(200, text=STREAM_HTML)
+        async with httpx.AsyncClient(headers={"User-Agent": "test"}) as http:
+            s = await UakinoProvider().stream("s1e1", "uk", http)
+    assert s.url == "https://cdn.uakino.club/player/abc123/index.m3u8"
+    assert s.type == "m3u8"
+    assert s.headers.get("Referer", "").startswith("https://uakino.club")
