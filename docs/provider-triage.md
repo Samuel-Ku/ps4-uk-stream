@@ -27,7 +27,7 @@ once they pass the live gate (search → content → stream → plays in mpv).
 | uaflix | [UAFlixProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UAFlixProvider) | `UAFlixProvider.kt` (14.9 KB) | HTML, has mainPage | iframe → regex | mild | **ready** |
 | animeua | [AnimeUAProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/AnimeUAProvider) | `AnimeUAProvider.kt` (8.2 KB), `Tracker.kt` | HTML | iframe → JSON `file:` (dubs or m3u8) | mild | **ready** |
 | kinovezha | [KinoVezhaProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/KinoVezhaProvider) | `KinoVezhaProvider.kt` (10.3 KB) | HTML | iframe → regex (torDecrypt) | mild | **ready** |
-| banderakino | [BanderakinoProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/BanderakinoProvider) | `BanderakinoProvider.kt` (14.2 KB) | HTML | TBD | TBD | TBD |
+| banderakino | [BanderakinoProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/BanderakinoProvider) | `BanderakinoProvider.kt` (14.2 KB) | HTML | TBD | TBD | **not portable (live site offline — HTTP 522 from `banderakino.online`, DNS NXDOMAIN for `banderakino.pp.ua`)** |
 | bambooua | [BambooUAProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/BambooUAProvider) | `BambooUAProvider.kt` (8.9 KB), `JSONModel.kt` | HTML + JSON | TBD | mild | TBD |
 | coaninet | [CoaninetProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/CoaninetProvider) | `CoaninetProvider.kt` (12.3 KB) | JSON API | pre-resolved HLS master | none | **ready** |
 | klontv | [KlonTVProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/KlonTVProvider) | `KlonTVProvider.kt` (10.0 KB), `Tracker.kt` | HTML | iframe → regex | mild | **ready** |
@@ -61,7 +61,8 @@ Group 2 (medium, 10–25 KB):
 
 1. `klontv` — landed in `backend/cs_uk_api/providers/klontv.py` (10 tests, ready; DLE + ashdi.vip iframe chain)
 2. `serialno` — landed in `backend/cs_uk_api/providers/serialno.py` (12 tests, ready; homepage-as-listing, tortuga.tw iframe + torDecrypt — code-duplication with KinoVezha noted as follow-up)
-3. `banderakino`, `doramyworld`
+3. `banderakino` — skipped, live site offline (HTTP 522)
+4. `doramyworld`
 
 Group 3 (heavy, needs deeper triage):
 
