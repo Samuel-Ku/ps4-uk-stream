@@ -36,7 +36,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from ._tortuga import tortuga_decode
+from ._tortuga import decode as _tor_decrypt
 from .base import BaseProvider, ProviderError
 
 BASE_URL = "https://serialno.tv"
@@ -117,14 +117,6 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
         poster=poster,
         url=urljoin(BASE_URL, href),
     )
-
-
-def _tor_decrypt(encoded: str) -> str | None:
-    """Backwards-compatible alias for :func:`tortuga_decode` (the
-    shared Tortuga XOR/Base64 decoder). Returns ``None`` when the
-    payload is undecodable so the caller can surface ``parse_failed``."""
-    out = tortuga_decode(encoded)
-    return out or None
 
 
 def _resolve_file_value(html: str) -> str | None:

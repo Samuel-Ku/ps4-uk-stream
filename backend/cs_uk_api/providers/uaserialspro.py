@@ -49,14 +49,11 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from ._crypto import decrypt_player_data
-from ._tortuga import tortuga_decode
+from ._crypto_uaserialspro import decrypt_player_data
+from ._tortuga import decode as _tortuga_decode
 from .base import BaseProvider, ProviderError
 
 BASE_URL = "https://uaserials.com"
-# Hard-coded upstream password (matches the Kotlin source). Used to
-# derive the AES-256 key for the data-tag1 blob via PBKDF2-HMAC-SHA512.
-_PLAYER_PASSWORD = "297796CCB81D255125"
 # tortuga.tw serves the HLS manifest with this Referer (mirrors the
 # upstream Kotlin source).
 TORTUGA_REFERER = "https://tortuga.tw/"
@@ -141,16 +138,6 @@ def _section_url(section: str, page: int) -> str:
     if page <= 1:
         return base
     return f"{base}page/{page}/"
-
-
-def _decrypt_player_data(data_tag1: str) -> list[dict[str, Any]]:
-    """AES-decrypt the ``<player-control data-tag1='...'>`` blob.
-
-    Returns the parsed JSON list of ``AESPlayerDecodedModel`` records.
-    Raises ``ProviderError`` for malformed payloads so the caller can
-    surface an explicit ``parse_failed``.
-    """
-    return decrypt_player_data(data_tag1, _PLAYER_PASSWORD)
 
 
 def _select_player_url(tabs: list[dict[str, Any]]) -> str | None:
@@ -353,7 +340,7 @@ class UASerialsProProvider(BaseProvider):
         data_tag1_el = soup.select_one("div.fplayer player-control")
         if data_tag1_el is None or not data_tag1_el.get("data-tag1"):
             raise ProviderError("parse_failed", "no data-tag1 on content page")
-        tabs = _decrypt_player_data(str(data_tag1_el["data-tag1"]))
+        tabs = decrypt_player_data(str(data_tag1_el["data-tag1"]))
         player_url = _select_player_url(tabs)
         if player_url is None:
             raise ProviderError("parse_failed", "no player url in data-tag1")
@@ -400,7 +387,7 @@ class UASerialsProProvider(BaseProvider):
         if encoded.startswith("http"):
             decoded = encoded
         else:
-            decoded = tortuga_decode(encoded)
+            decoded = _tortuga_decode(encoded)
         if not decoded:
             return None
         if decoded.startswith("["):
@@ -465,7 +452,7 @@ class UASerialsProProvider(BaseProvider):
         data_tag1_el = soup.select_one("div.fplayer player-control")
         if data_tag1_el is None or not data_tag1_el.get("data-tag1"):
             raise ProviderError("parse_failed", "no data-tag1 on content page")
-        tabs = _decrypt_player_data(str(data_tag1_el["data-tag1"]))
+        tabs = decrypt_player_data(str(data_tag1_el["data-tag1"]))
         player_url = _select_player_url(tabs)
         if player_url is None:
             raise ProviderError("parse_failed", "no player url in data-tag1")
@@ -485,7 +472,7 @@ class UASerialsProProvider(BaseProvider):
         if encoded.startswith("http"):
             decoded = encoded
         else:
-            decoded = tortuga_decode(encoded)
+            decoded = _tortuga_decode(encoded)
         if not decoded:
             raise ProviderError("parse_failed", "tortuga decode empty")
         # Movies: the decoded value is the m3u8 URL. Series: the decoded
