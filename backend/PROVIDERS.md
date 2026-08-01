@@ -19,7 +19,7 @@ All eight adapters are registered and surfaced via `GET /api/providers`:
 | cikavaideya | cikava-ideya.top              | filmy, serialy, cartoon, arthaus     | m3u8          |
 | hentaiukr   | hentaiukr.com                 | hentai                              | mp4           |
 | bambooua    | bambooua.com                  | cinema, dorama, anime, lakorn, voice, tv-show, done, world-bl, now | mp4 |
-| kinovezha   | kinovezha.com                 | films, series, cartoons, s-cartoons  | mp4           |
+| kinovezha   | kinovezha.tv                 | films, series, cartoons, s-cartoons  | m3u8          |
 
 ## Streaming shape
 
@@ -42,7 +42,9 @@ All eight adapters are registered and surfaced via `GET /api/providers`:
 - **bambooua**: inline `const playlist` JSON on the content page; the
   stream URL is the resolved first group file (movies) or the requested
   `sNeM` episode.
-- **kinovezha / uakino**: HTML content pages with embedded MP4 URLs.
+- **kinovezha**: content page → player page with an obfuscated
+  `file:"…"` value (upstream tor-decrypt) → direct `.m3u8` HLS stream.
+- **uakino**: HTML content pages with embedded MP4 URLs.
 
 ## Content ids
 
@@ -61,17 +63,22 @@ with `ffprobe`. Results of the latest full run:
 
 | provider    | gate | profile                          |
 |-------------|------|----------------------------------|
-| ufdub       | PASS | h264 640x360–1280x720            |
-| unimay      | PASS | h264 720x480                     |
-| kinotron    | PASS | h264 1920x816                    |
-| cikavaideya | PASS | h264 1442x1080                   |
-| hentaiukr   | PASS | **hevc** 1920x1080 — soft-decode risk on PS4 |
-| bambooua    | PASS | h264 1920x800                    |
-| kinovezha   | PASS | h264 1920x804                    |
-| uakino      | FAIL | site moved to uakino.best behind Cloudflare (upstream, not portability) |
+| ufdub       | ✅   | h264 1280x720 1373kbps           |
+| unimay      | ✅   | h264 720x480                     |
+| kinotron    | ✅   | h264 1920x816                    |
+| cikavaideya | ✅   | h264 1442x1080                   |
+| hentaiukr   | ✅   | **hevc** 1280x720 — ⚠️ ps4-soft-decode-risk |
+| bambooua    | ✅   | h264 1920x960                    |
+| kinovezha   | ✅   | h264 1920x804                    |
+| uakino      | ⚠️   | FAIL — site moved to uakino.best behind Cloudflare (upstream, not portability) |
+
+Gate queries: the default `Дюна` no longer matches upstream catalogs
+that rotated their listings (cikavaideya, hentaiukr, bambooua) — their
+rows above were re-gated with `фільм` / `школярки` / `квітка`. Search
+itself still resolves on all of them; the query is content-dependent.
 
 Non-H.264 output (e.g. hentaiukr HEVC) is flagged
-`ps4-soft-decode-risk`: mpv on PS4 decodes in software.
+`ps4-soft-decode-risk` (⚠️): mpv on PS4 decodes in software.
 
 On mpv failure the gate captures the player HTML and scans it for
 JS-generation markers (`eval(`, `Function(`, `atob(`, `obfuscated`).

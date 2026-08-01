@@ -68,11 +68,13 @@ _PLAYLIST_RE = re.compile(r"const playlist\s*=\s*(\[.*?\]);", re.DOTALL)
 
 
 def _external_id_from_url(href: str) -> str:
-    """Return an opaque id encoding the URL path. Most content URLs
-    have the form ``/kind/N-slug.html``; we collapse that to
-    ``kind/N-slug``. Multi-segment paths (e.g. ``/zhanr/romantyka/N-slug``)
-    keep only the last two segments so ``content()`` can rebuild the
-    URL verbatim."""
+    """Return an opaque id encoding the URL path. Content URLs have the
+    form ``/kind/N-slug.html``; we collapse that to ``kind/N-slug`` so
+    ``content()`` can rebuild ``f"{BASE_URL}/{external_id}.html"``.
+    Multi-segment paths (e.g. ``/zhanr/romantyka/N-slug``) keep only
+    the last two segments — the rebuild drops the category prefix.
+    No captured upstream card has used one yet, but if it does, the
+    id stays stable and the rebuild is the best-effort guess."""
     # Match the last two segments (the kind + slug) so the URL can be
     # rebuilt with `f"{BASE_URL}/{external_id}.html"` regardless of any
     # upstream category prefix.
