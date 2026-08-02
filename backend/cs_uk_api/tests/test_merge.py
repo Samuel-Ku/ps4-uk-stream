@@ -208,7 +208,6 @@ def test_item_group_key_is_pure_function_of_item_data() -> None:
     # Issue #69: the same item must produce the same key from any call,
     # regardless of which other providers appear beside it.
     it = item("uakino", "Тато / Daddy", year=2021)
-    assert item_group_key(it) == item_group_key(it)
     assert item_group_key(it) == group_key_from("Тато / Daddy", "movie", 2021, it.id)
     # The most canonical own alias drives the key (min over own aliases).
     assert item_group_key(it) == item_group_key(item("eneyida", "Daddy", year=2021, n="2"))
@@ -230,10 +229,12 @@ def test_merge_group_key_stable_across_provider_subsets() -> None:
         assert len(groups) == 1
         g = groups[0]
         keys.append(g.key)
-        # Group key == min over members' own item keys, and == the anchor's
-        # own key when the anchor is present.
+        # Group key == min over members' own item keys (order-independent).
+        # The real invariant: that min is always the item key of SOME
+        # member — not necessarily the anchor's (which member's digest
+        # happens to hash smallest is an accident of sha1 ordering).
         assert g.key == min(item_group_key(it) for it in g.sources)
-        assert g.key == item_group_key(anchor)
+        assert g.key in {item_group_key(it) for it in g.sources}
     assert len(set(keys)) == 1
 
 
@@ -257,12 +258,33 @@ def test_merge_group_key_min_over_members_is_order_independent() -> None:
     assert solo[0].key != forward[0].key
 
 
+def test_alias_bridge_limit_solo_vs_pooled_keys_differ() -> None:
+    # Accepted alias-bridge limit (v3 spec §4.3): group keys are stateless
+    # per-item functions, so whether an alias bridge exists depends on which
+    # items happen to share a call. A SOLO "Тато" keys on its own alias,
+    # while the pooled "Тато" + "Тато / Daddy" + "Daddy" merges through the
+    # bridge item and keys on the group-min member instead. The solo and
+    # pooled keys therefore legitimately differ — inherent to stateless
+    # bridging, not a bug: no single item can know about siblings it never
+    # sees, so a client's stored key for the solo title won't match the
+    # pooled group's key (the group's key is still SOME member's key).
+    solo = merge_results([item("kinolub", "Тато", year=2021, n="3")])
+    pooled = merge_results([
+        item("kinolub", "Тато", year=2021, n="3"),
+        item("uakino", "Тато / Daddy", year=2021),
+        item("eneyida", "Daddy", year=2021, n="2"),
+    ])
+    assert len(solo) == len(pooled) == 1
+    assert solo[0].key == item_group_key(item("kinolub", "Тато", year=2021, n="3"))
+    assert pooled[0].key in {item_group_key(m) for m in pooled[0].sources}
+    assert solo[0].key != pooled[0].key
+
+
 def test_merge_title_that_normalizes_to_nothing_anchors_on_item_id() -> None:
     # "(2021)" normalizes to an empty alias, so the key is anchored to the
     # item id — per-item stable, and distinct across providers.
     a = item("uakino", "(2021)", year=2021)
     b = item("eneyida", "(2021)", year=2021, n="2")
-    assert item_group_key(a) == item_group_key(a)
     assert item_group_key(a) != item_group_key(b)
     assert merge_results([a])[0].key == item_group_key(a)
     assert merge_results([b])[0].key == item_group_key(b)

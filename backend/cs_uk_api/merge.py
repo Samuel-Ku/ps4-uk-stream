@@ -106,12 +106,16 @@ def group_key_from(title: str, media_type: str, year: int | None, item_id: str) 
     """Stateless group identity for one raw title (issue #69, v3 spec §4.3).
 
     A pure function of the item's own listing data — its most canonical
-    alias, its type, its year — so the same title always yields the same
-    key no matter which other providers appear in the same call.
+    alias, its type, its RAW year field — so the same title always yields
+    the same key no matter which other providers appear in the same call.
+    The raw year is composed through ``effective_year`` (explicit year,
+    else title-parsed) internally, exactly as the merge core composes it
+    for matching, so a caller passing the raw field always agrees with
+    ``merge_results``.
     """
     aliases = title_aliases(title)
     key_alias = min(aliases) if aliases else f"id:{item_id}"
-    return group_key(key_alias, media_type, year)
+    return group_key(key_alias, media_type, effective_year(title, year))
 
 
 @dataclass(frozen=True)
@@ -131,9 +135,11 @@ def item_group_key(it: SearchResult) -> str:
     """Stateless per-item group identity: ``group_key_from`` over the item.
 
     Public seam for callers that hold one item (e.g. ``/api/content``) and
-    need the same key the merge core would produce for it.
+    need the same key the merge core would produce for it. The item's raw
+    year field is passed through — ``group_key_from`` applies the effective
+    year itself.
     """
-    return group_key_from(it.title, it.type, _effective_year(it), it.id)
+    return group_key_from(it.title, it.type, it.year, it.id)
 
 
 def _years_match(a: int | None, b: int | None) -> bool:

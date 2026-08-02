@@ -15,7 +15,7 @@ from .config import SETTINGS
 from .country import is_blocked_country
 from .health import TRACKER
 from .http_client import close_client, get_client
-from .merge import effective_year, group_key_from
+from .merge import group_key_from
 from .models import (
     BrowseResponse,
     ContentResponse,
@@ -192,7 +192,7 @@ async def content(content_id: str) -> ContentResponse:
     # Stateless per-item group key (issue #69): pure function of the item's
     # own title/type/year, so client state survives across sessions and
     # provider-set changes.
-    resp.group_key = group_key_from(resp.title, resp.type, effective_year(resp.title, resp.year), content_id)
+    resp.group_key = group_key_from(resp.title, resp.type, resp.year, content_id)
     _content_cache.set(cache_key, resp)
     return resp
 
