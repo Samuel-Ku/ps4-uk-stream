@@ -184,9 +184,15 @@ void ScreenHome::rebuildRows() {
     }
     rows_.clear();
 
+    // Issue #66 — prepend the «Продовжити перегляд» row built from
+    // the local state store. It sits above the backend rows because
+    // resume is the user's primary intent after a return visit.
+    prependResumeRow();
+
     // Build one RowView per backend row. Header + cards + «Ще» pill.
     for (const auto &src : fetchedResp_.rows) {
         RowView v;
+        v.kind = "home";
         v.data = src;
         v.header = new c2d::Text(src.title, kBodySize, main_->getFont());
         v.header->setFillColor(c2d::Color{0xff, 0xff, 0xff, 0xff});
@@ -229,6 +235,58 @@ void ScreenHome::rebuildRows() {
     focusRow_ = rows_.empty() ? FocusRow::Loupe : FocusRow::Rows;
     scrollOffset_ = 0.0f;
     layoutRows();
+}
+
+void ScreenHome::prependResumeRow() {
+    auto *state = CatalogContext::state();
+    if (state == nullptr) return;
+    const auto recent = state->recentResume(kResumeLimit);
+    // Filter finished entries (>= 95% per CatalogState::isFinished).
+    // On a "fresh start" the user gets the home row again, NOT a
+    // re-offered position at the end.
+    std::vector<ResumeEntry> live;
+    live.reserve(recent.size());
+    for (const auto &e : recent) {
+        if (CatalogState::isFinished(e)) continue;
+        live.push_back(e);
+    }
+    if (live.empty()) return;
+    // Build one card per live entry. The resume store doesn't carry
+    // a title or poster (those live on the backend); we synthesize a
+    // short placeholder from the resume provider + position so the
+    // user sees SOMETHING identifying the row. Activation routes via
+    // groupKey → ScreenContent, which fetches the real metadata.
+    RowView v;
+    v.kind = "resume";
+    v.header = new c2d::Text("Продовжити перегляд", kBodySize, main_->getFont());
+    v.header->setFillColor(c2d::Color{0xff, 0xff, 0xff, 0xff});
+    add(v.header);
+    for (const auto &e : live) {
+        auto *box = new c2d::RectangleShape({0, 0, kCardWidth, kCardHeight});
+        box->setFillColor(c2d::Color{0x22, 0x22, 0x22, 0xff});
+        box->setOutlineColor(c2d::Color{0x55, 0xef, 0xc4, 0xff});
+        box->setOutlineThickness(2.0f);
+        add(box);
+        v.cards.push_back(box);
+        // Render: "prov · NN:NN" so the user sees source + position.
+        std::string label = e.provider;
+        const long mins = e.positionSec / 60;
+        const long secs = e.positionSec % 60;
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), " · %02ld:%02ld", mins, secs);
+        label += buf;
+        if (label.size() > 28) label = label.substr(0, 27) + "…";
+        auto *t = new c2d::Text(label, kSmallSize, main_->getFont());
+        t->setFillColor(c2d::Color{0xee, 0xee, 0xee, 0xff});
+        add(t);
+        v.titles.push_back(t);
+        v.resumeEntries.push_back(e);
+    }
+    // The resume row NEVER carries a «Ще» pill — there's no
+    // "browse all resume entries" surface.
+    v.moreBox = nullptr;
+    v.moreLabel = nullptr;
+    rows_.push_back(std::move(v));
 }
 
 void ScreenHome::layoutRows() {
@@ -365,6 +423,20 @@ void ScreenHome::activateFocused() {
         auto *results = new ScreenResults(main_, prov, row.data.type,
                                           /*query*/ "", row.data.title);
         setChild(results);
+        return;
+    }
+    // Resume row (issue #66) — route to ScreenContent with the
+    // remembered groupKey. The screen's pre-focus logic (#67) lands
+    // the user on the right chip + episode; we never auto-play.
+    if (row.kind == "resume") {
+        if (focusedCardIndex_ < 0 ||
+            focusedCardIndex_ >= static_cast<int>(row.resumeEntries.size())) {
+            return;
+        }
+        const auto &e = row.resumeEntries[focusedCardIndex_];
+        auto *content = new ScreenContent(main_, e.groupKey,
+                                          /*title*/ std::string());
+        setChild(content);
         return;
     }
     if (focusedCardIndex_ < 0 ||

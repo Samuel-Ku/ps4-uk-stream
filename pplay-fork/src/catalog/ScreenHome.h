@@ -44,6 +44,12 @@ private:
     // Build the static chrome (background, loupe, error-screen widgets,
     // help text). Done once in the constructor.
     void buildChrome();
+    // Build the «Продовжити перегляд» row from the local state store
+    // (issue #66). Reads at most kResumeLimit most-recent entries,
+    // filters out finished ones (>= 95% per CatalogState::isFinished),
+    // and prepends a synthetic RowView to rows_. Called BEFORE the
+    // /api/home rebuild so the resume row sits on top.
+    void prependResumeRow();
     // Fetch /api/home. The worker-thread callback marshals into
     // fetchedRows_ + sets homeFetched_; onUpdate() drains it once.
     void requestHome();
@@ -99,7 +105,15 @@ private:
     // (optionally) a «Ще» pill. The lifetime is managed here: rebuild
     // frees the previous row's widgets before installing new ones.
     struct RowView {
+        // "home" — driven by /api/home rows
+        // "resume" — driven by the local state store (issue #66)
+        std::string kind;
         HomeRow data;
+        // For resume rows: one ResumeEntry per card, parallel to
+        // `cards` / `titles`. Empty for home rows. Used by
+        // activateFocused() to open ScreenContent with the right
+        // pre-focus (groupKey + episodeId).
+        std::vector<ResumeEntry> resumeEntries;
         c2d::Text *header = nullptr;
         std::vector<c2d::RectangleShape *> cards;
         std::vector<c2d::Text *> titles;
@@ -121,6 +135,11 @@ private:
     HomeResponse fetchedResp_;
     std::string fetchError_;
     LoadState loadState_ = LoadState::Idle;
+
+    // Cap on the resume row's card count (issue #66 — "≤ 20 most
+    // recent groups"). Matches the home-row cap and the catalog-state
+    // LRU ceiling so the resume row never overflows.
+    static constexpr std::size_t kResumeLimit = 20;
 };
 
 } // namespace cs
