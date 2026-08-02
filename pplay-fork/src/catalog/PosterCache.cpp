@@ -93,7 +93,8 @@ void DiskPosterCache::put(const std::string &url,
 
     const std::string ext = extForType(contentType);
     const fs::path finalPath(rootDir_ + "/" + fileKey(url) + ext);
-    const fs::path tmpPath(rootDir_ + "/." + fileKey(url) + ".tmp");
+    // Atomic write, repo convention: <final>.tmp (no hidden-dot prefix).
+    const fs::path tmpPath(rootDir_ + "/" + fileKey(url) + ".tmp");
     {
         std::ofstream f(tmpPath, std::ios::binary | std::ios::trunc);
         if (!f) return;

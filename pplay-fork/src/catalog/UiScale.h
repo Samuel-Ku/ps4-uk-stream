@@ -38,7 +38,6 @@ inline void scaleFocus(float &x, float &y, float &w, float &h) {
 
 // Results rows and poster thumbnails.
 constexpr float kRowHeight = 72.0f;      // list row stride
-constexpr float kPosterThumb = 144.0f;   // focused-item poster box side
 
 // Keyboard grid cells.
 constexpr float kKeyCellW = 72.0f;
