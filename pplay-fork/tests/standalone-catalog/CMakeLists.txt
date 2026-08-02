@@ -96,6 +96,7 @@ function(c2d_add_catalog_test_with_cache name)
 endfunction()
 
 c2d_add_catalog_test(test_json)
+c2d_add_catalog_test(test_error_strings)
 c2d_add_catalog_test_with_api(test_catalog_api)
 # Pure policy helper (ContentItem header) — reuses the API test wiring
 # for the catalog include dirs.

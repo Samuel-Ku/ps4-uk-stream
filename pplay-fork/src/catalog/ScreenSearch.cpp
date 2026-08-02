@@ -1,6 +1,7 @@
 #include "UiScale.h"
 #include "ScreenSearch.h"
 #include "CatalogContext.h"
+#include "ErrorStrings.h"
 #include "main.h"
 #include "ScreenResults.h"
 
@@ -165,7 +166,7 @@ void ScreenSearch::requestSearch() {
             fetchError_.clear();
             resultCount_ = fetchedResults_.size();
         } else {
-            fetchError_ = err.empty() ? "невідома помилка" : std::move(err);
+            fetchError_ = cs::ui::humanErrorOrGeneric(err);
             resultCount_ = 0;
         }
         inFlight_ = false;

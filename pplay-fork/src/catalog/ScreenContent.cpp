@@ -1,6 +1,7 @@
 #include "UiScale.h"
 #include "ScreenContent.h"
 #include "CatalogContext.h"
+#include "ErrorStrings.h"
 #include "main.h"
 
 #include "media_file.h"
@@ -129,7 +130,10 @@ void ScreenContent::requestContent() {
             fetchError_.clear();
         } else {
             fetchedItem_ = ContentItem{};
-            fetchError_ = err.empty() ? "невідома помилка" : err;
+            // Issue #64: route backend error codes through humanError() so
+            // raw snake_case never reaches the screen. The status string
+            // uses the mapped UA phrase; the source code is dropped.
+            fetchError_ = cs::ui::humanErrorOrGeneric(err);
         }
         contentFetched_.store(true, std::memory_order_release);
     });
@@ -245,7 +249,8 @@ void ScreenContent::playEpisode(int seasonIdx, int epIdx, const std::string &tra
             } else {
                 streamUrl_.clear();
                 streamHeaders_.clear();
-                streamError_ = err.empty() ? "невідома помилка" : err;
+                // Issue #64: human UA string for every error surface.
+                streamError_ = cs::ui::humanErrorOrGeneric(err);
             }
             streamFetched_.store(true, std::memory_order_release);
         });
