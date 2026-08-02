@@ -310,18 +310,20 @@ void ScreenResults::onUpdate() {
             requestPosterForRow(selection_ + kPosterLazyLookahead);
             requestNextIfNeeded();
         }
-    } else if (keys & c2d::Input::Key::Right) {
+    } else if (keys & c2d::Input::Key::Fire6) {
+        // R1 — next browse page (v3 control scheme, issue #56)
         if (mode_ == Mode::Browse && hasNext_ && !inFlight_) requestPage(page_ + 1);
-    } else if (keys & c2d::Input::Key::Left) {
+    } else if (keys & c2d::Input::Key::Fire5) {
+        // L1 — previous browse page
         if (page_ > 1 && !inFlight_ && mode_ == Mode::Browse) requestPage(page_ - 1);
     } else if (keys & c2d::Input::Key::Fire1) {
-        // Open the focused item's content screen.
+        // Cross — open the focused item's content screen.
         if (selection_ >= 0 && selection_ < total) {
             const auto &it = items_[selection_];
             setChild(new ScreenContent(main_, it.id, it.title));
         }
     } else if (keys & c2d::Input::Key::Fire2) {
-        // Back — hide; in browse mode this returns to ScreenSections,
+        // Circle — back; in browse mode this returns to ScreenSections,
         // in search mode this returns to ScreenSearch. Drop any
         // pushed child first so it doesn't stay around as a hidden
         // widget in `main_`'s children list.

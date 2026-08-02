@@ -111,12 +111,17 @@ extern c2d::Renderer *c2d_renderer;
 #define KEY_JOY_DOWN_DEFAULT    12
 #define KEY_JOY_LEFT_DEFAULT    13
 #define KEY_JOY_RIGHT_DEFAULT   14
-#define KEY_JOY_FIRE1_DEFAULT   0
-#define KEY_JOY_FIRE2_DEFAULT   1
-#define KEY_JOY_FIRE3_DEFAULT   2
-#define KEY_JOY_FIRE4_DEFAULT   3
-#define KEY_JOY_FIRE5_DEFAULT   15
-#define KEY_JOY_FIRE6_DEFAULT   16
+// v3 control scheme (issue #56): western PlayStation layout —
+// Fire1=Cross(confirm), Fire2=Circle(back), Fire3=Triangle(cycle/space),
+// Fire4=Square(filter/backspace), Fire5=L1, Fire6=R1.
+// Physical indices follow the SDL DS4 raw order (1=Cross, 2=Circle,
+// 3=Triangle, 0=Square, 4=L1, 5=R1); VERIFY on-console during M0.
+#define KEY_JOY_FIRE1_DEFAULT   1
+#define KEY_JOY_FIRE2_DEFAULT   2
+#define KEY_JOY_FIRE3_DEFAULT   3
+#define KEY_JOY_FIRE4_DEFAULT   0
+#define KEY_JOY_FIRE5_DEFAULT   4
+#define KEY_JOY_FIRE6_DEFAULT   5
 #define KEY_JOY_COIN1_DEFAULT   9
 #define KEY_JOY_START1_DEFAULT  10
 #define KEY_JOY_MENU1_DEFAULT   10
@@ -238,14 +243,17 @@ extern c2d::Renderer *c2d_renderer;
 #define C2DClock POSIXClock
 
 // "Hori GEM Xbox controller"
+// v3 control scheme (issue #56): with a DualShock on SDL, 0=Cross, 1=Circle,
+// 2=Square, 3=Triangle, 4=L1, 5=R1; with an Xbox pad, A/B/X/Y sit at the
+// same indices, so Fire3/Fire4 = top/left face buttons on both families.
 #define KEY_JOY_UP_DEFAULT      (-1)  // use hat
 #define KEY_JOY_DOWN_DEFAULT    (-1)  // use hat
 #define KEY_JOY_LEFT_DEFAULT    (-1)  // use hat
 #define KEY_JOY_RIGHT_DEFAULT   (-1)  // use hat
 #define KEY_JOY_FIRE1_DEFAULT   0
 #define KEY_JOY_FIRE2_DEFAULT   1
-#define KEY_JOY_FIRE3_DEFAULT   2
-#define KEY_JOY_FIRE4_DEFAULT   3
+#define KEY_JOY_FIRE3_DEFAULT   3
+#define KEY_JOY_FIRE4_DEFAULT   2
 #define KEY_JOY_FIRE5_DEFAULT   4
 #define KEY_JOY_FIRE6_DEFAULT   5
 #define KEY_JOY_COIN1_DEFAULT   6

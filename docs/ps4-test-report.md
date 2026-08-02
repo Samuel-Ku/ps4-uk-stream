@@ -62,35 +62,35 @@ lftp -c "open -u anonymous, ftp://192.168.2.105; \
 - [ ] Provider list (left) is non-empty (>= 3 providers visible)
 - [ ] D-pad Right moves the cursor to the right column
 - [ ] D-pad Up/Down moves within each column with wrap-around
-- [ ] A on a section opens ScreenResults with posters
+- [ ] X (Cross) on a section opens ScreenResults with posters
 - [ ] Posters load (poster URL resolves through the backend's
       `/api/poster` route)
-- [ ] A on a result opens ScreenContent (synopsis + seasons + episodes)
-- [ ] D-pad Left/Right cycles seasons
+- [ ] X (Cross) on a result opens ScreenContent (synopsis + seasons + episodes)
+- [ ] D-pad Left/Right cycles seasons; R1/L1 page results
 - [ ] D-pad Up/Down cycles episodes
-- [ ] A on an episode hands off to mpv and the stream starts
+- [ ] X (Cross) on an episode hands off to mpv and the stream starts
 
 ### Search path: Search → Results → Content → Play
 
 - [ ] "Пошук UA" opens the on-screen keyboard
 - [ ] Cyrillic characters are selectable and append to the query
       (try at least one letter from each row of the Ukrainian alphabet)
-- [ ] Y inserts a space, X backspaces, A on `OK`/Start submits
+- [ ] Triangle inserts a space, Square backspaces, X (Cross) on `OK`/Options submits
 - [ ] Empty query does not fire a search (status stays "Введіть запит")
 - [ ] Search results render with posters
-- [ ] From results: A → ScreenContent → A → mpv plays (same as browse)
+- [ ] From results: X (Cross) → ScreenContent → X (Cross) → mpv plays (same as browse)
 
 ### Translation levels
 
 Two providers expose per-episode dub/sub selection. On a content screen
 with `translations_level = "episode"`:
 
-- [ ] `Y` (Fire3) cycles the episode translation (only when the content
+- [ ] Triangle (Fire3) cycles the episode translation (only when the content
       has > 1 episode-level translation)
 - [ ] The currently-selected translation tag is visible in the episode
       row, e.g. `E3 · Назва · [Українська]`
-- [ ] A plays with the selected translation; switching and re-pressing
-      A actually swaps the stream
+- [ ] X (Cross) plays with the selected translation; switching and
+      re-pressing X (Cross) actually swaps the stream
 
 Providers with `translations_level = "episode"` (verify at least one):
 
@@ -134,8 +134,8 @@ Use ✅ / ❌ / n/a. If ❌, capture the failure mode in `## Notes` below.
 - [ ] Section screen renders in < 1 s after backend `GET /api/sections`
 - [ ] Search returns in < 12 s total (backend budget is 12 s for the
       cross-provider search; verify by timing on the backend logs)
-- [ ] mpv plays the first frame in < 3 s after A on an episode
-- [ ] No app crash on B (back) from any catalog screen
+- [ ] mpv plays the first frame in < 3 s after X (Cross) on an episode
+- [ ] No app crash on Circle (back) from any catalog screen
 - [ ] No freeze when the backend host is unreachable
       (test by pointing OPT_CATALOG_URL at a black-hole IP, then open
       "Каталог UA" — should show "Backend недоступний", not freeze)

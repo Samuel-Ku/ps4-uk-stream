@@ -255,9 +255,9 @@ void ScreenContent::onUpdate() {
         if (!fetchError_.empty()) {
             setStatus("Помилка: " + fetchError_);
         } else if (item_.seasons.empty()) {
-            setStatus("Готово · Фільм — A: грати");
+            setStatus("Готово · Фільм — X: грати");
         } else {
-            setStatus("Готово · A: грати епізод");
+            setStatus("Готово · X: грати епізод");
         }
     }
 
@@ -370,7 +370,7 @@ void ScreenContent::onUpdate() {
         }
         playEpisode(seasonIndex_, episodeIndex_, translationId);
     } else if (keys & c2d::Input::Key::Fire3) {
-        // Y — cycle episode translation (episode-level only)
+        // Triangle — cycle episode translation (episode-level only)
         if (item_.translationsLevel == "episode" && epCount > 0) {
             const auto &trs = item_.seasons[seasonIndex_].episodes[episodeIndex_].translations;
             if (!trs.empty()) {

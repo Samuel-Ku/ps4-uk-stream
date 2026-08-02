@@ -53,7 +53,7 @@ ScreenSearch::ScreenSearch(c2d::C2DRenderer *main)
     statusText_->setFillColor(c2d::Color{0xaa, 0xaa, 0xaa, 0xff});
     add(statusText_);
 
-    helpText_ = new c2d::Text("A: вибрати · Y: пробіл · X: видалити · Start: пошук · B: назад",
+    helpText_ = new c2d::Text("X: вибрати · △: пробіл · □: видалити · Options: пошук · O: назад",
                               kStatusSize, main_->getFont());
     helpText_->setPosition({kPanelPadding, H - (kStatusSize + 8) - kPanelPadding});
     helpText_->setFillColor(c2d::Color{0x88, 0x88, 0x88, 0xff});
@@ -202,17 +202,17 @@ void ScreenSearch::onUpdate() {
         kbCol_ = (kbCol_ + 1) % kb_.cols();
         renderKeyboard();
     } else if (keys & c2d::Input::Key::Fire3) {
-        // Y — space
+        // Triangle — space
         kb_.appendUtf8(" ");
         renderKeyboard();
         renderStatus();
     } else if (keys & c2d::Input::Key::Fire4) {
-        // X — backspace
+        // Square — backspace
         kb_.backspace();
         renderKeyboard();
         renderStatus();
     } else if (keys & c2d::Input::Key::Fire1) {
-        // A — pick focused cell
+        // Cross — pick focused cell
         std::string action;
         if (kb_.isAction(kbRow_, kbCol_, action)) {
             if (action == "SPACE") {
@@ -230,10 +230,10 @@ void ScreenSearch::onUpdate() {
         renderKeyboard();
         renderStatus();
     } else if (keys & c2d::Input::Key::Start) {
-        // Start — submit
+        // Options — submit
         if (!kb_.text().empty()) requestSearch();
     } else if (keys & c2d::Input::Key::Fire2) {
-        // B — back. Drop any pushed child first.
+        // Circle — back. Drop any pushed child first.
         setChild(nullptr);
         setVisibility(c2d::Visibility::Hidden, true);
     }
