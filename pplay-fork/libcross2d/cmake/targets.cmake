@@ -30,7 +30,7 @@ cmake_minimum_required(VERSION 3.16)
 #
 # Output convention (matches Sony PS4 homebrew expectations):
 #   <project>.elf            raw unstripped ELF64 from CMake
-#   <project>.eboot.bin      fake-signed ELF (paid=0x3100000000000002,
+#   <project>.eboot.bin      fake-signed ELF (paid=0x3800000000000011,
 #                            ptype=npdrm_exec) — GoldHEN accepts this.
 #   sce_sys/param.sfo        PS4 system param.sfo
 #   sce_sys/about/           right.sprx, icon0.png (from data/ps4/romfs)
@@ -95,11 +95,11 @@ if (PLATFORM_PS4 AND NOT COMMAND add_self)
                     "$<TARGET_FILE:${PROJECT}>"
                     "${CMAKE_CURRENT_BINARY_DIR}/eboot/eboot.bin.fself"
                     npdrm_exec
-                    0x3100000000000002
+                    0x3800000000000011
                 COMMAND ${CMAKE_COMMAND} -E rename
                     "${CMAKE_CURRENT_BINARY_DIR}/eboot/eboot.bin.fself"
                     "${CMAKE_CURRENT_BINARY_DIR}/eboot/eboot.bin"
-                COMMENT "add_self: create-fself -> eboot.bin (paid=0x3100000000000002, ptype=npdrm_exec)"
+                COMMENT "add_self: create-fself -> eboot.bin (paid=0x3800000000000011, ptype=npdrm_exec)"
                 VERBATIM
         )
     endfunction()

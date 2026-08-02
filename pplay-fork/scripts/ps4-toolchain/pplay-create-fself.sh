@@ -20,7 +20,7 @@ OO_PS4_TOOLCHAIN=${OO_PS4_TOOLCHAIN:-/opt/oo}
 IN="${1:-/work/build/pplay}"
 OUT="${2:-/work/build/eboot/eboot.bin.fself}"
 PTYPE="${3:-npdrm_exec}"
-PAID="${4:-0x3100000000000002}"
+PAID="${4:-0x3800000000000011}"
 # Touch the output dir so the rename-after-create-fself has a target.
 mkdir -p "$(dirname "$OUT")"
 exec "$OO_PS4_TOOLCHAIN/bin/linux/create-fself" \

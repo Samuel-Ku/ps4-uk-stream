@@ -16,8 +16,9 @@
 - [ ] `pplay-fork/build/PPLA00001.pkg` exists, size > 1 MB
 - [ ] `head -c 4 pplay-fork/build/PPLA00001.pkg | xxd` → `7f 43 4e 54`
       (`\x7FCNT` PKG magic)
-- [ ] `pplay-fork/build/eboot.bin` exists, `file` reports
-      `ELF 64-bit LSB executable, x86-64, ...FreeBSD`
+- [ ] `pplay-fork/build/eboot.bin` exists, magic `4f 15 3d 1d` (SCE
+      SELF wrapper from create-fself, fake-signed with
+      `paid=0x3800000000000011`)
 
 ## Setup commands used
 

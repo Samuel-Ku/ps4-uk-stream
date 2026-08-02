@@ -58,6 +58,18 @@ sed -i 's@^#if !HAVE_SOCKLEN_T\(.*\)$@#if !HAVE_SOCKLEN_T \&\& !defined(__FreeBS
     libavformat/os_support.h
 sed -i 's@^#if !HAVE_STRUCT_SOCKADDR_STORAGE\(.*\)$@#if !HAVE_STRUCT_SOCKADDR_STORAGE \&\& !defined(__FreeBSD__)@' \
     libavformat/network.h
+
+# OpenSSL lives in its own prefix (built by Dockerfile.ps4, #35).
+# `--enable-openssl` makes ffmpeg probe libssl/libcrypto via pkg-config;
+# without PKG_CONFIG_PATH pointing at the openssl prefix the probe
+# fails and https/tls silently configure to 0 (config_components.h).
+OPENSSL_PREFIX="${SYSROOT}/openssl"
+if [ ! -f "${OPENSSL_PREFIX}/lib/pkgconfig/libssl.pc" ]; then
+    echo "==> ERROR: OpenSSL for the PS4 target is not installed at ${OPENSSL_PREFIX}" >&2
+    echo "==> Rebuild the ps4-uk-build image (Dockerfile.ps4 builds it)." >&2
+    exit 1
+fi
+export PKG_CONFIG_PATH="${OPENSSL_PREFIX}/lib/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
 ./configure \
     --prefix=/usr/local \
     --enable-cross-compile --cc="${CC}" --cxx="${CXX}" \
@@ -70,6 +82,7 @@ sed -i 's@^#if !HAVE_STRUCT_SOCKADDR_STORAGE\(.*\)$@#if !HAVE_STRUCT_SOCKADDR_ST
     --disable-shared --enable-static --enable-pic \
     --disable-libass --disable-libfreetype --disable-libfribidi \
     --disable-protocols --enable-protocol='file,http,hls,https,tls' \
+    --enable-openssl \
     --disable-filters --enable-filter='rotate,transpose' \
     --disable-encoders --disable-muxers --disable-programs \
     --disable-debug --disable-doc --disable-runtime-cpudetect --disable-autodetect

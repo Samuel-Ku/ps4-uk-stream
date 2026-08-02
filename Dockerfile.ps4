@@ -37,7 +37,7 @@ FROM docker.io/openorbisofficial/toolchain:latest
 USER root
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        cmake make git pkg-config curl \
+        cmake make git pkg-config curl perl \
         libfreetype-dev libpng-dev zlib1g-dev libbz2-dev libass-dev \
         libfribidi-dev nasm yasm llvm \
         python3 ca-certificates && rm -rf /var/lib/apt/lists/*
@@ -193,9 +193,47 @@ RUN mkdir -p /opt/oo/lib/pkgconfig && \
     printf 'prefix=/opt/oo\nexec_prefix=${prefix}\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\n\nName: freetype2\nDescription: FreeType (PS4 / OpenOrbisSDK)\nVersion: 2.9.0\nLibs: -L${libdir} -lfreetype\nCflags: -I${includedir}/freetype2\n' > /opt/oo/lib/pkgconfig/freetype2.pc && \
     ls /opt/oo/lib/pkgconfig/
 
+# Cross-build OpenSSL 3.0 for the PS4 target (#35): FFmpeg is
+# configured with `--disable-autodetect --enable-protocol='… https,tls'`,
+# but without OpenSSL the https/tls protocols silently configure as
+# `CONFIG_HTTPS_PROTOCOL 0` / `CONFIG_TLS_PROTOCOL 0` (verified in
+# config_components.h of the 2026-08-02 build) — every https stream
+# would fail on the console. OpenSSL cross-builds cleanly with the same
+# clang --target + sysroot recipe as the rest of the image; plain C
+# (no-asm) is deliberately chosen over the asm accelerated build so we
+# do not inherit FreeBSD sysroot / assembler quirks — the streams we
+# terminate are ~2 Mbps, far below what no-asm AES-GCM can do.
+# Installed into its own prefix so nothing in the SDK tree is
+# overwritten; ffmpeg-ps4.sh finds it via PKG_CONFIG_PATH.
+# The bss_dgram.c sed: openssl's `#if defined(__FreeBSD__) && …`
+# override hard-codes the glibc/FreeBSD field name `__u6_addr`, but the
+# OpenOrbisSDK in6.h calls the same union `__in6_union.__s6_addr32` —
+# renaming the member is all the patch does (the standard
+# IN6_IS_ADDR_V4MAPPED semantics stay).
+RUN set -e; \
+    curl -fsSL --retry 3 \
+        https://github.com/openssl/openssl/releases/download/openssl-3.0.15/openssl-3.0.15.tar.gz \
+        -o /tmp/openssl.tar.gz && \
+    tar -xzf /tmp/openssl.tar.gz -C /tmp && \
+    cd /tmp/openssl-3.0.15 && \
+    sed -i 's@#  define s6_addr32 __u6_addr.__u6_addr32@#  define s6_addr32 __in6_union.__s6_addr32@' \
+        crypto/bio/bss_dgram.c && \
+    ./Configure BSD-x86_64 no-shared no-asm no-threads no-tests no-module \
+        no-devcryptoeng \
+        --cross-compile-prefix="" \
+        CC=clang AR=llvm-ar RANLIB=llvm-ranlib NM=llvm-nm STRIP=llvm-strip \
+        --prefix=/opt/oo/openssl --openssldir=/opt/oo/openssl/ssl \
+        CFLAGS="--target=x86_64-pc-freebsd12-elf -isysroot /opt/oo -isystem /opt/oo/include -O2 -fPIC" \
+        LDFLAGS="-fuse-ld=/opt/oo/linker.sh -L/opt/oo/lib -lc -lkernel -lc++ /opt/oo/lib/crt1.o /opt/oo/lib/crtlib.o" && \
+    make build_libs -j"$(nproc)" && \
+    make install_sw install_ssldirs && \
+    ls /opt/oo/openssl/lib/pkgconfig/ && \
+    rm -rf /tmp/openssl-3.0.15 /tmp/openssl.tar.gz
+
 # /opt/oo is now a hybrid: OpenOrbis source + Sony SDK headers/libs
 # layered on top, with libc.a patched (weaken __progname + alias
-# _init_tls) and crtlib.o compiled from upstream crtlib.c.
+# _init_tls), crtlib.o compiled from upstream crtlib.c, and a
+# cross-built OpenSSL under /opt/oo/openssl for FFmpeg's https/tls.
 ENV OO_PS4_TOOLCHAIN=/opt/oo
 ENV OPENORBIS=/opt/oo
 WORKDIR /work

@@ -49,7 +49,10 @@ fi
 echo "==> Building PS4 PKG inside ps4-uk-build"
 # Use a script file (not an inline -c) so multi-line bash + newlines
 # survive the host->container boundary without ANSI-C quoting issues.
-cp /tmp/run-in-container.sh "$BUILD_CTX/run-in-container.sh"
+# The container-side pipeline is repo-tracked (run-in-ps4-container.sh);
+# the earlier /tmp/run-in-container.sh staging made builds
+# non-reproducible on a clean machine (issue #32).
+cp "$ROOT/pplay-fork/scripts/run-in-ps4-container.sh" "$BUILD_CTX/run-in-container.sh"
 "$RUNTIME" run --rm \
     -v "$ROOT/pplay-fork":/work \
     -v "$BUILD_CTX/run-in-container.sh":/run-in-container.sh:ro \
