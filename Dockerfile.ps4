@@ -1,10 +1,61 @@
-FROM ubuntu:22.04
+# OpenOrbis-based PS4 build image for pPlay @ cpasjuste.
+#
+# Strategy: layer the OpenOrbis cmake helper (ps4.cmake) + the official
+# pkg tools on top of `openorbisofficial/toolchain:latest`, which already
+# ships clang-10 + the FreeBSD 12.0 sysroot + the PS4 Sce* libraries
+# + crt1.o/crti.o/crtn.o (built from Sony's leaked SDK). The OpenOrbis
+# source repo (v0.5.2) only contains source + cmake glue; the heavy
+# binaries (libc.a, libc++.a, crt*.o, the Sony Sce* libraries) live in
+# the prebuilt Docker image.
+#
+# Output: clang-10, ld.lld, ps4.cmake at /opt/oo/cmake/ps4.cmake,
+#         PkgTool.Core + create-eboot at /opt/oo/bin/linux, sysroot
+#         at /lib/OpenOrbisSDK with /opt/oo as a compat symlink so the
+#         existing ps4.cmake (which uses ${OPENORBIS} as sysroot)
+#         resolves correctly.
+FROM docker.io/openorbisofficial/toolchain:latest
+
+USER root
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    clang lld cmake make git pkg-config \
-    libfreetype-dev libpng-dev zlib1g-dev libbz2-dev libass-dev \
-    python3 ca-certificates && rm -rf /var/lib/apt/lists/*
+        cmake make git pkg-config \
+        libfreetype-dev libpng-dev zlib1g-dev libbz2-dev libass-dev \
+        libfribidi-dev nasm yasm \
+        python3 ca-certificates && rm -rf /var/lib/apt/lists/*
+
+# OpenOrbis v0.5.2 source: provides ps4.cmake (CMake toolchain glue
+# that wires clang-10 --target=x86_64-pc-freebsd12-elf + --isysroot
+# to the right place) and the C++ crtbegin.o / crtend.o stubs that the
+# official image's prebuilt Sony SDK does NOT ship.
 RUN git clone --depth 1 --branch v0.5.2 \
-    https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain.git /opt/oo
+        https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain.git /opt/oo && \
+    rm -rf /opt/oo/.git
+# Build the C++ support objects (crtbegin.o, crtend.o) from OpenOrbis
+# source. Without these, ld.lld fails to find the C++ init/destruct
+# hooks. The Makefile invokes the host clang-10 (already in the image)
+# with --target=x86_64-pc-freebsd12-elf and emits ELF objects into
+# /opt/oo/lib.
+RUN cd /opt/oo/src/crt && \
+    for tgt in crtbegin crtend crtbeginS crtendS; do \
+        echo "==> Building $tgt"; \
+        clang --target=x86_64-pc-freebsd12-elf -c -o /opt/oo/lib/${tgt}.o \
+              -I/opt/oo/include -ffreestanding -fPIC ${tgt}.cpp 2>&1 | head -5 \
+              || echo "  (skipped $tgt)"; \
+    done
+# Symlink the prebuilt Sony SDK into the OpenOrbis tree so ps4.cmake's
+# ${OPENORBIS}/include and ${OPENORBIS}/lib resolve to the right place.
+RUN ln -sfn /usr/lib/OpenOrbisSDK/include /opt/oo/include-sony && \
+    cp -rsn /usr/lib/OpenOrbisSDK/include/* /opt/oo/include/ 2>/dev/null || true; \
+    cp -rsn /usr/lib/OpenOrbisSDK/lib/* /opt/oo/lib/ 2>/dev/null || true; \
+    ls /opt/oo/lib/crt1.o /opt/oo/lib/crtbegin.o /opt/oo/lib/libc++.a 2>&1 | head
+# Pkg tools (the official image has them under a different name).
+RUN cp /usr/lib/OpenOrbisSDK/bin/linux/PkgTool.Core  /opt/oo/bin/linux/ && \
+    cp /usr/lib/OpenOrbisSDK/bin/linux/create-eboot  /opt/oo/bin/linux/create-fself && \
+    cp /usr/lib/OpenOrbisSDK/bin/linux/readelf       /opt/oo/bin/linux/
+
+# /opt/oo is now a hybrid: OpenOrbis source + Sony SDK headers/libs
+# layered on top. ps4.cmake (used by libcross2d) sees this as the
+# toolchain root and passes it as --isysroot.
 ENV OO_PS4_TOOLCHAIN=/opt/oo
 ENV OPENORBIS=/opt/oo
 WORKDIR /work
