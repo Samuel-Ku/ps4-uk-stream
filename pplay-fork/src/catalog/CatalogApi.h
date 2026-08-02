@@ -66,6 +66,14 @@ struct ContentItem {
     std::vector<Season> seasons;
 };
 
+// Memory policy (issue #74): series-form content is remembered, movies
+// never are. Form is keyed on seasons presence — `type` carries a STYLE
+// tag ("anime", "cartoon", "dorama"), which is orthogonal to form, so an
+// anime MOVIE (style=anime, no seasons) must not be remembered.
+inline bool shouldRememberMemory(const ContentItem &item) {
+    return !item.seasons.empty();
+}
+
 struct StreamInfo {
     std::string url;
     std::string type;

@@ -299,7 +299,11 @@ void ScreenContent::onUpdate() {
                     base.translationLabel = pendingPlayTranslationLabel_;
                     base.updatedAt = static_cast<std::int64_t>(std::time(nullptr));
                     st->setResume(base);
-                    if (item_.type != "movie") {  // movies are never remembered
+                    // Series-form content is remembered; movies never are.
+                    // Form = seasons presence (issue #74), not the type
+                    // string — anime/cartoon/dorama are STYLES, and an
+                    // anime movie has no seasons.
+                    if (shouldRememberMemory(item_)) {
                         MemoryEntry m;
                         m.groupKey = base.groupKey;
                         m.provider = base.provider;
