@@ -1,0 +1,65 @@
+[
+ {
+  "id": "kinotron:10127-djuna-chastina-tretja",
+  "provider": "kinotron",
+  "type": "series",
+  "title": "Дюна: Частина третя",
+  "year": null,
+  "poster": "https://kinotron.tv/uploads/posts/2026-03/1773836350_4mtxkctz75p4vjbaxrjztvzkuxk.webp",
+  "url": "https://kinotron.tv/10127-djuna-chastina-tretja.html"
+ },
+ {
+  "id": "kinotron:4519-duna",
+  "provider": "kinotron",
+  "type": "series",
+  "title": "Дюна",
+  "year": null,
+  "poster": "https://kinotron.tv/uploads/posts/2021-10/1634712034_1633296450_14987415_ua_aa0e38ff037566a74f35577d496fc508.jpeg",
+  "url": "https://kinotron.tv/4519-duna.html"
+ },
+ {
+  "id": "kinotron:9728-djuna",
+  "provider": "kinotron",
+  "type": "series",
+  "title": "Дюна",
+  "year": null,
+  "poster": "https://kinotron.tv/uploads/posts/2026-01/1767958931_6zjbr7wflupg7bbeialyxm6jjdk.webp",
+  "url": "https://kinotron.tv/9728-djuna.html"
+ },
+ {
+  "id": "kinotron:4460-duna-2021",
+  "provider": "kinotron",
+  "type": "series",
+  "title": "Дюна",
+  "year": null,
+  "poster": "https://kinotron.tv/uploads/posts/2021-12/1638993393_cover.jpg",
+  "url": "https://kinotron.tv/4460-duna-2021.html"
+ },
+ {
+  "id": "kinotron:7300-djuna-proroctvo",
+  "provider": "kinotron",
+  "type": "series",
+  "title": "Дюна: Пророцтво",
+  "year": null,
+  "poster": "https://kinotron.tv/uploads/posts/2024-11/1731924942_11111111111dg7dodrgx7o52olo7vveujuisrw.jpeg",
+  "url": "https://kinotron.tv/7300-djuna-proroctvo.html"
+ },
+ {
+  "id": "kinotron:6262-djuna-chastina-druga",
+  "provider": "kinotron",
+  "type": "series",
+  "title": "Дюна: Частина друга",
+  "year": null,
+  "poster": "https://kinotron.tv/uploads/posts/2024-03/1710493943_poqzwlmege8p4zsgehka0b2m4zk.jpg",
+  "url": "https://kinotron.tv/6262-djuna-chastina-druga.html"
+ },
+ {
+  "id": "kinotron:1252-dyuna-hodorovskogo",
+  "provider": "kinotron",
+  "type": "series",
+  "title": "«Дюна» Ходоровского",
+  "year": null,
+  "poster": "https://kinotron.tv/uploads/posts/2020-06/159351300435_jodorowskys_dune.jpg",
+  "url": "https://kinotron.tv/1252-dyuna-hodorovskogo.html"
+ }
+]
