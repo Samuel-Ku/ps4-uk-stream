@@ -23,6 +23,11 @@ using ui::kFocusOutline;
 using ui::drawFocusBox;
 using ui::kKeyCellW;
 constexpr int kKeySize = kBodySize;
+constexpr float kChipStripHeight = 48.0f;
+// The chip strip is the SECOND element on the screen (after the title);
+// the keyboard grid slides down by the strip's height + gap when the
+// strip is on screen.
+constexpr float kChipStripGap = 8.0f;
 } // namespace
 
 ScreenSearch::ScreenSearch(c2d::C2DRenderer *main)
@@ -68,6 +73,22 @@ ScreenSearch::ScreenSearch(c2d::C2DRenderer *main)
     helpText_->setFillColor(c2d::Color{0x88, 0x88, 0x88, 0xff});
     add(helpText_);
 
+    // Issue #63 — fetch /api/sections on entry so we have a provider
+    // roster to build the chip strip from. The fetch is fire-and-forget;
+    // the strip is built when the response lands. Until then, the
+    // keyboard is the only focus target.
+    if (api_) {
+        providersFetched_.store(false, std::memory_order_release);
+        api_->sectionsAsync(
+            [this](bool ok, std::vector<ProviderSections> providers, std::string err) {
+                if (ok) {
+                    providerRoster_ = std::move(providers);
+                    rebuildChipStrip();
+                }
+                providersFetched_.store(true, std::memory_order_release);
+            });
+    }
+
     (void)W;
     renderKeyboard();
     setStatus("Готовий");
@@ -80,6 +101,11 @@ ScreenSearch::~ScreenSearch() {
         if (main_ != nullptr) main_->remove(child_);
         delete child_;
         child_ = nullptr;
+    }
+    if (chipStrip_ != nullptr) {
+        remove(chipStrip_);
+        delete chipStrip_;
+        chipStrip_ = nullptr;
     }
 }
 
@@ -96,12 +122,85 @@ void ScreenSearch::setChild(c2d::C2DObject *next) {
     }
 }
 
+void ScreenSearch::rebuildChipStrip() {
+    // Tear down the previous strip (if any) so we never leak its
+    // children. The strip is owned by this screen via add().
+    if (chipStrip_ != nullptr) {
+        remove(chipStrip_);
+        delete chipStrip_;
+        chipStrip_ = nullptr;
+    }
+
+    // Build chips: "all" first, then one per provider. Providers we
+    // know are DOWN get grayed-down (visible but unselectable); the
+    // "all" chip is always enabled — it represents "no filter" and the
+    // user can always clear the filter.
+    std::vector<ui::Chip> chips;
+    {
+        ui::Chip all;
+        all.label = "Усі";
+        all.provider = "";  // empty == no filter
+        all.isEnabled = true;
+        chips.push_back(std::move(all));
+    }
+    for (const auto &p : providerRoster_) {
+        ui::Chip c;
+        c.label = p.name.empty() ? p.provider : p.name;
+        c.provider = p.provider;
+        if (CatalogContext::providerStatus(p.provider) ==
+            CatalogContext::ProviderStatus::Down) {
+            c.isEnabled = false;
+        }
+        chips.push_back(std::move(c));
+    }
+
+    if (chips.empty()) return;
+
+    const float W = static_cast<float>(static_cast<c2d::C2DRenderer *>(main_)->getSize().x);
+    const float chipY = kMarginY + kTitleSize + 12;
+    chipStrip_ = new ui::ChipStrip(main_, chips, {kMarginX, chipY, W - 2 * kMarginX, kChipStripHeight});
+    chipStrip_->setVisibility(c2d::Visibility::Hidden);
+    add(chipStrip_);
+
+    // Default focus is the active filter chip — if the user already
+    // had a filter on, highlight it; otherwise the "all" chip.
+    int focusIndex = 0;
+    if (!activeFilter_.empty()) {
+        for (size_t i = 0; i < chips.size(); ++i) {
+            if (chips[i].provider == activeFilter_) {
+                focusIndex = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+    chipStrip_->setCurrentIndex(focusIndex);
+
+    // Slide the keyboard down to make room for the strip. We add
+    // kChipStripHeight + kChipStripGap to the keyboard's baseline. The
+    // strip lives between the text label and the keyboard.
+    const float keyboardOffset = kChipStripHeight + kChipStripGap;
+    keyboardText_->setPosition({kMarginX, kMarginY + kTitleSize + kBodySize + 28 + keyboardOffset});
+}
+
+void ScreenSearch::applyFilter(const std::string &provider) {
+    activeFilter_ = provider;
+    if (provider.empty()) {
+        setStatus("Фільтр: всі");
+    } else {
+        setStatus("Фільтр: " + provider);
+    }
+    // Refetch results under the new filter, if the user has already
+    // typed a query. We re-push the results screen so the user sees
+    // the filter go live.
+    if (!kb_.text().empty()) requestSearch();
+}
+
 void ScreenSearch::renderKeyboard() {
     std::ostringstream oss;
     const int rows = kb_.rows();
     const int cols = kb_.cols();
     const float startX = kMarginX;
-    const float startY = kMarginY + kTitleSize + kBodySize + 28;
+    const float startY = keyboardText_->getPosition().y;
     const float cellW = kKeyCellW;
     const float cellH = kKeySize + 12.0f;
     // Pre-position cursor behind the focused cell; reset size based on the
@@ -160,18 +259,19 @@ void ScreenSearch::requestSearch() {
     if (q.empty()) return;
     inFlight_ = true;
     searchFetched_.store(false, std::memory_order_release);
-    api_->searchAsync(q, [this](bool ok, std::vector<SearchItem> results, std::string err) {
-        fetchedResults_ = std::move(results);
-        if (ok) {
-            fetchError_.clear();
-            resultCount_ = fetchedResults_.size();
-        } else {
-            fetchError_ = cs::ui::humanErrorOrGeneric(err);
-            resultCount_ = 0;
-        }
-        inFlight_ = false;
-        searchFetched_.store(true, std::memory_order_release);
-    });
+    api_->searchAsyncWithProvider(q, activeFilter_,
+        [this](bool ok, std::vector<SearchItem> results, std::string err) {
+            fetchedResults_ = std::move(results);
+            if (ok) {
+                fetchError_.clear();
+                resultCount_ = fetchedResults_.size();
+            } else {
+                fetchError_ = cs::ui::humanErrorOrGeneric(err);
+                resultCount_ = 0;
+            }
+            inFlight_ = false;
+            searchFetched_.store(true, std::memory_order_release);
+        });
 }
 
 void ScreenSearch::onUpdate() {
@@ -183,7 +283,7 @@ void ScreenSearch::onUpdate() {
         // On success with results, push ScreenResults in search mode.
         if (resultCount_ > 0) {
             auto *results = new ScreenResults(main_,
-                                              /*provider*/ "",
+                                              /*provider*/ activeFilter_,
                                               /*section*/ "",
                                               kb_.text(),
                                               "Результати пошуку");
@@ -198,6 +298,33 @@ void ScreenSearch::onUpdate() {
 
     const unsigned int keys = main_->getInput()->getKeys(0);
 
+    if (focusMode_ == FocusMode::Chips) {
+        // Chip strip owns input. L/R moves focus, Cross fires the
+        // focused chip (apply the filter and refetch), Triangle/Circle
+        // returns to the keyboard.
+        if (keys & c2d::Input::Key::Left) {
+            if (chipStrip_) chipStrip_->moveLeft();
+        } else if (keys & c2d::Input::Key::Right) {
+            if (chipStrip_) chipStrip_->moveRight();
+        } else if (keys & c2d::Input::Key::Fire1) {
+            if (chipStrip_ && chipStrip_->hasEnabledChip()) {
+                const int idx = chipStrip_->selectFocused();
+                if (idx >= 0 && idx < chipStrip_->chipCount()) {
+                    applyFilter(chipStrip_->chipAt(idx).provider);
+                }
+            }
+            focusMode_ = FocusMode::Keyboard;
+            if (chipStrip_) chipStrip_->setVisibility(c2d::Visibility::Hidden);
+            cursor_->setVisibility(c2d::Visibility::Visible);
+        } else if (keys & c2d::Input::Key::Fire3 || keys & c2d::Input::Key::Fire2) {
+            focusMode_ = FocusMode::Keyboard;
+            if (chipStrip_) chipStrip_->setVisibility(c2d::Visibility::Hidden);
+            cursor_->setVisibility(c2d::Visibility::Visible);
+        }
+        RectangleShape::onUpdate();
+        return;
+    }
+
     if (keys & c2d::Input::Key::Up) {
         kbRow_ = (kbRow_ - 1 + kb_.rows()) % kb_.rows();
         renderKeyboard();
@@ -211,10 +338,18 @@ void ScreenSearch::onUpdate() {
         kbCol_ = (kbCol_ + 1) % kb_.cols();
         renderKeyboard();
     } else if (keys & c2d::Input::Key::Fire3) {
-        // Triangle — space
-        kb_.appendUtf8(" ");
-        renderKeyboard();
-        renderStatus();
+        // Triangle — open the chip strip if it's been built (the
+        // providers fetch has landed). Otherwise it falls back to the
+        // legacy "space" semantics (insert a space in the query).
+        if (chipStrip_ != nullptr) {
+            focusMode_ = FocusMode::Chips;
+            chipStrip_->setVisibility(c2d::Visibility::Visible);
+            cursor_->setVisibility(c2d::Visibility::Hidden);
+        } else {
+            kb_.appendUtf8(" ");
+            renderKeyboard();
+            renderStatus();
+        }
     } else if (keys & c2d::Input::Key::Fire4) {
         // Square — backspace
         kb_.backspace();

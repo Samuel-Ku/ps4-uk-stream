@@ -143,6 +143,20 @@ void CatalogApi::searchAsync(const std::string &query, SearchCb cb) {
     });
 }
 
+void CatalogApi::searchAsyncWithProvider(const std::string &query,
+                                         const std::string &provider, SearchCb cb) {
+    impl_->post([this, query, provider, cb = std::move(cb)]() {
+        std::string url = impl_->base() + "/api/search?q=" + urlEncode(query);
+        if (!provider.empty()) {
+            url += "&provider=" + urlEncode(provider);
+        }
+        impl_->httpGet(url, [cb](bool ok, std::string body, std::string err) {
+            if (!ok) { cb(false, {}, std::move(err)); return; }
+            cb(true, parseSearch(body), {});
+        });
+    });
+}
+
 void CatalogApi::contentAsync(const std::string &id, ContentCb cb) {
     impl_->post([this, id, cb = std::move(cb)]() {
         // Backend exposes /api/content/{content_id:path} (path param,

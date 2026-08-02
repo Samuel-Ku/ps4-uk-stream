@@ -103,6 +103,8 @@ c2d_add_catalog_test_with_api(test_catalog_api)
 c2d_add_catalog_test_with_api(test_memory_policy)
 # Issue #62 — ContentItem.sources parsing (chip strip roster).
 c2d_add_catalog_test_with_api(test_sources_parsing)
+# Issue #63 — search AsyncWithProvider (provider filter chip strip).
+c2d_add_catalog_test_with_api(test_search_provider)
 c2d_add_catalog_test_widget(test_keyboard)
 c2d_add_catalog_test_widget(test_keyboard_utf8)
 c2d_add_catalog_test_with_fake(test_catalog_api_async)

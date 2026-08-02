@@ -115,6 +115,10 @@ public:
                                         std::string contentType, std::string error)>;
 
     void searchAsync(const std::string &query, SearchCb cb);
+    // Issue #63 — provider-scoped variant. When `provider` is non-empty
+    // the backend restricts the result set to that provider's catalog.
+    void searchAsyncWithProvider(const std::string &query,
+                                 const std::string &provider, SearchCb cb);
     void contentAsync(const std::string &id, ContentCb cb);
     // Issue #62: source-filter variant. When `source` is non-empty the
     // backend resolves the same group_key under a different provider and
