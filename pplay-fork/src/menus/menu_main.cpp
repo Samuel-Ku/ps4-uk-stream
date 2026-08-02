@@ -52,6 +52,9 @@ void MenuMain::onOptionSelection(MenuItem *item) {
     } else if (item->name == "Network") {
         setVisibility(Visibility::Hidden, true);
         main->show(Main::MenuType::Network);
+    } else if (item->name == "Каталог UA") {
+        setVisibility(Visibility::Hidden, true);
+        main->show(Main::MenuType::Catalog);
     } else if (item->name == "Options" && !menuMainOptions->getButtons().empty()) {
         setVisibility(Visibility::Hidden, true);
         menuMainOptions->setVisibility(Visibility::Visible);
