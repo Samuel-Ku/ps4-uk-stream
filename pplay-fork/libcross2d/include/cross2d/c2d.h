@@ -114,8 +114,10 @@ extern c2d::Renderer *c2d_renderer;
 // v3 control scheme (issue #56): western PlayStation layout —
 // Fire1=Cross(confirm), Fire2=Circle(back), Fire3=Triangle(cycle/space),
 // Fire4=Square(filter/backspace), Fire5=L1, Fire6=R1.
-// Physical indices follow the SDL DS4 raw order (1=Cross, 2=Circle,
-// 3=Triangle, 0=Square, 4=L1, 5=R1); VERIFY on-console during M0.
+// VERIFY-ON-CONSOLE: indices follow the PS4 SDK pad order (1=Cross,
+// 2=Circle, 3=Triangle, 0=Square, 4=L1, 5=R1) — NOT the SDL/evdev raw
+// order (0=Cross, 1=Circle, 2=Square, 3=Triangle). On-console button
+// verification happens in the M0/DoD pass (issue #68).
 #define KEY_JOY_FIRE1_DEFAULT   1
 #define KEY_JOY_FIRE2_DEFAULT   2
 #define KEY_JOY_FIRE3_DEFAULT   3
@@ -242,10 +244,12 @@ extern c2d::Renderer *c2d_renderer;
 #define C2DIo POSIXIo
 #define C2DClock POSIXClock
 
-// "Hori GEM Xbox controller"
-// v3 control scheme (issue #56): with a DualShock on SDL, 0=Cross, 1=Circle,
-// 2=Square, 3=Triangle, 4=L1, 5=R1; with an Xbox pad, A/B/X/Y sit at the
-// same indices, so Fire3/Fire4 = top/left face buttons on both families.
+// v3 control scheme (issue #56): western PlayStation layout —
+// Fire1=Cross(confirm), Fire2=Circle(back), Fire3=Triangle(cycle/space),
+// Fire4=Square(filter/backspace), Fire5=L1, Fire6=R1.
+// SDL2 reports the DS4 in the Linux kernel/SDL raw order: 0=Cross, 1=Circle,
+// 2=Square, 3=Triangle, 4=L1, 5=R1. An Xbox pad sits at the same indices
+// (A/B/X/Y), so Fire3/Fire4 = top/left face buttons on both families.
 #define KEY_JOY_UP_DEFAULT      (-1)  // use hat
 #define KEY_JOY_DOWN_DEFAULT    (-1)  // use hat
 #define KEY_JOY_LEFT_DEFAULT    (-1)  // use hat
@@ -284,14 +288,18 @@ extern c2d::Renderer *c2d_renderer;
 #define C2DIo POSIXIo
 #define C2DClock POSIXClock
 
+// v3 control scheme (issue #56): same western layout and same raw
+// gamepad order as the __SDL2__ block — SDL1 forwards the kernel's
+// evdev button codes 1:1, so Fire1=0(Cross), Fire2=1(Circle),
+// Fire3=3(Triangle), Fire4=2(Square), Fire5=4(L1), Fire6=5(R1).
 #define KEY_JOY_UP_DEFAULT      -1  // use hat
 #define KEY_JOY_DOWN_DEFAULT    -1  // use hat
 #define KEY_JOY_LEFT_DEFAULT    -1  // use hat
 #define KEY_JOY_RIGHT_DEFAULT   -1  // use hat
 #define KEY_JOY_FIRE1_DEFAULT   0
 #define KEY_JOY_FIRE2_DEFAULT   1
-#define KEY_JOY_FIRE3_DEFAULT   2
-#define KEY_JOY_FIRE4_DEFAULT   3
+#define KEY_JOY_FIRE3_DEFAULT   3
+#define KEY_JOY_FIRE4_DEFAULT   2
 #define KEY_JOY_FIRE5_DEFAULT   4
 #define KEY_JOY_FIRE6_DEFAULT   5
 #define KEY_JOY_COIN1_DEFAULT   6
@@ -410,10 +418,14 @@ extern c2d::Renderer *c2d_renderer;
 #define KEY_JOY_DOWN_DEFAULT    -1  // use hat
 #define KEY_JOY_LEFT_DEFAULT    -1  // use hat
 #define KEY_JOY_RIGHT_DEFAULT   -1  // use hat
+// v3 control scheme (issue #56): SFML reads the same kernel button
+// codes by index, so the layout matches the __SDL2__ block —
+// Fire1=0(Cross), Fire2=1(Circle), Fire3=3(Triangle), Fire4=2(Square),
+// Fire5=4(L1), Fire6=5(R1).
 #define KEY_JOY_FIRE1_DEFAULT   0
 #define KEY_JOY_FIRE2_DEFAULT   1
-#define KEY_JOY_FIRE3_DEFAULT   2
-#define KEY_JOY_FIRE4_DEFAULT   3
+#define KEY_JOY_FIRE3_DEFAULT   3
+#define KEY_JOY_FIRE4_DEFAULT   2
 #define KEY_JOY_FIRE5_DEFAULT   4
 #define KEY_JOY_FIRE6_DEFAULT   5
 #define KEY_JOY_COIN1_DEFAULT   6
