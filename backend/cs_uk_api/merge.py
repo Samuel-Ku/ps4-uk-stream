@@ -120,10 +120,9 @@ def group_key_from(title: str, media_type: str, year: int | None, item_id: str) 
 
 @dataclass(frozen=True)
 class MergeGroup:
-    """One merged title: a stable key, a display representative, all sources."""
+    """One merged title: a stable key plus all its source items."""
 
     key: str
-    representative: SearchResult
     sources: tuple[SearchResult, ...] = field(compare=False)
 
 
@@ -188,7 +187,6 @@ def merge_results(items: Iterable[SearchResult]) -> list[MergeGroup]:
 
     groups: list[MergeGroup] = []
     for members in buckets.values():
-        first = items[members[0]]
         # Group key = min over the members' own stateless item keys:
         # order-independent, and every member can recompute its own key
         # from its listing data alone (issue #69, v3 spec §4.3). Members
@@ -203,7 +201,6 @@ def merge_results(items: Iterable[SearchResult]) -> list[MergeGroup]:
         groups.append(
             MergeGroup(
                 key=key,
-                representative=first,
                 sources=tuple(items[m] for m in members),
             )
         )

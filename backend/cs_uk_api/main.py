@@ -5,6 +5,7 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
+from typing import Awaitable, Callable, TypeVar
 from urllib.parse import unquote
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -45,6 +46,54 @@ _search_cache = TtlCache(default_ttl_s=SETTINGS.cache_search_s)
 _content_cache = TtlCache(default_ttl_s=SETTINGS.cache_content_s)
 _browse_cache = TtlCache(default_ttl_s=SETTINGS.cache_search_s)
 _blocklist_cache = TtlCache(default_ttl_s=SETTINGS.cache_content_s)
+
+T = TypeVar("T")
+
+
+async def _upstream_guard(
+    provider_id: str,
+    coro: Awaitable[T],
+    log_label: str,
+    *,
+    on_error: T | None = None,
+    exc_handler: Callable[[Exception], None] | None = None,
+) -> T:
+    """Await an upstream provider call with health recording + the 502 guard.
+
+    The record+log+raise(502) pattern shared by every upstream try/except
+    site lives here and nowhere else:
+      - success -> ``TRACKER.record(provider_id, ok=True)`` and the result;
+      - failure -> ``TRACKER.record(provider_id, ok=False)`` + a warning
+        log, then either return ``on_error`` (search degrades one provider
+        to ``[]``) or raise the canonical 502 ``upstream_unreachable``;
+      - ``exc_handler`` runs first on failure, so a call site can translate
+        client-side errors (stream's invalid_translation / translation_missing
+        ProviderError codes) into their own HTTP statuses — those propagate
+        untouched because they are raised before any recording.
+    """
+    try:
+        result = await coro
+    except Exception as e:  # noqa: BLE001
+        if exc_handler is not None:
+            exc_handler(e)
+        TRACKER.record(provider_id, ok=False)
+        log.warning("%s failed provider=%s err=%s", log_label, provider_id, e)
+        if on_error is not None:
+            return on_error
+        raise HTTPException(502, detail=ErrorResponse(error="upstream_unreachable", message=str(e)).model_dump()) from e
+    TRACKER.record(provider_id, ok=True)
+    return result
+
+
+def _stream_provider_error(e: Exception) -> None:
+    """Translation-level validation errors are client-side semantics, not
+    upstream-health signals — they must not move the needle."""
+    if not isinstance(e, ProviderError):
+        return
+    if e.code == "invalid_translation":
+        raise HTTPException(400, detail=ErrorResponse(error=e.code, message=e.message).model_dump()) from e
+    if e.code == "translation_missing":
+        raise HTTPException(404, detail=ErrorResponse(error=e.code, message=e.message).model_dump()) from e
 
 
 @asynccontextmanager
@@ -120,13 +169,11 @@ async def browse(
     cached = _browse_cache.get(cache_key)
     if cached is not None:
         return cached  # type: ignore[return-value]
-    try:
-        results, has_next = await p.browse(section, page, get_client())
-    except Exception as e:
-        TRACKER.record(provider, ok=False)
-        log.warning("browse failed provider=%s section=%s page=%d err=%s", provider, section, page, e)
-        raise HTTPException(502, detail=ErrorResponse(error="upstream_unreachable", message=str(e)).model_dump()) from e
-    TRACKER.record(provider, ok=True)
+    results, has_next = await _upstream_guard(
+        provider,
+        p.browse(section, page, get_client()),
+        f"browse section={section} page={page}",
+    )
     resp = BrowseResponse(provider=provider, section=section, page=page, has_next=has_next, results=results)
     _browse_cache.set(cache_key, resp)
     return resp
@@ -147,14 +194,7 @@ async def search(
     http = get_client()
 
     async def run(p):
-        try:
-            results = await p.search(q, http)
-        except Exception as e:  # noqa: BLE001
-            TRACKER.record(p.id, ok=False)
-            log.warning("provider=%s error=%s", p.id, e)
-            return []
-        TRACKER.record(p.id, ok=True)
-        return results
+        return await _upstream_guard(p.id, p.search(q, http), p.id, on_error=[])
 
     results_lists = await asyncio.wait_for(
         asyncio.gather(*(run(p) for p in selected)),
@@ -178,13 +218,11 @@ async def content(content_id: str) -> ContentResponse:
     if provider_id not in PROVIDERS or not external_id:
         raise HTTPException(404, detail=ErrorResponse(error="not_found", message=content_id).model_dump())
     http = get_client()
-    try:
-        resp = await PROVIDERS[provider_id].content(external_id, http)
-    except Exception as e:
-        TRACKER.record(provider_id, ok=False)
-        log.warning("content failed id=%s err=%s", content_id, e)
-        raise HTTPException(502, detail=ErrorResponse(error="upstream_unreachable", message=str(e)).model_dump()) from e
-    TRACKER.record(provider_id, ok=True)
+    resp = await _upstream_guard(
+        provider_id,
+        PROVIDERS[provider_id].content(external_id, http),
+        f"content id={content_id}",
+    )
     if SETTINGS.block_russian and is_blocked_country(resp.country):
         _blocklist_cache.set(cache_key, True)
         log.info("blocked Russian content id=%s country=%s", content_id, resp.country)
@@ -220,23 +258,12 @@ async def stream(content_id: str, translation: str | None = None) -> StreamRespo
                     message=f"{translation} not in {allowed}",
                 ).model_dump(),
             )
-    try:
-        resp = await provider.stream(rest, translation, http)
-    except ProviderError as e:
-        # Translation-level validation errors are client-side semantics,
-        # not upstream-health signals — they must not move the needle.
-        if e.code == "invalid_translation":
-            raise HTTPException(400, detail=ErrorResponse(error=e.code, message=e.message).model_dump()) from e
-        if e.code == "translation_missing":
-            raise HTTPException(404, detail=ErrorResponse(error=e.code, message=e.message).model_dump()) from e
-        TRACKER.record(provider_id, ok=False)
-        log.warning("stream failed id=%s err=%s", content_id, e)
-        raise HTTPException(502, detail=ErrorResponse(error="upstream_unreachable", message=str(e)).model_dump()) from e
-    except Exception as e:
-        TRACKER.record(provider_id, ok=False)
-        log.warning("stream failed id=%s err=%s", content_id, e)
-        raise HTTPException(502, detail=ErrorResponse(error="upstream_unreachable", message=str(e)).model_dump()) from e
-    TRACKER.record(provider_id, ok=True)
+    resp = await _upstream_guard(
+        provider_id,
+        provider.stream(rest, translation, http),
+        f"stream id={content_id}",
+        exc_handler=_stream_provider_error,
+    )
     return resp
 
 

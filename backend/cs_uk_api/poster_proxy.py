@@ -60,10 +60,10 @@ def _disk_get(directory: str, u: str, ttl_s: int) -> tuple[bytes, str] | None:
 
 
 def _disk_put(directory: str, u: str, body: bytes, ctype: str) -> None:
-    """Best-effort atomic write (tmp + rename); never raises."""
+    """Best-effort atomic write (plain `<final>.tmp` + rename); never raises."""
     ext = _EXT_FOR_TYPE.get(ctype, ".jpg")
     final = os.path.join(directory, _disk_basename(u) + ext)
-    tmp = final + ".tmp." + str(os.getpid())
+    tmp = final + ".tmp"
     try:
         os.makedirs(directory, exist_ok=True)
         with open(tmp, "wb") as f:

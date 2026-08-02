@@ -19,6 +19,12 @@ from typing import Literal
 
 HealthStatus = Literal["ok", "degraded", "down"]
 
+#: Wire status literals (v3 spec §2.1.3/§3.4) — one source of truth for the
+#: strings TRACKER emits; the same values are mirrored in models.HealthStatus.
+STATUS_OK = "ok"
+STATUS_DEGRADED = "degraded"
+STATUS_DOWN = "down"
+
 
 class HealthTracker:
     def __init__(
@@ -46,21 +52,18 @@ class HealthTracker:
         """Deterministically pin a provider as down (logged once at startup)."""
         self._markers[provider_id] = reason
 
-    def startup_marker(self, provider_id: str) -> str | None:
-        return self._markers.get(provider_id)
-
     def status(self, provider_id: str) -> HealthStatus:
         if provider_id in self._markers:
-            return "down"
+            return STATUS_DOWN
         samples = self._samples.get(provider_id)
         if not samples or len(samples) < self._min_samples:
-            return "ok"
+            return STATUS_OK
         error_rate = 1.0 - (sum(samples) / len(samples))
         if error_rate >= self._down_at:
-            return "down"
+            return STATUS_DOWN
         if error_rate >= self._degraded_at:
-            return "degraded"
-        return "ok"
+            return STATUS_DEGRADED
+        return STATUS_OK
 
     def last_error_at(self, provider_id: str) -> str | None:
         dt = self._errors.get(provider_id)
