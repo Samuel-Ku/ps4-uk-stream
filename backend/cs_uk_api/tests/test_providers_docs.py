@@ -23,7 +23,11 @@ PROVIDERS_MD = Path(__file__).parents[2] / "PROVIDERS.md"
 # with spaces around the id column. Rows that don't match this shape
 # are invisible to readers and to this guard.
 _ROW_RE = re.compile(r"^\| (\w+) +\| ([^|]+?) \| ([^|]+?) \| ([^|]+) +\|$")
-_SKIP_HOST_CHECK = {"coaninet", "uakino", "unimay"}  # no module-level BASE_URL
+# Providers whose modules have no module-level BASE_URL binding (they
+# define or import it under other names); their host cannot be checked
+# here. Keep this set honest — a provider that grows a BASE_URL must
+# leave it.
+_SKIP_HOST_CHECK = {"coaninet", "unimay"}
 
 
 def _table_rows() -> dict[str, tuple[str, str, str]]:
@@ -65,7 +69,6 @@ def test_registry_table_is_complete_and_well_formed() -> None:
         f"doc-only={sorted(set(rows) - set(ids))} "
         f"code-only={sorted(set(ids) - set(rows))}"
     )
-    assert len(rows) == len(ids)
 
 
 def test_registry_table_sites_match_provider_hosts() -> None:
@@ -74,7 +77,7 @@ def test_registry_table_sites_match_provider_hosts() -> None:
             continue
         mod = __import__(f"cs_uk_api.providers.{pid}", fromlist=["BASE_URL"])
         host = mod.BASE_URL.split("//", 1)[-1].split("/", 1)[0]
-        assert site.split(" ")[0].lstrip("(") == host, (
+        assert site.split(" ")[0] == host, (
             f"PROVIDERS.md site '{site}' != {pid}.BASE_URL host '{host}'"
         )
 
