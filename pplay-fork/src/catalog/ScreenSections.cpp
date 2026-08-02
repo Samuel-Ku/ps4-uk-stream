@@ -9,8 +9,8 @@ ScreenSections::ScreenSections(c2d::C2DRenderer *main)
                       static_cast<float>(main->getSize().y)}) {
     // Solid dark background so the user sees something deliberate
     // (rather than the previous screen bleeding through).
-    setFillColor(Color{0x12, 0x12, 0x12, 0xff});
-    setOutlineColor(Color{0x55, 0xef, 0xc4, 0xff}); // mint accent
+    setFillColor(c2d::Color{0x12, 0x12, 0x12, 0xff});
+    setOutlineColor(c2d::Color{0x55, 0xef, 0xc4, 0xff}); // mint accent
     setOutlineThickness(2.0f);
 
     // TODO: replace this placeholder with the real two-column layout

@@ -25,7 +25,7 @@
 # target that uses tweeny, a simple `target_link_libraries(target tweeny)` is sufficient to set up include and link
 # instructions.
 
-cmake_minimum_required(VERSION 3.0)
+cmake_minimum_required(VERSION 3.16)
 project(Tweeny)
 
 # Setup variables and options

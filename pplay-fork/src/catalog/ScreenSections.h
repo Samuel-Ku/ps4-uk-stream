@@ -14,7 +14,7 @@ namespace cs {
 // the menu entry does not crash the build.
 //
 // Usage:
-//   push(new ScreenSections(this));
+//   main->add(new ScreenSections(this));
 class ScreenSections : public c2d::RectangleShape {
 public:
     explicit ScreenSections(c2d::C2DRenderer *main);

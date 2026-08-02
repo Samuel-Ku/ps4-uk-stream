@@ -227,7 +227,9 @@ void Main::show(MenuType type) {
         // Sections/Search/Results/Content screens are added in the
         // next plan pass. Until then, this entry surfaces in the
         // main menu and shows a blank screen rather than crashing.
-        push(new ScreenSections(this));
+        // Main::add is the c2d scene-graph attachment point (no push
+        // helper on C2DRenderer).
+        Main::add(new ScreenSections(this));
     } else {
 #ifdef __SWITCH__
         usbHsFsExit();
