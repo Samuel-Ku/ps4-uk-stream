@@ -49,16 +49,14 @@ void applyMpvHeaders(class Mpv *mpv,
 } // namespace
 
 ScreenContent::ScreenContent(c2d::C2DRenderer *main, std::string id, std::string title)
-    : RectangleShape({0, 0, static_cast<float>(static_cast<c2d::C2DRenderer *>(main_)->getSize().x),
-                      static_cast<float>(static_cast<c2d::C2DRenderer *>(main_)->getSize().y)}),
+    : RectangleShape({0, 0, static_cast<float>(static_cast<c2d::C2DRenderer *>(main)->getSize().x),
+                      static_cast<float>(static_cast<c2d::C2DRenderer *>(main)->getSize().y)}),
       api_(CatalogContext::get()),
       main_(static_cast<Main *>(main)),
       id_(std::move(id)),
       pendingTitle_(std::move(title)) {
     setFillColor(c2d::Color{0x12, 0x12, 0x12, 0xff});
     setLayer(5);
-
-    const float H = static_cast<float>(static_cast<c2d::C2DRenderer *>(main_)->getSize().x);
 
     title_ = new c2d::Text(pendingTitle_, kTitleSize, main_->getFont());
     title_->setPosition({kPanelPadding, kPanelPadding});
@@ -101,7 +99,6 @@ ScreenContent::ScreenContent(c2d::C2DRenderer *main, std::string id, std::string
     status_->setFillColor(c2d::Color{0xaa, 0xaa, 0xaa, 0xff});
     add(status_);
 
-    (void)H;
     setStatus("Завантаження…");
     requestContent();
 }
@@ -134,23 +131,23 @@ void ScreenContent::renderAll() {
     if (!title_->getString().size() && !pendingTitle_.empty()) {
         // Keep the title the caller passed in until the api response lands.
     }
-    if (!fetchedItem_.title.empty()) title_->setString(fetchedItem_.title);
+    if (!item_.title.empty()) title_->setString(item_.title);
 
     std::ostringstream m;
-    m << typeLabel(fetchedItem_.type);
-    if (!fetchedItem_.id.empty()) m << " · " << fetchedItem_.id;
+    m << typeLabel(item_.type);
+    if (!item_.id.empty()) m << " · " << item_.id;
     meta_->setString(m.str());
 
-    description_->setString(wrapDescription(fetchedItem_.description, kDescMaxChars));
+    description_->setString(wrapDescription(item_.description, kDescMaxChars));
 
-    if (fetchedItem_.translationsLevel == "content") {
+    if (item_.translationsLevel == "content") {
         std::ostringstream t;
         t << "Переклад: ";
-        for (size_t i = 0; i < fetchedItem_.translations.size(); ++i) {
+        for (size_t i = 0; i < item_.translations.size(); ++i) {
             if (i > 0) t << ", ";
-            t << fetchedItem_.translations[i].second;
+            t << item_.translations[i].second;
         }
-        if (fetchedItem_.translations.empty()) t << "(немає)";
+        if (item_.translations.empty()) t << "(немає)";
         translationsLabel_->setString(t.str());
     } else {
         translationsLabel_->setString("");
@@ -158,25 +155,25 @@ void ScreenContent::renderAll() {
 
     std::ostringstream s;
     s << "Сезони: ";
-    for (size_t i = 0; i < fetchedItem_.seasons.size(); ++i) {
+    for (size_t i = 0; i < item_.seasons.size(); ++i) {
         if (i > 0) s << "  ";
         if (i == static_cast<size_t>(seasonIndex_)) s << "[";
-        s << "S" << fetchedItem_.seasons[i].number;
+        s << "S" << item_.seasons[i].number;
         if (i == static_cast<size_t>(seasonIndex_)) s << "]";
     }
-    if (fetchedItem_.seasons.empty()) s << "(немає)";
+    if (item_.seasons.empty()) s << "(немає)";
     seasonsLabel_->setString(s.str());
 
     std::ostringstream e;
-    if (seasonIndex_ >= 0 && seasonIndex_ < static_cast<int>(fetchedItem_.seasons.size())) {
-        const auto &episodes = fetchedItem_.seasons[seasonIndex_].episodes;
+    if (seasonIndex_ >= 0 && seasonIndex_ < static_cast<int>(item_.seasons.size())) {
+        const auto &episodes = item_.seasons[seasonIndex_].episodes;
         for (size_t i = 0; i < episodes.size(); ++i) {
             if (i > 0) e << "\n";
             if (i == static_cast<size_t>(episodeIndex_)) e << "> ";
             else e << "  ";
             e << "E" << episodes[i].number;
             if (!episodes[i].title.empty()) e << " · " << episodes[i].title;
-            if (fetchedItem_.translationsLevel == "episode" &&
+            if (item_.translationsLevel == "episode" &&
                 !episodes[i].translations.empty()) {
                 e << " [";
                 for (size_t j = 0; j < episodes[i].translations.size(); ++j) {

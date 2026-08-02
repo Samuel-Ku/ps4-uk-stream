@@ -11,8 +11,10 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <unistd.h>
 #include <memory>
 #include <string>
 #include <utility>
@@ -50,8 +52,16 @@ public:
         // read the temp file back into bytesOut. This sidesteps the
         // Browser::write_bytes filepipe==NULL assert on read-only FSes
         // (HIGH review finding).
-        const std::string tmp = "/tmp/cs_catalog_poster.bin";
-        std::remove(tmp.c_str());
+        // Unique tmp name per call avoids races between concurrent
+        // Browse + Search posters hitting the same path.
+        char tmpName[] = "/tmp/cs_catalog_poster_XXXXXX";
+        const int fd = ::mkstemp(tmpName);
+        if (fd < 0) {
+            errorOut = "error_write_bytes";
+            return false;
+        }
+        ::close(fd);
+        const std::string tmp(tmpName);
 
         browser_.open_novisit(url, 12);
         if (browser_.error()) {
@@ -81,12 +91,20 @@ public:
         std::remove(tmp.c_str());
 
         // Content-Type is best-effort: pull it from the response header.
+        // RFC 7230 says header field names are case-insensitive, so scan
+        // for both casings.
         contentTypeOut.clear();
         const std::string info = browser_.info();
-        constexpr std::string_view kCtKey = "Content-Type:";
-        auto pos = info.find(kCtKey);
-        if (pos != std::string::npos) {
-            pos += kCtKey.size();
+        constexpr std::string_view kCtKeys[] = {"Content-Type:", "content-type:"};
+        std::size_t pos = std::string::npos;
+        for (const auto &key : kCtKeys) {
+            pos = info.find(key);
+            if (pos != std::string::npos) {
+                pos += key.size();
+                break;
+            }
+        }
+        if (pos != std::string::npos && pos < info.size()) {
             while (pos < info.size() && (info[pos] == ' ' || info[pos] == '\t')) ++pos;
             auto end = info.find_first_of("\r\n", pos);
             contentTypeOut = info.substr(pos, end == std::string::npos

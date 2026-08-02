@@ -31,8 +31,8 @@ ScreenResults::ScreenResults(c2d::C2DRenderer *main,
                              std::string section,
                              std::string query,
                              std::string title)
-    : RectangleShape({0, 0, static_cast<float>(static_cast<c2d::C2DRenderer *>(main_)->getSize().x),
-                      static_cast<float>(static_cast<c2d::C2DRenderer *>(main_)->getSize().y)}),
+    : RectangleShape({0, 0, static_cast<float>(static_cast<c2d::C2DRenderer *>(main)->getSize().x),
+                      static_cast<float>(static_cast<c2d::C2DRenderer *>(main)->getSize().y)}),
       api_(CatalogContext::get()),
       main_(static_cast<Main *>(main)),
       provider_(std::move(provider)),
@@ -41,7 +41,7 @@ ScreenResults::ScreenResults(c2d::C2DRenderer *main,
     setFillColor(c2d::Color{0x12, 0x12, 0x12, 0xff});
     setLayer(5);
 
-    const float W = static_cast<float>(static_cast<c2d::C2DRenderer *>(main_)->getSize().x);
+    const float W = static_cast<float>(static_cast<c2d::C2DRenderer *>(main)->getSize().x);
     const float H = static_cast<float>(static_cast<c2d::C2DRenderer *>(main_)->getSize().y);
 
     mode_ = query_.empty() ? Mode::Browse : Mode::Search;
