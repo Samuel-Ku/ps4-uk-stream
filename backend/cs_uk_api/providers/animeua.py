@@ -211,6 +211,8 @@ class AnimeUAProvider(BaseProvider):
     name = "AnimeUA"
     types = ("anime", "movie")
     sections = ANIMEUA_SECTIONS
+    # v3 (issue #70): "Нове аніме" contributes to «Новинки».
+    newest_section = "page"
 
     @staticmethod
     def _player_url(soup: BeautifulSoup) -> str | None:

@@ -44,11 +44,13 @@ class Settings:
     poster_allowed_hosts: tuple[str, ...]
     cache_search_s: int
     cache_content_s: int
+    cache_home_s: int
     cache_poster_s: int
     poster_cache_dir: str | None
     poster_disk_ttl_s: int
     providers: tuple[str, ...]
     block_russian: bool
+    home_row_limit: int
 
 
 def load_settings() -> Settings:
@@ -65,6 +67,10 @@ def load_settings() -> Settings:
         poster_allowed_hosts=hosts or DEFAULT_POSTER_ALLOWED_HOSTS,
         cache_search_s=int(os.environ.get("CS_UK_CACHE_SEARCH", "300")),
         cache_content_s=int(os.environ.get("CS_UK_CACHE_CONTENT", "1800")),
+        # v3 (issue #70): home page is a curated snapshot of newest
+        # listings + per-type buckets; 30 minutes matches the spec's
+        # documented staleness behaviour for the merged view.
+        cache_home_s=int(os.environ.get("CS_UK_CACHE_HOME", "1800")),
         cache_poster_s=int(os.environ.get("CS_UK_CACHE_POSTER", "3600")),
         # v3 (issue #54): posters persist on disk for 7 days. Empty string
         # disables the disk layer (memory-only, pre-v3 behaviour).
@@ -74,6 +80,8 @@ def load_settings() -> Settings:
         poster_disk_ttl_s=int(os.environ.get("CS_UK_POSTER_DISK_TTL", str(7 * 24 * 3600))),
         providers=providers or ("uakino",),
         block_russian=os.environ.get("CS_UK_BLOCK_RUSSIAN", "1") == "1",
+        # v3 (issue #70): per-row cap for «Новинки» + type rows.
+        home_row_limit=int(os.environ.get("CS_UK_HOME_ROW_LIMIT", "20")),
     )
 
 

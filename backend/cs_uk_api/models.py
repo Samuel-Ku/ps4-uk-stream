@@ -139,3 +139,63 @@ class BrowseResponse(BaseModel):
 class ErrorResponse(BaseModel):
     error: str
     message: str
+
+
+# ---------------------------------------------------------------------------
+# Home API (issue #70)
+# ---------------------------------------------------------------------------
+#
+# ``HomeItem`` is the merged cross-provider identity of one title: a
+# stable groupKey plus the list of provider ids that contributed to it
+# (dedup is by groupKey — same title from two providers is one row, and
+# the client receives the union of providers that surfaced it). The
+# ``type`` and ``poster`` fields are sourced from the first-seen
+# provider; the spec doesn't preserve attribution at the field level,
+# only at the row level (via ``providers``).
+#
+# ``HomeRow`` aggregates ``HomeItem`` rows under a human label. The
+# ``type`` field doubles as a routing key for the row's contents:
+#   - ``"newest"`` — «Новинки», aggregated across providers that opt into
+#     ``newest_section``.
+#   - ``"popular"`` — «Популярні зараз», only when animeon's ``popular``
+#     browse returned data (issue #70 AC).
+#   - a media-type literal (``"movie"``, ``"series"``, ``"anime"``,
+#     ``"cartoon"``, ``"dorama"``) — one row per type, aggregating every
+#     provider section whose ``Section.type`` matches.
+#
+# ``GroupContentResponse`` is the ``/api/content/{groupKey}`` payload:
+# the merged item plus the full providers list. It deliberately mirrors
+# ``HomeItem`` plus a single field rather than re-defining a separate
+# Content shape — the spec asks for "the merged item with its source
+# providers", nothing more.
+
+
+class HomeItem(BaseModel):
+    group_key: str
+    title: str
+    year: int | None = None
+    type: MediaType
+    poster: str | None = None
+    #: Provider ids that contributed this row. Always non-empty (a row
+    #: with zero providers was dropped upstream). Order = round-robin
+    #: visit order across providers; first-seen wins for the title
+    #: fields.
+    providers: list[str] = Field(default_factory=list)
+
+
+class HomeRow(BaseModel):
+    #: Human-readable label: «Новинки», «Популярні зараз», «Фільми», etc.
+    title: str
+    #: Routing key — see module docstring.
+    type: str
+    items: list[HomeItem]
+
+
+class HomeResponse(BaseModel):
+    rows: list[HomeRow]
+
+
+class GroupContentResponse(BaseModel):
+    """``/api/content/{groupKey}`` payload: one merged item + providers."""
+    item: HomeItem
+    providers: list[str]

@@ -29,6 +29,12 @@ class BaseProvider(abc.ABC):
     # Subclasses set this to a non-empty tuple to opt into /api/sections
     # and /api/browse. Default: no section browsing.
     sections: tuple[Section, ...] = ()
+    #: Subclasses set this to a section id whose first page is the
+    #: provider's "newest releases" listing (issue #70, «Новинки» row).
+    #: When ``None`` (the default), the provider contributes nothing to
+    #: «Новинки»; only providers with an explicit newest section
+    #: (e.g. animeon's ``"page"``) round-robin into the merged list.
+    newest_section: str | None = None
 
     def has_section(self, section_id: str) -> bool:
         return any(s.id == section_id for s in self.sections)

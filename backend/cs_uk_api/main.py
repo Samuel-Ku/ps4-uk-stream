@@ -16,12 +16,15 @@ from .cache import TtlCache
 from .config import SETTINGS
 from .country import is_blocked_country
 from .health import TRACKER
+from .home import build_home_rows
 from .http_client import close_client, get_client
 from .merge import group_key_from
 from .models import (
     BrowseResponse,
     ContentResponse,
     ErrorResponse,
+    GroupContentResponse,
+    HomeResponse,
     ProviderFailure,
     ProviderInfo,
     ProviderSections,
@@ -49,6 +52,10 @@ _search_cache = TtlCache(default_ttl_s=SETTINGS.cache_search_s)
 _content_cache = TtlCache(default_ttl_s=SETTINGS.cache_content_s)
 _browse_cache = TtlCache(default_ttl_s=SETTINGS.cache_search_s)
 _blocklist_cache = TtlCache(default_ttl_s=SETTINGS.cache_content_s)
+# v3 (issue #70): the merged home view — «Новинки» + «Популярні зараз»
+# + the five type rows — is a curated snapshot, refreshed every 30 min
+# per the spec's documented staleness behaviour.
+_home_cache = TtlCache(default_ttl_s=SETTINGS.cache_home_s)
 
 T = TypeVar("T")
 
@@ -341,8 +348,133 @@ async def search(
     return resp
 
 
+@app.get("/api/home", response_model=HomeResponse)
+async def home() -> HomeResponse:
+    """Merged home view (issue #70).
+
+    Composition:
+
+      - «Новинки» — round-robin across providers that opt into
+        ``newest_section`` (animeon, animeua, anitubeinua, unimay,
+        simpsonsuatv at time of writing), deduped by groupKey, capped
+        at 20.
+      - «Популярні зараз» — only when animeon's ``popular`` section
+        returns at least one item (spec AC: present iff animeon
+        provides it).
+      - Five type rows (movie, series, anime, cartoon, dorama) — each
+        aggregates every provider section whose ``Section.type``
+        matches. Empty types are omitted.
+
+    Cached for ``SETTINGS.cache_home_s`` (30 minutes by default). On a
+    cache hit the providers are not re-invoked.
+    """
+    cache_key = "home:v1"
+    cached = _home_cache.get(cache_key)
+    if cached is not None:
+        return cast(HomeResponse, cached)
+
+    http = get_client()
+    newest_lists: dict[str, list[SearchResult]] = {}
+    popular_lists: dict[str, list[SearchResult]] = {}
+    type_lists: dict[str, dict[str, list[SearchResult]]] = {}
+
+    async def _newest(pid: str, section_id: str) -> None:
+        try:
+            results, _ = await PROVIDERS[pid].browse(section_id, 1, http)
+        except Exception as e:  # noqa: BLE001
+            log.warning("home newest skipped provider=%s err=%s", pid, e)
+            TRACKER.record(pid, ok=False)
+            return
+        TRACKER.record(pid, ok=True)
+        if results:
+            newest_lists[pid] = list(results)
+
+    async def _popular(pid: str, section_id: str) -> None:
+        try:
+            results, _ = await PROVIDERS[pid].browse(section_id, 1, http)
+        except Exception as e:  # noqa: BLE001
+            log.warning("home popular skipped provider=%s err=%s", pid, e)
+            TRACKER.record(pid, ok=False)
+            return
+        TRACKER.record(pid, ok=True)
+        if results:
+            popular_lists[pid] = list(results)
+
+    async def _type_section(pid: str, section_id: str, type_key: str) -> None:
+        try:
+            results, _ = await PROVIDERS[pid].browse(section_id, 1, http)
+        except Exception as e:  # noqa: BLE001
+            log.warning("home type skipped provider=%s section=%s err=%s", pid, section_id, e)
+            TRACKER.record(pid, ok=False)
+            return
+        TRACKER.record(pid, ok=True)
+        if results:
+            # Multiple sections from the same provider can map to the
+            # same ``type`` (e.g. animeua's ``page``, ``anime``, ``ona``,
+            # ``ova`` all type as ``anime``). Extend per-provider rather
+            # than overwrite, so all sections contribute to the row.
+            buckets = type_lists.setdefault(type_key, {})
+            buckets.setdefault(pid, []).extend(results)
+
+    # Fan out: newest sections per opt-in provider, popular (animeon),
+    # and every (provider, section) pair for the five type buckets.
+    tasks: list[asyncio.Task[None]] = []
+    for pid, provider in PROVIDERS.items():
+        section_id = getattr(provider, "newest_section", None)
+        if section_id:
+            tasks.append(asyncio.create_task(_newest(pid, section_id)))
+        if pid == "animeon" and provider.has_section("popular"):
+            tasks.append(asyncio.create_task(_popular(pid, "popular")))
+        for section in provider.sections:
+            if section.type in {"movie", "series", "anime", "cartoon", "dorama"}:
+                tasks.append(asyncio.create_task(_type_section(pid, section.id, section.type)))
+
+    if tasks:
+        # Bound the fan-out so a single hung provider can't drag the
+        # whole /api/home request out to ``upstream_timeout_s * N``. We
+        # reuse the search budget for now — both routes fan out to the
+        # full provider registry with the same per-provider upstream
+        # timeout. The 30-min home cache absorbs the steady-state
+        # latency; this budget only matters on cache miss (cold start).
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=False),
+                timeout=SETTINGS.search_total_timeout_s,
+            )
+        except asyncio.TimeoutError:
+            # Per-task try/except already swallowed individual
+            # failures; the only thing that escapes the gather is a
+            # hung upstream. Cancel + drain and accept the rows we
+            # already collected.
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            # Await the cancellation propagation so the event loop
+            # is clean before we proceed to row assembly.
+            await asyncio.gather(*tasks, return_exceptions=True)
+            log.warning("home fan-out hit overall budget providers=%d", len(tasks))
+
+    rows = build_home_rows(
+        newest=newest_lists,
+        popular=popular_lists,
+        by_type=type_lists,
+        newest_limit=SETTINGS.home_row_limit,
+    )
+    resp = HomeResponse(rows=rows)
+    _home_cache.set(cache_key, resp)
+    return resp
+
+
 @app.get("/api/content/{content_id:path}")
-async def content(content_id: str) -> ContentResponse:
+async def content(content_id: str) -> ContentResponse | GroupContentResponse:
+    """Discriminator: ``g1:…`` group keys route to the merged lookup;
+    everything else is the existing ``provider:external`` content path."""
+    if content_id.startswith("g1:"):
+        return await _content_by_group_key(content_id)
+    return await _content_by_id(content_id)
+
+
+async def _content_by_id(content_id: str) -> ContentResponse:
     cache_key = f"content:{content_id}"
     if _blocklist_cache.get(cache_key) is not None:
         raise HTTPException(404, detail=ErrorResponse(error="not_found", message=content_id).model_dump())
@@ -368,6 +500,31 @@ async def content(content_id: str) -> ContentResponse:
     resp.group_key = group_key_from(resp.title, resp.type, resp.year, content_id)
     _content_cache.set(cache_key, resp)
     return resp
+
+
+async def _content_by_group_key(group_key: str) -> GroupContentResponse:
+    """Look up a merged item by its stateless group key (issue #70).
+
+    Resolves against the cached HomeResponse — the home cache IS the
+    source of truth for group_key → providers mapping. This pins the
+    staleness behaviour: a key absent from the cached home is 404 for
+    up to 30 minutes after the home was last populated, then expires
+    and the next /api/home refresh repopulates the mapping. The spec
+    accepts this in exchange for the documented 30-min home cache.
+    """
+    home = _home_cache.get("home:v1")
+    if home is not None:
+        for row in cast(HomeResponse, home).rows:
+            for it in row.items:
+                if it.group_key == group_key:
+                    return GroupContentResponse(
+                        item=it,
+                        providers=list(it.providers),
+                    )
+    raise HTTPException(
+        404,
+        detail=ErrorResponse(error="not_found", message=group_key).model_dump(),
+    )
 
 
 @app.get("/api/stream/{content_id:path}")

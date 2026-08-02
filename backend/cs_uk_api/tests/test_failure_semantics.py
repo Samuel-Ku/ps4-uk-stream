@@ -214,11 +214,13 @@ def test_search_returns_502_with_search_timeout_when_overall_budget_fires():
         poster_allowed_hosts=saved_settings.poster_allowed_hosts,
         cache_search_s=saved_settings.cache_search_s,
         cache_content_s=saved_settings.cache_content_s,
+        cache_home_s=saved_settings.cache_home_s,
         cache_poster_s=saved_settings.cache_poster_s,
         poster_cache_dir=saved_settings.poster_cache_dir,
         poster_disk_ttl_s=saved_settings.poster_disk_ttl_s,
         providers=saved_settings.providers,
         block_russian=saved_settings.block_russian,
+        home_row_limit=saved_settings.home_row_limit,
     )
     config_mod.SETTINGS = patched
     main_mod.SETTINGS = patched
@@ -294,11 +296,13 @@ def test_search_does_not_cache_502_responses():
         poster_allowed_hosts=saved_settings.poster_allowed_hosts,
         cache_search_s=saved_settings.cache_search_s,
         cache_content_s=saved_settings.cache_content_s,
+        cache_home_s=saved_settings.cache_home_s,
         cache_poster_s=saved_settings.cache_poster_s,
         poster_cache_dir=saved_settings.poster_cache_dir,
         poster_disk_ttl_s=saved_settings.poster_disk_ttl_s,
         providers=saved_settings.providers,
         block_russian=saved_settings.block_russian,
+        home_row_limit=saved_settings.home_row_limit,
     )
     config_mod.SETTINGS = patched
     main_mod.SETTINGS = patched
@@ -344,11 +348,13 @@ def test_search_returns_200_with_partial_results_when_overall_budget_fires():
         poster_allowed_hosts=saved_settings.poster_allowed_hosts,
         cache_search_s=saved_settings.cache_search_s,
         cache_content_s=saved_settings.cache_content_s,
+        cache_home_s=saved_settings.cache_home_s,
         cache_poster_s=saved_settings.cache_poster_s,
         poster_cache_dir=saved_settings.poster_cache_dir,
         poster_disk_ttl_s=saved_settings.poster_disk_ttl_s,
         providers=saved_settings.providers,
         block_russian=saved_settings.block_russian,
+        home_row_limit=saved_settings.home_row_limit,
     )
     config_mod.SETTINGS = patched
     main_mod.SETTINGS = patched

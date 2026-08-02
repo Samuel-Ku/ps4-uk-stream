@@ -276,11 +276,13 @@ def test_content_route_respects_block_russian_disabled(monkeypatch):
         poster_allowed_hosts=original.poster_allowed_hosts,
         cache_search_s=original.cache_search_s,
         cache_content_s=original.cache_content_s,
+        cache_home_s=original.cache_home_s,
         cache_poster_s=original.cache_poster_s,
         poster_cache_dir=original.poster_cache_dir,
         poster_disk_ttl_s=original.poster_disk_ttl_s,
         providers=original.providers,
         block_russian=False,
+        home_row_limit=original.home_row_limit,
     )
     main_mod = __import__("cs_uk_api.main", fromlist=["_blocklist_cache", "_content_cache"])
     original_main_settings = main_mod.SETTINGS
