@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from urllib.parse import unquote
@@ -11,6 +12,8 @@ from fastapi.responses import JSONResponse
 
 from .cache import TtlCache
 from .config import SETTINGS
+from .country import is_blocked_country
+from .health import TRACKER
 from .http_client import close_client, get_client
 from .models import (
     BrowseResponse,
@@ -24,15 +27,23 @@ from .models import (
 from .poster_proxy import fetch as fetch_poster
 from .providers import PROVIDERS  # noqa: F401  (import for side effects)
 from .providers.base import ProviderError
-from .uakino_browser import get_session
+from .uakino_browser import DEFAULT_CHROMIUM, get_session
 import cs_uk_api.providers._registry  # noqa: F401
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("cs_uk_api")
 
+# uakino's browser-session provider cannot work without a system Chromium
+# binary (v3 spec §2.1): mark it down deterministically at startup instead
+# of letting it fail per-request.
+if not os.path.exists(DEFAULT_CHROMIUM):
+    TRACKER.mark_startup("uakino", "chromium_missing")
+    log.warning("uakino marked down at startup: chromium binary not found at %s", DEFAULT_CHROMIUM)
+
 _search_cache = TtlCache(default_ttl_s=SETTINGS.cache_search_s)
 _content_cache = TtlCache(default_ttl_s=SETTINGS.cache_content_s)
 _browse_cache = TtlCache(default_ttl_s=SETTINGS.cache_search_s)
+_blocklist_cache = TtlCache(default_ttl_s=SETTINGS.cache_content_s)
 
 
 @asynccontextmanager
@@ -70,7 +81,13 @@ async def unhandled(_request: Request, exc: Exception) -> JSONResponse:  # noqa:
 @app.get("/api/providers")
 async def list_providers() -> list[ProviderInfo]:
     return [
-        ProviderInfo(id=p.id, name=p.name, types=list(p.types))  # type: ignore[arg-type]
+        ProviderInfo(
+            id=p.id,
+            name=p.name,
+            types=list(p.types),  # type: ignore[arg-type]
+            status=TRACKER.status(p.id),
+            last_error_at=TRACKER.last_error_at(p.id),
+        )
         for p in PROVIDERS.values()
     ]
 
@@ -105,8 +122,10 @@ async def browse(
     try:
         results, has_next = await p.browse(section, page, get_client())
     except Exception as e:
+        TRACKER.record(provider, ok=False)
         log.warning("browse failed provider=%s section=%s page=%d err=%s", provider, section, page, e)
         raise HTTPException(502, detail=ErrorResponse(error="upstream_unreachable", message=str(e)).model_dump()) from e
+    TRACKER.record(provider, ok=True)
     resp = BrowseResponse(provider=provider, section=section, page=page, has_next=has_next, results=results)
     _browse_cache.set(cache_key, resp)
     return resp
@@ -128,10 +147,13 @@ async def search(
 
     async def run(p):
         try:
-            return await p.search(q, http)
+            results = await p.search(q, http)
         except Exception as e:  # noqa: BLE001
+            TRACKER.record(p.id, ok=False)
             log.warning("provider=%s error=%s", p.id, e)
             return []
+        TRACKER.record(p.id, ok=True)
+        return results
 
     results_lists = await asyncio.wait_for(
         asyncio.gather(*(run(p) for p in selected)),
@@ -146,6 +168,8 @@ async def search(
 @app.get("/api/content/{content_id:path}")
 async def content(content_id: str) -> ContentResponse:
     cache_key = f"content:{content_id}"
+    if _blocklist_cache.get(cache_key) is not None:
+        raise HTTPException(404, detail=ErrorResponse(error="not_found", message=content_id).model_dump())
     cached = _content_cache.get(cache_key)
     if cached is not None:
         return cached  # type: ignore[return-value]
@@ -156,8 +180,14 @@ async def content(content_id: str) -> ContentResponse:
     try:
         resp = await PROVIDERS[provider_id].content(external_id, http)
     except Exception as e:
+        TRACKER.record(provider_id, ok=False)
         log.warning("content failed id=%s err=%s", content_id, e)
         raise HTTPException(502, detail=ErrorResponse(error="upstream_unreachable", message=str(e)).model_dump()) from e
+    TRACKER.record(provider_id, ok=True)
+    if SETTINGS.block_russian and is_blocked_country(resp.country):
+        _blocklist_cache.set(cache_key, True)
+        log.info("blocked Russian content id=%s country=%s", content_id, resp.country)
+        raise HTTPException(404, detail=ErrorResponse(error="not_found", message=content_id).model_dump())
     _content_cache.set(cache_key, resp)
     return resp
 
@@ -186,17 +216,23 @@ async def stream(content_id: str, translation: str | None = None) -> StreamRespo
                 ).model_dump(),
             )
     try:
-        return await provider.stream(rest, translation, http)
+        resp = await provider.stream(rest, translation, http)
     except ProviderError as e:
+        # Translation-level validation errors are client-side semantics,
+        # not upstream-health signals — they must not move the needle.
         if e.code == "invalid_translation":
             raise HTTPException(400, detail=ErrorResponse(error=e.code, message=e.message).model_dump()) from e
         if e.code == "translation_missing":
             raise HTTPException(404, detail=ErrorResponse(error=e.code, message=e.message).model_dump()) from e
+        TRACKER.record(provider_id, ok=False)
         log.warning("stream failed id=%s err=%s", content_id, e)
         raise HTTPException(502, detail=ErrorResponse(error="upstream_unreachable", message=str(e)).model_dump()) from e
     except Exception as e:
+        TRACKER.record(provider_id, ok=False)
         log.warning("stream failed id=%s err=%s", content_id, e)
         raise HTTPException(502, detail=ErrorResponse(error="upstream_unreachable", message=str(e)).model_dump()) from e
+    TRACKER.record(provider_id, ok=True)
+    return resp
 
 
 @app.get("/api/poster")

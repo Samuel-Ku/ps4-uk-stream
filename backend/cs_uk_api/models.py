@@ -52,9 +52,8 @@ class ContentResponse(BaseModel):
     poster: str | None = None
     translations: list[Translation] = Field(min_length=1)
     seasons: list[Season] | None = None
-    # Where dub/sub choices live: "content" (whole series, default) or
-    # "episode" (each episode carries its own list).
     translations_level: TranslationLevel = "content"
+    country: str | None = None
 
 
 class StreamResponse(BaseModel):
@@ -63,10 +62,15 @@ class StreamResponse(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
 
 
+HealthStatus = Literal["ok", "degraded", "down"]
+
+
 class ProviderInfo(BaseModel):
     id: str
     name: str
     types: list[MediaType]
+    status: HealthStatus = "ok"
+    last_error_at: str | None = None
 
 
 class Section(BaseModel):
