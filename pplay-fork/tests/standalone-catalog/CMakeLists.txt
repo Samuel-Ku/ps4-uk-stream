@@ -107,6 +107,8 @@ c2d_add_catalog_test_with_api(test_sources_parsing)
 c2d_add_catalog_test_with_api(test_search_provider)
 # Issue #73 — providersAsync / parseProviders (health snapshot).
 c2d_add_catalog_test_with_api(test_providers_parsing)
+# Issue #61 — homeAsync / parseHome (Home row aggregation).
+c2d_add_catalog_test_with_api(test_home_parsing)
 c2d_add_catalog_test_widget(test_keyboard)
 c2d_add_catalog_test_widget(test_keyboard_utf8)
 c2d_add_catalog_test_with_fake(test_catalog_api_async)

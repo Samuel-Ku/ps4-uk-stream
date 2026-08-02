@@ -6,6 +6,7 @@
 #include "catalog/CatalogApi.h"
 #include "catalog/CatalogContext.h"
 #include "catalog/ScreenSections.h"
+#include "catalog/ScreenHome.h"
 #include "catalog/ScreenSearch.h"
 #include "io.h"
 #include "filer.h"
@@ -117,9 +118,9 @@ Main::Main(const c2d::Vector2f &size) : C2DRenderer(size) {
 #endif
     items.emplace_back("Network", "network.png", MenuItem::Position::Top);
     // Catalog UA menu entry (issue #17 — backend at OPT_CATALOG_URL).
-    // Falls back to "network.png" if "catalog.png" is missing.
+    // Issue #61 — single «Каталог UA» entry replaces the separate
+    // «Пошук UA»; Home opens ScreenHome which owns the loupe shortcut.
     items.emplace_back("Каталог UA", "catalog.png", MenuItem::Position::Top);
-    items.emplace_back("Пошук UA", "search.png", MenuItem::Position::Top);
     items.emplace_back("Options", "options.png", MenuItem::Position::Top);
     items.emplace_back("Exit", "exit.png", MenuItem::Position::Bottom);
     menu_main = new MenuMain(this, {-250 * scaling.x, 0, 250 * scaling.x, Main::getSize().y}, items);
@@ -185,19 +186,14 @@ Main::~Main() {
     // on a cv, and any in-flight request must finish before libcurl's
     // global teardown happens in libcross2d's static destructors.
     cs::CatalogContext::set(nullptr);
-    // Drop the tracked catalog/search screens. They're also in our
-    // children list (DeleteMode::Auto will clean them up too), but
-    // clearing the pointers here keeps the relationship explicit and
-    // matches the show() site that set them.
+    // Drop the tracked catalog screen. They're also in our children
+    // list (DeleteMode::Auto will clean them up too), but clearing the
+    // pointer here keeps the relationship explicit and matches the
+    // show() site that set it.
     if (catalogScreen_ != nullptr) {
         remove(catalogScreen_);
         delete catalogScreen_;
         catalogScreen_ = nullptr;
-    }
-    if (searchScreen_ != nullptr) {
-        remove(searchScreen_);
-        delete searchScreen_;
-        searchScreen_ = nullptr;
     }
     delete (scrapper);
     delete (config);
@@ -270,26 +266,17 @@ void Main::show(MenuType type) {
             filer->getDir(config->getOption(OPT_UMS_DEVICE)->getString());
 #endif
     } else if (type == MenuType::Catalog) {
-        // Sections/Search/Results/Content are full v2 catalog screens
-        // (plan Task 18). Sections is the first one the user sees; the
-        // other three are pushed from there. Drop any previously
-        // pushed catalog screen so the children list does not grow
-        // on every menu entry.
+        // Issue #61 — ScreenHome is the single catalog entry point. The
+        // screen owns loupe → ScreenSearch and rows → ScreenResults /
+        // ScreenContent. Drop any previously pushed catalog screen so
+        // the children list does not grow on every menu entry.
         if (catalogScreen_ != nullptr) {
             remove(catalogScreen_);
             delete catalogScreen_;
             catalogScreen_ = nullptr;
         }
-        catalogScreen_ = new ScreenSections(this);
+        catalogScreen_ = new ScreenHome(this);
         Main::add(catalogScreen_);
-    } else if (type == MenuType::Search) {
-        if (searchScreen_ != nullptr) {
-            remove(searchScreen_);
-            delete searchScreen_;
-            searchScreen_ = nullptr;
-        }
-        searchScreen_ = new ScreenSearch(this);
-        Main::add(searchScreen_);
     } else {
 #ifdef __SWITCH__
         usbHsFsExit();

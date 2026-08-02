@@ -51,7 +51,6 @@ public:
         Network,
         Current,
         Catalog,
-        Search,
 #ifdef __SWITCH__
         Usb
 #endif
@@ -138,7 +137,6 @@ private:
     // screens own their own children (Results → Content, etc.); Main
     // only owns the top-level catalog/search screen.
     c2d::C2DObject *catalogScreen_ = nullptr;
-    c2d::C2DObject *searchScreen_ = nullptr;
     unsigned int oldKeys = 0;
     c2d::Vector2f scaling = {1, 1};
 

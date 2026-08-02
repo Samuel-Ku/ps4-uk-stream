@@ -97,6 +97,33 @@ struct ProviderInfo {
     long long lastErrorAt = 0;
 };
 
+// Issue #61 / #70 — Home is a list of rows, each a labeled list of
+// cross-provider items. A HomeItem is the merged identity of one title
+// across providers — group_key is the stable key (resume/memory anchor),
+// providers is the union of provider ids that surfaced this row.
+struct HomeItem {
+    std::string groupKey;
+    std::string title;
+    int year = 0;
+    std::string type;       // media type: "movie" / "series" / ...
+    std::string poster;
+    std::vector<std::string> providers;
+    // Issue #89 — every per-item group key that contributed to this row.
+    // The canonical group_key is one of these; a resume record keyed by
+    // any element of this list matches the row.
+    std::vector<std::string> memberKeys;
+};
+
+struct HomeRow {
+    std::string title;      // "Новинки", "Фільми", etc.
+    std::string type;       // routing key: "newest" / "popular" / media type
+    std::vector<HomeItem> items;
+};
+
+struct HomeResponse {
+    std::vector<HomeRow> rows;
+};
+
 struct StreamInfo {
     std::string url;
     std::string type;
@@ -123,6 +150,7 @@ public:
     using SectionsCb = std::function<void(bool ok, std::vector<ProviderSections> providers, std::string error)>;
     using BrowseCb = std::function<void(bool ok, BrowseItem item, std::string error)>;
     using ProvidersCb = std::function<void(bool ok, std::vector<ProviderInfo> providers, std::string error)>;
+    using HomeCb = std::function<void(bool ok, HomeResponse resp, std::string error)>;
     using PosterCb = std::function<void(bool ok, std::vector<std::uint8_t> bytes,
                                         std::string contentType, std::string error)>;
 
@@ -143,6 +171,10 @@ public:
     // filter refresh provider status from this endpoint on every screen
     // load; the result is fed into CatalogContext::setProviderStatuses().
     void providersAsync(ProvidersCb cb);
+    // Issue #61 — Home is the merged cross-provider view: «Новинки»
+    // (+ conditional «Популярні зараз» + five type rows). Items carry
+    // group_key for resume/memory continuity.
+    void homeAsync(HomeCb cb);
     void browseAsync(const std::string &provider, const std::string &section,
                      int page, BrowseCb cb);
     void loadPoster(const std::string &url, PosterCb cb);
@@ -160,6 +192,7 @@ public:
     static StreamInfo parseStream(const std::string &raw);
     static std::vector<ProviderSections> parseSections(const std::string &raw);
     static std::vector<ProviderInfo> parseProviders(const std::string &raw);
+    static HomeResponse parseHome(const std::string &raw);
     static BrowseItem parseBrowse(const std::string &raw);
 
 private:

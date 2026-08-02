@@ -223,6 +223,16 @@ void CatalogApi::providersAsync(ProvidersCb cb) {
     });
 }
 
+void CatalogApi::homeAsync(HomeCb cb) {
+    impl_->post([this, cb = std::move(cb)]() {
+        std::string url = impl_->base() + "/api/home";
+        impl_->httpGet(url, [cb](bool ok, std::string body, std::string err) {
+            if (!ok) { cb(false, {}, std::move(err)); return; }
+            cb(true, parseHome(body), {});
+        });
+    });
+}
+
 void CatalogApi::browseAsync(const std::string &provider, const std::string &section,
                              int page, BrowseCb cb) {
     impl_->post([this, provider, section, page, cb = std::move(cb)]() {
@@ -422,6 +432,41 @@ std::vector<ProviderInfo> CatalogApi::parseProviders(const std::string &raw) {
         const auto lastError = p.integer("last_error_at", 0);
         info.lastErrorAt = static_cast<long long>(lastError);
         if (!info.id.empty()) out.push_back(std::move(info));
+    }
+    return out;
+}
+
+HomeResponse CatalogApi::parseHome(const std::string &raw) {
+    HomeResponse out;
+    auto doc = JsonDoc::parse(raw);
+    if (!doc) return out;
+    auto root = doc->root();
+    for (const auto &rowJson : root.arr("rows")) {
+        HomeRow row;
+        row.title = rowJson.str("title");
+        row.type = rowJson.str("type");
+        for (const auto &itJson : rowJson.arr("items")) {
+            HomeItem it;
+            it.groupKey = itJson.str("group_key");
+            it.title = itJson.str("title");
+            it.year = itJson.integer("year", 0);
+            it.type = itJson.str("type");
+            it.poster = itJson.str("poster");
+            for (const auto &p : itJson.arr("providers")) {
+                const std::string pid = p.str();
+                if (!pid.empty()) it.providers.push_back(pid);
+            }
+            for (const auto &mk : itJson.arr("member_keys")) {
+                const std::string k = mk.str();
+                if (!k.empty()) it.memberKeys.push_back(k);
+            }
+            // Defensive: a row with empty group_key is useless for resume
+            // and round-trip with /api/content/{gk}; drop it.
+            if (!it.groupKey.empty()) row.items.push_back(std::move(it));
+        }
+        // Defensive: empty rows are filtered server-side, but if the
+        // backend drifts and ships one, skip it.
+        if (!row.items.empty()) out.rows.push_back(std::move(row));
     }
     return out;
 }
