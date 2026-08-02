@@ -12,8 +12,7 @@
 // The toast is rendered above the active screen (high z-order); the
 // renderer is responsible for keeping it on top via setLayer().
 
-#include "cross2d/skeleton/sfml/RectangleShape.hpp"
-#include "cross2d/skeleton/sfml/Text.hpp"
+#include "cross2d/c2d.h"
 
 #include <chrono>
 #include <string>

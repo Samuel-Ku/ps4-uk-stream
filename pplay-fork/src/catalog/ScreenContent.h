@@ -2,6 +2,7 @@
 
 #include "main.h"
 #include "CatalogApi.h"
+#include "ChipStrip.h"
 #include "cross2d/c2d.h"
 
 #include <atomic>
@@ -14,11 +15,15 @@ namespace cs {
 //
 // Layout (top-down):
 //   1. Title + type/year/provider metadata line
-//   2. Description (word-wrapped, truncated to fit)
-//   3. Content-level translations (only when translationsLevel == "content")
-//   4. Season strip (left-to-right tabs)
-//   5. Episode list (vertical)
-//   6. Status line
+//   2. Source-chip strip — one chip per provider that served this
+//      group (issue #62 / v3 spec §3.3). Left/Right moves focus,
+//      Cross refetches content under that provider. Disabled chips
+//      (provider status == Down) are grayed but still visible.
+//   3. Description (word-wrapped, truncated to fit)
+//   4. Content-level translations (only when translationsLevel == "content")
+//   5. Season strip (left-to-right tabs)
+//   6. Episode list (vertical)
+//   7. Status line
 //
 // translations_level="episode" hides the content-level translations row
 // and instead shows per-episode translation choices in the episode row.
@@ -42,10 +47,31 @@ private:
     void setStatus(const std::string &s);
     void playEpisode(int seasonIdx, int epIdx, const std::string &translationId);
     static std::string wrapDescription(const std::string &desc, size_t maxLine);
+    // Build the chip strip from item_.sources after a content fetch
+    // lands. Called from renderAll() so the strip updates alongside
+    // any chip-switch refetch.
+    void rebuildChipStrip();
+    // Default focus on the action row (the «Дивитись» implied button).
+    // The screen has no explicit button widget yet — the entire
+    // episode / movie area is the action target — so we keep the
+    // focus cursor on the action row and disable chip-strip input
+    // when the action row is "active" (i.e. when the user hasn't
+    // explicitly entered the chip strip).
+    void focusActionRow();
+    void focusChipStrip();
+    // Whether the chip strip owns the current focus / input.
+    bool chipStripHasFocus() const { return focusMode_ == FocusMode::Chips; }
+
+    enum class FocusMode { Action, Chips };
+    FocusMode focusMode_ = FocusMode::Action;
 
     CatalogApi *api_ = nullptr;
     Main *main_ = nullptr;
     std::string id_;
+    // Cross-provider group identity for the active content (issue #69).
+    // Captured from item_.groupKey on the first fetch; reused for
+    // chip-switch refetches via /api/content/{groupKey}?source=<p>.
+    std::string groupKey_;
     std::string pendingTitle_;
 
     c2d::Text *title_ = nullptr;
@@ -56,6 +82,7 @@ private:
     c2d::Text *episodesLabel_ = nullptr;
     c2d::Text *status_ = nullptr;
     c2d::RectangleShape *cursor_ = nullptr;
+    ui::ChipStrip *chipStrip_ = nullptr;
 
     ContentItem item_;
     std::atomic<bool> contentFetched_{false};

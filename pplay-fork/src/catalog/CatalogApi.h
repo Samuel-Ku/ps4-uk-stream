@@ -64,6 +64,18 @@ struct ContentItem {
         std::vector<Episode> episodes;
     };
     std::vector<Season> seasons;
+    // Issue #62 / v3 spec §3.3: chip-strip roster of every provider that
+    // surfaced this group in /api/home. Each entry carries the
+    // provider's content id so the chip can drive a refetch
+    // (/api/content/{groupKey}?source=<p>) without re-running /api/home.
+    // For single-source responses the array has one entry whose id
+    // equals `id` above; the chip strip collapses to a no-choice state
+    // (single chip, unselectable).
+    struct Source {
+        std::string provider;
+        std::string id;
+    };
+    std::vector<Source> sources;
 };
 
 // Memory policy (issue #74): series-form content is remembered, movies
@@ -104,6 +116,11 @@ public:
 
     void searchAsync(const std::string &query, SearchCb cb);
     void contentAsync(const std::string &id, ContentCb cb);
+    // Issue #62: source-filter variant. When `source` is non-empty the
+    // backend resolves the same group_key under a different provider and
+    // returns that source's `content_id` in the response. The id passed
+    // is the group_key (or, on legacy backends, the first provider's id).
+    void contentAsyncForSource(const std::string &groupKey, const std::string &source, ContentCb cb);
     void streamAsync(const std::string &id, const std::string &translation, StreamCb cb);
     void sectionsAsync(SectionsCb cb);
     void browseAsync(const std::string &provider, const std::string &section,

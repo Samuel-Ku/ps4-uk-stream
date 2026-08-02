@@ -1,12 +1,14 @@
 #include "CatalogContext.h"
 
 #include <mutex>
+#include <utility>
 
 namespace cs {
 
 namespace {
 std::unique_ptr<CatalogApi> g_api;
 std::unique_ptr<CatalogState> g_state;
+std::unordered_map<std::string, std::string> g_providerStatuses;
 std::mutex g_mu;
 } // namespace
 
@@ -31,6 +33,20 @@ void CatalogContext::setState(std::unique_ptr<CatalogState> state) {
 CatalogState *CatalogContext::state() {
     // Same lifetime argument as ::get().
     return g_state.get();
+}
+
+void CatalogContext::setProviderStatuses(std::unordered_map<std::string, std::string> statuses) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    g_providerStatuses = std::move(statuses);
+}
+
+CatalogContext::ProviderStatus CatalogContext::providerStatus(const std::string &provider) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    auto it = g_providerStatuses.find(provider);
+    if (it == g_providerStatuses.end()) return ProviderStatus::Unknown;
+    if (it->second == "up") return ProviderStatus::Up;
+    if (it->second == "down") return ProviderStatus::Down;
+    return ProviderStatus::Unknown;
 }
 
 } // namespace cs

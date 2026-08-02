@@ -156,6 +156,24 @@ void CatalogApi::contentAsync(const std::string &id, ContentCb cb) {
     });
 }
 
+void CatalogApi::contentAsyncForSource(const std::string &groupKey,
+                                       const std::string &source, ContentCb cb) {
+    impl_->post([this, groupKey, source, cb = std::move(cb)]() {
+        // /api/content/{group_key:path}?source=<provider>. Backend
+        // re-resolves the group under the named provider and returns the
+        // source's content_id (which is then assigned to out.id in the
+        // parser's synthesized single-entry `sources` list).
+        std::string url = impl_->base() + "/api/content/" + urlEncode(groupKey);
+        if (!source.empty()) {
+            url += "?source=" + urlEncode(source);
+        }
+        impl_->httpGet(url, [cb](bool ok, std::string body, std::string err) {
+            if (!ok) { cb(false, {}, std::move(err)); return; }
+            cb(true, parseContent(body), {});
+        });
+    });
+}
+
 void CatalogApi::streamAsync(const std::string &id, const std::string &translation, StreamCb cb) {
     impl_->post([this, id, translation, cb = std::move(cb)]() {
         // /api/stream/{content_id:path}; translation stays a query
@@ -286,6 +304,29 @@ ContentItem CatalogApi::parseContent(const std::string &raw) {
             cs2.episodes.push_back(std::move(ep));
         }
         out.seasons.push_back(std::move(cs2));
+    }
+
+    // Issue #62 / v3 spec §3.3: chip-strip roster of every provider that
+    // served this group. When the backend omits the field (legacy / single
+    // provider / test fixture), synthesize a single-entry roster from `id`
+    // so the UI never shows a bogus empty strip.
+    for (const auto &src : r.arr("sources")) {
+        ContentItem::Source s;
+        s.provider = src.str("provider");
+        s.id = src.str("id");
+        if (!s.provider.empty() && !s.id.empty()) {
+            out.sources.push_back(std::move(s));
+        }
+    }
+    if (out.sources.empty() && !out.id.empty()) {
+        ContentItem::Source s;
+        // Convention: ids are `<provider>:<inner_id>`. Strip the prefix so
+        // the chip's backend filter (`?source=<p>`) lines up with the
+        // provider id registered on the home / sections response.
+        const auto sep = out.id.find(':');
+        s.provider = (sep == std::string::npos) ? out.id : out.id.substr(0, sep);
+        s.id = out.id;
+        out.sources.push_back(std::move(s));
     }
     return out;
 }

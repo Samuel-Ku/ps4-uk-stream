@@ -101,6 +101,8 @@ c2d_add_catalog_test_with_api(test_catalog_api)
 # Pure policy helper (ContentItem header) — reuses the API test wiring
 # for the catalog include dirs.
 c2d_add_catalog_test_with_api(test_memory_policy)
+# Issue #62 — ContentItem.sources parsing (chip strip roster).
+c2d_add_catalog_test_with_api(test_sources_parsing)
 c2d_add_catalog_test_widget(test_keyboard)
 c2d_add_catalog_test_widget(test_keyboard_utf8)
 c2d_add_catalog_test_with_fake(test_catalog_api_async)

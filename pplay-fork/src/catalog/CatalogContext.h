@@ -4,6 +4,8 @@
 #include "CatalogState.h"
 
 #include <memory>
+#include <string>
+#include <unordered_map>
 
 namespace cs {
 
@@ -32,6 +34,16 @@ public:
 
     static void setState(std::unique_ptr<CatalogState> state);
     static CatalogState *state();
+
+    // Issue #62 / #73 — provider health snapshot. The home / sections
+    // poll refreshes the map; the chip strip renders "down" chips in a
+    // muted shade and refuses to fire refetches on them. Unknown status
+    // (provider not yet polled, or missing from the response) is treated
+    // as enabled — we'd rather let the user try and see a graceful error
+    // than hide a working source behind a stale 'down' snapshot.
+    enum class ProviderStatus { Unknown, Up, Down };
+    static void setProviderStatuses(std::unordered_map<std::string, std::string> statuses);
+    static ProviderStatus providerStatus(const std::string &provider);
 };
 
 } // namespace cs

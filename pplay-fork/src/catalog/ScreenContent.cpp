@@ -2,6 +2,7 @@
 #include "ScreenContent.h"
 #include "CatalogContext.h"
 #include "ErrorStrings.h"
+#include "ChipStrip.h"
 #include "main.h"
 
 #include "media_file.h"
@@ -112,6 +113,64 @@ ScreenContent::ScreenContent(c2d::C2DRenderer *main, std::string id, std::string
     requestContent();
 }
 
+void ScreenContent::rebuildChipStrip() {
+    // Tear down the previous strip (if any) so we never leak its
+    // children. The strip owns chip rectangles + labels + a focus cursor
+    // — every one of those is freed by `delete strip` since the parent
+    // owns the chain via add().
+    if (chipStrip_ != nullptr) {
+        remove(chipStrip_);
+        delete chipStrip_;
+        chipStrip_ = nullptr;
+    }
+
+    // Build chip model from item_.sources. Providers we know are DOWN
+    // get grayed-down (visible but unselectable). Unknown / Up providers
+    // are enabled. The single-chip case still renders — the user sees
+    // which source this is — but the strip is degenerate (no Left/Right
+    // movement).
+    std::vector<ui::Chip> chips;
+    chips.reserve(item_.sources.size());
+    for (const auto &s : item_.sources) {
+        ui::Chip c;
+        // Strip the "<provider>:" prefix from the id when labeling, so
+        // the chip shows the human name when one is available. We fall
+        // back to the provider id which is the wire-format name.
+        c.label = s.provider;
+        c.provider = s.provider;
+        if (CatalogContext::providerStatus(s.provider) ==
+            CatalogContext::ProviderStatus::Down) {
+            c.isEnabled = false;
+        }
+        chips.push_back(std::move(c));
+    }
+
+    if (chips.empty()) return;  // No source roster — refuse to render.
+
+    const float W = static_cast<float>(static_cast<c2d::C2DRenderer *>(main_)->getSize().x);
+    const float chipY = meta_->getPosition().y + kSmallSize + 8;
+    chipStrip_ = new ui::ChipStrip(main_, chips, {kMarginX, chipY, W - 2 * kMarginX, 48.0f});
+    add(chipStrip_);
+
+    // Strip returns to the action row whenever we rebuild it — the
+    // user just landed on this screen and the «Дивитись» row is the
+    // primary affordance.
+    focusActionRow();
+}
+
+void ScreenContent::focusActionRow() {
+    focusMode_ = FocusMode::Action;
+    cursor_->setVisibility(c2d::Visibility::Visible);
+    if (chipStrip_) chipStrip_->setVisibility(c2d::Visibility::Hidden);
+}
+
+void ScreenContent::focusChipStrip() {
+    if (chipStrip_ == nullptr) return;
+    focusMode_ = FocusMode::Chips;
+    cursor_->setVisibility(c2d::Visibility::Hidden);
+    chipStrip_->setVisibility(c2d::Visibility::Visible);
+}
+
 std::string ScreenContent::wrapDescription(const std::string &desc, size_t maxLine) {
     if (desc.size() <= maxLine) return desc;
     return desc.substr(0, maxLine) + "…";
@@ -150,6 +209,15 @@ void ScreenContent::renderAll() {
     if (!item_.id.empty()) m << " · " << item_.id;
     meta_->setString(m.str());
 
+    // When the chip strip is present, the description / translations /
+    // seasons / episodes labels shift down by the strip's height + gap
+    // so the strip has clean breathing room (issue #62 / v3 spec §5.1).
+    // The chip strip is built after the content fetch lands, so this
+    // branch is taken on the second renderAll() call (the first one
+    // runs before the strip exists, with the original layout).
+    const float chipStripHeight = chipStrip_ ? chipStrip_->getSize().y + 8.0f : 0.0f;
+    description_->setPosition({kMarginX,
+                               meta_->getPosition().y + kSmallSize + 16 + chipStripHeight});
     description_->setString(wrapDescription(item_.description, kDescMaxChars));
 
     if (item_.translationsLevel == "content") {
@@ -261,9 +329,24 @@ void ScreenContent::onUpdate() {
     if (contentFetched_.load(std::memory_order_acquire)) {
         contentFetched_.store(false, std::memory_order_release);
         item_ = std::move(fetchedItem_);
+        // Capture the group key so chip-switch refetches can use the
+        // group-aware endpoint. The screen's id_ tracks the active
+        // source's content id; the group key is the cross-provider
+        // identity (issue #69).
+        if (item_.groupKey.empty()) {
+            groupKey_ = item_.id;
+        } else {
+            groupKey_ = item_.groupKey;
+        }
         seasonIndex_ = 0;
         episodeIndex_ = 0;
         episodeTranslationIndex_ = 0;
+        // Rebuild the chip strip after every content fetch — the strip
+        // depends on item_.sources which only lands once the backend
+        // responds. Rebuilding on each fetch also handles chip-switch
+        // refetches: the new content has a new id_/sources, and the
+        // strip needs to be rebuilt with the new roster.
+        rebuildChipStrip();
         renderAll();
         if (!fetchError_.empty()) {
             setStatus("Помилка: " + fetchError_);
@@ -351,55 +434,104 @@ void ScreenContent::onUpdate() {
     const int epCount = (seasonIndex_ >= 0 && seasonIndex_ < seasonCount)
         ? static_cast<int>(item_.seasons[seasonIndex_].episodes.size()) : 0;
 
-    if (keys & c2d::Input::Key::Left) {
-        if (seasonCount > 0) {
-            seasonIndex_ = (seasonIndex_ - 1 + seasonCount) % seasonCount;
-            episodeIndex_ = 0;
-            renderAll();
-        }
-    } else if (keys & c2d::Input::Key::Right) {
-        if (seasonCount > 0) {
-            seasonIndex_ = (seasonIndex_ + 1) % seasonCount;
-            episodeIndex_ = 0;
-            renderAll();
-        }
-    } else if (keys & c2d::Input::Key::Up) {
-        if (epCount > 0) {
-            episodeIndex_ = (episodeIndex_ - 1 + epCount) % epCount;
-            episodeTranslationIndex_ = 0;
-            renderAll();
-        }
-    } else if (keys & c2d::Input::Key::Down) {
-        if (epCount > 0) {
-            episodeIndex_ = (episodeIndex_ + 1) % epCount;
-            episodeTranslationIndex_ = 0;
-            renderAll();
-        }
-    } else if (keys & c2d::Input::Key::Fire1) {
-        std::string translationId;
-        if (item_.translationsLevel == "episode" && epCount > 0) {
-            const auto &ep = item_.seasons[seasonIndex_].episodes[episodeIndex_];
-            if (!ep.translations.empty()) {
-                const int idx = episodeTranslationIndex_ %
-                    static_cast<int>(ep.translations.size());
-                translationId = ep.translations[idx].first;
+    if (focusMode_ == FocusMode::Chips) {
+        // Chip strip owns input. L/R moves focus, Cross fires the
+        // focused chip (refetch the same group under that provider),
+        // Triangle or Circle returns to Action row.
+        if (keys & c2d::Input::Key::Left) {
+            if (chipStrip_) chipStrip_->moveLeft();
+        } else if (keys & c2d::Input::Key::Right) {
+            if (chipStrip_) chipStrip_->moveRight();
+        } else if (keys & c2d::Input::Key::Fire1) {
+            if (chipStrip_ && chipStrip_->hasEnabledChip()) {
+                const int idx = chipStrip_->selectFocused();
+                if (idx >= 0 && idx < static_cast<int>(item_.sources.size())) {
+                    const auto &src = item_.sources[idx];
+                    if (src.id != id_) {
+                        // Switch to the new source: refetch content under
+                        // the same group key. The new id_ is the source's
+                        // content id; groupKey_ stays the same.
+                        id_ = src.id;
+                        setStatus("Завантаження…");
+                        contentFetched_.store(false, std::memory_order_release);
+                        api_->contentAsyncForSource(groupKey_, src.provider,
+                            [this](bool ok, ContentItem it, std::string err) {
+                                if (ok) {
+                                    fetchedItem_ = std::move(it);
+                                    fetchError_.clear();
+                                } else {
+                                    fetchedItem_ = ContentItem{};
+                                    fetchError_ = cs::ui::humanErrorOrGeneric(err);
+                                }
+                                contentFetched_.store(true, std::memory_order_release);
+                            });
+                    }
+                }
+                focusActionRow();
             }
-        } else if (!item_.translations.empty()) {
-            translationId = item_.translations[0].first;
+        } else if (keys & c2d::Input::Key::Fire3 || keys & c2d::Input::Key::Fire2) {
+            focusActionRow();
         }
-        playEpisode(seasonIndex_, episodeIndex_, translationId);
-    } else if (keys & c2d::Input::Key::Fire3) {
-        // Triangle — cycle episode translation (episode-level only)
-        if (item_.translationsLevel == "episode" && epCount > 0) {
-            const auto &trs = item_.seasons[seasonIndex_].episodes[episodeIndex_].translations;
-            if (!trs.empty()) {
-                episodeTranslationIndex_ = (episodeTranslationIndex_ + 1) %
-                    static_cast<int>(trs.size());
+    } else {
+        // Action row (default focus). L/R cycles seasons, Up/Down cycles
+        // episodes, Cross plays, Triangle opens the chip strip (when one
+        // is rendered). Cycle-translation on Triangle when the chip
+        // strip is absent so the existing (single-source) flow keeps
+        // its Triangle-cycles-translation behavior.
+        if (keys & c2d::Input::Key::Left) {
+            if (seasonCount > 0) {
+                seasonIndex_ = (seasonIndex_ - 1 + seasonCount) % seasonCount;
+                episodeIndex_ = 0;
                 renderAll();
             }
+        } else if (keys & c2d::Input::Key::Right) {
+            if (seasonCount > 0) {
+                seasonIndex_ = (seasonIndex_ + 1) % seasonCount;
+                episodeIndex_ = 0;
+                renderAll();
+            }
+        } else if (keys & c2d::Input::Key::Up) {
+            if (epCount > 0) {
+                episodeIndex_ = (episodeIndex_ - 1 + epCount) % epCount;
+                episodeTranslationIndex_ = 0;
+                renderAll();
+            }
+        } else if (keys & c2d::Input::Key::Down) {
+            if (epCount > 0) {
+                episodeIndex_ = (episodeIndex_ + 1) % epCount;
+                episodeTranslationIndex_ = 0;
+                renderAll();
+            }
+        } else if (keys & c2d::Input::Key::Fire1) {
+            std::string translationId;
+            if (item_.translationsLevel == "episode" && epCount > 0) {
+                const auto &ep = item_.seasons[seasonIndex_].episodes[episodeIndex_];
+                if (!ep.translations.empty()) {
+                    const int idx = episodeTranslationIndex_ %
+                        static_cast<int>(ep.translations.size());
+                    translationId = ep.translations[idx].first;
+                }
+            } else if (!item_.translations.empty()) {
+                translationId = item_.translations[0].first;
+            }
+            playEpisode(seasonIndex_, episodeIndex_, translationId);
+        } else if (keys & c2d::Input::Key::Fire3) {
+            // Triangle — open the chip strip when one is on screen.
+            // Otherwise cycle the episode translation (legacy single-
+            // source behavior).
+            if (chipStrip_ && chipStrip_->hasEnabledChip()) {
+                focusChipStrip();
+            } else if (item_.translationsLevel == "episode" && epCount > 0) {
+                const auto &trs = item_.seasons[seasonIndex_].episodes[episodeIndex_].translations;
+                if (!trs.empty()) {
+                    episodeTranslationIndex_ = (episodeTranslationIndex_ + 1) %
+                        static_cast<int>(trs.size());
+                    renderAll();
+                }
+            }
+        } else if (keys & c2d::Input::Key::Fire2) {
+            setVisibility(c2d::Visibility::Hidden, true);
         }
-    } else if (keys & c2d::Input::Key::Fire2) {
-        setVisibility(c2d::Visibility::Hidden, true);
     }
 
     RectangleShape::onUpdate();
