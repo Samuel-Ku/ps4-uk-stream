@@ -105,6 +105,16 @@ ScreenContent::ScreenContent(c2d::C2DRenderer *main, std::string id, std::string
     cursor_->setOutlineThickness(kFocusOutline);
     add(cursor_);
 
+    // Issue #72 — "▶ Поновити з MM:SS" banner. Hidden by default; the
+    // banner becomes visible once renderResumeBanner() finds a live
+    // resume entry for this groupKey. The widget sits below the chip
+    // strip; we position it lazily in renderResumeBanner() so it lands
+    // exactly where the chip strip ends, regardless of font metrics.
+    resumeBanner_ = new c2d::Text("", kBodySize, main_->getFont());
+    resumeBanner_->setFillColor(c2d::Color{0x55, 0xef, 0xc4, 0xff});
+    resumeBanner_->setVisibility(c2d::Visibility::Hidden);
+    add(resumeBanner_);
+
     status_ = new c2d::Text("", kSmallSize, main_->getFont());
     status_->setPosition({kMarginX, static_cast<float>(static_cast<c2d::C2DRenderer *>(main_)->getSize().y) - kSmallSize - kMarginY});
     status_->setFillColor(c2d::Color{0xaa, 0xaa, 0xaa, 0xff});
@@ -164,6 +174,37 @@ void ScreenContent::focusActionRow() {
     focusMode_ = FocusMode::Action;
     cursor_->setVisibility(c2d::Visibility::Visible);
     if (chipStrip_) chipStrip_->setVisibility(c2d::Visibility::Hidden);
+}
+
+void ScreenContent::renderResumeBanner() {
+    // Issue #72 — show "▶ Поновити з MM:SS" when this group has a
+    // resume entry AND the entry is not finished (>= 95% per
+    // CatalogState::isFinished). Memory is keyed by groupKey so the
+    // entry is consistent across providers and chip switches.
+    if (resumeBanner_ == nullptr) return;
+    auto *state = CatalogContext::state();
+    if (state == nullptr) {
+        resumeBanner_->setVisibility(c2d::Visibility::Hidden);
+        return;
+    }
+    const cs::ResumeEntry *e = state->resume(groupKey_);
+    if (e == nullptr || e->positionSec <= 0 ||
+        cs::CatalogState::isFinished(*e)) {
+        resumeBanner_->setVisibility(c2d::Visibility::Hidden);
+        return;
+    }
+    const long mins = e->positionSec / 60;
+    const long secs = e->positionSec % 60;
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "▶ Поновити з %02ld:%02ld", mins, secs);
+    resumeBanner_->setString(buf);
+    // Position below the chip strip with a small gap. The strip's
+    // height is 48 px; the chipY is meta_->y + kSmallSize + 8.
+    float y = chipStrip_ != nullptr
+                  ? chipStrip_->getPosition().y + 48.0f + 8.0f
+                  : kMarginY + kTitleSize + kSmallSize + 8 + 48.0f + 8.0f;
+    resumeBanner_->setPosition({kMarginX, y});
+    resumeBanner_->setVisibility(c2d::Visibility::Visible);
 }
 
 void ScreenContent::focusChipStrip() {
@@ -419,6 +460,10 @@ void ScreenContent::onUpdate() {
         // helper is a no-op for movies (no memory record exists) and
         // when no memory record is present.
         applyMemoryPreFocus();
+        // Issue #72 — show "▶ Поновити з MM:SS" below the chip strip
+        // when this group has a live resume entry. Hidden for finished
+        // entries (>= 95%) and movies.
+        renderResumeBanner();
         renderAll();
 
         // Issue #73 — refresh the provider health snapshot on every

@@ -133,6 +133,18 @@ target_include_directories(test_resume_row PRIVATE
 )
 target_compile_options(test_resume_row PRIVATE -Wall -Wextra)
 add_test(NAME test_resume_row COMMAND test_resume_row)
+# Issue #72 — resume banner on ScreenContent (string format + show policy).
+add_executable(test_resume_banner ${CMAKE_CURRENT_SOURCE_DIR}/../catalog/test_resume_banner.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog/CatalogState.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog/Json.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../external/cJSON/cJSON.c
+)
+target_include_directories(test_resume_banner PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../external/cJSON
+)
+target_compile_options(test_resume_banner PRIVATE -Wall -Wextra)
+add_test(NAME test_resume_banner COMMAND test_resume_banner)
 c2d_add_catalog_test_widget(test_keyboard)
 c2d_add_catalog_test_widget(test_keyboard_utf8)
 c2d_add_catalog_test_with_fake(test_catalog_api_async)

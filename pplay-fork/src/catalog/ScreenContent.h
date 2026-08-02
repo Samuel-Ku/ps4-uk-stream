@@ -67,6 +67,10 @@ private:
     // entry (the policy lives at the call site: shouldRememberMemory
     // in CatalogApi.h), so this is a no-op for them.
     void applyMemoryPreFocus();
+    // Issue #72: render a "▶ Поновити з MM:SS" banner under the chips
+    // when this group has a live resume entry. Hidden when the entry
+    // is finished (>= 95%) or missing.
+    void renderResumeBanner();
     // Whether the chip strip owns the current focus / input.
     bool chipStripHasFocus() const { return focusMode_ == FocusMode::Chips; }
 
@@ -88,6 +92,9 @@ private:
     c2d::Text *translationsLabel_ = nullptr;
     c2d::Text *seasonsLabel_ = nullptr;
     c2d::Text *episodesLabel_ = nullptr;
+    // Issue #72 — "▶ Поновити з MM:SS" banner. Hidden when no live
+    // resume entry exists for this group's key.
+    c2d::Text *resumeBanner_ = nullptr;
     c2d::Text *status_ = nullptr;
     c2d::RectangleShape *cursor_ = nullptr;
     ui::ChipStrip *chipStrip_ = nullptr;
