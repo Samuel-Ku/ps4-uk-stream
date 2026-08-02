@@ -19,9 +19,42 @@ class SearchResult(BaseModel):
     url: str
 
 
+class ProviderFailure(BaseModel):
+    """Per-provider failure attribution for /api/search (ADR-0002).
+
+    A provider that contributes nothing to the search response — either
+    because it raised an exception or because the overall budget expired
+    before it could complete — surfaces as a row here. A provider that
+    returns ``[]`` with no exception is a legitimate "no match" answer
+    and is NOT a failure.
+
+    The ``code`` field uses a small closed vocabulary:
+      - ``"timeout"`` — the per-provider httpx 8s timeout fired, or the
+        overall 12s budget expired before this provider completed
+        (synthetic row, per ADR-0002).
+      - ``"upstream_unreachable"`` — anything else (HTTP error, parse
+        failure, scraper bug, etc.).
+      - ``"internal"`` — a programming-error escapee (BaseException
+        subclass that ``run()`` did not catch). Should be empty in
+        healthy operation; if it ever populates, that's a bug.
+    """
+
+    provider: str
+    code: str
+    message: str  # str(exc); human-readable, surfaced for debugging only
+
+
 class SearchResponse(BaseModel):
     query: str = Field(min_length=1, max_length=80)
     results: list[SearchResult]
+    #: Per-provider failure attribution (ADR-0002, issue #81).
+    #: Empty list is omitted from JSON by the route via ``exclude_unset``
+    #: semantics: clients that don't know about the field see today's
+    #: shape unchanged. When non-empty, each entry carries
+    #: ``{provider, code, message}`` where ``code`` is one of
+    #: ``"timeout"`` / ``"upstream_unreachable"`` / ``"internal"`` and
+    #: ``message`` is the surfaced exception string for debugging only.
+    failures: list[ProviderFailure] = Field(default_factory=list)
 
 
 class Translation(BaseModel):

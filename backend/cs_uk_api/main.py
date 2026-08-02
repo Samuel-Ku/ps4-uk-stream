@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Awaitable, Callable, TypeVar
 from urllib.parse import unquote
 
+import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 
@@ -21,14 +22,16 @@ from .models import (
     BrowseResponse,
     ContentResponse,
     ErrorResponse,
+    ProviderFailure,
     ProviderInfo,
     ProviderSections,
     SearchResponse,
+    SearchResult,
     StreamResponse,
 )
 from .poster_proxy import fetch as fetch_poster
 from .providers import PROVIDERS  # noqa: F401  (import for side effects)
-from .providers.base import ProviderError
+from .providers.base import BaseProvider, ProviderError
 from .uakino_browser import DEFAULT_CHROMIUM, get_session
 import cs_uk_api.providers._registry  # noqa: F401
 
@@ -189,29 +192,136 @@ async def browse(
     return resp
 
 
-@app.get("/api/search")
+@app.get("/api/search", response_model=SearchResponse, response_model_exclude_unset=True)
 async def search(
     q: str = Query(min_length=1, max_length=80),
     provider: str = Query("all"),
 ) -> SearchResponse:
+    """Multi-provider search with per-provider failure attribution (ADR-0002).
+
+    Behaviour:
+      - 200 OK with ``failures: list[ProviderFailure]`` whenever at least
+        one provider's contribution failed; the failures field is omitted
+        from the JSON when no provider failed (``exclude_unset`` semantics).
+      - 502 with ``ErrorResponse(error="search_timeout", ...)`` only when
+        the overall 12s budget expired for ALL providers — i.e. nothing
+        usable came back in time. Partial results on timeout return 200
+        with synthetic timeout rows; total-failure returns 502.
+    """
     if provider != "all" and provider not in PROVIDERS:
         raise HTTPException(400, detail=ErrorResponse(error="unknown_provider", message=provider).model_dump())
     cache_key = f"search:{provider}:{q}"
     cached = _search_cache.get(cache_key)
     if cached is not None:
         return cached  # type: ignore[return-value]
-    selected = PROVIDERS.values() if provider == "all" else [PROVIDERS[provider]]
+    selected = list(PROVIDERS.values() if provider == "all" else [PROVIDERS[provider]])
     http = get_client()
 
-    async def run(p):
-        return await _upstream_guard(p.id, p.search(q, http), p.id, on_error=[])
+    async def run(p: BaseProvider) -> list[SearchResult] | ProviderFailure:
+        """Per-provider search that converts any exception into a ProviderFailure.
 
-    results_lists = await asyncio.wait_for(
-        asyncio.gather(*(run(p) for p in selected)),
+        Returns ``list[SearchResult]`` on success and ``ProviderFailure``
+        on failure. A provider that returns ``[]`` with no exception is
+        a legitimate "no match" answer and is NOT a failure (the empty
+        list is the success signal). Health recording lives in the
+        outer loop, not here, so partial-failure paths don't double-count.
+        """
+        try:
+            return await p.search(q, http)
+        except Exception as e:  # noqa: BLE001
+            log.warning("search failed provider=%s err=%s", p.id, e)
+            if isinstance(e, (httpx.TimeoutException, asyncio.TimeoutError)):
+                code = "timeout"
+            else:
+                code = "upstream_unreachable"
+            return ProviderFailure(provider=p.id, code=code, message=str(e))
+
+    # One task per provider, so the overall-timeout branch can observe
+    # partial completion (ADR-0002 contract: "if it fires, any in-flight
+    # providers that didn't complete get a synthetic timeout row").
+    # `asyncio.wait` returns (done, pending) within the budget; we then
+    # cancel pending and assemble the response — 502 only when no
+    # provider completed at all.
+    tasks: dict[asyncio.Task[list[SearchResult] | ProviderFailure], str] = {
+        asyncio.create_task(run(p)): p.id for p in selected
+    }
+    done: set[asyncio.Task[list[SearchResult] | ProviderFailure]]
+    pending: set[asyncio.Task[list[SearchResult] | ProviderFailure]]
+    done, pending = await asyncio.wait(
+        tasks.keys(),
         timeout=SETTINGS.search_total_timeout_s,
     )
-    flat = [item for sub in results_lists for item in sub]
-    resp = SearchResponse(query=q, results=flat)
+
+    # Cancel + drain the still-flying tasks. CancelledError is not
+    # caught by `run()`'s `except Exception`, so a cancel leaves the
+    # task in cancelled state; we don't iterate cancelled tasks below.
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.wait(pending, timeout=0.5)
+
+    out_results: list[SearchResult] = []
+    failures: list[ProviderFailure] = []
+
+    for task in done:
+        if task.cancelled():
+            continue
+        pid = tasks[task]
+        try:
+            content = task.result()
+        except Exception as e:  # noqa: BLE001
+            # Defensive: ``run()`` catches Exception everywhere; an
+            # escapee is a programming error. Surface as an internal
+            # failure attributed to the provider so the client sees a
+            # structured signal rather than a partial response.
+            log.warning("search unexpected escapee provider=%s err=%r", pid, e)
+            TRACKER.record(pid, ok=False)
+            failures.append(
+                ProviderFailure(provider=pid, code="internal", message=str(e))
+            )
+            continue
+        if isinstance(content, ProviderFailure):
+            TRACKER.record(pid, ok=False)
+            failures.append(content)
+        else:
+            TRACKER.record(pid, ok=True)
+            out_results.extend(content)
+
+    # Pending tasks: the overall budget fired before they completed.
+    # Per ADR-0002, each one gets a synthetic ``timeout`` row.
+    for task in pending:
+        pid = tasks[task]
+        failures.append(
+            ProviderFailure(
+                provider=pid,
+                code="timeout",
+                message=f"overall budget {SETTINGS.search_total_timeout_s}s exceeded",
+            )
+        )
+
+    if not done and failures:
+        # Every provider timed out — total failure is a server-side
+        # problem, not a per-provider outcome. Surface as a clean error
+        # (never cached per ADR-0003).
+        log.warning(
+            "search total-timeout exceeded q=%r providers=%d", q, len(selected)
+        )
+        raise HTTPException(
+            502,
+            detail=ErrorResponse(
+                error="search_timeout",
+                message=f"search exceeded {SETTINGS.search_total_timeout_s}s for all {len(selected)} providers",
+            ).model_dump(),
+        ) from None
+
+    # Build the response. Always cache 200 responses — including those
+    # with populated failures (a flapping provider should not become a
+    # permanent cache bypass per ADR-0003). The 502 path never reaches
+    # this code because it raises above.
+    if failures:
+        resp = SearchResponse(query=q, results=out_results, failures=failures)
+    else:
+        resp = SearchResponse(query=q, results=out_results)
     _search_cache.set(cache_key, resp)
     return resp
 
