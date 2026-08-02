@@ -15,9 +15,9 @@ from .kinovezha import KinoVezhaProvider
 from .klontv import KlonTVProvider
 from .serialno import SerialnoProvider
 from .simpsonsuatv import SimpsonsUATvProvider
-from .uaserialspro import UASerialsProProvider
 from .uaflix import UAFlixProvider
 from .uakino import UakinoProvider
+from .uaserialspro import UASerialsProProvider
 from .ufdub import UFDubProvider
 from .unimay import UnimayProvider
 
@@ -33,6 +33,7 @@ def bootstrap() -> None:
     register(KinoVezhaProvider())
     register(AnimeUAProvider())
     register(UAFlixProvider())
+    register(CoaninetProvider())
     register(EneyidaProvider())
     register(KlonTVProvider())
     register(SerialnoProvider())
