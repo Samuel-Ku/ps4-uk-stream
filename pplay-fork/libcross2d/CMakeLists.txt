@@ -72,6 +72,13 @@ if (PLATFORM_PS4)
     set(OPTION_SDL2 ON CACHE BOOL "OpenGLES 2.0 rendering" FORCE)
     set(OPTION_RENDER_GLES2 ON CACHE BOOL "OpenGLES 2.0 rendering" FORCE)
     set(OPTION_LOADER_GLAD OFF CACHE BOOL "Glad OpenGL loader" FORCE)
+    # The OpenOrbisSDK ships freetype 2.5.x which removed the legacy
+    # FT_Get_Kerning() prototype in favour of FT_Get_Track_Kerning().
+    # libcross2d's sfml/Font.cpp still calls FT_Get_Kerning, so disable
+    # freetype here — the PS4 streaming UI uses pre-rendered bitmap
+    # fonts (libcross2d's default with OPTION_FREETYPE=OFF) which is
+    # enough for the catalog navigation.
+    set(OPTION_FREETYPE OFF CACHE BOOL "Build with freetype support" FORCE)
     set(OPTION_SCREEN_WIDTH 1920 CACHE STRING "Custom screen width" FORCE)
     set(OPTION_SCREEN_HEIGHT 1080 CACHE STRING "Custom screen height" FORCE)
     #
@@ -93,6 +100,13 @@ if (PLATFORM_PS3)
     set(OPTION_BUILTIN_LIBCONFIG ON CACHE BOOL "Build libconfig from sources" FORCE)
 endif ()
 
+if (PLATFORM_PS4)
+    # OpenOrbisSDK does not ship libconfig (the libcross2d config
+    # classes are built on top of it). Build the bundled copy out of
+    # source/skeleton/libconfig/*.c — same path PS3 already takes.
+    set(OPTION_BUILTIN_LIBCONFIG ON CACHE BOOL "Build libconfig from sources" FORCE)
+endif ()
+
 ####################
 # COMMON STUFF
 ####################
@@ -109,7 +123,13 @@ include(FindPkgConfig)
 if (OPTION_FREETYPE)
     pkg_search_module(FREETYPE REQUIRED freetype2)
 endif ()
-if (NOT PLATFORM_DREAMCAST AND NOT PLATFORM_PS3)
+if (NOT PLATFORM_DREAMCAST AND NOT PLATFORM_PS3 AND NOT PLATFORM_PS4)
+    # The OpenOrbisSDK does not ship static libpng.a / libz.a — only
+    # the Sce* dynamic .so for the PS4 firmware. libpng / zlib are
+    # only used by libcross2d's PNG texture loader, which the PS4
+    # streaming UI doesn't need (the catalog is JSON-driven, not
+    # image-driven). Skip the pkg_search_module for PS4 and let the
+    # .pc stubs stay unused.
     pkg_search_module(PNG REQUIRED libpng)
     pkg_search_module(ZLIB REQUIRED zlib)
 endif ()
@@ -150,11 +170,22 @@ endif ()
 
 # gl2 / gles2
 if (OPTION_RENDER_GL2 OR OPTION_RENDER_GLES2)
-    file(GLOB GL_SRC source/platforms/gl2/*.c*)
-    if ((NOT PLATFORM_VITA AND NOT PLATFORM_PS4) OR OPTION_PS4_SHACC)
+    # PS4 uses its own GNM-backed renderer in source/platforms/ps4/
+    # (compiled below); pulling in the cross-platform gl2/*.c* would
+    # require libGLESv2 which the OpenOrbisSDK doesn't ship as a
+    # static lib. Same as Vita.
+    if (NOT PLATFORM_VITA AND NOT PLATFORM_PS4)
+        file(GLOB GL_SRC source/platforms/gl2/*.c*)
         file(GLOB GL_SHADERS_SRC source/platforms/gl2/shaders/*.c*)
+        list(APPEND C2D_SOURCES ${GL_SRC} ${GL_SHADERS_SRC})
+    elseif (PLATFORM_PS4 AND OPTION_PS4_SHACC)
+        # OPTION_PS4_SHACC means "compile the GLES2 shader sources
+        # through libcross2d's GNM shacc, link to the host-built
+        # EBOOT" — only used by the upstream pPlay SDK samples. Off
+        # by default.
+        file(GLOB GL_SHADERS_SRC source/platforms/gl2/shaders/*.c*)
+        list(APPEND C2D_SOURCES ${GL_SHADERS_SRC})
     endif ()
-    list(APPEND C2D_SOURCES ${GL_SRC} ${GL_SHADERS_SRC})
     list(APPEND C2D_CFLAGS -D__GL2__)
     if (OPTION_RENDER_GLES2)
         list(APPEND C2D_CFLAGS -D__GLES2__)

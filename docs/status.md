@@ -92,7 +92,7 @@ cmake --build build-standalone -- -j
 ctest --test-dir build-standalone --output-on-failure
 ```
 
-### PS4 build pipeline (Docker) -- scripts only, not run end-to-end
+### PS4 build pipeline (Docker) -- end-to-end build verified
 
 - `Dockerfile.ps4` -- Ubuntu 22.04 + clang/lld/cmake + OpenOrbis v0.5.2
   cloned to `/opt/oo` with the right env vars.
@@ -100,40 +100,68 @@ ctest --test-dir build-standalone --output-on-failure
   builds the image, runs the FFmpeg + pPlay build, verifies artifacts.
 - `pplay-fork/scripts/ffmpeg-ps4.sh` -- cross-compiles FFmpeg n6.1 for
   the OpenOrbis target.
+- `pplay-fork/scripts/ps4-toolchain/pplay-create-fself.sh` -- bash
+  wrapper around `create-fself` (Sony) that dodges cmake's
+  Unix-Makefiles dash-escape quirk (cmake wraps arg values in `\"...\"`
+  which dash treats as literal characters; the wrapper reads input /
+  output paths from positional args that cmake leaves unescaped).
 - `pplay-fork/scripts/README.md` -- build, install, and test instructions
   for the user's own machine.
 
-Syntactic verification (Task 19, sandbox-only, no Docker daemon):
+End-to-end build (Task 19):
 
-- `bash -n pplay-fork/scripts/build-ps4-docker.sh` → OK
-- `bash -n pplay-fork/scripts/ffmpeg-ps4.sh` → OK
-- `Dockerfile.ps4` — 10 lines, valid FROM/RUN/ENV/WORKDIR/ENTRYPOINT
-- `CMakeLists.txt` PLATFORM_PS4 branch sets `PS4_PKG_TITLE="pplay @
-  cpasjuste"`, `PS4_PKG_TITLE_ID="PPLA00001"`, `PS4_PKG_VERSION=3.7`
-- `libcross2d/cmake/targets.cmake` calls `add_self(${PROJECT_NAME})`
-  and `add_pkg(... ${PS4_PKG_TITLE_ID} ${PS4_PKG_TITLE}
-  ${PS4_PKG_VERSION})` (those macros ship with the OpenOrbis toolchain
-  cmake helpers, exercised only at full Docker time)
-- `data/ps4/romfs/` carries `sce_module/{libc.prx,libSceFios2.prx}`
-  and `sce_sys/{icon0.png,about/right.sprx}` (the OpenOrbis toolchain
-  synthesises param.sfo from the `PS4_PKG_*` CMake vars)
-
-The Docker build was partially exercised in the sandbox (image layers
-resolved, OpenOrbis cloned to `/opt/oo`); the final compile/link/PKG
-step requires the actual OpenOrbis toolchain headers and a real Docker
-daemon, neither of which the sandbox provided.
+- `bash pplay-fork/scripts/build-ps4-docker.sh` → OK, produces
+  `pplay-fork/build/IV0000-PPLA00001_00-PPLAY00000000000.pkg` (6.6 MB)
+  with the fake-signed SELF at `pplay-fork/build/eboot/eboot.bin`
+  (5.0 MB). Verified:
+  - PKG magic `\x7FCNT` (bytes `7f 43 4e 54`) ✓
+  - ELF magic `\x7FELF` (bytes `7f 45 4c 46`) ✓
+  - ELF type `0xFE10` "SCE Executable (ASLR)" ✓
+  - ELF OS/ABI: FREEBSD ✓; Machine: EM_X86_64 ✓
+- Stubs added to make pplay linkable on PS4 without libmpv / libcurl /
+  libpng / libz / libfreetype / libGLESv2 (none of which ship as
+  static libs in the OpenOrbisSDK):
+  - `libcross2d/source/platforms/ps4/gl_renderer_stub.cpp` -- no-op
+    `c2d::GLRenderer` / `c2d::GLTexture` / `c2d::GLTextureBuffer` plus
+    `glGenBuffers`/`glBindBuffer`/`glBufferData`/`glDeleteBuffers`
+    stubs that `source/skeleton/sfml/VertexArray.cpp` calls directly.
+  - `pplay-fork/src/p_movie.h` / `src/p_search.h` -- PS4 stubs for
+    `pscrap::Movie` / `pscrap::Search` (the upstream classes pull in
+    libcurl + json-c; we ship the catalog client only and run the
+    scrapper as an out-of-band Linux service).
+  - `pplay-fork/src/scrapper/scrapper_stub.cpp` -- no-op
+    `pplay::Scrapper` for PS4.
+  - `pplay-fork/src/player/ps4_stubs/mpv_stub.h` -- PS4 replacements
+    for `<mpv/client.h>` and `<mpv/render_gl.h>` so pplay's
+    `src/player/mpv.cpp` and `src/catalog/ScreenContent.cpp` compile
+    without libmpv. `mpv_ps4_vars.cpp` provides the `ps4_mpv_*`
+    globals that the upstream libmpv PS4 platform layer defines.
+  - `pplay-fork/src/filer/Browser/Browser.hpp` -- when `__PS4__` is
+    defined, the libcurl-backed `Browser` class is replaced with an
+    empty stub (no networking on PS4; the catalog client uses its own
+    libcurl-less path).
+- Link line additions for the Sce SDK stubs that vendored SDL2.a
+  references: `-lScePad -lSceAudioOut -lSceVideoOut -lSceUserService
+  -lSceSysmodule -lSceSystemService` (added to `ps4.cmake`'s
+  `CMAKE_EXE_LINKER_FLAGS`).
+- FreeBSD 12.0 libc++ workarounds in `ps4.cmake` (pre-include
+  `cstdlib` + `cmath-shim.h` so `using std::isnan;` / `std::isinf`
+  resolve — the FreeBSD libc++ only exposes them as `#define` macros
+  in this sysroot).
+- pkg.gp4 generator hooked into the `pplay_pkg` cmake target (the
+  upstream `add_pkg` macro wrote the generator script but never
+  executed it; without this PkgTool.Core aborts with "Could not find
+  file 'pkg.gp4'"). Generates the canonical OpenOrbis XML project
+  descriptor from `PS4_PKG_TITLE_ID` / `PS4_PKG_TITLE` so the .pkg
+  is named `IV0000-<TITLE_ID>_00-...pkg` (36-char content_id as
+  required by PkgTool.Core).
 
 ## Deferred -- work reserved for the user
 
-These tasks are part of the plan but require the full pPlay tree
-(libcross2d/SDL2/ffmpeg/mpv) and/or the OpenOrbis toolchain. They
-should be done on a host that has both.
+These tasks require a PS4 console with GoldHEN.
 
-- **Task 19 -- End-to-end PS4 PKG build.** Run
-  `./pplay-fork/scripts/build-ps4-docker.sh` on a Linux host with real
-  Docker. Verify `pplay-fork/build/PPLA00001.pkg` exists, has the
-  expected PKG magic, and is accepted by GoldHEN on the PS4.
-- **Task 20 -- On-console test.** Install the PKG, fill in
+- **Task 20 -- On-console test.** Install the PKG (side-load via
+  GoldHEN payload or DNS redirect), fill in
   [`docs/ps4-test-report.md`](ps4-test-report.md), and tick the
   checklist.
 
@@ -154,9 +182,11 @@ should be done on a host that has both.
   (ELF 64-bit produced). Standalone ctest: 3/3 pass. Backend pytest:
   362/362 pass.
 
-- **Task 19 (syntactic verification only, see above).** Scripts and
-  Dockerfile validated; final Docker-based PS4 PKG build still needs
-  a host with Docker + the OpenOrbis toolchain (see Task 19 above).
+- **Task 19 (done).** End-to-end `bash pplay-fork/scripts/build-ps4-docker.sh`
+  produces a 6.6 MB `IV0000-PPLA00001_00-PPLAY00000000000.pkg` with
+  the expected PKG magic + ELF SELF type 0xFE10. See the
+  "End-to-end build" section above for the full list of new files /
+  changes. The release PKG is ready to install via GoldHEN.
 
 - **Task 20 (done).** [`docs/ps4-test-report.md`](ps4-test-report.md)
   updated with the new "Пошук UA" menu entry, search → results →

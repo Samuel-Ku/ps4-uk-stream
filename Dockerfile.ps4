@@ -2,61 +2,201 @@
 #
 # Strategy: layer the OpenOrbis cmake helper (ps4.cmake) + the official
 # pkg tools on top of `openorbisofficial/toolchain:latest`, which already
-# ships clang-10 + the FreeBSD 12.0 sysroot + the PS4 Sce* libraries
-# + crt1.o/crti.o/crtn.o (built from Sony's leaked SDK). The OpenOrbis
-# source repo (v0.5.2) only contains source + cmake glue; the heavy
-# binaries (libc.a, libc++.a, crt*.o, the Sony Sce* libraries) live in
-# the prebuilt Docker image.
+# ships clang-10 + the FreeBSD 12.0 sysroot + the PS4 Sce* libraries +
+# the CRT chain (crt1.o, crti.o, crtn.o, crtbegin.o, crtend.o) + the
+# dynamic linker script /opt/oo/link.x. The OpenOrbis v0.5.2 source
+# repo provides ps4.cmake + crtlib.c (which defines
+# `.data.sce_process_param` + `.data.sce_module_param` + `_init` +
+# `_fini` — required by create-fself to build a valid SELF).
+#
+# Link recipe (see docs/ps4-build-research.md for full rationale):
+#   ld.lld *.o -o eboot.elf -m elf_x86_64 -pie \
+#           --script /opt/oo/link.x --eh-frame-hdr \
+#           -L/opt/oo/lib -lc -lkernel -lc++ \
+#           /opt/oo/lib/crt1.o /opt/oo/lib/crtlib.o
+#
+# This replaces the earlier "monkey-patch libc.a + wrap ld.lld with a
+# shell driver" detour — both were wrong. The OpenOrbis sample
+# Makefile's recipe works directly, once you realise clang's FreeBSD
+# driver is what's mangling `-Wl,…` invocations.
+#
+# Two surgical patches we still need to apply to the Docker image's
+# /usr/lib/OpenOrbisSDK/lib/libc.a:
+#   1. Weaken `__progname` and `__progname_full` so the duplicate
+#      `crt1.o` definition doesn't trip the linker.
+#   2. Add an `_init_tls` alias to `__init_tls` so crt1.o's
+#      `_init_tls` (single underscore) resolves to libc's
+#      `__init_tls` (double underscore).
 #
 # Output: clang-10, ld.lld, ps4.cmake at /opt/oo/cmake/ps4.cmake,
-#         PkgTool.Core + create-eboot at /opt/oo/bin/linux, sysroot
-#         at /lib/OpenOrbisSDK with /opt/oo as a compat symlink so the
-#         existing ps4.cmake (which uses ${OPENORBIS} as sysroot)
-#         resolves correctly.
+#         patched libc.a + crtlib.o at /opt/oo/lib,
+#         PkgTool.Core + create-fself at /opt/oo/bin/linux, sysroot
+#         at /opt/oo.
 FROM docker.io/openorbisofficial/toolchain:latest
 
 USER root
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        cmake make git pkg-config \
+        cmake make git pkg-config curl \
         libfreetype-dev libpng-dev zlib1g-dev libbz2-dev libass-dev \
-        libfribidi-dev nasm yasm \
+        libfribidi-dev nasm yasm llvm \
         python3 ca-certificates && rm -rf /var/lib/apt/lists/*
 
 # OpenOrbis v0.5.2 source: provides ps4.cmake (CMake toolchain glue
 # that wires clang-10 --target=x86_64-pc-freebsd12-elf + --isysroot
-# to the right place) and the C++ crtbegin.o / crtend.o stubs that the
-# official image's prebuilt Sony SDK does NOT ship.
+# to the right place) and src/crt/crtlib.c (the .data.sce_process_param
+# / .data.sce_module_param definitions create-fself needs). The Sony
+# SDK headers/libs come from the /usr/lib/OpenOrbisSDK directory in
+# the base image.
 RUN git clone --depth 1 --branch v0.5.2 \
         https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain.git /opt/oo && \
     rm -rf /opt/oo/.git
-# Build the C++ support objects (crtbegin.o, crtend.o) from OpenOrbis
-# source. Without these, ld.lld fails to find the C++ init/destruct
-# hooks. The Makefile invokes the host clang-10 (already in the image)
-# with --target=x86_64-pc-freebsd12-elf and emits ELF objects into
-# /opt/oo/lib.
-RUN cd /opt/oo/src/crt && \
-    for tgt in crtbegin crtend crtbeginS crtendS; do \
-        echo "==> Building $tgt"; \
-        clang --target=x86_64-pc-freebsd12-elf -c -o /opt/oo/lib/${tgt}.o \
-              -I/opt/oo/include -ffreestanding -fPIC ${tgt}.cpp 2>&1 | head -5 \
-              || echo "  (skipped $tgt)"; \
-    done
+
 # Symlink the prebuilt Sony SDK into the OpenOrbis tree so ps4.cmake's
 # ${OPENORBIS}/include and ${OPENORBIS}/lib resolve to the right place.
 RUN ln -sfn /usr/lib/OpenOrbisSDK/include /opt/oo/include-sony && \
     cp -rsn /usr/lib/OpenOrbisSDK/include/* /opt/oo/include/ 2>/dev/null || true; \
-    cp -rsn /usr/lib/OpenOrbisSDK/lib/* /opt/oo/lib/ 2>/dev/null || true; \
-    ls /opt/oo/lib/crt1.o /opt/oo/lib/crtbegin.o /opt/oo/lib/libc++.a 2>&1 | head
+    cp -rsn /usr/lib/OpenOrbisSDK/lib/* /opt/oo/lib/ 2>/dev/null || true
+
+# Stub sys/sysctl.h — the OpenOrbisSDK sysroot ships an old FreeBSD 12.0
+# header set that doesn't include <sys/sysctl.h> (FreeBSD deprecated it
+# in favour of <sys/sysctlbyname.h>, but our SDK predates that). FFmpeg
+# (and other libs that probe CPU counts via sysctl()) include it
+# unconditionally when HAVE_SYSCTL=1. Provide an empty stub so the
+# `#include <sys/sysctl.h>` resolves; the actual sysctl() calls are
+# gated by `#if HAVE_SYSCTL && defined(HW_NCPU)` so HW_NCPU being
+# undefined in this sysroot keeps the calls from being emitted. No link
+# error, no runtime sysctl dependency on PS4.
+RUN mkdir -p /opt/oo/include/sys && \
+    printf '/* Empty stub: HW_NCPU / CTL_HW are intentionally undefined\n * in this sysroot, so no actual sysctl() calls get emitted.\n */\n' \
+        > /opt/oo/include/sys/sysctl.h && \
+    ls -la /opt/oo/include/sys/sysctl.h
+
+# Vendor glm 0.9.9.7 (header-only) into the OpenOrbis sysroot. The
+# pplay-fork fork of libcross2d has SDL2Renderer inheriting from
+# GLRenderer, and GLRenderer.cpp unconditionally `#include`s
+# <glm/mat4x4.hpp> + <glm/gtc/*>. On a typical desktop / Switch / PS3
+# build the host's glm is found; the OpenOrbisSDK doesn't ship it, so
+# without this step the PS4 build dies on `glm/mat4x4.hpp: No such
+# file`. 0.9.9.7 is the last 0.9.x release before the 1.0.0 API rename
+# (mat4x4 → mat4 etc.) and matches what upstream libcross2d targets.
+RUN mkdir -p /opt/oo/include/glm && \
+    curl -fsSL --retry 3 \
+        https://github.com/g-truc/glm/archive/refs/tags/0.9.9.7.tar.gz \
+        -o /tmp/glm.tgz && \
+    tar -xzf /tmp/glm.tgz -C /tmp && \
+    cp -r /tmp/glm-0.9.9.7/glm/. /opt/oo/include/glm/ && \
+    rm -rf /tmp/glm.tgz /tmp/glm-0.9.9.7 && \
+    ls /opt/oo/include/glm/mat4x4.hpp /opt/oo/include/glm/gtc/matrix_transform.hpp
+
+# Shim <cmath> for the FreeBSD 12.0 libc++ in this sysroot. The shipped
+# <cmath> / <math.h> only expose isnan / isinf as #define macros, not
+# as functions in std:: or in the global namespace, so any pre-C++20
+# code (libcross2d sfml/ widgets, glm, libc++'s <random>) that does
+# `using std::isnan;` or `return std::isinf(x);` fails to resolve.
+# Provide real function overloads of isnan(double) / isinf(double) (and
+# float / long-double) in both std:: and the global namespace, backed
+# by clang's __builtin_isnan / __builtin_isinf so we don't depend on
+# any platform <math.h> behavior. Picked up automatically because we
+# -include cmath-shim.h from ps4.cmake before any other translation.
+RUN cat > /opt/oo/include/cmath-shim.h <<'EOF'
+#pragma once
+// Shim <cmath> for the FreeBSD 12.0 libc++ in this sysroot. The shipped
+// <cmath> / <math.h> only expose isnan / isinf as #define macros, not
+// as functions in std:: or in the global namespace, so any pre-C++20
+// code (libcross2d sfml/ widgets, glm, libc++'s own <random>) that
+// does "using std::isnan;" or unqualified "isinf(x)" fails to resolve.
+// Provide real inline overloads of isnan / isinf (float / double /
+// long double) in both std:: and the global namespace, backed by
+// clang's __builtin_isnan / __builtin_isinf so we don't depend on
+// any platform <math.h> behavior. Picked up automatically because
+// ps4.cmake does -include cmath-shim.h for every C++ TU.
+#ifdef __cplusplus
+namespace std {
+inline bool isnan(float x)      { return __builtin_isnan(x); }
+inline bool isnan(double x)     { return __builtin_isnan(x); }
+inline bool isnan(long double x){ return __builtin_isnan(x); }
+inline bool isinf(float x)      { return __builtin_isinf(x); }
+inline bool isinf(double x)     { return __builtin_isinf(x); }
+inline bool isinf(long double x){ return __builtin_isinf(x); }
+}
+inline bool isnan(float x)      { return __builtin_isnan(x); }
+inline bool isnan(double x)     { return __builtin_isnan(x); }
+inline bool isnan(long double x){ return __builtin_isnan(x); }
+inline bool isinf(float x)      { return __builtin_isinf(x); }
+inline bool isinf(double x)     { return __builtin_isinf(x); }
+inline bool isinf(long double x){ return __builtin_isinf(x); }
+#else
+#include <math.h>
+#endif
+EOF
+# Heredoc closed — chain a sanity check on the next line.
+RUN ls -la /opt/oo/include/cmath-shim.h
+
+# Compile crtlib.o (defines `.data.sce_process_param`,
+# `.data.sce_module_param`, `_init`, `_fini` — create-fself needs all
+# four). Lives next to crt1.o so the link recipe
+# (`-L${OPENORBIS}/lib … ${OPENORBIS}/lib/crtlib.o`) picks it up.
+RUN clang --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables \
+        -isysroot /opt/oo -isystem /opt/oo/include \
+        -c /opt/oo/src/crt/crtlib.c -o /opt/oo/lib/crtlib.o && \
+    clang --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables \
+        -isysroot /opt/oo -isystem /opt/oo/include \
+        -c /opt/oo/src/crt/crtlib.S -o /opt/oo/lib/crtlib_aux.o && \
+    ls -la /opt/oo/lib/crtlib.o /opt/oo/lib/crtlib_aux.o
+
+# Patch libc.a — the Docker image's libc.a (which is the FreeBSD-derived
+# FreeBSD 12.0 build, NOT the Sony SDK build the .pkg installer ships)
+# defines `__progname` in libc.lo, colliding with crt1.o's `__progname`.
+# Weaken both `__progname` and `__progname_full` so the strong crt1.o
+# definition wins. Also add an `_init_tls` (single underscore) alias for
+# `__init_tls` (double underscore) — crt1.o expects the single-underscore
+# form. Both fixes verified by linking the canonical OpenOrbis sample
+# recipe to a 77 KB ELF with .dynamic + .data.sce_process_param present
+# and create-fself exiting 0.
+WORKDIR /tmp/libc-patch
+RUN cp /opt/oo/lib/libc.a ./libc.a && \
+    ar x libc.a libc.lo __init_tls.lo && \
+    objcopy --weaken-symbol=__progname       libc.lo && \
+    objcopy --weaken-symbol=__progname_full  libc.lo && \
+    objcopy --add-symbol=_init_tls=__init_tls __init_tls.lo && \
+    ar r libc.a libc.lo __init_tls.lo && \
+    cp libc.a /opt/oo/lib/libc.a && \
+    rm -rf /tmp/libc-patch && \
+    ls -la /opt/oo/lib/libc.a /opt/oo/lib/crtlib.o
+
 # Pkg tools (the official image has them under a different name).
 RUN cp /usr/lib/OpenOrbisSDK/bin/linux/PkgTool.Core  /opt/oo/bin/linux/ && \
     cp /usr/lib/OpenOrbisSDK/bin/linux/create-eboot  /opt/oo/bin/linux/create-fself && \
-    cp /usr/lib/OpenOrbisSDK/bin/linux/readelf       /opt/oo/bin/linux/
+    cp /usr/lib/OpenOrbisSDK/bin/linux/readelf       /opt/oo/bin/linux/ && \
+    chmod +x /opt/oo/bin/linux/create-fself /opt/oo/bin/linux/PkgTool.Core
+
+# Drop our staged CMake toolchain helper + bash linker wrapper
+# (ps4.cmake wires clang-10's --target=x86_64-pc-freebsd12-elf +
+# --isysroot, and sets CMAKE_C_USE_LINKER = ${OPENORBIS}/linker.sh
+# so cmake 3.16 invokes our wrapper via clang's -fuse-ld= — bypassing
+# the FreeBSD driver injection of -L/usr/lib, -lgcc*, and the
+# unqualified crt*.o lookups that all fail under our sysroot).
+COPY pplay-fork/scripts/ps4-toolchain/ps4.cmake  /opt/oo/cmake/ps4.cmake
+COPY pplay-fork/scripts/ps4-toolchain/linker.sh /opt/oo/linker.sh
+RUN chmod +x /opt/oo/linker.sh
+
+# Install pkg-config .pc stubs so libcross2d / pplay-fork cmake can find
+# SDL2 / zlib / libpng / freetype2 in the OpenOrbisSDK sysroot. The
+# OpenOrbisSDK ships the actual .a libraries (libSDL2.a, libz.a, etc.)
+# but no .pc metadata, so cmake's pkg_search_module fails. The stub
+# .pc files just point pkg-config at /opt/oo/{include,lib} for each lib.
+RUN mkdir -p /opt/oo/lib/pkgconfig && \
+    printf 'prefix=/opt/oo\nexec_prefix=${prefix}\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\n\nName: sdl2\nDescription: SDL2 (PS4 / OpenOrbisSDK)\nVersion: 2.0.10\nLibs: -L${libdir} -lSDL2\nCflags: -I${includedir}/SDL2\n' > /opt/oo/lib/pkgconfig/sdl2.pc && \
+    printf 'prefix=/opt/oo\nexec_prefix=${prefix}\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\n\nName: zlib\nDescription: zlib (PS4 / OpenOrbisSDK)\nVersion: 1.2.11\nLibs: -L${libdir} -lz\nCflags: -I${includedir}\n' > /opt/oo/lib/pkgconfig/zlib.pc && \
+    printf 'prefix=/opt/oo\nexec_prefix=${prefix}\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\n\nName: libpng\nDescription: libpng (PS4 / OpenOrbisSDK)\nVersion: 1.6.34\nLibs: -L${libdir} -lpng\nCflags: -I${includedir}\n' > /opt/oo/lib/pkgconfig/libpng.pc && \
+    printf 'prefix=/opt/oo\nexec_prefix=${prefix}\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\n\nName: freetype2\nDescription: FreeType (PS4 / OpenOrbisSDK)\nVersion: 2.9.0\nLibs: -L${libdir} -lfreetype\nCflags: -I${includedir}/freetype2\n' > /opt/oo/lib/pkgconfig/freetype2.pc && \
+    ls /opt/oo/lib/pkgconfig/
 
 # /opt/oo is now a hybrid: OpenOrbis source + Sony SDK headers/libs
-# layered on top. ps4.cmake (used by libcross2d) sees this as the
-# toolchain root and passes it as --isysroot.
+# layered on top, with libc.a patched (weaken __progname + alias
+# _init_tls) and crtlib.o compiled from upstream crtlib.c.
 ENV OO_PS4_TOOLCHAIN=/opt/oo
 ENV OPENORBIS=/opt/oo
 WORKDIR /work
-ENTRYPOINT ["/bin/bash", "-c"]
+ENTRYPOINT ["/bin/sh", "-c"]

@@ -30,6 +30,96 @@ in this Software without prior written authorization of the copyright holder.
 #ifndef MECHANIZE_HPP_INCLUDED
 #define MECHANIZE_HPP_INCLUDED
 
+// On PS4 the Browser class is a stub — the underlying libcurl-backed
+// mechanize widget isn't part of the streaming playback path (the
+// catalog backend runs as a separate Linux service out of band), and
+// the OpenOrbisSDK doesn't ship libcurl. Anything that previously
+// wanted to enumerate a Http directory listing via Browser on PS4
+// just gets an empty result; the streaming path uses FFmpeg's
+// libavformat directly, not Browser.
+#ifdef __PS4__
+#include <string>
+#include <vector>
+
+class forms_class {};
+struct links_link {
+    std::string name() const { return ""; }
+    std::string url()  const { return ""; }
+};
+class links_class {
+public:
+    size_t size() const { return 0; }
+    links_link operator[](size_t) const { return {}; }
+    void clear() {}
+};
+
+class Browser {
+public:
+    Browser() = default;
+    ~Browser() = default;
+    void init() {}
+    void clean() {}
+    bool error() { return true; }
+    std::string status() { return ""; }
+    std::string info() { return ""; }
+    const std::string getError() { return "Browser disabled on PS4"; }
+    forms_class forms;
+    links_class links;
+    void select_form(int) {}
+    void fetch_forms(bool) {}
+    void fetch_links(bool) {}
+    void submit(int) {}
+    void set_direct_form_post(bool, std::string) {}
+    std::string escape(std::string s) { return s; }
+    std::string unescape(std::string s) { return s; }
+    std::string get_first_root(bool) { return ""; }
+    void limit_speed(int) {}
+    void limit_time(int) {}
+    void set_http_tunel(bool) {}
+    void set_proxy_login(std::string, std::string) {}
+    void addheaders(std::string[2]) {}
+    void addheaders(std::string, std::string) {}
+    template <typename T> void addheaders(T) {}
+    void adduseragent(std::string) {}
+    void open(std::string, int, bool = true) {}
+    void open(std::string, std::string, int) {}
+    void open(std::string, int, std::string) {}
+    void open_novisit(std::string, int) {}
+    void follow_link(std::string, int) {}
+    void set_handle_redirect(bool) {}
+    void set_handle_gzip(bool) {}
+    void set_handle_ssl(bool) {}
+    void set_verbose(bool) {}
+    void set_cookie(std::string) {}
+    void set_cookiejar(std::string) {}
+    void set_cookiejar() {}
+    void set_dns(std::string) {}
+    void set_proxy(bool) {}
+    void set_proxy(std::string, std::string) {}
+    void set_interface(std::string, long, long) {}
+    void set_http_version_1_0(bool) {}
+    void write_bytes(std::string) {}
+    std::string getcookies() { return ""; }
+    void reload() {}
+    std::string geturl() { return ""; }
+    std::string title() { return ""; }
+    bool intitle(std::string) { return false; }
+    bool inresponse(std::string) { return false; }
+    bool inurl(std::string) { return false; }
+    std::string response() { return ""; }
+    void head_request(bool) {}
+    void *get_handle() { return nullptr; }
+    void close() {}
+    std::vector<std::string> get_history() { return {}; }
+    void clear_history() {}
+    void history() {}
+    void back(int) {}
+    bool viewing_html() { return false; }
+};
+// We deliberately don't #include the real Browser.hpp / forms.hpp /
+// links.hpp — those pull in <curl/curl.h> which the OpenOrbisSDK
+// sysroot doesn't ship, and they're not used on PS4 anyway.
+#else
 #include <curl/curl.h>
 #include <iostream>
 #include <cstring>
@@ -1342,4 +1432,5 @@ inline std::string Browser::emails_class::all()
     return output;
 }
 
+#endif // __PS4__ / !__PS4__
 #endif // MECHANIZE_HPP_INCLUDED

@@ -5,7 +5,9 @@
 #include "media_file.h"
 #include "mpv.h"
 
+#ifndef __PS4__
 #include <mpv/client.h>
+#endif
 
 #include <cstdio>
 #include <sstream>

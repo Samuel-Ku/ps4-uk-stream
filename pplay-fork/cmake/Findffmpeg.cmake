@@ -15,6 +15,17 @@ set(FFMPEG_SEARCH_PATHS
         /usr/local
         /usr
         /opt
+        # PS4 cross-build: scripts/ffmpeg-ps4.sh installs to
+        # $PWD/../../ffmpeg-install (relative to external/ffmpeg-ps4/ffmpeg/),
+        # which lands at <pplay-fork>/external/ffmpeg-install/usr/local/.
+        # Mounted at /work inside the container, so:
+        #   /work/external/ffmpeg-install/usr/local
+        # Without this hint, Findffmpeg only searches
+        # /usr/local /usr /opt and fails the PS4 build.
+        /work/external/ffmpeg-install/usr/local
+        # Some configs/older images also dropped it under the OpenOrbis
+        # sysroot (persistent across container runs). Cheap to check.
+        /opt/oo/ffmpeg-install/usr/local
         )
 
 set(FFMPEG_COMPONENTS

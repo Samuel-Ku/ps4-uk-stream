@@ -6,8 +6,10 @@
 #include "mpv.h"
 
 #ifdef __PS4__
-extern "C" int ps4_mpv_use_precompiled_shaders;
-extern "C" int ps4_mpv_dump_shaders;
+// ps4_mpv_use_precompiled_shaders / ps4_mpv_dump_shaders are
+// declared in ps4_stubs/mpv_stub.h (replaces <mpv/client.h> on PS4)
+// and defined in ps4_stubs/mpv_ps4_vars.cpp. mpv.h includes mpv_stub.h
+// for PS4, so the declarations are visible via that include.
 #endif
 
 static void *get_proc_address_mpv(void *unused, const char *name) {

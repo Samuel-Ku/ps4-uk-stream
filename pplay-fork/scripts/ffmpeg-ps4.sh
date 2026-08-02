@@ -23,20 +23,52 @@ fi
 cd ffmpeg
 echo "==> Configuring FFmpeg for PS4 (clang ${TARGET})"
 # ld flags must match /opt/oo/cmake/ps4.cmake so ffmpeg and the rest of
-# the build (libcross2d + pPlay) link the same C runtime files. crt1.o
-# is passed positionally because the linker doesn't search --sysroot
-# in the same way Clang does.
+# the build (libcross2d + pPlay) link the same C runtime files. We use
+# `-fuse-ld=${SYSROOT}/linker.sh` so clang `exec()`s our bash wrapper
+# for the link (bypassing its FreeBSD driver injection of -L/usr/lib,
+# -lgcc*, unqualified crt*.o lookups — see docs/ps4-build-research.md).
+# The wrapper adds the canonical OpenOrbis recipe (`-m elf_x86_64 -pie
+# --script=link.x --eh-frame-hdr -L=lib`) and forwards the rest. We
+# only need to add the archives + crt tail here (same as ps4.cmake).
+#
+# `-isystem ${SYSROOT}/include` is required for clang to find the
+# FreeBSD-target headers (the sysroot has /opt/oo/include not
+# /opt/oo/usr/include, so without -isystem clang's default FreeBSD
+# sysroot layout fails to locate <math.h>, <stdio.h>, etc.).
+#
+# Cross-compiling against host libass/freetype/fribidi via pkg-config
+# fails: clang with `--target=x86_64-pc-freebsd12-elf --sysroot=/opt/oo`
+# treats absolute `-I/usr/include/...` paths from pkg-config as
+# sysroot-relative (looking for /opt/oo/usr/include/...). pPlay's
+# libcross2d doesn't call libass/freetype/fribidi directly — it goes
+# through FFmpeg's libavformat. We only need file/HLS demuxing +
+# h264 decode, so disable these and skip the cross-compile dep chain.
+#
+# Patch FFmpeg's `os_support.h` + `network.h` to add an extra guard
+# against double-defining `socklen_t` and `sockaddr_storage`. FFmpeg's
+# own HAVE_SOCKLEN_T / HAVE_STRUCT_SOCKADDR_STORAGE config-time checks
+# return 0 under our cross-compile (clang's FreeBSD target emits these
+# as 0 because the test compilation uses a minimal sysroot stub that
+# doesn't include the FreeBSD headers), but the real FreeBSD sysroot
+# DOES define both — so we get duplicate-definition errors when
+# FFmpeg's headers are included after sys/socket.h. Adding
+# `#ifndef socklen_t` / `#ifndef sockaddr_storage` to FFmpeg's
+# typedef/struct guards resolves the collision.
+sed -i 's@^#if !HAVE_SOCKLEN_T\(.*\)$@#if !HAVE_SOCKLEN_T \&\& !defined(__FreeBSD__)@' \
+    libavformat/os_support.h
+sed -i 's@^#if !HAVE_STRUCT_SOCKADDR_STORAGE\(.*\)$@#if !HAVE_STRUCT_SOCKADDR_STORAGE \&\& !defined(__FreeBSD__)@' \
+    libavformat/network.h
 ./configure \
     --prefix=/usr/local \
     --enable-cross-compile --cc="${CC}" --cxx="${CXX}" \
     --ar="${AR}" --nm="${NM}" --ranlib="${RANLIB}" --strip="${STRIP}" \
     --arch=x86_64 \
     --target-os=freebsd --pkg-config=pkg-config \
-    --extra-cflags="${TARGET} --sysroot=${SYSROOT} -O2 -fPIC -isysroot ${SYSROOT}" \
-    --extra-ldflags="${TARGET} --sysroot=${SYSROOT} -fuse-ld=lld -L${SYSROOT}/lib -lc -lkernel -lc++ ${SYSROOT}/lib/crt1.o" \
+    --extra-cflags="${TARGET} --sysroot=${SYSROOT} -isystem ${SYSROOT}/include -O2 -fPIC" \
+    --extra-ldflags="-fuse-ld=${SYSROOT}/linker.sh -L${SYSROOT}/lib -lc -lkernel -lc++ ${SYSROOT}/lib/crt1.o ${SYSROOT}/lib/crtlib.o" \
     --extra-libs="-L${SYSROOT}/lib -lc -lkernel -lc++" \
     --disable-shared --enable-static --enable-pic \
-    --enable-libass --enable-libfreetype --enable-libfribidi \
+    --disable-libass --disable-libfreetype --disable-libfribidi \
     --disable-protocols --enable-protocol='file,http,hls,https,tls' \
     --disable-filters --enable-filter='rotate,transpose' \
     --disable-encoders --disable-muxers --disable-programs \

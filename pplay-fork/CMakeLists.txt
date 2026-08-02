@@ -20,7 +20,14 @@ set(OPTION_SMB2 OFF CACHE BOOL "Build with smb2 support")
 # MODULES
 ###################
 add_subdirectory(libcross2d)
-add_subdirectory(pscrap)
+# pscrap is the standalone HTTP scraper backend client (uses libcurl +
+# json-c). On PS4 we ship the streamer client only — the scraper runs
+# as a separate Linux service out of band — so skip it for PS4 to
+# avoid pulling in libcurl/json-c as cross-compile deps. Linking
+# ${PROJECT_NAME} against `pscrap` below is also gated.
+if (NOT PLATFORM_PS4)
+    add_subdirectory(pscrap)
+endif ()
 
 ##############
 # pplay
@@ -35,10 +42,18 @@ set(TITLE_ID "PPLAY0001")
 
 # deps
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake")
-find_package(BZip2 REQUIRED)
-find_package(MPV REQUIRED)
-find_package(ffmpeg COMPONENTS avfilter avcodec avformat avutil swscale swresample)
-find_package(ass REQUIRED)
+# BZip2 / MPV / ass are not needed for the streaming playback path
+# the PS4 build is targeting. The upstream `REQUIRED` markers fail
+# the configure step when the sysroot (OpenOrbisSDK) doesn't ship
+# those libs. Skip them when targeting PS4.
+if (NOT PLATFORM_PS4)
+    find_package(BZip2 REQUIRED)
+    find_package(MPV REQUIRED)
+    find_package(ffmpeg COMPONENTS avfilter avcodec avformat avutil swscale swresample)
+    find_package(ass REQUIRED)
+else ()
+    find_package(ffmpeg COMPONENTS avfilter avcodec avformat avutil swscale swresample)
+endif ()
 
 # sources
 file(GLOB PPLAY_SRC
@@ -49,9 +64,26 @@ file(GLOB PPLAY_SRC
         src/filer/ftplib/*.c*
         src/menus/*.c*
         src/player/*.c*
-        src/scrapper/*.c*
         external/cJSON/cJSON.c
         )
+# Scrapper is the TMDB / IMDB metadata fetch wired into the catalog
+# browser UI. It uses libcurl + json-c and the OpenOrbisSDK doesn't
+# ship either, so on PS4 we ship the catalog client only — the actual
+# scrapper runs as a separate Linux service out of band. A no-op
+# `pplay::Scrapper` stub lives at src/scrapper/scrapper_stub.cpp to
+# satisfy the `scrapper` member in Main.
+if (PLATFORM_PS4)
+    list(APPEND PPLAY_SRC src/scrapper/scrapper_stub.cpp)
+    # ps4_stubs/mpv_ps4_vars.cpp defines ps4_mpv_use_precompiled_shaders
+    # and ps4_mpv_dump_shaders (replacing the symbols libmpv ships in
+    # its PS4 platform layer). Without this, the link fails with
+    # `undefined symbol: ps4_mpv_use_precompiled_shaders`. See
+    # ps4_stubs/mpv_stub.h for the declaration.
+    list(APPEND PPLAY_SRC src/player/ps4_stubs/mpv_ps4_vars.cpp)
+else ()
+    file(GLOB PPLAY_SCRAPPER_SRC src/scrapper/*.c*)
+    list(APPEND PPLAY_SRC ${PPLAY_SCRAPPER_SRC})
+endif ()
 
 # includes
 set(PPLAY_INC
@@ -67,17 +99,27 @@ set(PPLAY_INC
         ${ASS_INCLUDE_DIRS}
         ${FFMPEG_INCLUDE_DIRS}
         external/cJSON
-        ${BZIP2_INCLUDE_DIR}
         )
+# BZip2 is not used on the PS4 streaming playback path; the find_package
+# call above is gated on NOT PLATFORM_PS4, so ${BZIP2_INCLUDE_DIR} is
+# NOTFOUND here. Append it only when the variable was actually set.
+if (NOT PLATFORM_PS4)
+    list(APPEND PPLAY_INC ${BZIP2_INCLUDE_DIR})
+endif ()
 
 # cflags
 set(PPLAY_CFLAGS
         -D__PPLAY__
         -D__VERSION_MAJOR__=${VERSION_MAJOR}
         -D__VERSION_MINOR__=${VERSION_MINOR}
-        #-DM_PI=3.14159265358979323846
-        #-DM_SQRT2=1.41421356237309504880
         )
+# __PS4__ is the source-level marker the pplay code uses to gate PS4-only
+# behaviour (paths, stub classes, omitted UI). Define it whenever the
+# PS4 build is selected; #ifdef __PS4__ blocks in the headers/sources
+# pick it up automatically.
+if (PLATFORM_PS4)
+    list(APPEND PPLAY_CFLAGS -D__PS4__)
+endif ()
 
 # ldflags
 set(PPLAY_LDFLAGS
@@ -114,7 +156,14 @@ elseif (PLATFORM_PS4)
     set(PS4_PKG_TITLE_ID "PPLA00001")
     set(PS4_PKG_VERSION "${VERSION_MAJOR}.${VERSION_MINOR}")
     list(APPEND PPLAY_INC)
-    list(APPEND PPLAY_LDFLAGS opus freetype fribidi png bz2)
+    # The OpenOrbisSDK does not ship static libs for opus / fribidi /
+    # png / bz2 (the Sony SDK only ships the Sce* .so runtime libs
+    # for the dynamic PS4 firmware). For the PS4 streaming playback
+    # path we rely on FFmpeg's built-in Opus / H.264 / AAC decoders +
+    # SDL2's bundled png/jpeg loaders, so we don't need any of these
+    # in the link line. zlib is pulled in transitively via
+    # libavformat. freetype is part of libcross2d (linked in via
+    # C2D_LDFLAGS), not pplay itself.
 elseif (PLATFORM_LINUX)
     #####################
     # LINUX PLATORM
@@ -128,7 +177,10 @@ add_executable(${CMAKE_PROJECT_NAME} ${PPLAY_SRC})
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${PPLAY_INC})
 target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE ${PPLAY_CFLAGS})
 target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>)
-target_link_libraries(${CMAKE_PROJECT_NAME} cross2d pscrap ${PPLAY_LDFLAGS})
+target_link_libraries(${CMAKE_PROJECT_NAME} cross2d ${PPLAY_LDFLAGS})
+if (NOT PLATFORM_PS4)
+    target_link_libraries(${CMAKE_PROJECT_NAME} pscrap)
+endif ()
 
 #####################
 # tests (catalog)

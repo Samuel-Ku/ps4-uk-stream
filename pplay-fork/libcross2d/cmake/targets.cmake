@@ -2,6 +2,195 @@ cmake_minimum_required(VERSION 3.16)
 #set(CMAKE_VERBOSE_MAKEFILE ON)
 
 ###########################################################
+# PS4 packaging macros
+#
+# Upstream cpasjuste/libcross2d expects these to be provided by the
+# toolchain installer (OpenOrbis PS4 Toolchain.pkg) via the
+# `${OPENORBIS}/cmake/OpenOrbisConfig.cmake` include. Neither the v0.5.2
+# source nor the openorbisofficial/toolchain Docker image ship them
+# (the official Docker image only contains the binaries under
+# /usr/lib/OpenOrbisSDK/bin/linux). We therefore define the macros here
+# so the cmake `add_self` / `add_pkg` calls in the PS4 block below
+# always resolve regardless of toolchain origin. The wire-up is what
+# the macOS installer does internally: invoke PkgTool.Core and
+# create-fself, both of which the openorbisofficial image already
+# provides via /opt/oo/bin/linux/.
+#
+# The official OpenOrbis image only ships `create-eboot` (Sony's
+# tool with `-in/-out/-ptype/-paid` flags), not the upstream
+# OpenOrbis/create-fself which uses `--eboot` + positional args.
+# Going through create-eboot requires Go 1.17 to build upstream
+# create-fself from source (Ubuntu 20.04 only ships Go 1.14), and
+# upstream go modules use Windows-style backslashes in `replace`
+# directives that break on Linux. So we use create-eboot directly
+# via flag syntax (same binary, same output). ${CREATE_FSELF}
+# defaults to `create-fself` (PATH-resolved by the docker image's
+# /opt/oo/bin/linux layout) and can be overridden with
+# -DCREATE_FSELF=/full/path if a custom binary is preferred.
+#
+# Output convention (matches Sony PS4 homebrew expectations):
+#   <project>.elf            raw unstripped ELF64 from CMake
+#   <project>.eboot.bin      fake-signed ELF (paid=0x3100000000000002,
+#                            ptype=npdrm_exec) — GoldHEN accepts this.
+#   sce_sys/param.sfo        PS4 system param.sfo
+#   sce_sys/about/           right.sprx, icon0.png (from data/ps4/romfs)
+#   <titleid>.pkg            final installable .pkg built by PkgTool.Core.
+###########################################################
+if (PLATFORM_PS4 AND NOT COMMAND add_self)
+    # create-fself lives at /opt/oo/bin/linux/create-fself.bin (the
+    # path the openorbisofficial/toolchain Docker image installs it
+    # under; the OpenOrbis macOS .pkg drops it under
+    # /usr/lib/OpenOrbisSDK/bin/linux/ and our Dockerfile.ps4 copies
+    # from there).
+    #
+    # We do NOT invoke create-fself directly from cmake because the
+    # Unix Makefiles generator escapes arg values with `\"...\"`
+    # sequences that dash (Debian's /bin/sh) treats as literal
+    # characters — create-fself then reports "no such file" because
+    # it's looking for a path called `\"/work/build/pplay\"`. Use the
+    # bash wrapper at scripts/ps4-toolchain/pplay-create-fself.sh
+    # which reads input/output paths from positional args that cmake
+    # leaves unescaped (verified locally with a no-VERBATIM cmake
+    # probe).
+    #
+    # pplay-fork layout: libcross2d/cmake/targets.cmake and
+    # scripts/ps4-toolchain/pplay-create-fself.sh live 3 dirs apart
+    # (cmake → libcross2d → pplay-fork → scripts). Walk up two levels
+    # then down into scripts/.
+    set(PPLAY_FSELF_WRAPPER "${CMAKE_CURRENT_LIST_DIR}/../../scripts/ps4-toolchain/pplay-create-fself.sh")
+    if (NOT EXISTS "${PPLAY_FSELF_WRAPPER}")
+        # Fallback for callers that don't have scripts/ co-located
+        # (e.g. when libcross2d is consumed as a git submodule from a
+        # different repo). In that case just point at create-fself
+        # directly and let the caller deal with the dash escape
+        # quirk — they probably aren't on Debian.
+        set(PPLAY_FSELF_WRAPPER "/opt/oo/bin/linux/create-fself")
+    endif ()
+    function(add_self PROJECT)
+        set(SELF_BIN "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT}.elf")
+        add_custom_command(
+                TARGET ${PROJECT} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy
+                    "$<TARGET_FILE:${PROJECT}>"
+                    "${SELF_BIN}"
+                COMMENT "add_self: copying ${PROJECT} -> ${SELF_BIN}"
+                VERBATIM
+        )
+        add_custom_target(${PROJECT}.eboot
+                DEPENDS ${PROJECT}
+                COMMAND ${CMAKE_COMMAND} -E make_directory
+                    "${CMAKE_CURRENT_BINARY_DIR}/eboot"
+                # create-eboot (Sony) crashes with "Failed to build FSELF:
+                # EOF" when -out points to a path whose basename is
+                # literally "eboot.bin" — empirically verified across
+                # ptype=fake / npdrm_exec / system_exec. Workaround:
+                # write to .fself then rename. Self-trust:
+                # verified by hand in ps4-uk-build container.
+                #
+                # The bash wrapper (PPLAY_FSELF_WRAPPER) takes the
+                # paths as positional args — cmake leaves those
+                # unescaped, so the dash /bin/sh escape-quirk is
+                # bypassed. See comment above for the full rationale.
+                COMMAND ${PPLAY_FSELF_WRAPPER}
+                    "$<TARGET_FILE:${PROJECT}>"
+                    "${CMAKE_CURRENT_BINARY_DIR}/eboot/eboot.bin.fself"
+                    npdrm_exec
+                    0x3100000000000002
+                COMMAND ${CMAKE_COMMAND} -E rename
+                    "${CMAKE_CURRENT_BINARY_DIR}/eboot/eboot.bin.fself"
+                    "${CMAKE_CURRENT_BINARY_DIR}/eboot/eboot.bin"
+                COMMENT "add_self: create-fself -> eboot.bin (paid=0x3100000000000002, ptype=npdrm_exec)"
+                VERBATIM
+        )
+    endfunction()
+
+    function(add_pkg PROJECT ROMFS_DIR TITLE_ID TITLE VERSION)
+        set(PKG_DIR "${CMAKE_CURRENT_BINARY_DIR}/${TITLE_ID}")
+        set(PKG_OUT "${CMAKE_CURRENT_BINARY_DIR}/${TITLE_ID}.pkg")
+        # sce_sys param.sfo comes from data/ps4/romfs/sce_sys (right.sprx,
+        # icon0.png) bundled by libcross2d upsteam. We only need to make
+        # sure the FS layout that PkgTool.Core expects is present.
+        add_custom_target(${PROJECT}_pkg
+                DEPENDS ${PROJECT}.eboot
+                # Generate pkg.gp4 first so PkgTool.Core has something
+                # to read. The generator script is also written below
+                # (the file(WRITE) is at function scope so it always
+                # runs at configure time; the PRE_BUILD hook then
+                # runs `cmake -P` against it on each build).
+                COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/gen_pkg_gp4.cmake"
+                COMMAND ${CMAKE_COMMAND} -E remove_directory "${PKG_DIR}"
+                COMMAND ${CMAKE_COMMAND} -E make_directory "${PKG_DIR}/sce_sys"
+                COMMAND ${CMAKE_COMMAND} -E make_directory "${PKG_DIR}/eboot.bin"
+                COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${ROMFS_DIR}/sce_sys" "${PKG_DIR}/sce_sys"
+                COMMAND ${CMAKE_COMMAND} -E copy
+                    "${CMAKE_CURRENT_BINARY_DIR}/eboot/eboot.bin"
+                    "${PKG_DIR}/eboot.bin/eboot.bin"
+                COMMAND PkgTool.Core
+                    pkg_build
+                    "${CMAKE_CURRENT_BINARY_DIR}/pkg.gp4"
+                    "${CMAKE_CURRENT_BINARY_DIR}"
+                COMMENT "add_pkg: building ${TITLE_ID}.pkg via PkgTool.Core"
+                VERBATIM
+        )
+        # Generate pkg.gp4 on the fly. PkgTool.Core expects a pkg.gp4
+        # project file alongside the eboot.bin / sce_sys layout that
+        # we just materialised; without it the pkg build aborts with
+        # "Could not find file 'pkg.gp4'".
+        #
+        # The pkg.gp4 schema (see opt/oo/samples/hello_world/pkg.gp4)
+        # is the OpenOrbis XML project descriptor consumed by
+        # PkgTool.Core's `pkg_build` subcommand. We write a
+        # generator cmake script to gen_pkg_gp4.cmake and add a
+        # custom command that runs `cmake -P` against it before
+        # PkgTool.Core is invoked. See ps4-uk-stream plan
+        # docs/superpowers/plans/2026-08-01-ps4-uk-stream-impl.md.
+        set(GP4_PATH "${CMAKE_CURRENT_BINARY_DIR}/pkg.gp4")
+        set(GEN_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/gen_pkg_gp4.cmake")
+        file(WRITE "${GEN_SCRIPT}"
+             "set(TITLE_ID \"${TITLE_ID}\")\n"
+             "set(TITLE \"${TITLE}\")\n"
+             "set(GP4_PATH \"${GP4_PATH}\")\n"
+             "set(PKG_DIR \"${CMAKE_CURRENT_BINARY_DIR}/${TITLE_ID}\")\n"
+             "file(WRITE \"\${GP4_PATH}\"\n"
+             "  \"<?xml version=\\\"1.0\\\"?>\\n\"\n"
+             "  \"<psproject xmlns:xsd=\\\"http://www.w3.org/2001/XMLSchema\\\"\"\n"
+             "  \" xmlns:xsi=\\\"http://www.w3.org/2001/XMLSchema-instance\\\"\"\n"
+             "  \" fmt=\\\"gp4\\\" version=\\\"1000\\\">\\n\"\n"
+             "  \"  <volume>\\n\"\n"
+             "  \"    <volume_type>pkg_ps4_app</volume_type>\\n\"\n"
+             "  \"    <volume_id>PS4VOLUME</volume_id>\\n\"\n"
+             "  \"    <volume_ts>2026-08-02 08:12:00</volume_ts>\\n\"\n"
+             "  \"    <package content_id=\\\"IV0000-\${TITLE_ID}_00-PPLAY00000000000\\\"\"\n"
+             "  \"             passcode=\\\"00000000000000000000000000000000\\\"\"\n"
+             "  \"             storage_type=\\\"digital50\\\" app_type=\\\"full\\\" />\\n\"\n"
+             "  \"    <chunk_info chunk_count=\\\"1\\\" scenario_count=\\\"1\\\">\\n\"\n"
+             "  \"      <chunks>\\n\"\n"
+             "  \"        <chunk id=\\\"0\\\" layer_no=\\\"0\\\" label=\\\"Chunk #0\\\" />\\n\"\n"
+             "  \"      </chunks>\\n\"\n"
+             "  \"      <scenarios default_id=\\\"0\\\">\\n\"\n"
+             "  \"        <scenario id=\\\"0\\\" type=\\\"sp\\\"\"\n"
+             "  \"                  initial_chunk_count=\\\"1\\\"\"\n"
+             "  \"                  label=\\\"Scenario #0\\\">0</scenario>\\n\"\n"
+             "  \"      </scenarios>\\n\"\n"
+             "  \"    </chunk_info>\\n\"\n"
+             "  \"  </volume>\\n\"\n"
+             "  \"  <files img_no=\\\"0\\\">\\n\"\n"
+             "  \"    <file targ_path=\\\"eboot.bin\\\" orig_path=\\\"\${PKG_DIR}/eboot.bin/eboot.bin\\\" />\\n\"\n"
+             "  \"    <file targ_path=\\\"sce_sys/about/right.sprx\\\" orig_path=\\\"\${PKG_DIR}/sce_sys/about/right.sprx\\\" />\\n\"\n"
+             "  \"    <file targ_path=\\\"sce_sys/param.sfo\\\" orig_path=\\\"\${PKG_DIR}/sce_sys/param.sfo\\\" />\\n\"\n"
+             "  \"    <file targ_path=\\\"sce_sys/icon0.png\\\" orig_path=\\\"\${PKG_DIR}/sce_sys/icon0.png\\\" />\\n\"\n"
+             "  \"  </files>\\n\"\n"
+             "  \"  <rootdir>\\n\"\n"
+             "  \"    <dir targ_name=\\\"sce_sys\\\">\\n\"\n"
+             "  \"      <dir targ_name=\\\"about\\\" />\\n\"\n"
+             "  \"    </dir>\\n\"\n"
+             "  \"  </rootdir>\\n\"\n"
+             "  \"</psproject>\\n\")\n")
+    endfunction()
+endif ()
+
+###########################################################
 # Copy data to binary directory (common to all platforms)
 ###########################################################
 add_custom_target(${PROJECT_NAME}.data

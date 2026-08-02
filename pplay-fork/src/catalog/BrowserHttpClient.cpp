@@ -95,12 +95,12 @@ public:
         // for both casings.
         contentTypeOut.clear();
         const std::string info = browser_.info();
-        constexpr std::string_view kCtKeys[] = {"Content-Type:", "content-type:"};
+        constexpr const char *kCtKeys[] = {"Content-Type:", "content-type:"};
         std::size_t pos = std::string::npos;
-        for (const auto &key : kCtKeys) {
+        for (const char *key : kCtKeys) {
             pos = info.find(key);
             if (pos != std::string::npos) {
-                pos += key.size();
+                pos += std::strlen(key);
                 break;
             }
         }
