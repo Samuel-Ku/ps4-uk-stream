@@ -18,7 +18,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from ..uakino_browser import BASE_URL, UakinoSessionProtocol, get_session
+from ..uakino_browser import _UA, BASE_URL, UakinoSessionProtocol, get_session
 from .base import BaseProvider, ProviderError
 
 # Sections exposed by Uakino's new-theme navigation. The /animeukr URL is
@@ -54,11 +54,7 @@ _FILE_RE = re.compile(r"""file\s*:\s*["']([^"']+)["']""")
 _SERIES_EP_RE = re.compile(r"^Серія\s+(\d+)$")
 
 _CDN_REFERER = "https://ashdi.vip/"
-
-_DESKTOP_UA = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
-)
+_DESKTOP_UA = _UA
 
 # MediaType hints for search results, keyed on the section in the href.
 _SECTION_TYPES: dict[str, str] = {
@@ -196,6 +192,19 @@ def _parse_playlists(html: str) -> tuple[list[_PlaylistItem], bool]:
     return items, is_series
 
 
+def _pick_voice(
+    candidates: list[_PlaylistItem], translation: str | None
+) -> _PlaylistItem | None:
+    """Pick a playlist item: the requested voice, or the first one when no
+    voice was requested (specified-but-unmatched voices return None so the
+    caller can raise translation_missing)."""
+    if translation is not None:
+        return next(
+            (it for it in candidates if it.get("voice") == translation), None
+        )
+    return candidates[0] if candidates else None
+
+
 class UakinoProvider(BaseProvider):
     id = "uakino"
     name = "Uakino"
@@ -309,9 +318,7 @@ class UakinoProvider(BaseProvider):
                     episodes=[episodes_by_number[n] for n in sorted(episodes_by_number)],
                 )
             ]
-            translations = [Translation(id=v, label=v) for v in voices] or [
-                Translation(id="uk", label="Українська")
-            ]
+            translations = [Translation(id=v, label=v) for v in voices]
             return ContentResponse(
                 id=f"uakino:{external_id}",
                 type="series",
@@ -329,8 +336,6 @@ class UakinoProvider(BaseProvider):
             for it in items
             if it.get("voice")
         ]
-        if not translations:
-            translations = [Translation(id="uk", label="Українська")]
         return ContentResponse(
             id=f"uakino:{external_id}",
             type="anime" if "аніме" in " ".join(tags).lower() else "movie",
@@ -357,27 +362,18 @@ class UakinoProvider(BaseProvider):
         items, _ = await self._fetch_playlists(news_id)
         if episode is not None:
             candidates = [it for it in items if it.get("episode") == episode]
-            chosen = next(
-                (it for it in candidates if translation and it.get("voice") == translation),
-                None,
-            )
-            if chosen is None and translation is None:
-                chosen = candidates[0] if candidates else None
-            if chosen is None:
+            if not candidates:
                 raise ProviderError("not_found", f"episode {episode} not found in playlists")
         else:
             candidates = [it for it in items if it.get("episode") is None]
-            chosen = next(
-                (it for it in candidates if translation and it.get("voice") == translation),
-                None,
+            if not candidates:
+                raise ProviderError("parse_failed", "no playable voices in playlists")
+        chosen = _pick_voice(candidates, translation)
+        if chosen is None:
+            raise ProviderError(
+                "translation_missing",
+                f"voice {translation!r} not found in playlists",
             )
-            if chosen is None and translation is None:
-                chosen = candidates[0] if candidates else None
-            if chosen is None:
-                raise ProviderError(
-                    "translation_missing",
-                    f"voice {translation!r} not found in playlists",
-                )
 
         stream_page_url = str(chosen["file"])
         try:

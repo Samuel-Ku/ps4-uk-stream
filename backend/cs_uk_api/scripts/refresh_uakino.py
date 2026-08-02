@@ -5,9 +5,11 @@ plain httpx could reuse them. Investigation showed that uakino.best's
 Cloudflare managed challenge is silent (no cf_clearance is ever set) and
 evaluated per request: only fetch() executed inside a loaded page passes,
 while every API-level client gets 403. There is therefore no cookie to
-persist; the "refresher" became a session warmer/verifier that keeps the
-headless Chromium session healthy and reports whether uakino.best still
-serves playable content.
+persist; the "refresher" became a warm/verify probe that reports whether
+uakino.best still serves playable content. It launches its own session
+(which it closes with --close); the API provider boots its own session
+lazily via get_session(), so this script does not share warm state with
+the API process — treat it as a health check, not a pre-warmer.
 
 Usage:
     python -m cs_uk_api.scripts.refresh_uakino

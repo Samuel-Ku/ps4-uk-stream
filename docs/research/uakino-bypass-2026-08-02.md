@@ -117,9 +117,17 @@ users or third parties.
 - Task 1 (cf_clearance persistence) is **not implementable as
   specified** — replaced by a warm browser session that serves requests
   from the page context; documented and reflected in the ticket.
+  **TTL measurement: N/A** — no cookie exists to persist or refresh, so
+  no refresh cadence is set; the refresher script is a health check.
 - Task 2 (stream extraction) is **implemented and verified
   end-to-end**: search → content (movie + series) → playlists →
   ashdi.vip → playable master m3u8 (live probe 200).
+- **Extractor decision (yt-dlp vs regex)**: the `iframe#pre` YouTube
+  embed on movie pages is a *trailer*, not the stream carrier; the real
+  stream lives in the playlists.php → `li[data-file]` → ashdi.vip chain
+  as a `file:'…m3u8'` line. The existing regex matches it, so **no
+  yt-dlp dependency is added** — avoided cost: ~60 MB Python wheels +
+  binary downloads, per-process startup, and a second failure mode.
 
 ## Artifacts
 

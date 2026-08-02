@@ -16,7 +16,7 @@ status: [`docs/provider-triage.md`](../docs/provider-triage.md).
 
 | id          | site                          | sections                             | stream format |
 |-------------|-------------------------------|--------------------------------------|---------------|
-| uakino      | uakino.club (→ uakino.best)   | filmy, serials, animeukr, cartoons   | mp4           |
+| uakino      | uakino.best                  | filmy, serials, animeukr, cartoons   | m3u8        |
 | ufdub       | ufdub.com                     | filmy, serialy, doramy, cartoons, multserialy, anime | mp4 |
 | unimay      | unimay.media (API)            | updates, projects                    | m3u8          |
 | kinotron    | kinotron.tv                   | films, serials, cartoons, cartoon-series, anime | m3u8 |
@@ -59,7 +59,13 @@ status: [`docs/provider-triage.md`](../docs/provider-triage.md).
   `sNeM` episode.
 - **kinovezha**: content page → player page with an obfuscated
   `file:"…"` value (upstream tor-decrypt) → direct `.m3u8` HLS stream.
-- **uakino**: HTML content pages with embedded MP4 URLs.
+- **uakino**: personal-use exception to the no-headless-JS rule: a warm
+  headless-Chromium session serves every uakino.best request as an
+  in-page `fetch()` (Cloudflare's silent per-request JS check never
+  issues a cf_clearance cookie; see
+  `docs/research/uakino-bypass-2026-08-02.md`). Streams are
+  `ashdi.vip/vod/{id}` pages whose `file:'…m3u8'` lines yield direct
+  `.m3u8` HLS; only that CDN hop uses plain httpx.
 
 ## Content ids
 
@@ -86,7 +92,7 @@ live providers.
 | hentaiukr   | ✅   | **hevc** 1280x720 — ⚠️ ps4-soft-decode-risk |
 | bambooua    | ✅   | h264 1920x960                    |
 | kinovezha   | ✅   | h264 1920x804                    |
-| uakino      | ⛔   | known-broken — upstream moved to uakino.best: content/player pages 403 behind Cloudflare Turnstile, new DLE theme (all adapter selectors dead), search via POST only; not portable without a JS engine (research: `docs/research/uakino-reachability-2026-08-02.md`) |
+| uakino      | ⛔   | public stance: known-broken — Cloudflare's per-request JS check blocks plain HTTP (research: `docs/research/uakino-reachability-2026-08-02.md`). Personal-use exception implemented (#51): headless-Chromium session + new-theme extraction, verified live (search/content/stream → playable m3u8, 2026-08-02) |
 
 Gate queries: the default `Дюна` no longer matches upstream catalogs
 that rotated their listings (cikavaideya, hentaiukr, bambooua) — their
