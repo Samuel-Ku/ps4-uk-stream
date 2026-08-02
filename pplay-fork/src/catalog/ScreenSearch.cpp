@@ -7,6 +7,7 @@
 
 #include <cstdio>
 #include <sstream>
+#include <unordered_map>
 
 namespace cs {
 
@@ -87,6 +88,21 @@ ScreenSearch::ScreenSearch(c2d::C2DRenderer *main)
                 }
                 providersFetched_.store(true, std::memory_order_release);
             });
+        // Issue #73 — refresh the provider health snapshot on every
+        // screen load. The chip strip's grayed-down / degraded flags
+        // are driven by CatalogContext::providerStatus. We fire this
+        // alongside the sections fetch so the health snapshot is
+        // current when the chip strip is built.
+        api_->providersAsync(
+            [this](bool ok, std::vector<ProviderInfo> providers, std::string err) {
+                if (!ok) return;
+                std::unordered_map<std::string, std::string> snapshot;
+                for (const auto &p : providers) {
+                    if (!p.id.empty()) snapshot[p.id] = p.status;
+                }
+                CatalogContext::setProviderStatuses(std::move(snapshot));
+                rebuildChipStrip();
+            });
     }
 
     (void)W;
@@ -147,9 +163,12 @@ void ScreenSearch::rebuildChipStrip() {
         ui::Chip c;
         c.label = p.name.empty() ? p.provider : p.name;
         c.provider = p.provider;
-        if (CatalogContext::providerStatus(p.provider) ==
-            CatalogContext::ProviderStatus::Down) {
+        const auto status = CatalogContext::providerStatus(p.provider);
+        if (status == CatalogContext::ProviderStatus::Down) {
             c.isEnabled = false;
+            c.statusHint = "● Down";
+        } else if (status == CatalogContext::ProviderStatus::Degraded) {
+            c.statusHint = "⚠";
         }
         chips.push_back(std::move(c));
     }

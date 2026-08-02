@@ -41,7 +41,7 @@ public:
     // (provider not yet polled, or missing from the response) is treated
     // as enabled — we'd rather let the user try and see a graceful error
     // than hide a working source behind a stale 'down' snapshot.
-    enum class ProviderStatus { Unknown, Up, Down };
+    enum class ProviderStatus { Unknown, Up, Degraded, Down };
     static void setProviderStatuses(std::unordered_map<std::string, std::string> statuses);
     static ProviderStatus providerStatus(const std::string &provider);
 };

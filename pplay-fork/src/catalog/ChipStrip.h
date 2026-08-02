@@ -31,6 +31,12 @@ struct Chip {
     std::string label;       // "Uakino"
     std::string provider;    // "uakino"
     bool isEnabled = true;   // false → grayed-down (provider status == Down)
+    // Issue #73 — status hint appended to the chip's label so the user
+    // sees WHY a chip is disabled. Empty string means no hint
+    // (healthy / unknown status). The hint is rendered in a muted
+    // color so it doesn't shout; the chip border stays the primary
+    // signal.
+    std::string statusHint;
 };
 
 class ChipStrip : public c2d::RectangleShape {

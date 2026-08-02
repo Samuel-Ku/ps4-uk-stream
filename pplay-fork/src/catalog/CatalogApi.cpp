@@ -213,6 +213,16 @@ void CatalogApi::sectionsAsync(SectionsCb cb) {
     });
 }
 
+void CatalogApi::providersAsync(ProvidersCb cb) {
+    impl_->post([this, cb = std::move(cb)]() {
+        std::string url = impl_->base() + "/api/providers";
+        impl_->httpGet(url, [cb](bool ok, std::string body, std::string err) {
+            if (!ok) { cb(false, {}, std::move(err)); return; }
+            cb(true, parseProviders(body), {});
+        });
+    });
+}
+
 void CatalogApi::browseAsync(const std::string &provider, const std::string &section,
                              int page, BrowseCb cb) {
     impl_->post([this, provider, section, page, cb = std::move(cb)]() {
@@ -384,6 +394,34 @@ std::vector<ProviderSections> CatalogApi::parseSections(const std::string &raw) 
             if (!sec.id.empty()) ps.sections.push_back(std::move(sec));
         }
         out.push_back(std::move(ps));
+    }
+    return out;
+}
+
+std::vector<ProviderInfo> CatalogApi::parseProviders(const std::string &raw) {
+    std::vector<ProviderInfo> out;
+    auto doc = JsonDoc::parse(raw);
+    if (!doc) return out;
+    auto root = doc->root();
+    // Bare array form (the actual /api/providers response). Accept
+    // {"providers": [...]} for symmetry with parseSections.
+    auto arr = root.has("providers") ? root.arr("providers") : root.asArray();
+    for (const auto &p : arr) {
+        ProviderInfo info;
+        info.id = p.str("id");
+        info.name = p.str("name");
+        info.status = p.str("status");
+        // Defensive: status is "ok" / "degraded" / "down" — anything
+        // else collapses to "unknown" downstream.
+        if (info.status != "ok" && info.status != "degraded" &&
+            info.status != "down") {
+            info.status = "ok";
+        }
+        // last_error_at is a unix timestamp (large int) — JsonValue
+        // exposes integer() with a default.
+        const auto lastError = p.integer("last_error_at", 0);
+        info.lastErrorAt = static_cast<long long>(lastError);
+        if (!info.id.empty()) out.push_back(std::move(info));
     }
     return out;
 }

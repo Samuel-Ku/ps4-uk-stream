@@ -56,7 +56,15 @@ ChipStrip::ChipStrip(c2d::C2DRenderer *main, std::vector<Chip> chips, c2d::Float
         add(box);
         chipBoxes_.push_back(box);
 
-        auto *label = new c2d::Text(chips_[i].label, kChipFontSize, main_->getFont());
+        // Issue #73 — append the status hint (e.g. "● Down", "⚠") to the
+        // chip's label so the user sees WHY a chip is grayed. The hint
+        // stays on the chip after the focus leaves, so the user can
+        // scan the strip and understand the provider state at a glance.
+        std::string fullLabel = chips_[i].label;
+        if (!chips_[i].statusHint.empty()) {
+            fullLabel += " " + chips_[i].statusHint;
+        }
+        auto *label = new c2d::Text(fullLabel, kChipFontSize, main_->getFont());
         add(label);
         chipLabels_.push_back(label);
     }

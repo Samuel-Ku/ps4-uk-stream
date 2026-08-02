@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <ctime>
 #include <sstream>
+#include <unordered_map>
 
 namespace cs {
 
@@ -128,19 +129,20 @@ void ScreenContent::rebuildChipStrip() {
     // get grayed-down (visible but unselectable). Unknown / Up providers
     // are enabled. The single-chip case still renders — the user sees
     // which source this is — but the strip is degenerate (no Left/Right
-    // movement).
+    // movement). Issue #73: append a status hint so the user sees WHY
+    // a chip is disabled (Down → "● Down"; Degraded → "⚠").
     std::vector<ui::Chip> chips;
     chips.reserve(item_.sources.size());
     for (const auto &s : item_.sources) {
         ui::Chip c;
-        // Strip the "<provider>:" prefix from the id when labeling, so
-        // the chip shows the human name when one is available. We fall
-        // back to the provider id which is the wire-format name.
         c.label = s.provider;
         c.provider = s.provider;
-        if (CatalogContext::providerStatus(s.provider) ==
-            CatalogContext::ProviderStatus::Down) {
+        const auto status = CatalogContext::providerStatus(s.provider);
+        if (status == CatalogContext::ProviderStatus::Down) {
             c.isEnabled = false;
+            c.statusHint = "● Down";
+        } else if (status == CatalogContext::ProviderStatus::Degraded) {
+            c.statusHint = "⚠";
         }
         chips.push_back(std::move(c));
     }
@@ -348,6 +350,28 @@ void ScreenContent::onUpdate() {
         // strip needs to be rebuilt with the new roster.
         rebuildChipStrip();
         renderAll();
+
+        // Issue #73 — refresh the provider health snapshot on every
+        // group load. The chip strip's grayed-down / degraded flags
+        // are driven by CatalogContext::providerStatus, which is
+        // populated by this call. The strip is rebuilt below if the
+        // snapshot lands between strip builds — we keep this fire-
+        // and-forget so the user never waits on a health fetch.
+        if (api_) {
+            api_->providersAsync([this](bool ok, std::vector<ProviderInfo> providers,
+                                        std::string err) {
+                if (!ok) return;
+                std::unordered_map<std::string, std::string> snapshot;
+                for (const auto &p : providers) {
+                    if (!p.id.empty()) snapshot[p.id] = p.status;
+                }
+                CatalogContext::setProviderStatuses(std::move(snapshot));
+                // Rebuild the strip so the new statuses take effect
+                // visually. The rebuild is cheap (per-allocation reflow).
+                rebuildChipStrip();
+                renderAll();
+            });
+        }
         if (!fetchError_.empty()) {
             setStatus("Помилка: " + fetchError_);
         } else if (item_.seasons.empty()) {

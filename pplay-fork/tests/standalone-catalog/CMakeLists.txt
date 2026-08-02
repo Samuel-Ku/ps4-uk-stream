@@ -105,6 +105,8 @@ c2d_add_catalog_test_with_api(test_memory_policy)
 c2d_add_catalog_test_with_api(test_sources_parsing)
 # Issue #63 — search AsyncWithProvider (provider filter chip strip).
 c2d_add_catalog_test_with_api(test_search_provider)
+# Issue #73 — providersAsync / parseProviders (health snapshot).
+c2d_add_catalog_test_with_api(test_providers_parsing)
 c2d_add_catalog_test_widget(test_keyboard)
 c2d_add_catalog_test_widget(test_keyboard_utf8)
 c2d_add_catalog_test_with_fake(test_catalog_api_async)

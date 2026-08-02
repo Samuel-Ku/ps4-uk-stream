@@ -44,7 +44,8 @@ CatalogContext::ProviderStatus CatalogContext::providerStatus(const std::string 
     std::lock_guard<std::mutex> lk(g_mu);
     auto it = g_providerStatuses.find(provider);
     if (it == g_providerStatuses.end()) return ProviderStatus::Unknown;
-    if (it->second == "up") return ProviderStatus::Up;
+    if (it->second == "ok" || it->second == "up") return ProviderStatus::Up;
+    if (it->second == "degraded") return ProviderStatus::Degraded;
     if (it->second == "down") return ProviderStatus::Down;
     return ProviderStatus::Unknown;
 }

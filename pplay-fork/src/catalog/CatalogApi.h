@@ -86,6 +86,17 @@ inline bool shouldRememberMemory(const ContentItem &item) {
     return !item.seasons.empty();
 }
 
+struct ProviderInfo {
+    std::string id;
+    std::string name;
+    // Issue #73 — provider health as reported by /api/providers. Mirrors
+    // the backend's HealthStatus literal: "ok" / "degraded" / "down".
+    std::string status;
+    // Last upstream-error timestamp from the tracker (issue #53). Empty
+    // when the provider has not errored in the current tracker window.
+    long long lastErrorAt = 0;
+};
+
 struct StreamInfo {
     std::string url;
     std::string type;
@@ -111,6 +122,7 @@ public:
     using StreamCb = std::function<void(bool ok, StreamInfo info, std::string error)>;
     using SectionsCb = std::function<void(bool ok, std::vector<ProviderSections> providers, std::string error)>;
     using BrowseCb = std::function<void(bool ok, BrowseItem item, std::string error)>;
+    using ProvidersCb = std::function<void(bool ok, std::vector<ProviderInfo> providers, std::string error)>;
     using PosterCb = std::function<void(bool ok, std::vector<std::uint8_t> bytes,
                                         std::string contentType, std::string error)>;
 
@@ -127,6 +139,10 @@ public:
     void contentAsyncForSource(const std::string &groupKey, const std::string &source, ContentCb cb);
     void streamAsync(const std::string &id, const std::string &translation, StreamCb cb);
     void sectionsAsync(SectionsCb cb);
+    // Issue #73 — provider health snapshot. The chip strip and search
+    // filter refresh provider status from this endpoint on every screen
+    // load; the result is fed into CatalogContext::setProviderStatuses().
+    void providersAsync(ProvidersCb cb);
     void browseAsync(const std::string &provider, const std::string &section,
                      int page, BrowseCb cb);
     void loadPoster(const std::string &url, PosterCb cb);
@@ -143,6 +159,7 @@ public:
     static ContentItem parseContent(const std::string &raw);
     static StreamInfo parseStream(const std::string &raw);
     static std::vector<ProviderSections> parseSections(const std::string &raw);
+    static std::vector<ProviderInfo> parseProviders(const std::string &raw);
     static BrowseItem parseBrowse(const std::string &raw);
 
 private:
