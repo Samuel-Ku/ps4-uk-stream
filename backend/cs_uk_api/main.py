@@ -434,6 +434,12 @@ async def search(
             type=mg.sources[0].type,
             poster=mg.sources[0].poster,
             sources=list(mg.sources),
+            # Issue #89: every per-item group key that contributed to
+            # this merged card. Deduped, first-seen order. The canonical
+            # ``group_key`` is the yearful-preferred-min; the client
+            # matches a resume entry against ANY member key, not only
+            # ``group_key``.
+            member_keys=list(dict.fromkeys(item_group_key(s) for s in mg.sources)),
         )
         for mg in merge_results(out_results)
     ]

@@ -28,7 +28,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from cs_uk_api.main import _search_cache, _home_cache, app
-from cs_uk_api.merge import merge_results
+from cs_uk_api.merge import item_group_key, merge_results
 from cs_uk_api.models import (
     SearchGroup,
     SearchResult,
@@ -141,6 +141,44 @@ def test_search_group_has_group_key_title_year_type_poster_sources() -> None:
     assert {s.provider for s in sg.sources} == {"uakino", "eneyida"}
 
 
+def test_search_group_member_keys_includes_all_member_group_keys() -> None:
+    """Issue #89: SearchGroup carries the full set of per-item group
+    keys that contributed to the merged card. The canonical
+    ``group_key`` is the yearful-preferred-min; the client matches a
+    resume record against ANY member key, not only ``group_key``.
+
+    The spec's canonical example: a yearless member + a yearful
+    member. The yearful key wins as the canonical ``group_key``,
+    but the yearless key is also reachable via ``member_keys`` so a
+    client record keyed by the yearless member still matches."""
+    items = [
+        _result("uakino", "Дюна", year=2021, n="u1"),
+        _result("eneyida", "Дюна", year=None, n="e1"),
+    ]
+    groups = merge_results(items)
+    assert len(groups) == 1
+    mg = groups[0]
+    member_keys = [item_group_key(s) for s in mg.sources]
+    # Both per-item keys present in the member_keys set.
+    assert set(member_keys) == {item_group_key(items[0]), item_group_key(items[1])}
+    # The canonical ``group_key`` is the yearful-preferred-min (the
+    # yearful key wins on tie).
+    assert mg.key == item_group_key(items[0])
+    # The route should expose both keys — projection in main.py builds
+    # the same list it built here, deduped first-seen-preserved.
+    sg = SearchGroup(
+        group_key=mg.key,
+        title=mg.sources[0].title,
+        year=mg.sources[0].year,
+        type=mg.sources[0].type,  # type: ignore[arg-type]
+        poster=mg.sources[0].poster,
+        sources=list(mg.sources),
+        member_keys=list(dict.fromkeys(member_keys)),
+    )
+    assert set(sg.member_keys) == {item_group_key(items[0]), item_group_key(items[1])}
+    assert sg.group_key in sg.member_keys
+
+
 # ---------------------------------------------------------------------------
 # /api/search route — the response shape contract
 # ---------------------------------------------------------------------------
@@ -164,6 +202,10 @@ def test_search_response_groups_field_replaces_results(monkeypatch: pytest.Monke
     assert body["groups"][0]["group_key"].startswith("g1:")
     assert body["groups"][0]["title"] == "Дюна"
     assert len(body["groups"][0]["sources"]) == 2
+    # Issue #89: member_keys is on the wire so the client can match
+    # resume records against any member key, not only group_key.
+    assert "member_keys" in body["groups"][0]
+    assert body["groups"][0]["member_keys"] == [body["groups"][0]["group_key"]]
     providers_in_sources = {s["provider"] for s in body["groups"][0]["sources"]}
     assert providers_in_sources == {"uakino", "eneyida"}
 

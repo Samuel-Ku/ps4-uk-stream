@@ -57,6 +57,14 @@ class SearchGroup(BaseModel):
     ``/api/content/{group_key}`` (issue #70): a client that picks a
     card from /api/search can drive the detail screen with the
     ``group_key`` field as-is, no translation.
+
+    The ``member_keys`` field is the issue #89 reconciliation layer:
+    it carries every per-item group key that contributed to this
+    merged card. The canonical ``group_key`` is the yearful-preferred-
+    min of those — for a year-soft pair (yearful + yearless), the
+    min key is the yearful one. A client resume record keyed by the
+    yearless member would NOT match ``group_key`` on its own; the
+    client matches against any element of ``member_keys`` instead.
     """
 
     group_key: str
@@ -69,6 +77,14 @@ class SearchGroup(BaseModel):
     #: Order = first-seen in the merge pass; the first source also
     #: wins the canonical title/year/type/poster fields above.
     sources: list[SearchResult]
+    #: Every per-item group key that contributed to this merged card
+    #: (issue #89). First-seen order — the canonical ``group_key``
+    #: (``yearful-preferred-min``) is always the first element for
+    #: groups with at least one yearful member. Sort key is the
+    #: ``g1:`` digest in lexicographic order; ``"g1:"`` prefix sorts
+    #: before any other character so the yearful preference still
+    #: wins on tie.
+    member_keys: list[str] = Field(default_factory=list)
 
 
 class SearchResponse(BaseModel):
@@ -213,6 +229,16 @@ class HomeItem(BaseModel):
     #: visit order across providers; first-seen wins for the title
     #: fields.
     providers: list[str] = Field(default_factory=list)
+    #: Every per-item group key that contributed to this merged row
+    #: (issue #89). The canonical ``group_key`` is the yearful-
+    #: preferred-min of those — for a year-soft pair (yearful +
+    #: yearless), the min key is the yearful one. A client resume
+    #: record keyed by the yearless member would NOT match
+    #: ``group_key`` on its own; the client matches against any
+    #: element of ``member_keys`` instead. Same content as
+    #: ``SearchGroup.member_keys`` because both routes share the
+    #: merge core.
+    member_keys: list[str] = Field(default_factory=list)
 
 
 class HomeRow(BaseModel):

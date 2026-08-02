@@ -37,7 +37,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from .merge import merge_results
+from .merge import item_group_key, merge_results
 from .models import HomeItem, HomeRow, SearchResult
 
 #: Five-row type-row order, per the issue #70 spec. Anything else in
@@ -130,6 +130,14 @@ def round_robin_dedup(
         # Provider union, first-seen order (the merge core preserves
         # sources in bucket-order = first-seen order).
         providers = list(dict.fromkeys(s.provider for s in mg.sources))
+        # Issue #89: every per-item group key that contributed to this
+        # merged row. Deduped, first-seen-preserved order. The canonical
+        # ``mg.key`` is the yearful-preferred-min of these — the client
+        # matches a resume entry against ANY member key, not only
+        # ``group_key``. Dedup keeps the payload bounded when one
+        # provider surfaces multiple listings for the same group
+        # (same title+type+year, different upstream ids).
+        member_keys = list(dict.fromkeys(item_group_key(s) for s in mg.sources))
         items.append(
             HomeItem(
                 group_key=mg.key,
@@ -138,6 +146,7 @@ def round_robin_dedup(
                 type=sample.type,
                 poster=sample.poster,
                 providers=providers,
+                member_keys=member_keys,
             )
         )
     return items
