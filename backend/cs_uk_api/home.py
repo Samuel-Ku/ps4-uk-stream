@@ -7,9 +7,13 @@ pre-collected data; this module never touches ``PROVIDERS`` or HTTP.
 The three observable contracts:
 
   - ``round_robin_dedup`` — interleave provider listings one item at a
-    time (P1[0], P2[0], P1[1], P2[1], ...) and dedup by groupKey so the
-    same title from two providers becomes ONE HomeItem carrying both
-    providers in its ``providers`` list.
+    time (P1[0], P2[0], P1[1], P2[1], ...) and dedup via the shared
+    ``merge_results`` core so the same title from two providers becomes
+    ONE HomeItem carrying both providers in its ``providers`` list. The
+    canonical ``group_key`` matches the one ``/api/search`` would
+    compute for the same items (issue #71, yearful-preferred-min) — so
+    a client can round-trip a card between Home and Search without
+    translation.
 
   - ``aggregate_by_group_key`` — the second-pass pass that takes the
     round-robin output and folds multiple occurrences of the same
@@ -33,7 +37,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from .merge import item_group_key
+from .merge import merge_results
 from .models import HomeItem, HomeRow, SearchResult
 
 #: Five-row type-row order, per the issue #70 spec. Anything else in
@@ -48,84 +52,95 @@ _TYPE_ORDER: tuple[tuple[str, str], ...] = (
 )
 
 
+#: Cap on raw items collected during the round-robin walk before we
+#: hand off to ``merge_results`` for dedup. The dedup is post-hoc (after
+#: collection), so the cursor walk can't use group-count as an early-
+#: exit signal — but a high-duplicate input (one title across many
+#: providers, or a single provider re-emitting a listing many times)
+#: must still terminate.
+#:
+#: Trade-off: ``limit * N`` lets the merge produce AT MOST
+#: ``limit * N`` raw items and thus at most ``limit * N`` groups. After
+#: merging, output is sliced to ``limit``. Under heavy duplicate
+#: collapse (many raw items fold into one group), the output may fall
+#: below ``limit`` — that is correct behaviour (one group is one group),
+#: not a truncation bug. Under the realistic home row counts (well
+#: under ``limit * N`` unique items per row), the bound is loose enough
+#: that it never bites in practice.
+_WALK_BUDGET_MULTIPLIER = 4
+
+
 def round_robin_dedup(
     by_provider: Mapping[str, Sequence[SearchResult]],
     limit: int,
 ) -> list[HomeItem]:
-    """Interleave provider listings round-robin; dedup by groupKey.
+    """Interleave provider listings round-robin; dedup via ``merge_results``.
 
     Algorithm: a per-provider cursor walks each provider's listings one
-    item at a time. Per round, every still-alive provider contributes
-    its NEXT item. A first-seen item opens a new HomeItem keyed on its
-    groupKey; a repeat hit appends the provider to that item's
-    ``providers`` list (still consuming the cursor slot, so the
-    round-robin pace stays governed by total listings per provider,
-    not by unique keys).
+    item at a time, collecting raw items in first-seen order. The
+    collection is bounded by ``limit * _WALK_BUDGET_MULTIPLIER`` (or by
+    all cursors exhausting, whichever comes first). The collected
+    stream is then passed to ``merge_results`` (issue #52 / #71) — the
+    same merge core /api/search uses — which folds year-soft duplicates
+    (e.g. "Дюна 2021" + "Дюна" with no year) into one ``MergeGroup``
+    whose ``key`` is the yearful-preferred-min ``item_group_key``.
 
-    Output is capped at ``limit`` items; iteration order across
-    providers matches the iteration order of ``by_provider`` (Python
-    3.7+ ``dict`` preserves insertion order).
+    Output order matches first-seen in the walk (the merge core
+    preserves bucket order = first-seen order of each bucket's first
+    member). Output is capped at ``limit`` items.
+
+    Why not per-item ``item_group_key`` dedup (the old approach)?
+    That key includes the raw year field in its digest, so a year-soft
+    pair (yearful + yearless members) had two different per-item keys
+    and produced TWO HomeItems with TWO different ``group_key`` fields
+    — breaking the round-trip with /api/search and /api/content/{key}
+    (HIGH issue #71 code review, "H1: cross-route groupKey
+    divergence"). Delegating to ``merge_results`` makes the two routes
+    share one identity.
     """
-    seen_order: list[str] = []
-    providers_by_key: dict[str, list[str]] = {}
-    sample_by_key: dict[str, SearchResult] = {}
+    walk_budget = max(limit * _WALK_BUDGET_MULTIPLIER, 0)
+    collected: list[SearchResult] = []
     cursors: dict[str, int] = {pid: 0 for pid in by_provider}
 
-    while len(seen_order) < limit:
+    while len(collected) < walk_budget:
         progress = False
         for pid in by_provider:
             cursor = cursors[pid]
             listings = by_provider[pid]
             if cursor >= len(listings):
                 continue
-            # Each provider contributes AT MOST one round per outer
-            # iteration, even if its cursor advances past a duplicate.
-            raw = listings[cursor]
+            collected.append(listings[cursor])
             cursors[pid] = cursor + 1
-            gk = item_group_key(raw)
-            if gk not in providers_by_key:
-                providers_by_key[gk] = [pid]
-                sample_by_key[gk] = raw
-                seen_order.append(gk)
-            elif pid not in providers_by_key[gk]:
-                # Same provider surfacing the same groupKey from two
-                # listings (rare but possible — e.g. a "newest" section
-                # re-emitting a "popular" hit) must not duplicate the
-                # pid in the resulting ``providers`` union.
-                providers_by_key[gk].append(pid)
             progress = True
-            if len(seen_order) >= limit:
-                return _materialize(seen_order, providers_by_key, sample_by_key)
+            if len(collected) >= walk_budget:
+                break
         if not progress:
             break
 
-    return _materialize(seen_order, providers_by_key, sample_by_key)
+    # Shared merge core — same identity /api/search surfaces (issue #71).
+    groups = merge_results(collected)
 
-
-def _materialize(
-    seen_order: list[str],
-    providers_by_key: dict[str, list[str]],
-    sample_by_key: dict[str, SearchResult],
-) -> list[HomeItem]:
-    """Convert the dedup-state maps into the HomeItem list.
-
-    Order matches first-seen (which is round-robin position: the first
-    provider to surface a groupKey anchors the row's title/year/poster
-    fields). Title/year/poster from subsequent providers are dropped —
-    the spec doesn't preserve per-provider field-level attribution
-    beyond the providers list itself.
-    """
-    return [
-        HomeItem(
-            group_key=gk,
-            title=sample_by_key[gk].title,
-            year=sample_by_key[gk].year,
-            type=sample_by_key[gk].type,
-            poster=sample_by_key[gk].poster,
-            providers=providers_by_key[gk],
+    # Project MergeGroup → HomeItem, preserving the merge core's
+    # first-seen order. Cap at ``limit``.
+    items: list[HomeItem] = []
+    for mg in groups:
+        if len(items) >= limit:
+            break
+        sample = mg.sources[0]
+        # Provider union, first-seen order (the merge core preserves
+        # sources in bucket-order = first-seen order).
+        providers = list(dict.fromkeys(s.provider for s in mg.sources))
+        items.append(
+            HomeItem(
+                group_key=mg.key,
+                title=sample.title,
+                year=sample.year,
+                type=sample.type,
+                poster=sample.poster,
+                providers=providers,
+            )
         )
-        for gk in seen_order
-    ]
+    return items
 
 
 def aggregate_by_group_key(items: Sequence[HomeItem]) -> list[HomeItem]:

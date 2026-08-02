@@ -460,3 +460,76 @@ def test_search_provider_filter_still_groups(monkeypatch: pytest.MonkeyPatch) ->
     assert len(body["groups"]) == 1
     assert len(body["groups"][0]["sources"]) == 1
     assert body["groups"][0]["sources"][0]["provider"] == "uakino"
+
+
+# ---------------------------------------------------------------------------
+# H1 regression — cross-route groupKey divergence
+# ---------------------------------------------------------------------------
+
+
+def test_search_group_key_matches_home_group_key_on_year_soft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """H1 cross-route invariant: /api/search and /api/home MUST produce
+    the same ``group_key`` for a year-soft title (yearful member +
+    yearless member). The merge core is shared (merge_results), so both
+    routes collapse to the yearful-preferred-min key.
+
+    Before the H1 fix, /api/home's round_robin_dedup used the per-item
+    ``item_group_key`` as the dedup key — which differs across year-soft
+    members — so the two routes returned different keys for the same
+    title, breaking the /api/content/{group_key} round-trip.
+
+    The test exercises BOTH routes — fetching /api/search and /api/home
+    with the same year-soft data and asserting the keys round-trip.
+    """
+    from cs_uk_api.main import _home_cache
+    from cs_uk_api.merge import item_group_key
+
+    # Yearful + yearless scenario — the two items have DIFFERENT per-item
+    # keys (the digest hashes the year field) but merge into one group.
+    uakino_yearful = _result("uakino", "Дюна", year=2021, n="u1")
+    eneyida_yearless = _result("eneyida", "Дюна", n="e1")
+    # Sanity precondition for the H1 scenario.
+    assert item_group_key(uakino_yearful) != item_group_key(eneyida_yearless)
+
+    # Register stubs that serve BOTH routes: ``search()`` is called by
+    # /api/search, ``browse("page")`` is called by /api/home's
+    # «Новинки» row (the provider declares ``newest_section = "page"``).
+    class _DualStub(_StubBase):
+        def __init__(self, pid: str, items: list[SearchResult]) -> None:
+            self.id = pid
+            self.name = pid.title()
+            self.newest_section = "page"  # /api/home hook
+            self._items = items
+
+        async def search(self, q, http):
+            return list(self._items)
+
+        async def browse(self, section, page, http):
+            if section == "page":
+                return list(self._items), False
+            return [], False
+
+    monkeypatch.setitem(PROVIDERS, "uakino", _DualStub("uakino", [uakino_yearful]))
+    monkeypatch.setitem(PROVIDERS, "eneyida", _DualStub("eneyida", [eneyida_yearless]))
+    _home_cache.clear()
+
+    client = TestClient(app)
+
+    # /api/search collapses via merge_results → yearful-preferred-min key.
+    search_key = client.get("/api/search?q=дюна").json()["groups"][0]["group_key"]
+
+    # /api/home must surface the SAME key for the same year-soft pair.
+    home_body = client.get("/api/home").json()
+    newest_row = next(row for row in home_body["rows"] if row["title"] == "Новинки")
+    assert len(newest_row["items"]) == 1, (
+        "home must collapse the yearful + yearless pair into one row "
+        "(H1 contract)"
+    )
+    home_key = newest_row["items"][0]["group_key"]
+
+    # The whole point of the H1 fix: both routes return the same key.
+    assert search_key == home_key
+    # And it's the yearful member's key (yearful-preferred-min rule).
+    assert search_key == item_group_key(uakino_yearful)

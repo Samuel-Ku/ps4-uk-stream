@@ -224,6 +224,106 @@ def test_round_robin_dedup_dedups_same_pid_same_key() -> None:
     assert out[0].providers == ["p1"]
 
 
+def test_round_robin_dedup_year_soft_collapses_to_single_row() -> None:
+    """H1 (HIGH from #71 code review): cross-route groupKey divergence.
+
+    ``merge_results`` (used by /api/search) treats "Дюна 2021" and "Дюна"
+    (no year anywhere) as the SAME title via the year-soft rule
+    (``_years_match``: a None year is treated as compatible), and the
+    canonical group_key is the YEARFUL member's ``item_group_key``
+    (yearful-preferred-min — see ``merge.py:merge_results``).
+
+    The previous ``round_robin_dedup`` used each item's raw
+    ``item_group_key`` as the dedup key. The two items have DIFFERENT
+    per-item keys (the digest hashes ``year or ''``), so they ended up
+    as two HomeItems with two distinct group_keys — breaking the
+    round-trip: a client that picked the group_key from /api/search
+    would 404 on /api/content/{group_key} if the same title had only
+    surfaced via /api/home, and vice versa.
+
+    Fix: ``round_robin_dedup`` now delegates to ``merge_results`` so the
+    two routes share ONE merge core and ONE group_key identity.
+    """
+    from cs_uk_api.merge import item_group_key, merge_results
+
+    p1 = item("p1", "Дюна", year=2021, n="1")
+    p2 = item("p2", "Дюна", year=None, n="2")
+    # Sanity: the two items have DIFFERENT per-item keys (the year field
+    # is part of the digest). This is the precondition for the H1 bug.
+    assert item_group_key(p1) != item_group_key(p2)
+    # Sanity: merge_results DOES collapse them (year-soft rule).
+    assert len(merge_results([p1, p2])) == 1
+
+    by_provider = {"p1": [p1], "p2": [p2]}
+    out = round_robin_dedup(by_provider, limit=20)
+
+    # One row, not two.
+    assert len(out) == 1
+    # Both providers in the union.
+    assert set(out[0].providers) == {"p1", "p2"}
+    # Canonical key = the yearful member's item_group_key.
+    assert out[0].group_key == item_group_key(p1)
+
+
+def test_round_robin_dedup_year_soft_same_provider_collapses() -> None:
+    """H1 variant: a single provider that emits a yearful + yearless
+    listing for the same logical title must produce ONE HomeItem with
+    that provider listed once (and the yearful key)."""
+    from cs_uk_api.merge import item_group_key
+
+    by_provider = {
+        "p1": [
+            item("p1", "Дюна", year=2021, n="1"),
+            item("p1", "Дюна", year=None, n="2"),
+        ],
+    }
+    out = round_robin_dedup(by_provider, limit=20)
+    assert len(out) == 1
+    assert out[0].providers == ["p1"]
+    assert out[0].group_key == item_group_key(item("p1", "Дюна", year=2021, n="1"))
+
+
+def test_round_robin_dedup_all_yearless_collapses_to_single_per_item_key() -> None:
+    """Sanity edge for H1: when ALL members are yearless (no year
+    anywhere), every member's ``item_group_key`` is identical (the
+    year field is hashed as ``''`` for everyone), so the yearful-
+    preferred-min rule degenerates to "the single shared key". The
+    group collapses to one row carrying that key — confirming the
+    cross-route invariant holds even at the degenerate tail of the
+    yearful-preferred-min rule.
+
+    The ``min()`` over identical keys is no-op; this test pins the
+    behaviour at the degenerate case, not the min-comparison logic."""
+    from cs_uk_api.merge import item_group_key
+
+    p1 = item("p1", "Дюна", year=None, n="1")
+    p2 = item("p2", "Дюна", year=None, n="2")
+    # Sanity: the two items share one per-item key (no year field
+    # differentiates them).
+    assert item_group_key(p1) == item_group_key(p2)
+
+    by_provider = {"p1": [p1], "p2": [p2]}
+    out = round_robin_dedup(by_provider, limit=20)
+    assert len(out) == 1
+    assert set(out[0].providers) == {"p1", "p2"}
+    assert out[0].group_key == item_group_key(p1)
+
+
+def test_round_robin_dedup_year_soft_does_not_collapse_different_years() -> None:
+    """Regression guard: the year-soft collapse must NOT swallow distinct
+    years (e.g. Дюна 2021 vs Дюна 1984). When both items have raw years
+    and they don't match, the dedup keeps them as separate rows.
+
+    This is the floor under the H1 fix — without this guard, a too-eager
+    collapse would silently merge different movies into one group_key."""
+    by_provider = {
+        "p1": [item("p1", "Дюна", year=2021, n="1")],
+        "p2": [item("p2", "Дюна", year=1984, n="2")],
+    }
+    out = round_robin_dedup(by_provider, limit=20)
+    assert len(out) == 2
+
+
 # ---------------------------------------------------------------------------
 # aggregate_by_group_key — collision-only step (used inside rows)
 # ---------------------------------------------------------------------------
