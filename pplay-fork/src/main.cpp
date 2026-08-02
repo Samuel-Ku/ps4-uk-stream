@@ -47,6 +47,7 @@ extern "C" int sceSystemServiceLoadExec(const char *path, const char *args[]);
 using namespace c2d;
 using namespace c2d::config;
 using namespace pplay;
+using namespace cs;
 
 Main::Main(const c2d::Vector2f &size) : C2DRenderer(size) {
 
