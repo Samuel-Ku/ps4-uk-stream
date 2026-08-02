@@ -173,6 +173,65 @@ void ScreenContent::focusChipStrip() {
     chipStrip_->setVisibility(c2d::Visibility::Visible);
 }
 
+void ScreenContent::applyMemoryPreFocus() {
+    // Issue #67 — movies are not remembered (one-shot). The store
+    // never contains a movie entry; the check is defensive in case
+    // a stale record from an earlier schema survives.
+    if (!shouldRememberMemory(item_)) return;
+    auto *state = CatalogContext::state();
+    if (state == nullptr) return;
+    const MemoryEntry *mem = state->memory(groupKey_);
+    if (mem == nullptr) return;
+    // Pre-focus the chip strip on the remembered provider, falling
+    // through to the next enabled chip when the remembered one is
+    // currently DOWN. Disabled chips are skipped by the strip's
+    // setCurrentIndex path — it does NOT validate isEnabled, so we
+    // walk manually to honor the fall-through rule.
+    if (chipStrip_ != nullptr && !item_.sources.empty()) {
+        int target = -1;
+        for (size_t i = 0; i < item_.sources.size(); ++i) {
+            if (item_.sources[i].provider != mem->provider) continue;
+            const auto status = CatalogContext::providerStatus(item_.sources[i].provider);
+            if (status == CatalogContext::ProviderStatus::Down) continue;
+            target = static_cast<int>(i);
+            break;
+        }
+        if (target < 0) {
+            // Remembered provider is down — fall through to the first
+            // enabled chip. The strip already skipped disabled chips
+            // via its constructor focus-index picker, so any chip at
+            // index 0 (or wherever focus landed on rebuild) is
+            // enabled. setCurrentIndex(0) is a safe reset; the user
+            // sees a healthy chip focused.
+            for (size_t i = 0; i < item_.sources.size(); ++i) {
+                if (CatalogContext::providerStatus(item_.sources[i].provider)
+                    != CatalogContext::ProviderStatus::Down) {
+                    target = static_cast<int>(i);
+                    break;
+                }
+            }
+        }
+        if (target >= 0) chipStrip_->setCurrentIndex(target);
+    }
+    // Pre-focus the action row's translation index. Content-level
+    // translations live on item_.translations as a vector of
+    // {id, label} pairs (see CatalogApi parseContent); we match by
+    // the LABEL (the second member) since translation ids are
+    // provider-internal and may differ across sources. The pre-focus
+    // is honored by the Fire1 handler when translationsLevel ==
+    // "content" — Triangle cycles the episode translation otherwise.
+    if (!item_.translations.empty()) {
+        int match = -1;
+        for (size_t i = 0; i < item_.translations.size(); ++i) {
+            if (item_.translations[i].second == mem->translationLabel) {
+                match = static_cast<int>(i);
+                break;
+            }
+        }
+        if (match >= 0) contentTranslationIndex_ = match;
+    }
+}
+
 std::string ScreenContent::wrapDescription(const std::string &desc, size_t maxLine) {
     if (desc.size() <= maxLine) return desc;
     return desc.substr(0, maxLine) + "…";
@@ -227,6 +286,11 @@ void ScreenContent::renderAll() {
         t << "Переклад: ";
         for (size_t i = 0; i < item_.translations.size(); ++i) {
             if (i > 0) t << ", ";
+            // Mark the pre-selected translation with «▶» so the user
+            // sees which dub will play on Cross (issue #67). The
+            // index defaults to 0 on first open; memory pre-focus
+            // (applyMemoryPreFocus) bumps it to the remembered label.
+            if (static_cast<int>(i) == contentTranslationIndex_) t << "▶ ";
             t << item_.translations[i].second;
         }
         if (item_.translations.empty()) t << "(немає)";
@@ -343,12 +407,18 @@ void ScreenContent::onUpdate() {
         seasonIndex_ = 0;
         episodeIndex_ = 0;
         episodeTranslationIndex_ = 0;
+        contentTranslationIndex_ = 0;
         // Rebuild the chip strip after every content fetch — the strip
         // depends on item_.sources which only lands once the backend
         // responds. Rebuilding on each fetch also handles chip-switch
         // refetches: the new content has a new id_/sources, and the
         // strip needs to be rebuilt with the new roster.
         rebuildChipStrip();
+        // Issue #67 — apply source/dub memory now that the chip strip
+        // exists and we know whether the content has seasons. The
+        // helper is a no-op for movies (no memory record exists) and
+        // when no memory record is present.
+        applyMemoryPreFocus();
         renderAll();
 
         // Issue #73 — refresh the provider health snapshot on every
@@ -536,7 +606,9 @@ void ScreenContent::onUpdate() {
                     translationId = ep.translations[idx].first;
                 }
             } else if (!item_.translations.empty()) {
-                translationId = item_.translations[0].first;
+                const int idx = contentTranslationIndex_ %
+                    static_cast<int>(item_.translations.size());
+                translationId = item_.translations[idx].first;
             }
             playEpisode(seasonIndex_, episodeIndex_, translationId);
         } else if (keys & c2d::Input::Key::Fire3) {

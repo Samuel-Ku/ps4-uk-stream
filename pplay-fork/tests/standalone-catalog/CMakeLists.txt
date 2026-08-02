@@ -109,6 +109,18 @@ c2d_add_catalog_test_with_api(test_search_provider)
 c2d_add_catalog_test_with_api(test_providers_parsing)
 # Issue #61 — homeAsync / parseHome (Home row aggregation).
 c2d_add_catalog_test_with_api(test_home_parsing)
+# Issue #67 — source/dub memory store (pre-focus policy).
+add_executable(test_memory_prefocus ${CMAKE_CURRENT_SOURCE_DIR}/../catalog/test_memory_prefocus.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog/CatalogState.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog/Json.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../external/cJSON/cJSON.c
+)
+target_include_directories(test_memory_prefocus PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../external/cJSON
+)
+target_compile_options(test_memory_prefocus PRIVATE -Wall -Wextra)
+add_test(NAME test_memory_prefocus COMMAND test_memory_prefocus)
 c2d_add_catalog_test_widget(test_keyboard)
 c2d_add_catalog_test_widget(test_keyboard_utf8)
 c2d_add_catalog_test_with_fake(test_catalog_api_async)

@@ -59,6 +59,14 @@ private:
     // explicitly entered the chip strip).
     void focusActionRow();
     void focusChipStrip();
+    // Issue #67: pre-focus the chip strip on the remembered source for
+    // a series group, and pre-select the remembered translation on the
+    // action row. Falls through to a healthy source when the
+    // remembered provider is DOWN (memory stays — the user might come
+    // back when the source is back up). Movies never have a memory
+    // entry (the policy lives at the call site: shouldRememberMemory
+    // in CatalogApi.h), so this is a no-op for them.
+    void applyMemoryPreFocus();
     // Whether the chip strip owns the current focus / input.
     bool chipStripHasFocus() const { return focusMode_ == FocusMode::Chips; }
 
@@ -92,6 +100,10 @@ private:
     int seasonIndex_ = 0;
     int episodeIndex_ = 0;
     int episodeTranslationIndex_ = 0;
+    // Issue #67 — pre-selected content-level translation (when
+    // translationsLevel == "content"). Driven by memory when present;
+    // falls back to 0 (the first translation, the backend's default).
+    int contentTranslationIndex_ = 0;
 
     // Pending stream hand-off.
     std::atomic<bool> streamFetched_{false};
