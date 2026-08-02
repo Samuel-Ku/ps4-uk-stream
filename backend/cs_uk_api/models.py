@@ -54,6 +54,10 @@ class ContentResponse(BaseModel):
     seasons: list[Season] | None = None
     translations_level: TranslationLevel = "content"
     country: str | None = None
+    #: Stateless cross-provider group identity (issue #69, v3 spec §4.3):
+    #: the same title yields the same key from any provider. Client resume/
+    #: memory records anchor on this, not on the provider-scoped id.
+    group_key: str = ""
 
 
 class StreamResponse(BaseModel):

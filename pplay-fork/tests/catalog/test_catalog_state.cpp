@@ -179,6 +179,40 @@ int main() {
         fs::remove(p);
     }
 
+    // --- legacy content-id group keys (pre-#69) still load gracefully -------
+    // Entries written before the backend shipped group keys stored the
+    // provider-scoped id ("uakino:123") as the group. The store treats the
+    // key as opaque, so they must parse, look up, and round-trip unchanged.
+    {
+        fs::path p = freshTmpPath("legacy");
+        {
+            std::ofstream f(p);
+            f << "{\"resume\":[{\"group\":\"uakino:123\",\"provider\":\"uakino\","
+                 "\"id\":\"uakino:123\",\"episode\":\"\",\"translation\":\"дуб\","
+                 "\"pos\":42,\"dur\":100,\"at\":1000}],"
+                 "\"memory\":[{\"group\":\"eneyida:7\",\"provider\":\"eneyida\","
+                 "\"translation\":\"Українська\",\"at\":1000}]}";
+        }
+        cs::CatalogState st(p.string());
+        CHECK(st.load());
+        const auto *r = st.resume("uakino:123");
+        CHECK(r != nullptr);
+        if (r) {
+            CHECK_EQ(r->groupKey, std::string("uakino:123"));
+            CHECK_EQ(r->positionSec, 42L);
+            CHECK_EQ(r->translationLabel, std::string("дуб"));
+        }
+        const auto *m = st.memory("eneyida:7");
+        CHECK(m != nullptr);
+        if (m) CHECK_EQ(m->translationLabel, std::string("Українська"));
+        CHECK(st.save());
+        cs::CatalogState st2(p.string());
+        CHECK(st2.load());
+        CHECK(st2.resume("uakino:123") != nullptr);
+        CHECK(st2.memory("eneyida:7") != nullptr);
+        fs::remove(p);
+    }
+
     // --- atomic save leaves no tmp litter -----------------------------------
     {
         fs::path p = freshTmpPath("atomic");

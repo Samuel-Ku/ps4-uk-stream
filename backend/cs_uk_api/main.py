@@ -15,6 +15,7 @@ from .config import SETTINGS
 from .country import is_blocked_country
 from .health import TRACKER
 from .http_client import close_client, get_client
+from .merge import effective_year, group_key_from
 from .models import (
     BrowseResponse,
     ContentResponse,
@@ -188,6 +189,10 @@ async def content(content_id: str) -> ContentResponse:
         _blocklist_cache.set(cache_key, True)
         log.info("blocked Russian content id=%s country=%s", content_id, resp.country)
         raise HTTPException(404, detail=ErrorResponse(error="not_found", message=content_id).model_dump())
+    # Stateless per-item group key (issue #69): pure function of the item's
+    # own title/type/year, so client state survives across sessions and
+    # provider-set changes.
+    resp.group_key = group_key_from(resp.title, resp.type, effective_year(resp.title, resp.year), content_id)
     _content_cache.set(cache_key, resp)
     return resp
 

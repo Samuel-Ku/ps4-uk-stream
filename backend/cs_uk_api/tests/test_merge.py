@@ -13,6 +13,8 @@ import pytest
 from cs_uk_api.merge import (
     extract_year,
     group_key,
+    group_key_from,
+    item_group_key,
     merge_results,
     normalize_title,
     title_aliases,
@@ -200,6 +202,71 @@ def test_merge_groups_have_stable_group_keys() -> None:
     assert len(forward) == len(reverse) == 1
     assert forward[0].key == reverse[0].key
     assert forward[0].key.startswith("g1:")
+
+
+def test_item_group_key_is_pure_function_of_item_data() -> None:
+    # Issue #69: the same item must produce the same key from any call,
+    # regardless of which other providers appear beside it.
+    it = item("uakino", "Тато / Daddy", year=2021)
+    assert item_group_key(it) == item_group_key(it)
+    assert item_group_key(it) == group_key_from("Тато / Daddy", "movie", 2021, it.id)
+    # The most canonical own alias drives the key (min over own aliases).
+    assert item_group_key(it) == item_group_key(item("eneyida", "Daddy", year=2021, n="2"))
+
+
+def test_merge_group_key_stable_across_provider_subsets() -> None:
+    # Same semantic title across different provider subsets -> identical
+    # group key. "Тато / Daddy" anchors subsets 1-3; each group's key is
+    # the min of its members' own item keys (order-independent).
+    anchor = item("uakino", "Тато / Daddy", year=2021)
+    subsets = [
+        [anchor, item("eneyida", "Daddy", year=2021, n="2")],
+        [anchor, item("kinolub", "Тато", year=2021, n="3")],
+        [anchor, item("eneyida", "Daddy", year=2021, n="2"), item("kinolub", "Тато", year=2021, n="3")],
+    ]
+    keys = []
+    for subset in subsets:
+        groups = merge_results(subset)
+        assert len(groups) == 1
+        g = groups[0]
+        keys.append(g.key)
+        # Group key == min over members' own item keys, and == the anchor's
+        # own key when the anchor is present.
+        assert g.key == min(item_group_key(it) for it in g.sources)
+        assert g.key == item_group_key(anchor)
+    assert len(set(keys)) == 1
+
+
+def test_merge_group_key_min_over_members_is_order_independent() -> None:
+    # A bridge item with a lexicographically smaller own alias must not
+    # change the key based on input order — only on actual membership.
+    items = [
+        item("kinolub", "Тато", year=2021, n="3"),
+        item("uakino", "Тато / Daddy", year=2021),
+        item("eneyida", "Daddy", year=2021, n="2"),
+    ]
+    forward = merge_results(items)
+    reverse = merge_results(list(reversed(items)))
+    assert len(forward) == len(reverse) == 1
+    assert forward[0].key == reverse[0].key
+    # "daddy" is the min own alias, so it anchors the merged key.
+    assert forward[0].key == item_group_key(item("eneyida", "Daddy", year=2021, n="2"))
+    # The singleton "Тато" without the bridge keeps its own "тато" key.
+    solo = merge_results([item("kinolub", "Тато", year=2021, n="3")])
+    assert solo[0].key == item_group_key(item("kinolub", "Тато", year=2021, n="3"))
+    assert solo[0].key != forward[0].key
+
+
+def test_merge_title_that_normalizes_to_nothing_anchors_on_item_id() -> None:
+    # "(2021)" normalizes to an empty alias, so the key is anchored to the
+    # item id — per-item stable, and distinct across providers.
+    a = item("uakino", "(2021)", year=2021)
+    b = item("eneyida", "(2021)", year=2021, n="2")
+    assert item_group_key(a) == item_group_key(a)
+    assert item_group_key(a) != item_group_key(b)
+    assert merge_results([a])[0].key == item_group_key(a)
+    assert merge_results([b])[0].key == item_group_key(b)
+    assert merge_results([a, b])[0].key != merge_results([a, b])[1].key
 
 
 def test_merge_apostrophe_variants_unify() -> None:

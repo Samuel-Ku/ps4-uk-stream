@@ -97,6 +97,23 @@ def group_key(alias: str, media_type: str, year: int | None) -> str:
     return f"{_KEY_VERSION}:{digest[:16]}"
 
 
+def effective_year(title: str, year: int | None) -> int | None:
+    """A title's year: the explicit field, else one parsed from the raw title."""
+    return year if year is not None else extract_year(title)
+
+
+def group_key_from(title: str, media_type: str, year: int | None, item_id: str) -> str:
+    """Stateless group identity for one raw title (issue #69, v3 spec §4.3).
+
+    A pure function of the item's own listing data — its most canonical
+    alias, its type, its year — so the same title always yields the same
+    key no matter which other providers appear in the same call.
+    """
+    aliases = title_aliases(title)
+    key_alias = min(aliases) if aliases else f"id:{item_id}"
+    return group_key(key_alias, media_type, year)
+
+
 @dataclass(frozen=True)
 class MergeGroup:
     """One merged title: a stable key, a display representative, all sources."""
@@ -107,7 +124,16 @@ class MergeGroup:
 
 
 def _effective_year(it: SearchResult) -> int | None:
-    return it.year if it.year is not None else extract_year(it.title)
+    return effective_year(it.title, it.year)
+
+
+def item_group_key(it: SearchResult) -> str:
+    """Stateless per-item group identity: ``group_key_from`` over the item.
+
+    Public seam for callers that hold one item (e.g. ``/api/content``) and
+    need the same key the merge core would produce for it.
+    """
+    return group_key_from(it.title, it.type, _effective_year(it), it.id)
 
 
 def _years_match(a: int | None, b: int | None) -> bool:
@@ -157,19 +183,13 @@ def merge_results(items: Iterable[SearchResult]) -> list[MergeGroup]:
     groups: list[MergeGroup] = []
     for members in buckets.values():
         first = items[members[0]]
-        all_aliases = {a for m in members for a in per_item_aliases[m]}
-        if all_aliases:
-            canonical = min(all_aliases)
-        else:
-            # Title that normalized to nothing (e.g. "(2021)") can never
-            # merge; anchor its key to the item id so it stays a stable
-            # singleton.
-            canonical = f"id:{first.id}"
-        years = {y for m in members if (y := _effective_year(items[m])) is not None}
-        key_year = years.pop() if len(years) == 1 else None
+        # Group key = min over the members' own stateless item keys:
+        # order-independent, and every member can recompute its own key
+        # from its listing data alone (issue #69, v3 spec §4.3).
+        key = min(item_group_key(items[m]) for m in members)
         groups.append(
             MergeGroup(
-                key=group_key(canonical, first.type, key_year),
+                key=key,
                 representative=first,
                 sources=tuple(items[m] for m in members),
             )

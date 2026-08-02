@@ -44,6 +44,10 @@ struct ContentItem {
     std::string title;
     std::string description;
     std::string poster;
+    // Stateless cross-provider group identity (issue #69): resume/memory
+    // records anchor on this, not on the provider-scoped id. Empty when
+    // the backend predates the field.
+    std::string groupKey;
     // "content" — translations list applies to the whole item
     // "episode" — translations live on each Episode
     std::string translationsLevel = "content";

@@ -134,6 +134,7 @@ int main() {
         auto fake = std::make_unique<FakeHttpClient>();
         fake->set("/api/content", R"({
             "id":"uakino:film-x","type":"movie","title":"X","description":"","poster":"",
+            "group_key":"g1:0123456789abcdef",
             "translations_level":"content",
             "translations":[{"id":"uk","label":"Українська"}],
             "seasons":[]
@@ -146,6 +147,7 @@ int main() {
         });
         w.wait();
         CHECK_EQ(item.translationsLevel, std::string("content"));
+        CHECK_EQ(item.groupKey, std::string("g1:0123456789abcdef"));
         CHECK_EQ(item.translations.size(), 1u);
         if (!item.translations.empty()) {
             CHECK_EQ(item.translations[0].first, std::string("uk"));

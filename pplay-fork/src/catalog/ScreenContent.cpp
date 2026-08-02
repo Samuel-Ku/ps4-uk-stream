@@ -286,11 +286,13 @@ void ScreenContent::onUpdate() {
                 mf.type = f.type;
 
                 // v3 (issue #55): record what is playing so resume +
-                // source/dub memory survive restarts. groupKey stands in
-                // for the content id until backend grouping lands (#58+).
+                // source/dub memory survive restarts. Records anchor on
+                // the item's stateless group key (issue #69) so they stay
+                // valid across sessions and provider-set changes; the id
+                // is only a fallback for backends without the field.
                 if (auto *st = CatalogContext::state()) {
                     ResumeEntry base;
-                    base.groupKey = item_.id;
+                    base.groupKey = item_.groupKey.empty() ? item_.id : item_.groupKey;
                     base.provider = item_.id.substr(0, item_.id.find(':'));
                     base.id = item_.id;
                     if (!item_.seasons.empty()) base.episodeId = pendingPlayEpisodeId_;

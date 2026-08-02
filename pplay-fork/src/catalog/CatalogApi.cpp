@@ -253,6 +253,7 @@ ContentItem CatalogApi::parseContent(const std::string &raw) {
     out.title = r.str("title");
     out.description = r.str("description");
     out.poster = r.str("poster");
+    out.groupKey = r.str("group_key");
 
     // translations_level controls where translations live.
     // "content" (default) → on ContentItem; "episode" → on each Episode.
