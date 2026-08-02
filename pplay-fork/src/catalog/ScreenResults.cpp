@@ -1,3 +1,4 @@
+#include "UiScale.h"
 #include "ScreenResults.h"
 #include "CatalogContext.h"
 #include "main.h"
@@ -9,11 +10,16 @@
 namespace cs {
 
 namespace {
-constexpr int kTitleSize = 28;
-constexpr int kBodySize = 18;
-constexpr int kStatusSize = 16;
-constexpr float kPanelPadding = 16.0f;
-constexpr float kRowHeight = 56.0f;
+// 10-foot scale: typography floor and action-safe margins anchored to
+// 1080p (issue #57, v3 spec §5.1).
+using ui::kSmallSize;
+using ui::kBodySize;
+using ui::kTitleSize;
+using ui::kMarginX;
+using ui::kMarginY;
+using ui::kGap;
+using ui::kFocusOutline;
+using ui::kRowHeight;
 constexpr int kPosterLazyLookahead = 2;
 } // namespace
 
@@ -48,14 +54,14 @@ ScreenResults::ScreenResults(c2d::C2DRenderer *main,
     if (mode_ == Mode::Search) page_ = 1;
 
     title_ = new c2d::Text(title, kTitleSize, main_->getFont());
-    title_->setPosition({kPanelPadding, kPanelPadding});
+    title_->setPosition({kMarginX, kMarginY});
     title_->setFillColor(c2d::Color{0xff, 0xff, 0xff, 0xff});
     add(title_);
 
     // Poster thumbnail area on the left of the list, with a fallback
     // "no poster" fill when no texture is loaded.
-    const float posterX = kPanelPadding;
-    const float posterY = kPanelPadding + kTitleSize + 12;
+    const float posterX = kMarginX;
+    const float posterY = kMarginY + kTitleSize + 12;
     const float posterSize = kRowHeight * 2.0f;
     posterBox_ = new c2d::RectangleShape({posterX, posterY, posterSize, posterSize});
     posterBox_->setFillColor(c2d::Color{0x22, 0x22, 0x22, 0xff});
@@ -63,14 +69,14 @@ ScreenResults::ScreenResults(c2d::C2DRenderer *main,
     posterBox_->setOutlineThickness(1.0f);
     add(posterBox_);
 
-    posterBadge_ = new c2d::Text("—", kStatusSize, main_->getFont());
+    posterBadge_ = new c2d::Text("—", kSmallSize, main_->getFont());
     posterBadge_->setPosition({posterX + 8, posterY + 8});
     posterBadge_->setFillColor(c2d::Color{0x66, 0x66, 0x66, 0xff});
     add(posterBadge_);
 
     // Rows to the right of the poster.
-    const float rowsX = posterX + posterSize + 16;
-    const float rowsW = W - rowsX - kPanelPadding;
+    const float rowsX = posterX + posterSize + kGap;
+    const float rowsW = W - rowsX - kMarginX;
     rowsText_ = new c2d::Text("", kBodySize, main_->getFont());
     rowsText_->setPosition({rowsX, posterY});
     rowsText_->setFillColor(c2d::Color{0xee, 0xee, 0xee, 0xff});
@@ -79,11 +85,11 @@ ScreenResults::ScreenResults(c2d::C2DRenderer *main,
     cursor_ = new c2d::RectangleShape({rowsX, posterY, rowsW, kRowHeight});
     cursor_->setFillColor(c2d::Color{0x55, 0xef, 0xc4, 0x40});
     cursor_->setOutlineColor(c2d::Color{0x55, 0xef, 0xc4, 0xff});
-    cursor_->setOutlineThickness(1.5f);
+    cursor_->setOutlineThickness(kFocusOutline);
     add(cursor_);
 
-    status_ = new c2d::Text("", kStatusSize, main_->getFont());
-    status_->setPosition({kPanelPadding, H - kStatusSize - kPanelPadding});
+    status_ = new c2d::Text("", kSmallSize, main_->getFont());
+    status_->setPosition({kMarginX, H - kSmallSize - kMarginY});
     status_->setFillColor(c2d::Color{0xaa, 0xaa, 0xaa, 0xff});
     add(status_);
 

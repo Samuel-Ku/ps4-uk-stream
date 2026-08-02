@@ -1,3 +1,4 @@
+#include "UiScale.h"
 #include "ScreenSections.h"
 #include "CatalogContext.h"
 #include "main.h"
@@ -12,11 +13,15 @@ namespace {
 
 // Two-column layout constants. The screen is 1280x720 (PS4) but Main
 // scales via Vector2f scaling — we render against the renderer size so
-// the layout adapts to 1920x1080 too.
-constexpr int kTitleSize = 28;
-constexpr int kBodySize = 20;
-constexpr int kStatusSize = 18;
-constexpr float kPanelPadding = 16.0f;
+// the layout adapts to 1920x1080 too. Typography floor and margins are
+// anchored to 1080p (issue #57, v3 spec §5.1).
+using ui::kSmallSize;
+using ui::kBodySize;
+using ui::kTitleSize;
+using ui::kMarginX;
+using ui::kMarginY;
+using ui::kGap;
+using ui::kFocusOutline;
 
 } // namespace
 
@@ -32,28 +37,28 @@ ScreenSections::ScreenSections(c2d::C2DRenderer *main)
     const float H = static_cast<float>(static_cast<c2d::C2DRenderer *>(main)->getSize().y);
 
     title_ = new c2d::Text("Каталог UA", kTitleSize, main_->getFont());
-    title_->setPosition({kPanelPadding, kPanelPadding});
+    title_->setPosition({kMarginX, kMarginY});
     title_->setFillColor(c2d::Color{0xff, 0xff, 0xff, 0xff});
     add(title_);
 
-    status_ = new c2d::Text("Завантаження…", kStatusSize, main_->getFont());
-    status_->setPosition({kPanelPadding, kPanelPadding + kTitleSize + 8});
+    status_ = new c2d::Text("Завантаження…", kSmallSize, main_->getFont());
+    status_->setPosition({kMarginX, kMarginY + kTitleSize + 8});
     status_->setFillColor(c2d::Color{0xaa, 0xaa, 0xaa, 0xff});
     add(status_);
 
     // Left column: providers.
-    const float colY = kPanelPadding + kTitleSize + kStatusSize + 24;
-    const float colH = H - colY - kPanelPadding;
+    const float colY = kMarginY + kTitleSize + kSmallSize + 32;
+    const float colH = H - colY - kMarginY;
     const float leftW = W * 0.38f;
-    providerPanel_ = new c2d::RectangleShape({kPanelPadding, colY, leftW - kPanelPadding, colH});
+    providerPanel_ = new c2d::RectangleShape({kMarginX, colY, leftW - kMarginX, colH});
     providerPanel_->setFillColor(c2d::Color{0x1e, 0x1e, 0x1e, 0xff});
     providerPanel_->setOutlineColor(c2d::Color{0x55, 0x55, 0x55, 0xff});
     providerPanel_->setOutlineThickness(1.0f);
     add(providerPanel_);
 
     // Right column: sections.
-    const float rightX = leftW + kPanelPadding;
-    const float rightW = W - rightX - kPanelPadding;
+    const float rightX = leftW + kGap;
+    const float rightW = W - rightX - kMarginX;
     sectionPanel_ = new c2d::RectangleShape({rightX, colY, rightW, colH});
     sectionPanel_->setFillColor(c2d::Color{0x1a, 0x1a, 0x1a, 0xff});
     sectionPanel_->setOutlineColor(c2d::Color{0x55, 0x55, 0x55, 0xff});
@@ -61,7 +66,7 @@ ScreenSections::ScreenSections(c2d::C2DRenderer *main)
     add(sectionPanel_);
 
     providerList_ = new c2d::Text("", kBodySize, main_->getFont());
-    providerList_->setPosition({kPanelPadding + 8, colY + 8});
+    providerList_->setPosition({kMarginX + 8, colY + 8});
     providerList_->setFillColor(c2d::Color{0xff, 0xff, 0xff, 0xff});
     add(providerList_);
 
@@ -71,10 +76,10 @@ ScreenSections::ScreenSections(c2d::C2DRenderer *main)
     add(sectionList_);
 
     // Cursor highlights the active row in the active column.
-    cursor_ = new c2d::RectangleShape({0, 0, leftW - kPanelPadding - 16, kBodySize + 8});
+    cursor_ = new c2d::RectangleShape({0, 0, providerPanel_->getSize().x - 16, kBodySize + 8});
     cursor_->setFillColor(c2d::Color{0x55, 0xef, 0xc4, 0x40});
     cursor_->setOutlineColor(c2d::Color{0x55, 0xef, 0xc4, 0xff});
-    cursor_->setOutlineThickness(1.5f);
+    cursor_->setOutlineThickness(kFocusOutline);
     cursor_->setVisibility(c2d::Visibility::Hidden, false);
     add(cursor_);
 
@@ -149,7 +154,7 @@ void ScreenSections::renderLabels() {
     const float colY = providerPanel_->getPosition().y;
     const float rowH = kBodySize + 6.0f;
     if (column_ == Column::Providers) {
-        const float x = kPanelPadding + 8;
+        const float x = kMarginX + 8;
         const float y = colY + 8 + providerIndex_ * rowH - 4;
         cursor_->setPosition({x, y});
         cursor_->setSize({providerPanel_->getSize().x - 16, kBodySize + 8});

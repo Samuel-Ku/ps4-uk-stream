@@ -1,3 +1,4 @@
+#include "UiScale.h"
 #include "ScreenSearch.h"
 #include "CatalogContext.h"
 #include "main.h"
@@ -9,11 +10,17 @@
 namespace cs {
 
 namespace {
-constexpr int kTitleSize = 28;
-constexpr int kBodySize = 22;
-constexpr int kKeySize = 22;
-constexpr int kStatusSize = 18;
-constexpr float kPanelPadding = 16.0f;
+// 10-foot scale: typography floor and action-safe margins anchored to
+// 1080p (issue #57, v3 spec §5.1).
+using ui::kSmallSize;
+using ui::kBodySize;
+using ui::kTitleSize;
+using ui::kMarginX;
+using ui::kMarginY;
+using ui::kGap;
+using ui::kFocusOutline;
+using ui::kKeyCellW;
+constexpr int kKeySize = kBodySize;
 } // namespace
 
 ScreenSearch::ScreenSearch(c2d::C2DRenderer *main)
@@ -28,34 +35,34 @@ ScreenSearch::ScreenSearch(c2d::C2DRenderer *main)
     const float H = static_cast<float>(static_cast<c2d::C2DRenderer *>(main)->getSize().y);
 
     title_ = new c2d::Text("Пошук", kTitleSize, main_->getFont());
-    title_->setPosition({kPanelPadding, kPanelPadding});
+    title_->setPosition({kMarginX, kMarginY});
     title_->setFillColor(c2d::Color{0xff, 0xff, 0xff, 0xff});
     add(title_);
 
     textLabel_ = new c2d::Text("", kBodySize, main_->getFont());
-    textLabel_->setPosition({kPanelPadding, kPanelPadding + kTitleSize + 12});
+    textLabel_->setPosition({kMarginX, kMarginY + kTitleSize + 12});
     textLabel_->setFillColor(c2d::Color{0x55, 0xef, 0xc4, 0xff});
     add(textLabel_);
 
     keyboardText_ = new c2d::Text("", kKeySize, main_->getFont());
-    keyboardText_->setPosition({kPanelPadding, kPanelPadding + kTitleSize + kBodySize + 28});
+    keyboardText_->setPosition({kMarginX, kMarginY + kTitleSize + kBodySize + 28});
     keyboardText_->setFillColor(c2d::Color{0xee, 0xee, 0xee, 0xff});
     add(keyboardText_);
 
     cursor_ = new c2d::RectangleShape({0, 0, 0, 0});
     cursor_->setFillColor(c2d::Color{0x55, 0xef, 0xc4, 0x40});
     cursor_->setOutlineColor(c2d::Color{0x55, 0xef, 0xc4, 0xff});
-    cursor_->setOutlineThickness(1.5f);
+    cursor_->setOutlineThickness(kFocusOutline);
     add(cursor_);
 
-    statusText_ = new c2d::Text("", kStatusSize, main_->getFont());
-    statusText_->setPosition({kPanelPadding, H - 2 * (kStatusSize + 8) - kPanelPadding});
+    statusText_ = new c2d::Text("", kSmallSize, main_->getFont());
+    statusText_->setPosition({kMarginX, H - 2 * (kSmallSize + 8) - kMarginY});
     statusText_->setFillColor(c2d::Color{0xaa, 0xaa, 0xaa, 0xff});
     add(statusText_);
 
     helpText_ = new c2d::Text("X: вибрати · △: пробіл · □: видалити · Options: пошук · O: назад",
-                              kStatusSize, main_->getFont());
-    helpText_->setPosition({kPanelPadding, H - (kStatusSize + 8) - kPanelPadding});
+                              kSmallSize, main_->getFont());
+    helpText_->setPosition({kMarginX, H - (kSmallSize + 8) - kMarginY});
     helpText_->setFillColor(c2d::Color{0x88, 0x88, 0x88, 0xff});
     add(helpText_);
 
@@ -91,9 +98,9 @@ void ScreenSearch::renderKeyboard() {
     std::ostringstream oss;
     const int rows = kb_.rows();
     const int cols = kb_.cols();
-    const float startX = kPanelPadding;
-    const float startY = kPanelPadding + kTitleSize + kBodySize + 28;
-    const float cellW = 64.0f;
+    const float startX = kMarginX;
+    const float startY = kMarginY + kTitleSize + kBodySize + 28;
+    const float cellW = kKeyCellW;
     const float cellH = kKeySize + 12.0f;
     // Pre-position cursor behind the focused cell; reset size based on the
     // widest key in the grid (some Cyrillic glyphs are wider than 64px

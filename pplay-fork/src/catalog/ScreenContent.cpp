@@ -1,3 +1,4 @@
+#include "UiScale.h"
 #include "ScreenContent.h"
 #include "CatalogContext.h"
 #include "main.h"
@@ -16,11 +17,14 @@
 namespace cs {
 
 namespace {
-constexpr int kTitleSize = 28;
-constexpr int kMetaSize = 18;
-constexpr int kBodySize = 18;
-constexpr int kStatusSize = 16;
-constexpr float kPanelPadding = 16.0f;
+// 10-foot scale: typography floor and action-safe margins anchored to
+// 1080p (issue #57, v3 spec §5.1).
+using ui::kSmallSize;
+using ui::kBodySize;
+using ui::kTitleSize;
+using ui::kMarginX;
+using ui::kMarginY;
+using ui::kFocusOutline;
 constexpr size_t kDescMaxChars = 320;
 
 const char *typeLabel(const std::string &type) {
@@ -62,43 +66,43 @@ ScreenContent::ScreenContent(c2d::C2DRenderer *main, std::string id, std::string
     setLayer(5);
 
     title_ = new c2d::Text(pendingTitle_, kTitleSize, main_->getFont());
-    title_->setPosition({kPanelPadding, kPanelPadding});
+    title_->setPosition({kMarginX, kMarginY});
     title_->setFillColor(c2d::Color{0xff, 0xff, 0xff, 0xff});
     add(title_);
 
-    meta_ = new c2d::Text("", kMetaSize, main_->getFont());
-    meta_->setPosition({kPanelPadding, kPanelPadding + kTitleSize + 8});
+    meta_ = new c2d::Text("", kSmallSize, main_->getFont());
+    meta_->setPosition({kMarginX, kMarginY + kTitleSize + 8});
     meta_->setFillColor(c2d::Color{0xaa, 0xaa, 0xaa, 0xff});
     add(meta_);
 
     description_ = new c2d::Text("", kBodySize, main_->getFont());
-    description_->setPosition({kPanelPadding, kPanelPadding + kTitleSize + kMetaSize + 16});
+    description_->setPosition({kMarginX, kMarginY + kTitleSize + kSmallSize + 16});
     description_->setFillColor(c2d::Color{0xdd, 0xdd, 0xdd, 0xff});
     add(description_);
 
     translationsLabel_ = new c2d::Text("", kBodySize, main_->getFont());
-    translationsLabel_->setPosition({kPanelPadding, description_->getPosition().y + kBodySize * 8 + 16});
+    translationsLabel_->setPosition({kMarginX, description_->getPosition().y + kBodySize * 8 + 16});
     translationsLabel_->setFillColor(c2d::Color{0x55, 0xef, 0xc4, 0xff});
     add(translationsLabel_);
 
     seasonsLabel_ = new c2d::Text("", kBodySize, main_->getFont());
-    seasonsLabel_->setPosition({kPanelPadding, translationsLabel_->getPosition().y + kBodySize + 8});
+    seasonsLabel_->setPosition({kMarginX, translationsLabel_->getPosition().y + kBodySize + 8});
     seasonsLabel_->setFillColor(c2d::Color{0xaa, 0xaa, 0xaa, 0xff});
     add(seasonsLabel_);
 
     episodesLabel_ = new c2d::Text("", kBodySize, main_->getFont());
-    episodesLabel_->setPosition({kPanelPadding, seasonsLabel_->getPosition().y + kBodySize + 16});
+    episodesLabel_->setPosition({kMarginX, seasonsLabel_->getPosition().y + kBodySize + 16});
     episodesLabel_->setFillColor(c2d::Color{0xee, 0xee, 0xee, 0xff});
     add(episodesLabel_);
 
     cursor_ = new c2d::RectangleShape({0, 0, 0, 0});
     cursor_->setFillColor(c2d::Color{0x55, 0xef, 0xc4, 0x40});
     cursor_->setOutlineColor(c2d::Color{0x55, 0xef, 0xc4, 0xff});
-    cursor_->setOutlineThickness(1.5f);
+    cursor_->setOutlineThickness(kFocusOutline);
     add(cursor_);
 
-    status_ = new c2d::Text("", kStatusSize, main_->getFont());
-    status_->setPosition({kPanelPadding, static_cast<float>(static_cast<c2d::C2DRenderer *>(main_)->getSize().y) - kStatusSize - kPanelPadding});
+    status_ = new c2d::Text("", kSmallSize, main_->getFont());
+    status_->setPosition({kMarginX, static_cast<float>(static_cast<c2d::C2DRenderer *>(main_)->getSize().y) - kSmallSize - kMarginY});
     status_->setFillColor(c2d::Color{0xaa, 0xaa, 0xaa, 0xff});
     add(status_);
 
@@ -193,7 +197,7 @@ void ScreenContent::renderAll() {
     episodesLabel_->setString(e.str());
 
     const float epY = episodesLabel_->getPosition().y;
-    cursor_->setPosition({kPanelPadding - 4, epY + episodeIndex_ * (kBodySize + 4)});
+    cursor_->setPosition({kMarginX - 4, epY + episodeIndex_ * (kBodySize + 4)});
     cursor_->setSize({episodesLabel_->getSize().x + 8, kBodySize + 4});
 }
 
