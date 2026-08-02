@@ -16,13 +16,16 @@
 
 ## Build verification (run on the Linux host before installing) `[harness]`
 
-- [ ] `./pplay-fork/scripts/build-ps4-docker.sh` exits 0
-- [ ] `pplay-fork/build/PPLA00001.pkg` exists, size > 1 MB
-- [ ] `head -c 4 pplay-fork/build/PPLA00001.pkg | xxd` → `7f 43 4e 54`
-      (`\x7FCNT` PKG magic)
-- [ ] `pplay-fork/build/eboot.bin` exists, magic `4f 15 3d 1d` (SCE
+- [x] `./pplay-fork/scripts/build-ps4-docker.sh` exits 0
+      (verified by #32, commits 4874b6a + fd3b32f)
+- [x] `pplay-fork/build/PPLA00001.pkg` exists, size > 1 MB
+      (verified by #32: 6.8 MB artifact)
+- [x] `head -c 4 pplay-fork/build/PPLA00001.pkg | xxd` → `7f 43 4e 54`
+      (`\x7FCNT` PKG magic; verified by #32)
+- [x] `pplay-fork/build/eboot.bin` exists, magic `4f 15 3d 1d` (SCE
       SELF wrapper from create-fself, fake-signed with
-      `paid=0x3800000000000011`)
+      `paid=0x3800000000000011`; verified at offset 864 of the SELF
+      by #32)
 
 ## Agent-host verification (Linux host, before installing) `[harness]`
 
@@ -30,13 +33,13 @@ These items do NOT require a PS4. They lock the build pipeline and
 the catalog-state unit suite so the on-console test inherits a known-
 good binary.
 
-- [ ] `cmake --build pplay-fork/tests/standalone-catalog/build` builds
+- [x] `cmake --build pplay-fork/tests/standalone-catalog/build` builds
       every test binary (no link errors)
-- [ ] `ctest --test-dir pplay-fork/tests/standalone-catalog/build` is
-      100% green (last verified: **17/17** on commit 44a5e8d)
-- [ ] Backend test suite is 100% green (last verified: **370+ passed**
+- [x] `ctest --test-dir pplay-fork/tests/standalone-catalog/build` is
+      100% green (verified: **17/17** on commit 44a5e8d)
+- [x] Backend test suite is 100% green (verified: **370+ passed**
       on commit 44a5e8d — see `docs/status.md` Task 20)
-- [ ] `pplay-fork/src/catalog/ScreenHome.*` and `ScreenContent.*`
+- [x] `pplay-fork/src/catalog/ScreenHome.*` and `ScreenContent.*`
       compile clean under `-Wall -Wextra` (no warnings introduced by
       the v3 work)
 
