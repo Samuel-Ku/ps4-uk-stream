@@ -269,6 +269,43 @@ def test_merge_title_that_normalizes_to_nothing_anchors_on_item_id() -> None:
     assert merge_results([a, b])[0].key != merge_results([a, b])[1].key
 
 
+def test_year_soft_groups_do_not_collide() -> None:
+    # Regression (diagnosed via code review of #69): two DIFFERENT groups
+    # {Дюна 2021 + yearless} and {Дюна 1984 + yearless} both min'ed to the
+    # yearless member's key sha1("дюна|movie|"), because the yearless key
+    # hashed smaller than both year keys. GroupKey dedup (§3.1) would then
+    # silently drop one of the titles.
+    g1 = merge_results([
+        item("uakino", "Дюна", year=2021),
+        item("eneyida", "Дюна", n="2"),  # year unknown
+    ])
+    g2 = merge_results([
+        item("kinolub", "Дюна", year=1984, n="3"),
+        item("animeua", "Дюна", n="4"),  # year unknown
+    ])
+    assert len(g1) == len(g2) == 1
+    assert g1[0].key != g2[0].key
+    # Each group keys on its year-carrying member, not the yearless one.
+    assert g1[0].key == item_group_key(item("uakino", "Дюна", year=2021))
+    assert g2[0].key == item_group_key(item("kinolub", "Дюна", year=1984, n="3"))
+
+
+def test_transitive_year_soft_group_is_deterministic() -> None:
+    # 2021 ~ yearless and 1984 ~ yearless merge transitively into one group
+    # (year-soft rule, spec §4.2); its key must be one of the year-carrying
+    # members' own keys — never the yearless one.
+    group = merge_results([
+        item("uakino", "Дюна", year=2021),
+        item("eneyida", "Дюна", n="2"),
+        item("kinolub", "Дюна", year=1984, n="3"),
+    ])
+    assert len(group) == 1
+    assert group[0].key in {
+        item_group_key(item("uakino", "Дюна", year=2021)),
+        item_group_key(item("kinolub", "Дюна", year=1984, n="3")),
+    }
+
+
 def test_merge_apostrophe_variants_unify() -> None:
     groups = merge_results([
         item("uakino", "Онґелс'", year=2020),

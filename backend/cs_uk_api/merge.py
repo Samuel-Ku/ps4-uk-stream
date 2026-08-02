@@ -185,8 +185,15 @@ def merge_results(items: Iterable[SearchResult]) -> list[MergeGroup]:
         first = items[members[0]]
         # Group key = min over the members' own stateless item keys:
         # order-independent, and every member can recompute its own key
-        # from its listing data alone (issue #69, v3 spec §4.3).
-        key = min(item_group_key(items[m]) for m in members)
+        # from its listing data alone (issue #69, v3 spec §4.3). Members
+        # with a known year are preferred: otherwise two different
+        # year-soft groups (Дюна 2021 + yearless vs Дюна 1984 + yearless)
+        # would both min to the yearless member's key (its digest hashes
+        # below both year variants) and collide, silently dropping one
+        # title at groupKey-dedup. Yearless singletons keep their own key.
+        yearful = [m for m in members if _effective_year(items[m]) is not None]
+        preferred = yearful if yearful else members
+        key = min(item_group_key(items[m]) for m in preferred)
         groups.append(
             MergeGroup(
                 key=key,
