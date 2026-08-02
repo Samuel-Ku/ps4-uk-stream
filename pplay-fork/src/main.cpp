@@ -2,7 +2,11 @@
 // Created by cpasjuste on 02/10/18.
 //
 #include "main.h"
+#include "catalog/BrowserHttpClient.h"
+#include "catalog/CatalogApi.h"
+#include "catalog/CatalogContext.h"
 #include "catalog/ScreenSections.h"
+#include "catalog/ScreenSearch.h"
 #include "io.h"
 #include "filer.h"
 #include "menu_main.h"
@@ -115,6 +119,7 @@ Main::Main(const c2d::Vector2f &size) : C2DRenderer(size) {
     // Catalog UA menu entry (issue #17 — backend at OPT_CATALOG_URL).
     // Falls back to "network.png" if "catalog.png" is missing.
     items.emplace_back("Каталог UA", "catalog.png", MenuItem::Position::Top);
+    items.emplace_back("Пошук UA", "search.png", MenuItem::Position::Top);
     items.emplace_back("Options", "options.png", MenuItem::Position::Top);
     items.emplace_back("Exit", "exit.png", MenuItem::Position::Bottom);
     menu_main = new MenuMain(this, {-250 * scaling.x, 0, 250 * scaling.x, Main::getSize().y}, items);
@@ -150,9 +155,27 @@ Main::Main(const c2d::Vector2f &size) : C2DRenderer(size) {
     Main::add(messageBox);
 
     scrapper = new Scrapper(this);
+
+    // Catalog UA — single shared CatalogApi per process, owned by the
+    // CatalogContext singleton so the four catalog screens (Sections,
+    // Search, Results, Content) can reach it without Main having to
+    // thread it through every constructor. The api runs an internal
+    // worker thread that owns the Browser-backed HttpClient; all UI
+    // marshalling happens via std::atomic flags inside the screens.
+    const std::string catalogUrl =
+        config->getOption(OPT_CATALOG_URL)->getString();
+    if (!catalogUrl.empty()) {
+        cs::CatalogContext::set(
+            std::make_unique<cs::CatalogApi>(catalogUrl,
+                                             cs::makeBrowserHttpClient()));
+    }
 }
 
 Main::~Main() {
+    // Drop the api before anything else: its worker thread is blocked
+    // on a cv, and any in-flight request must finish before libcurl's
+    // global teardown happens in libcross2d's static destructors.
+    cs::CatalogContext::set(nullptr);
     delete (scrapper);
     delete (config);
     delete (timer);
@@ -224,13 +247,12 @@ void Main::show(MenuType type) {
             filer->getDir(config->getOption(OPT_UMS_DEVICE)->getString());
 #endif
     } else if (type == MenuType::Catalog) {
-        // The placeholder screen compiles and links; the full
-        // Sections/Search/Results/Content screens are added in the
-        // next plan pass. Until then, this entry surfaces in the
-        // main menu and shows a blank screen rather than crashing.
-        // Main::add is the c2d scene-graph attachment point (no push
-        // helper on C2DRenderer).
+        // Sections/Search/Results/Content are full v2 catalog screens
+        // (plan Task 18). Sections is the first one the user sees; the
+        // other three are pushed from there.
         Main::add(new ScreenSections(this));
+    } else if (type == MenuType::Search) {
+        Main::add(new ScreenSearch(this));
     } else {
 #ifdef __SWITCH__
         usbHsFsExit();

@@ -25,3 +25,4 @@ venv/
 # Local developer tooling (reference clones, scratch artifacts)
 backend/tools/
 backend/tools/**
+pplay-fork/build-ps4/

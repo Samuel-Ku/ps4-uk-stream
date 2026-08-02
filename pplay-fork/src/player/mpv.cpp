@@ -77,9 +77,10 @@ Mpv::Mpv(const std::string &configPath, bool initRender) {
     }
 
     if (initRender) {
-        mpv_opengl_init_params gl_init_params{get_proc_address_mpv,
-                                              nullptr,
-                                              nullptr};
+        // mpv_opengl_init_params carries only get_proc_address +
+        // get_proc_address_ctx in libmpv 0.32+; the third initialiser
+        // (an older `extra_exts` slot) was dropped upstream.
+        mpv_opengl_init_params gl_init_params{get_proc_address_mpv, nullptr};
         mpv_render_param params[]{
                 {MPV_RENDER_PARAM_API_TYPE,           (void *) MPV_RENDER_API_TYPE_OPENGL},
                 {MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &gl_init_params},

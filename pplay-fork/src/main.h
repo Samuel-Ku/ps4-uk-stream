@@ -51,6 +51,7 @@ public:
         Network,
         Current,
         Catalog,
+        Search,
 #ifdef __SWITCH__
         Usb
 #endif

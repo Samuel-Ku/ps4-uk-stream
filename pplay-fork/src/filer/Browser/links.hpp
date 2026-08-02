@@ -101,14 +101,14 @@ class links_class
 };
 
 ///===============================clear the links array==============================///
-void links_class::clear()
+inline void links_class::clear()
 {
     links_array.clear();
 }
 ///==================================================================================///
 
 ///=========================Return all the links=====================================///
-std::string links_class::all()
+inline std::string links_class::all()
 {
     std::string output="";
     for(int i=0;i<size();i++) {
@@ -120,7 +120,7 @@ std::string links_class::all()
 ///==================================================================================///
 
 ///=========Get all links in a raw_html_input and saves it in an array===============///
-void links_class::getlinks(std::string raw_input)
+inline void links_class::getlinks(std::string raw_input)
 {
     std::vector <std::string> temp_raw_links_container;
     //wrong!!! there thousands of a in a page
@@ -154,7 +154,7 @@ void links_class::getlinks(std::string raw_input)
 
 
 ///===============================EMPTY A LINK_struct================================///
-void link_struct::clear_link()
+inline void link_struct::clear_link()
 {
     url_   = "";
     name_  = "";
@@ -168,11 +168,11 @@ void link_struct::clear_link()
 
 ///=======================Overloading of the streaming operator======================///
 //return simply the url, the part the most used of a link
-void link_struct::stream_it(std::ostream & flux) const
+inline void link_struct::stream_it(std::ostream & flux) const
 {
     flux << url_;
 }
-std::ostream &operator<<( std::ostream &flux, link_struct const& link_to_display  )
+inline std::ostream &operator<<( std::ostream &flux, link_struct const& link_to_display  )
 {
     link_to_display.stream_it(flux); // <- we change it here
     return flux;
@@ -181,7 +181,7 @@ std::ostream &operator<<( std::ostream &flux, link_struct const& link_to_display
 
 
 ///==================Return the number of links found in a page======================///
-int links_class::size()
+inline int links_class::size()
 {
     return (links_array.size());
 }
@@ -189,7 +189,7 @@ int links_class::size()
 
 
 ///======================Overloading of [] to return the link========================///
-link_struct links_class::operator[ ]  (int ite)
+inline link_struct links_class::operator[ ]  (int ite)
 {
     //return the link which has a url, name, title, target
     if((unsigned int)ite<links_array.size() && ite>-1)
