@@ -22,6 +22,8 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, cast
+
+from ..country import extract_country
 from urllib.parse import quote, urljoin
 
 import httpx
@@ -228,6 +230,7 @@ class SerialnoProvider(BaseProvider):
         # we accept the whole block and surface its text.
         desc_el = soup.select_one(".fdesc")
         description = desc_el.get_text(" ", strip=True) if desc_el else ""
+        country: str | None = extract_country(soup)
         # Player URL: the first `<iframe>` inside `.fplayer` is the
         # series player (`tortuga.tw/embed/<id>`); the second is a
         # trailer and is ignored.
@@ -244,6 +247,7 @@ class SerialnoProvider(BaseProvider):
             poster=poster,
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
+            country=country,
         )
 
     @staticmethod

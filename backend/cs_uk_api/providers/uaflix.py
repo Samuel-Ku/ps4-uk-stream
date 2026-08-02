@@ -16,6 +16,7 @@ from bs4 import BeautifulSoup
 from bs4.element import Tag
 
 from ..extractors import RegexExtractor
+from ..country import extract_country
 from ..models import (
     ContentResponse,
     Episode,
@@ -392,6 +393,7 @@ class UAFlixProvider(BaseProvider):
         poster = _parse_poster(soup)
         desc_el = soup.select_one("#serial-kratko, .fdesc.full-text")
         description = desc_el.get_text(" ", strip=True) if desc_el else ""
+        country: str | None = extract_country(soup)
         media_type = _type_from_url(url)
         seasons: list[Season] | None = None
         if media_type in ("series", "anime", "dorama"):
@@ -404,6 +406,7 @@ class UAFlixProvider(BaseProvider):
             poster=poster,
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
+            country=country,
         )
 
     async def stream(

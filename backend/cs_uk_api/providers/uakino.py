@@ -279,6 +279,7 @@ class UakinoProvider(BaseProvider):
 
         year: int | None = None
         tags: list[str] = []
+        country: str | None = None
         for item in soup.select("div.fi-item"):
             label = item.select_one("div.fi-label")
             value = item.select_one("div.fi-desc")
@@ -289,6 +290,10 @@ class UakinoProvider(BaseProvider):
                 year = _parse_year(value.get_text())
             elif label_text.startswith("Жанр"):
                 tags = [t.strip() for t in value.get_text().split(",") if t.strip()]
+            elif "Країна" in label_text:
+                links = value.select("a")
+                raw = links[0].get_text(strip=True) if links else value.get_text(strip=True)
+                country = " ".join(raw.lower().split()) if raw else None
 
         ajax_el = soup.select_one("div.playlists-ajax")
         news_id = (
@@ -336,6 +341,7 @@ class UakinoProvider(BaseProvider):
                 translations=translations,
                 seasons=seasons,
                 translations_level="episode",
+                country=country,
             )
 
         translations = [
@@ -352,6 +358,7 @@ class UakinoProvider(BaseProvider):
             poster=poster,
             translations=translations,
             seasons=None,
+            country=country,
         )
 
     async def stream(

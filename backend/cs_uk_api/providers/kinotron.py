@@ -8,6 +8,7 @@ from urllib.parse import quote, urljoin
 import httpx
 from bs4 import BeautifulSoup
 
+from ..country import extract_country
 from ..models import ContentResponse, Episode, SearchResult, Season, Section, StreamResponse, Translation, TranslationLevel
 from .base import BaseProvider, MediaTypeStr, ProviderError
 
@@ -151,6 +152,7 @@ class KinoTronProvider(BaseProvider):
         image = soup.select_one(".img-box img")
         poster = urljoin(BASE_URL, str(image.get("data-src"))) if image and image.get("data-src") else None
         kind = self._type_from_subtitle(str(soup.select_one("div.fsubtitle") or ""))
+        country: str | None = extract_country(soup)
         player_url = self._player_url(soup)
         seasons = None
         translations = [Translation(id="uk", label="Українська")]
@@ -187,7 +189,7 @@ class KinoTronProvider(BaseProvider):
         description_el = soup.select_one(".full-text")
         return ContentResponse(id=f"{self.id}:{external_id}", type=kind, title=title_el.get_text(" ", strip=True),
             description=description_el.get_text(" ", strip=True) if description_el else "",
-            poster=poster, translations=translations, seasons=seasons, translations_level=translations_level)
+            poster=poster, translations=translations, seasons=seasons, translations_level=translations_level, country=country)
 
     async def stream(self, content_id: str, translation: str | None, http: httpx.AsyncClient) -> StreamResponse:
         parts = content_id.split(":")

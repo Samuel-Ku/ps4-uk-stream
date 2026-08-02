@@ -32,6 +32,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
+from ..country import extract_country
 from ._tortuga import decode as _tor_decrypt
 from .base import BaseProvider, ProviderError
 
@@ -298,6 +299,7 @@ class KinoVezhaProvider(BaseProvider):
         flist = soup.select(".inner-page__list > li")
         tags_text = flist[2].get_text(" ", strip=True) if len(flist) >= 3 else ""
         media_type = _classify_from_tags(tags_text)
+        country: str | None = extract_country(soup)
         desc_el = soup.select_one("div.inner-page__text")
         description = desc_el.get_text(strip=True) if desc_el else ""
         # Player URL: the first iframe inside `.video-responsive` (or
@@ -320,6 +322,7 @@ class KinoVezhaProvider(BaseProvider):
             poster=poster,
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
+            country=country,
         )
 
     @staticmethod
