@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import time
+from collections.abc import Mapping, Sequence
 from contextlib import asynccontextmanager
 from typing import Awaitable, Callable, TypeVar, cast
 from urllib.parse import unquote
@@ -18,12 +19,13 @@ from .country import is_blocked_country
 from .health import TRACKER
 from .home import build_home_rows
 from .http_client import close_client, get_client
-from .merge import group_key_from, merge_results
+from .merge import group_key_from, item_group_key, merge_results
 from .models import (
     BrowseResponse,
     ContentResponse,
     ErrorResponse,
     GroupContentResponse,
+    GroupSourceContentResponse,
     HomeResponse,
     ProviderFailure,
     ProviderInfo,
@@ -57,6 +59,63 @@ _blocklist_cache = TtlCache(default_ttl_s=SETTINGS.cache_content_s)
 # + the five type rows — is a curated snapshot, refreshed every 30 min
 # per the spec's documented staleness behaviour.
 _home_cache = TtlCache(default_ttl_s=SETTINGS.cache_home_s)
+
+#: v3 (issue #60): side cache keyed by group_key → {provider →
+#: SearchResult}. Populated by ``/api/home`` from the raw SearchResult
+#: listings it collected (the provider's per-group content id is NOT
+#: carried in the wire HomeResponse — it's needed only by
+#: ``/api/content/{gk}?source=`` to know which upstream ``content()``
+#: to call AND to echo the chip-strip roster back to the client).
+#: Same TTL as the home cache; same staleness contract. Cleared
+#: alongside the home cache.
+_home_sources_cache: TtlCache = TtlCache(default_ttl_s=SETTINGS.cache_home_s)
+
+#: Cache key for the home-side sources map (issue #60). Versioned
+#: alongside the home cache key so a home-cache reset also resets
+#: the side cache.
+_HOME_SOURCES_KEY = "home:sources:v1"
+
+
+def _add_listing_to_sources_map(
+    sources: dict[str, dict[str, SearchResult]], item: SearchResult
+) -> None:
+    """Fold one SearchResult into ``group_key → {provider → SearchResult}``.
+
+    First-seen wins per (group_key, provider) — Python 3.7+ dict
+    insertion order is preserved, so iteration order over the home
+    listings determines the chip-strip order on the client.
+    """
+    per_pid = sources.setdefault(item_group_key(item), {})
+    per_pid.setdefault(item.provider, item)
+
+
+def _build_sources_map(
+    newest: Mapping[str, Sequence[SearchResult]],
+    popular: Mapping[str, Sequence[SearchResult]],
+    by_type: Mapping[str, Mapping[str, Sequence[SearchResult]]],
+) -> dict[str, dict[str, SearchResult]]:
+    """Build ``group_key → {provider → SearchResult}`` from raw listings.
+
+    Used by ``/api/content/{groupKey}?source=`` to translate a
+    stateless group key into the provider-scoped content id needed
+    for an upstream ``content()`` call AND to echo the chip-strip
+    roster back to the client (issue #60 / v3 spec §3.3).
+
+    Iteration order matters: it matches ``build_home_rows``'s walk
+    order (newest → popular → by_type), so the chip-strip roster
+    seen from ``/api/content/{gk}?source=`` matches the home row's
+    ``HomeItem.providers`` exactly.
+    """
+    out: dict[str, dict[str, SearchResult]] = {}
+    for source_map in (newest, popular):
+        for items in source_map.values():
+            for it in items:
+                _add_listing_to_sources_map(out, it)
+    for source_map in by_type.values():
+        for items in source_map.values():
+            for it in items:
+                _add_listing_to_sources_map(out, it)
+    return out
 
 T = TypeVar("T")
 
@@ -500,14 +559,31 @@ async def home() -> HomeResponse:
     )
     resp = HomeResponse(rows=rows)
     _home_cache.set(cache_key, resp)
+    # v3 (issue #60): populate the side cache so /api/content/{gk}?source=
+    # can resolve each provider's source from a stateless group key.
+    sources = _build_sources_map(newest_lists, popular_lists, type_lists)
+    _home_sources_cache.set(_HOME_SOURCES_KEY, sources)
     return resp
 
 
 @app.get("/api/content/{content_id:path}")
-async def content(content_id: str) -> ContentResponse | GroupContentResponse:
+async def content(
+    content_id: str,
+    source: str | None = Query(default=None),
+) -> ContentResponse | GroupContentResponse | GroupSourceContentResponse:
     """Discriminator: ``g1:…`` group keys route to the merged lookup;
-    everything else is the existing ``provider:external`` content path."""
+    everything else is the existing ``provider:external`` content path.
+
+    For ``g1:…`` keys, an optional ``?source=<provider>`` query param
+    routes to the lazy single-source fetch (issue #60 / v3 spec §3.3):
+    returns that ONE source's v2 ContentResponse + a ``providers`` echo
+    for the source-switching chip strip. Without ``?source=``, the
+    legacy ``GroupContentResponse{item, providers}`` shape is returned
+    (preserved for backwards compatibility).
+    """
     if content_id.startswith("g1:"):
+        if source is not None:
+            return await _content_by_group_key_and_source(content_id, source)
         return await _content_by_group_key(content_id)
     return await _content_by_id(content_id)
 
@@ -563,6 +639,100 @@ async def _content_by_group_key(group_key: str) -> GroupContentResponse:
         404,
         detail=ErrorResponse(error="not_found", message=group_key).model_dump(),
     )
+
+
+async def _content_by_group_key_and_source(
+    group_key: str, source: str
+) -> GroupSourceContentResponse:
+    """Lazy single-source content fetch (issue #60 / v3 spec §3.3).
+
+    Translates the stateless group key into the provider-scoped content
+    id (populated by ``/api/home`` from the raw SearchResult listings),
+    then issues EXACTLY ONE upstream ``content()`` call against the
+    chosen provider. Returns that source's v2 ContentResponse + a
+    ``sources`` echo (the §3.2 grouped-card shape) for the source-
+    switching chip strip.
+
+    Error semantics:
+      - 400 ``unknown_source`` when ``source`` is not one of the group's
+        providers (the provider might be real, just doesn't carry this
+        group or was retired from the registry after /api/home ran).
+      - 502 ``upstream_unreachable`` (with ``sources`` echo) when the
+        upstream ``content()`` raises — the chip strip stays up.
+      - 404 ``not_found`` when the group key itself is unknown (no entry
+        in the sources side cache).
+    """
+    sources_map: dict[str, dict[str, SearchResult]] = cast(
+        dict[str, dict[str, SearchResult]],
+        _home_sources_cache.get(_HOME_SOURCES_KEY) or {},
+    )
+    per_provider = sources_map.get(group_key)
+    if per_provider is None:
+        raise HTTPException(
+            404,
+            detail=ErrorResponse(error="not_found", message=group_key).model_dump(),
+        )
+
+    # First-seen order: matches the home row's ``HomeItem.providers``
+    # because both reads walk the same build_home_rows iteration order.
+    sources_echo = list(per_provider.values())
+    if source not in per_provider or source not in PROVIDERS:
+        raise HTTPException(
+            400,
+            detail=ErrorResponse(
+                error="unknown_source",
+                message=f"{source} not in group {group_key}",
+            ).model_dump(),
+        )
+
+    external_id = per_provider[source].id
+    provider = PROVIDERS[source]
+    http = get_client()
+
+    try:
+        resp = await _upstream_guard(
+            source,
+            provider.content(external_id, http),
+            f"content groupKey={group_key} source={source}",
+        )
+    except HTTPException as e:
+        # The guard raises 502 with ``{"error": "upstream_unreachable",
+        # "message": ...}``. Re-raise with the spec-required ``sources``
+        # echo so the UI can degrade just the dead chip. The echo is
+        # JSON-serialized as a plain list of dicts because FastAPI's
+        # HTTPException detail is encoded by ``json.dumps`` directly
+        # (no Pydantic reduction).
+        _inject_sources_into_unavailable_error(e, sources_echo)
+        raise
+
+    # Re-derive the group key on this single-source response so the
+    # returned ContentResponse is self-identifying (issue #69 stateless
+    # identity — same key the merge core would compute for this item).
+    resp.group_key = group_key_from(resp.title, resp.type, resp.year, resp.id)
+    return GroupSourceContentResponse(
+        **resp.model_dump(),
+        sources=sources_echo,
+    )
+
+
+def _inject_sources_into_unavailable_error(
+    exc: HTTPException, sources: list[SearchResult]
+) -> None:
+    """Add the spec-required ``sources`` echo to an upstream-guard 502.
+
+    Called from the 502 re-raise path so the chip strip stays up even
+    when the focused source's ``content()`` raised. The echo is
+    JSON-serialized as a plain list of dicts because FastAPI's
+    HTTPException detail is encoded by ``json.dumps`` directly (no
+    Pydantic reduction). If the upstream detail is not a dict, the
+    function is a no-op — the caller will re-raise the original
+    exception unchanged.
+    """
+    if not isinstance(exc.detail, dict):
+        return
+    new_detail = dict(exc.detail)
+    new_detail["sources"] = [s.model_dump() for s in sources]
+    exc.detail = new_detail
 
 
 @app.get("/api/stream/{content_id:path}")

@@ -231,3 +231,32 @@ class GroupContentResponse(BaseModel):
     """``/api/content/{groupKey}`` payload: one merged item + providers."""
     item: HomeItem
     providers: list[str]
+
+
+class GroupSourceContentResponse(ContentResponse):
+    """``/api/content/{groupKey}?source=<provider>`` payload (v3 spec §3.3).
+
+    Inherits every field of ``ContentResponse`` (id, type, title, year,
+    description, poster, translations, seasons, translations_level,
+    country, group_key) — the chosen source's content body is the
+    response body verbatim, no transformation. The added ``sources``
+    field is the chip-strip roster: every provider that surfaced this
+    group in ``/api/home``, with each provider's content id so the UI
+    can switch sources without re-running ``/api/home`` (the spec's
+    "Fetching another source = a new request with a spinner" line, §3.3).
+
+    The ``sources`` shape matches the §3.2 grouped-card shape exactly
+    (``[{ "provider": ..., "id": ... }]``) so the chip strip and the
+    home row's chip strip share one parsing path on the client.
+
+    Issue #60 / v3 spec §3.3.
+    """
+
+    #: All providers that surfaced this group in ``/api/home`` (the
+    #: chip-strip roster). Order = first-seen by ``/api/home``'s
+    #: round-robin walk, matching the home row's ``HomeItem.providers``.
+    #: Each entry carries the provider's content id — the same
+    #: ``(provider, id)`` pair the home listing surfaced — so the UI
+    #: can drive ``/api/content/{groupKey}?source=<p>`` directly from
+    #: this echo without a second listings round-trip.
+    sources: list[SearchResult] = Field(default_factory=list)
