@@ -5,6 +5,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 enable_testing()
 
+# CatalogApi uses std::thread / std::mutex / std::condition_variable.
+find_package(Threads REQUIRED)
+
 function(c2d_add_catalog_test name)
     add_executable(${name} ${CMAKE_CURRENT_SOURCE_DIR}/../catalog/${name}.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog/Json.cpp
@@ -29,6 +32,7 @@ function(c2d_add_catalog_test_with_api name)
         ${CMAKE_CURRENT_SOURCE_DIR}/../../external/cJSON
     )
     target_compile_options(${name} PRIVATE -Wall -Wextra)
+    target_link_libraries(${name} Threads::Threads)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
@@ -46,6 +50,7 @@ function(c2d_add_catalog_test_with_fake name)
         ${CMAKE_CURRENT_SOURCE_DIR}/../../external/cJSON
     )
     target_compile_options(${name} PRIVATE -Wall -Wextra)
+    target_link_libraries(${name} Threads::Threads)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 

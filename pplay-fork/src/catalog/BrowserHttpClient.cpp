@@ -70,12 +70,15 @@ public:
         // Content-Type is best-effort: pull it from the response header.
         contentTypeOut.clear();
         const std::string info = browser_.info();
-        auto pos = info.find("Content-Type:");
+        const std::string needle = "Content-Type:";
+        auto pos = info.find(needle);
         if (pos != std::string::npos) {
-            pos += static_cast<std::string::npos>(13);
+            pos += needle.size();
             while (pos < info.size() && (info[pos] == ' ' || info[pos] == '\t')) ++pos;
             auto end = info.find_first_of("\r\n", pos);
-            contentTypeOut = info.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+            contentTypeOut = info.substr(pos, end == std::string::npos
+                                              ? std::string::npos
+                                              : end - pos);
         }
         if (contentTypeOut.empty()) contentTypeOut = "application/octet-stream";
 
