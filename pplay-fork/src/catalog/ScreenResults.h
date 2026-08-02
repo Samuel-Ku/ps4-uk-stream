@@ -5,6 +5,7 @@
 #include "cross2d/c2d.h"
 
 #include <atomic>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -24,7 +25,7 @@ public:
                   std::string section,
                   std::string query,
                   std::string title);
-    ~ScreenResults() override = default;
+    ~ScreenResults() override;
 
     void onUpdate() override;
 
@@ -36,10 +37,17 @@ private:
     void requestPosterForRow(size_t rowIndex);
     void renderRows();
     void setStatus(const std::string &s);
+    void applyPosterTexture(); // UI-thread: decode posterBytes_ into posterTex_
+    // Remove + delete the previously pushed child screen, if any,
+    // and (optionally) install `next` as the new child. Avoids the
+    // widget leak when the user re-pushes the same screen type.
+    void setChild(c2d::C2DObject *next);
+
     static const char *typeLabel(const std::string &type);
 
     CatalogApi *api_ = nullptr;
     Main *main_ = nullptr;
+    c2d::C2DObject *child_ = nullptr; // owned — freed by setChild / dtor
 
     Mode mode_ = Mode::Browse;
     std::string provider_;
@@ -64,6 +72,11 @@ private:
     std::vector<SearchItem> fetchedItems_;
     bool fetchedHasNext_ = false;
     std::string fetchError_;
+
+    // Pending poster fetched off-thread; consumed on the UI thread.
+    std::vector<std::uint8_t> posterBytes_;
+    size_t pendingPosterRow_ = static_cast<size_t>(-1);
+    size_t displayedPosterRow_ = static_cast<size_t>(-1);
 };
 
 } // namespace cs

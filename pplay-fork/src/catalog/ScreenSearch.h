@@ -27,7 +27,7 @@ namespace cs {
 class ScreenSearch : public c2d::RectangleShape {
 public:
     explicit ScreenSearch(c2d::C2DRenderer *main);
-    ~ScreenSearch() override = default;
+    ~ScreenSearch() override;
 
     void onUpdate() override;
 
@@ -36,9 +36,14 @@ private:
     void renderKeyboard();
     void renderStatus();
     void setStatus(const std::string &s);
+    // Remove + delete the previously pushed child screen, if any,
+    // and (optionally) install `next` as the new child. Avoids the
+    // widget leak when the user re-pushes the same screen type.
+    void setChild(c2d::C2DObject *next);
 
     CatalogApi *api_ = nullptr;
     Main *main_ = nullptr;
+    c2d::C2DObject *child_ = nullptr; // owned — freed by setChild / dtor
     OnscreenKeyboard kb_;
 
     c2d::Text *title_ = nullptr;

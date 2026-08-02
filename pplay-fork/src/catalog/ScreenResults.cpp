@@ -91,6 +91,16 @@ ScreenResults::ScreenResults(c2d::C2DRenderer *main,
     setStatus("Завантаження…");
 }
 
+ScreenResults::~ScreenResults() {
+    // Drop any pushed child screen (ScreenContent) so it doesn't stay
+    // around as a hidden widget in `main_`'s children list.
+    if (child_ != nullptr) {
+        if (main_ != nullptr) main_->remove(child_);
+        delete child_;
+        child_ = nullptr;
+    }
+}
+
 void ScreenResults::requestPage(int page) {
     if (!api_) {
         setStatus("Backend недоступний");
@@ -144,13 +154,81 @@ void ScreenResults::requestPosterForRow(size_t rowIndex) {
     const auto &url = items_[rowIndex].poster;
     if (url.empty()) return;
     api_->loadPoster(url,
-        [this, rowIndex](bool /*ok*/, std::vector<std::uint8_t> /*bytes*/,
+        [this, rowIndex](bool ok, std::vector<std::uint8_t> bytes,
                          std::string /*ct*/, std::string /*err*/) {
             // Touching c2d textures off the UI thread is unsafe; the
-            // texture wiring lives in the UI thread tick below.
-            (void)rowIndex;
+            // texture wiring lives in the UI thread tick below. We
+            // stage the bytes + which row they belong to in members;
+            // applyPosterTexture() in onUpdate does the actual decode
+            // and Texture allocation.
+            if (!ok) {
+                posterRefresh_.store(true, std::memory_order_release);
+                return;
+            }
+            posterBytes_ = std::move(bytes);
+            pendingPosterRow_ = rowIndex;
             posterRefresh_.store(true, std::memory_order_release);
         });
+}
+
+void ScreenResults::applyPosterTexture() {
+    if (!posterRefresh_.load(std::memory_order_acquire)) return;
+    posterRefresh_.store(false, std::memory_order_release);
+
+    // Nothing to decode (e.g. failure callback without bytes) — leave
+    // the existing poster texture in place.
+    if (posterBytes_.empty()) return;
+    if (pendingPosterRow_ == displayedPosterRow_) {
+        // Same row as currently displayed; the texture is already
+        // up to date. Drop the bytes and bail.
+        posterBytes_.clear();
+        return;
+    }
+
+    // Tear down the previous texture (if any). The c2d::Texture
+    // pointer was added to `this` (a RectangleShape) by the previous
+    // applyPosterTexture call, so we have to remove it before
+    // deleting or the children list keeps a dangling pointer.
+    if (posterTex_) {
+        remove(posterTex_);
+        delete posterTex_;
+        posterTex_ = nullptr;
+    }
+
+    // c2d::Texture(buffer, size) decodes the bytes via stb_image in
+    // libcross2d. On PS4 the constructor is a no-op stub
+    // (libcross2d/source/platforms/ps4/gl_renderer_stub.cpp) so the
+    // texture is created with `available = false` and we skip
+    // adding it to the scene — the posterBox_ placeholder stays
+    // visible. This matches the existing PS4 build behavior.
+    auto *tex = new c2d::Texture(posterBytes_.data(),
+                                 static_cast<int>(posterBytes_.size()));
+    if (tex->available) {
+        const auto boxSize = posterBox_->getSize();
+        tex->setSize(boxSize);
+        // Match the placeholder's top-left so the texture lines up
+        // exactly over the box.
+        tex->setPosition(posterBox_->getPosition());
+        add(tex);
+        posterTex_ = tex;
+        displayedPosterRow_ = pendingPosterRow_;
+    } else {
+        delete tex;
+    }
+    posterBytes_.clear();
+}
+
+void ScreenResults::setChild(c2d::C2DObject *next) {
+    if (child_ == next) return;
+    if (child_ != nullptr) {
+        main_->remove(child_);
+        delete child_;
+        child_ = nullptr;
+    }
+    child_ = next;
+    if (child_ != nullptr) {
+        main_->add(child_);
+    }
 }
 
 void ScreenResults::renderRows() {
@@ -205,6 +283,12 @@ void ScreenResults::onUpdate() {
         }
     }
 
+    // Decode any poster bytes that arrived off-thread. Called every
+    // tick so we drain the queue even when the page doesn't refresh
+    // (lazy lookahead via requestPosterForRow sets the flag without
+    // changing pageFetched_).
+    applyPosterTexture();
+
     const unsigned int keys = main_->getInput()->getKeys(0);
     const int total = static_cast<int>(items_.size());
 
@@ -234,13 +318,14 @@ void ScreenResults::onUpdate() {
         // Open the focused item's content screen.
         if (selection_ >= 0 && selection_ < total) {
             const auto &it = items_[selection_];
-            auto *content = new ScreenContent(main_, it.id, it.title);
-            main_->add(content);
+            setChild(new ScreenContent(main_, it.id, it.title));
         }
     } else if (keys & c2d::Input::Key::Fire2) {
         // Back — hide; in browse mode this returns to ScreenSections,
-        // in search mode this returns to ScreenSearch. Both stay in the
-        // scene tree so popping is enough.
+        // in search mode this returns to ScreenSearch. Drop any
+        // pushed child first so it doesn't stay around as a hidden
+        // widget in `main_`'s children list.
+        setChild(nullptr);
         setVisibility(c2d::Visibility::Hidden, true);
     }
 

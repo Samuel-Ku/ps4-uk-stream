@@ -132,6 +132,13 @@ private:
     MenuMain *menu_main;
     MenuVideo *menu_video;
     pplay::Scrapper *scrapper;
+    // Catalog screens are pushed by the menu flow and from each
+    // other. We track them here so a subsequent show() / push can
+    // remove + delete the previous one instead of leaking it. The
+    // screens own their own children (Results → Content, etc.); Main
+    // only owns the top-level catalog/search screen.
+    c2d::C2DObject *catalogScreen_ = nullptr;
+    c2d::C2DObject *searchScreen_ = nullptr;
     unsigned int oldKeys = 0;
     c2d::Vector2f scaling = {1, 1};
 

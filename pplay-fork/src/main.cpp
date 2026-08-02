@@ -176,6 +176,20 @@ Main::~Main() {
     // on a cv, and any in-flight request must finish before libcurl's
     // global teardown happens in libcross2d's static destructors.
     cs::CatalogContext::set(nullptr);
+    // Drop the tracked catalog/search screens. They're also in our
+    // children list (DeleteMode::Auto will clean them up too), but
+    // clearing the pointers here keeps the relationship explicit and
+    // matches the show() site that set them.
+    if (catalogScreen_ != nullptr) {
+        remove(catalogScreen_);
+        delete catalogScreen_;
+        catalogScreen_ = nullptr;
+    }
+    if (searchScreen_ != nullptr) {
+        remove(searchScreen_);
+        delete searchScreen_;
+        searchScreen_ = nullptr;
+    }
     delete (scrapper);
     delete (config);
     delete (timer);
@@ -249,10 +263,24 @@ void Main::show(MenuType type) {
     } else if (type == MenuType::Catalog) {
         // Sections/Search/Results/Content are full v2 catalog screens
         // (plan Task 18). Sections is the first one the user sees; the
-        // other three are pushed from there.
-        Main::add(new ScreenSections(this));
+        // other three are pushed from there. Drop any previously
+        // pushed catalog screen so the children list does not grow
+        // on every menu entry.
+        if (catalogScreen_ != nullptr) {
+            remove(catalogScreen_);
+            delete catalogScreen_;
+            catalogScreen_ = nullptr;
+        }
+        catalogScreen_ = new ScreenSections(this);
+        Main::add(catalogScreen_);
     } else if (type == MenuType::Search) {
-        Main::add(new ScreenSearch(this));
+        if (searchScreen_ != nullptr) {
+            remove(searchScreen_);
+            delete searchScreen_;
+            searchScreen_ = nullptr;
+        }
+        searchScreen_ = new ScreenSearch(this);
+        Main::add(searchScreen_);
     } else {
 #ifdef __SWITCH__
         usbHsFsExit();

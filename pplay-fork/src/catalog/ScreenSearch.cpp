@@ -64,6 +64,29 @@ ScreenSearch::ScreenSearch(c2d::C2DRenderer *main)
     setStatus("Готовий");
 }
 
+ScreenSearch::~ScreenSearch() {
+    // Drop any pushed child (ScreenResults) so it doesn't stay around
+    // as a hidden widget in `main_`'s children list.
+    if (child_ != nullptr) {
+        if (main_ != nullptr) main_->remove(child_);
+        delete child_;
+        child_ = nullptr;
+    }
+}
+
+void ScreenSearch::setChild(c2d::C2DObject *next) {
+    if (child_ == next) return;
+    if (child_ != nullptr) {
+        main_->remove(child_);
+        delete child_;
+        child_ = nullptr;
+    }
+    child_ = next;
+    if (child_ != nullptr) {
+        main_->add(child_);
+    }
+}
+
 void ScreenSearch::renderKeyboard() {
     std::ostringstream oss;
     const int rows = kb_.rows();
@@ -159,7 +182,7 @@ void ScreenSearch::onUpdate() {
             // screen would otherwise refetch. The simplest correct path
             // is to let ScreenResults refetch with the same query, since
             // re-search is cheap and keeps the API uniform.
-            main_->add(results);
+            setChild(results);
         }
         return;
     }
@@ -210,7 +233,8 @@ void ScreenSearch::onUpdate() {
         // Start — submit
         if (!kb_.text().empty()) requestSearch();
     } else if (keys & c2d::Input::Key::Fire2) {
-        // B — back
+        // B — back. Drop any pushed child first.
+        setChild(nullptr);
         setVisibility(c2d::Visibility::Hidden, true);
     }
 

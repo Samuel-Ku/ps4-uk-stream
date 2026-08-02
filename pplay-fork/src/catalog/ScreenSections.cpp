@@ -81,6 +81,18 @@ ScreenSections::ScreenSections(c2d::C2DRenderer *main)
     requestSections();
 }
 
+ScreenSections::~ScreenSections() {
+    // Drop any child we pushed. Removing from main_ is a no-op if
+    // we're being destroyed because main_ itself is going away (the
+    // children list is being torn down too), but it's a real op
+    // when the user navigated back and we removed ourselves first.
+    if (child_ != nullptr) {
+        if (main_ != nullptr) main_->remove(child_);
+        delete child_;
+        child_ = nullptr;
+    }
+}
+
 void ScreenSections::requestSections() {
     if (!api_) {
         loadState_ = LoadState::Failed;
@@ -161,7 +173,20 @@ void ScreenSections::onSectionActivated() {
     if (sectionIndex_ < 0 || sectionIndex_ >= static_cast<int>(ps.sections.size())) return;
     auto *results = new ScreenResults(main_, ps.provider, ps.sections[sectionIndex_].id,
                                       /*query*/ "", ps.sections[sectionIndex_].title);
-    main_->add(results);
+    setChild(results);
+}
+
+void ScreenSections::setChild(c2d::C2DObject *next) {
+    if (child_ == next) return;
+    if (child_ != nullptr) {
+        main_->remove(child_);
+        delete child_;
+        child_ = nullptr;
+    }
+    child_ = next;
+    if (child_ != nullptr) {
+        main_->add(child_);
+    }
 }
 
 void ScreenSections::onUpdate() {
@@ -231,7 +256,10 @@ void ScreenSections::onUpdate() {
             renderLabels();
         }
     } else if (keys & c2d::Input::Key::Fire2) {
-        // Back — hide the screen, return to the main menu.
+        // Back — hide the screen, return to the main menu. Drop any
+        // pushed child first so it doesn't stay around as a hidden
+        // widget in `main_`'s children list.
+        setChild(nullptr);
         setVisibility(c2d::Visibility::Hidden, true);
     }
 

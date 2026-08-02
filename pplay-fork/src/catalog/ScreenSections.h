@@ -22,7 +22,7 @@ namespace cs {
 class ScreenSections : public c2d::RectangleShape {
 public:
     explicit ScreenSections(c2d::C2DRenderer *main);
-    ~ScreenSections() override = default;
+    ~ScreenSections() override;
 
     void onUpdate() override;
 
@@ -35,9 +35,14 @@ private:
     void onProviderChanged();
     void onSectionActivated();
     void setStatus(const std::string &s);
+    // Remove + delete the previously pushed child screen, if any,
+    // and (optionally) install `next` as the new child. Avoids the
+    // widget leak when the user re-pushes the same screen type.
+    void setChild(c2d::C2DObject *next);
 
     CatalogApi *api_ = nullptr;
     Main *main_ = nullptr;
+    c2d::C2DObject *child_ = nullptr; // owned — freed by setChild / dtor
 
     c2d::Text *title_ = nullptr;
     c2d::Text *status_ = nullptr;

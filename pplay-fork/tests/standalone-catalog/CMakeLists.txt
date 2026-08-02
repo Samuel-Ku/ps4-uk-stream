@@ -65,8 +65,18 @@ function(c2d_add_catalog_test_widget name)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
+# Static (no external deps) test — does NOT link any catalog source.
+# Used for plumbing helpers (RAII wrappers etc.) that the production
+# code can keep in an anonymous namespace without exporting.
+function(c2d_add_catalog_test_static name)
+    add_executable(${name} ${CMAKE_CURRENT_SOURCE_DIR}/../catalog/${name}.cpp)
+    target_compile_options(${name} PRIVATE -Wall -Wextra)
+    add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
 c2d_add_catalog_test(test_json)
 c2d_add_catalog_test_with_api(test_catalog_api)
 c2d_add_catalog_test_widget(test_keyboard)
 c2d_add_catalog_test_widget(test_keyboard_utf8)
 c2d_add_catalog_test_with_fake(test_catalog_api_async)
+c2d_add_catalog_test_static(test_tmp_file)
