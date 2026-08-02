@@ -43,24 +43,37 @@ public:
                   std::vector<std::uint8_t> &bytesOut,
                   std::string &contentTypeOut,
                   std::string &errorOut) override {
-        // Browser has no first-class bytes API: write_bytes streams the
-        // response body into a file, which we then slurp back into memory.
+        // Browser's write_bytes() only opens a FILE* for subsequent
+        // requests — it does NOT flush the in-memory html_response
+        // buffer to disk. So we: (1) load the body into html_response,
+        // (2) write that string to a temp file via C++ ofstream, (3)
+        // read the temp file back into bytesOut. This sidesteps the
+        // Browser::write_bytes filepipe==NULL assert on read-only FSes
+        // (HIGH review finding).
         const std::string tmp = "/tmp/cs_catalog_poster.bin";
         std::remove(tmp.c_str());
 
-        // First load the body into Browser's internal buffer…
         browser_.open_novisit(url, 12);
         if (browser_.error()) {
             errorOut = browser_.getError();
             if (errorOut.empty()) errorOut = "error_network";
             return false;
         }
-        // …then persist via write_bytes to the same handle, and read back.
-        browser_.write_bytes(tmp);
+
+        const std::string body = browser_.response();
+        {
+            std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+            if (!out) {
+                errorOut = "error_write_bytes";
+                return false;
+            }
+            out.write(body.data(), static_cast<std::streamsize>(body.size()));
+        }
 
         std::ifstream in(tmp, std::ios::binary);
         if (!in) {
             errorOut = "error_write_bytes";
+            std::remove(tmp.c_str());
             return false;
         }
         bytesOut.assign(std::istreambuf_iterator<char>(in),
@@ -70,10 +83,10 @@ public:
         // Content-Type is best-effort: pull it from the response header.
         contentTypeOut.clear();
         const std::string info = browser_.info();
-        const std::string needle = "Content-Type:";
-        auto pos = info.find(needle);
+        constexpr std::string_view kCtKey = "Content-Type:";
+        auto pos = info.find(kCtKey);
         if (pos != std::string::npos) {
-            pos += needle.size();
+            pos += kCtKey.size();
             while (pos < info.size() && (info[pos] == ' ' || info[pos] == '\t')) ++pos;
             auto end = info.find_first_of("\r\n", pos);
             contentTypeOut = info.substr(pos, end == std::string::npos
