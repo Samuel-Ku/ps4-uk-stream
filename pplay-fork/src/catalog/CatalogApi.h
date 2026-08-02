@@ -1,6 +1,10 @@
 #pragma once
 
+#include "HttpClient.h"
+
+#include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -17,15 +21,44 @@ struct SearchItem {
     std::string url;
 };
 
+struct Section {
+    std::string id;
+    std::string title;
+    std::string type;
+};
+
+struct ProviderSections {
+    std::string provider;
+    std::string name;
+    std::vector<Section> sections;
+};
+
+struct BrowseItem {
+    std::vector<SearchItem> results;
+    bool hasNext = false;
+};
+
 struct ContentItem {
     std::string id;
     std::string type;
     std::string title;
     std::string description;
     std::string poster;
+    // "content" — translations list applies to the whole item
+    // "episode" — translations live on each Episode
+    std::string translationsLevel = "content";
     std::vector<std::pair<std::string, std::string>> translations;
-    struct Episode { int number; std::string id; std::string title; };
-    struct Season { int number; std::vector<Episode> episodes; };
+    struct Episode {
+        int number = 0;
+        std::string id;
+        std::string title;
+        // Only populated when translationsLevel == "episode" (anime).
+        std::vector<std::pair<std::string, std::string>> translations;
+    };
+    struct Season {
+        int number = 0;
+        std::vector<Episode> episodes;
+    };
     std::vector<Season> seasons;
 };
 
@@ -37,22 +70,44 @@ struct StreamInfo {
 
 class CatalogApi {
 public:
-    explicit CatalogApi(std::string baseUrl);
+    // Production code wires a Browser-backed HttpClient (see
+    // BrowserHttpClient.h). Tests pass a fake. The CatalogApi owns the
+    // HttpClient exclusively and runs all calls on its worker thread.
+    CatalogApi(std::string baseUrl, std::unique_ptr<HttpClient> http);
+    ~CatalogApi();
 
+    // Disable copy: owns a worker thread.
+    CatalogApi(const CatalogApi &) = delete;
+    CatalogApi &operator=(const CatalogApi &) = delete;
+
+    // Async callbacks — all invoked on the worker thread. UI code is
+    // responsible for marshalling to its own thread (see Screen tasks).
     using SearchCb = std::function<void(bool ok, std::vector<SearchItem> results, std::string error)>;
     using ContentCb = std::function<void(bool ok, ContentItem item, std::string error)>;
     using StreamCb = std::function<void(bool ok, StreamInfo info, std::string error)>;
+    using SectionsCb = std::function<void(bool ok, std::vector<ProviderSections> providers, std::string error)>;
+    using BrowseCb = std::function<void(bool ok, BrowseItem item, std::string error)>;
+    using PosterCb = std::function<void(bool ok, std::vector<std::uint8_t> bytes,
+                                        std::string contentType, std::string error)>;
 
     void searchAsync(const std::string &query, SearchCb cb);
     void contentAsync(const std::string &id, ContentCb cb);
     void streamAsync(const std::string &id, const std::string &translation, StreamCb cb);
+    void sectionsAsync(SectionsCb cb);
+    void browseAsync(const std::string &provider, const std::string &section,
+                     int page, BrowseCb cb);
+    void loadPoster(const std::string &url, PosterCb cb);
 
+    // Pure parsing (testable without network).
     static std::vector<SearchItem> parseSearch(const std::string &raw);
     static ContentItem parseContent(const std::string &raw);
     static StreamInfo parseStream(const std::string &raw);
+    static std::vector<ProviderSections> parseSections(const std::string &raw);
+    static BrowseItem parseBrowse(const std::string &raw);
 
 private:
-    std::string baseUrl_;
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 } // namespace cs

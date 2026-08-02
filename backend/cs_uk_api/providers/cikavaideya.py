@@ -77,6 +77,9 @@ def _numeric_sort_key(label: str) -> int:
     return int(m.group(1)) if m else 0
 
 
+_SLUG_RE = re.compile(r"\d+-[a-z0-9-]+")
+
+
 def _classify_from_tags(tags_text: str) -> str:
     """Map the .th-subtitle (or content-page Жанр) text to a MediaType."""
     lower = tags_text.lower()
@@ -207,6 +210,8 @@ class CikavaIdeyaProvider(BaseProvider):
     async def content(
         self, external_id: str, http: httpx.AsyncClient
     ) -> ContentResponse:
+        if not _SLUG_RE.fullmatch(external_id):
+            raise ProviderError("not_found", f"bad external_id: {external_id!r}")
         url = f"{BASE_URL}/{external_id}.html"
         try:
             resp = await http.get(url)
@@ -287,6 +292,8 @@ class CikavaIdeyaProvider(BaseProvider):
             ext_id, _, ep_suffix = content_id.rpartition(":")
         else:
             ext_id, ep_suffix = content_id, ""
+        if not _SLUG_RE.fullmatch(ext_id):
+            raise ProviderError("not_found", f"bad external_id: {ext_id!r}")
         content_url = f"{BASE_URL}/{ext_id}.html"
         try:
             resp = await http.get(content_url)

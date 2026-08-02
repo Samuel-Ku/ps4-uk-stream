@@ -2,6 +2,7 @@
 // Created by cpasjuste on 02/10/18.
 //
 #include "main.h"
+#include "catalog/ScreenSections.h"
 #include "io.h"
 #include "filer.h"
 #include "menu_main.h"
@@ -110,6 +111,9 @@ Main::Main(const c2d::Vector2f &size) : C2DRenderer(size) {
     items.emplace_back("Usb", "usb.png", MenuItem::Position::Top);
 #endif
     items.emplace_back("Network", "network.png", MenuItem::Position::Top);
+    // Catalog UA menu entry (issue #17 — backend at OPT_CATALOG_URL).
+    // Falls back to "network.png" if "catalog.png" is missing.
+    items.emplace_back("Каталог UA", "catalog.png", MenuItem::Position::Top);
     items.emplace_back("Options", "options.png", MenuItem::Position::Top);
     items.emplace_back("Exit", "exit.png", MenuItem::Position::Bottom);
     menu_main = new MenuMain(this, {-250 * scaling.x, 0, 250 * scaling.x, Main::getSize().y}, items);
@@ -218,6 +222,14 @@ void Main::show(MenuType type) {
             usbInit();
             filer->getDir(config->getOption(OPT_UMS_DEVICE)->getString());
 #endif
+    } else if (type == MenuType::Catalog) {
+        // The placeholder screen compiles and links; the full
+        // Sections/Search/Results/Content screens are added in the
+        // next plan pass. Until then, this entry surfaces in the
+        // main menu and shows a blank screen rather than crashing.
+        // Main::add is the c2d scene-graph attachment point (no push
+        // helper on C2DRenderer).
+        Main::add(new ScreenSections(this));
     } else {
 #ifdef __SWITCH__
         usbHsFsExit();

@@ -1,0 +1,147 @@
+[
+  {
+    "id": 16380,
+    "episode": 1,
+    "title": "Enter: Naruto Uzumaki!",
+    "titleUa": "\u041d\u0430 \u0441\u0446\u0435\u043d\u0443: \u041d\u0430\u0440\u0443\u0442\u043e \u0423\u0437\u0443\u043c\u0430\u043a\u0438!",
+    "aired": "2002-10-03T00:00:00.000Z",
+    "filler": false,
+    "recap": false,
+    "translations": [
+      {
+        "id": 1167,
+        "name": "QTV",
+        "isSub": false,
+        "studios": []
+      },
+      {
+        "id": 1191,
+        "name": "QTV AI Remaster",
+        "isSub": false,
+        "studios": []
+      },
+      {
+        "id": 1640,
+        "name": "Sweet Sound Studio",
+        "isSub": false,
+        "studios": []
+      }
+    ]
+  },
+  {
+    "id": 16381,
+    "episode": 2,
+    "title": "My Name is Konohamaru!",
+    "titleUa": "\u041c\u0435\u043d\u0435 \u0437\u0432\u0430\u0442\u0438 \u041a\u043e\u043d\u043e\u0445\u0430\u043c\u0430\u0440\u0443!",
+    "aired": "2002-10-10T00:00:00.000Z",
+    "filler": false,
+    "recap": false,
+    "translations": [
+      {
+        "id": 1167,
+        "name": "QTV",
+        "isSub": false,
+        "studios": []
+      },
+      {
+        "id": 1191,
+        "name": "QTV AI Remaster",
+        "isSub": false,
+        "studios": []
+      },
+      {
+        "id": 1640,
+        "name": "Sweet Sound Studio",
+        "isSub": false,
+        "studios": []
+      }
+    ]
+  },
+  {
+    "id": 16382,
+    "episode": 3,
+    "title": "Sasuke and Sakura: Friends or Foes?",
+    "titleUa": "\u0421\u0430\u0441\u043a\u0435 \u0456 \u0421\u0430\u043a\u0443\u0440\u0430: \u0434\u0440\u0443\u0437\u0456 \u0447\u0438 \u0432\u043e\u0440\u043e\u0433\u0438?",
+    "aired": "2002-10-17T00:00:00.000Z",
+    "filler": false,
+    "recap": false,
+    "translations": [
+      {
+        "id": 1167,
+        "name": "QTV",
+        "isSub": false,
+        "studios": []
+      },
+      {
+        "id": 1191,
+        "name": "QTV AI Remaster",
+        "isSub": false,
+        "studios": []
+      },
+      {
+        "id": 1640,
+        "name": "Sweet Sound Studio",
+        "isSub": false,
+        "studios": []
+      }
+    ]
+  },
+  {
+    "id": 16383,
+    "episode": 4,
+    "title": "Pass or Fail: Survival Test",
+    "titleUa": "\u041f\u0440\u043e\u0445\u043e\u0434\u0436\u0435\u043d\u043d\u044f \u0430\u0431\u043e \u043f\u0440\u043e\u0432\u0430\u043b: \u0422\u0435\u0441\u0442 \u043d\u0430 \u0432\u0438\u0436\u0438\u0432\u0430\u043d\u043d\u044f",
+    "aired": "2002-10-24T00:00:00.000Z",
+    "filler": false,
+    "recap": false,
+    "translations": [
+      {
+        "id": 1167,
+        "name": "QTV",
+        "isSub": false,
+        "studios": []
+      },
+      {
+        "id": 1191,
+        "name": "QTV AI Remaster",
+        "isSub": false,
+        "studios": []
+      },
+      {
+        "id": 1640,
+        "name": "Sweet Sound Studio",
+        "isSub": false,
+        "studios": []
+      }
+    ]
+  },
+  {
+    "id": 16384,
+    "episode": 5,
+    "title": "You Failed! Kakashi's Final Decision",
+    "titleUa": "\u0422\u0438 \u043f\u0440\u043e\u0432\u0430\u043b\u0438\u0432\u0441\u044f! \u041e\u0441\u0442\u0430\u0442\u043e\u0447\u043d\u0435 \u0440\u0456\u0448\u0435\u043d\u043d\u044f \u041a\u0430\u043a\u0430\u0448\u0456",
+    "aired": "2002-10-31T00:00:00.000Z",
+    "filler": false,
+    "recap": false,
+    "translations": [
+      {
+        "id": 1191,
+        "name": "QTV AI Remaster",
+        "isSub": false,
+        "studios": []
+      },
+      {
+        "id": 1167,
+        "name": "QTV",
+        "isSub": false,
+        "studios": []
+      },
+      {
+        "id": 1640,
+        "name": "Sweet Sound Studio",
+        "isSub": false,
+        "studios": []
+      }
+    ]
+  }
+]

@@ -314,3 +314,40 @@ async def test_cikavaideya_content_missing_title_raises_parse_failed():
             with pytest.raises(ProviderError) as exc_info:
                 await CikavaIdeyaProvider().content("281-duelianty", http)
     assert exc_info.value.code == "parse_failed"
+
+
+@pytest.mark.asyncio
+async def test_cikavaideya_content_bad_slug_raises():
+    """Regression (HIGH #2, code-reviewer): the CikavaIdeya provider
+    string-interpolated the slug into `f"{BASE_URL}/{external_id}.html"`
+    without re-validating it. The external_id regex constrains the
+    shape to `\\d+-[a-z0-9-]+`, but content()/stream() never enforced
+    that constraint themselves — so a malformed `../admin` would
+    build `https://cikava-ideya.top/../admin.html`, a path-traversal
+    escape.
+
+    Anything that fails the slug regex must surface as `not_found`
+    BEFORE any HTTP request is made."""
+    from cs_uk_api.providers.base import ProviderError
+
+    with respx.mock(assert_all_called=False):
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await CikavaIdeyaProvider().content("../admin", http)
+    assert exc_info.value.code == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_cikavaideya_stream_bad_slug_raises():
+    """Same regression as `content`: the `stream()` partition path
+    builds `content_url` from the same unvalidated slug. An invalid
+    slug must raise `not_found` before any HTTP request is made."""
+    from cs_uk_api.providers.base import ProviderError
+
+    with respx.mock(assert_all_called=False):
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await CikavaIdeyaProvider().stream(
+                    "../admin:__movie__", None, http
+                )
+    assert exc_info.value.code == "not_found"

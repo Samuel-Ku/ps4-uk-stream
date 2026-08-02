@@ -50,6 +50,7 @@ public:
         Home,
         Network,
         Current,
+        Catalog,
 #ifdef __SWITCH__
         Usb
 #endif

@@ -209,3 +209,37 @@ async def test_ufdub_browse_unknown_section_raises():
     with respx.mock(assert_all_called=False):
         with pytest.raises(ProviderError):
             await UFDubProvider().browse("nonexistent", 1, httpx.AsyncClient())
+
+
+@pytest.mark.asyncio
+async def test_ufdub_content_bad_slug_raises():
+    """Regression (HIGH #2, code-reviewer): the UFDub provider string-
+    interpolated the slug into `f"{BASE_URL}/{kind}/{slug}.html"`
+    without re-validating it. The external_id regex constrains the
+    shape, but content()/stream() never enforced that constraint
+    themselves — so a malformed `film-../admin` would build an
+    out-of-bounds URL.
+
+    The suffix after `<kind>-` must match `\\d+-[a-z0-9-]+`. Anything
+    else surfaces as `not_found` BEFORE any HTTP request is made."""
+    from cs_uk_api.providers.base import ProviderError
+
+    with respx.mock(assert_all_called=False):
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await UFDubProvider().content("film-../admin", http)
+    assert exc_info.value.code == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_ufdub_stream_bad_slug_raises():
+    """Same regression as `content`: the `stream()` partition path
+    builds `content_url` from the same unvalidated slug. An invalid
+    slug must raise `not_found` before any HTTP request is made."""
+    from cs_uk_api.providers.base import ProviderError
+
+    with respx.mock(assert_all_called=False):
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await UFDubProvider().stream("film-../admin", None, http)
+    assert exc_info.value.code == "not_found"

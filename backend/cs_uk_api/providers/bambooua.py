@@ -66,6 +66,12 @@ MOVIE_SUFFIX = ":__movie__"
 # The upstream `playlistRegex` extracts the inline JSON manifest.
 _PLAYLIST_RE = re.compile(r"const playlist\s*=\s*(\[.*?\]);", re.DOTALL)
 
+# external_id is "<category>/<numeric-slug>" (e.g. "cinema/1159-aichaku").
+# Gate content()/stream() against values that could escape the URL path;
+# without this the caller could interpolate "../" segments upstream's
+# http client would happily follow.
+_SLUG_RE = re.compile(r"[a-z][a-z-]+/\d+-[a-z0-9_-]+")
+
 
 def _external_id_from_url(href: str) -> str:
     """Return an opaque id encoding the URL path. Content URLs have the
@@ -289,6 +295,8 @@ class BambooUAProvider(BaseProvider):
     async def content(
         self, external_id: str, http: httpx.AsyncClient
     ) -> ContentResponse:
+        if not _SLUG_RE.fullmatch(external_id):
+            raise ProviderError("not_found", "bad external_id")
         url = f"{BASE_URL}/{external_id}.html"
         try:
             resp = await http.get(url)
@@ -379,6 +387,8 @@ class BambooUAProvider(BaseProvider):
             ext_id, _, ep_suffix = content_id.rpartition(":")
         else:
             ext_id, ep_suffix = content_id, ""
+        if not _SLUG_RE.fullmatch(ext_id):
+            raise ProviderError("not_found", "bad external_id")
         url = f"{BASE_URL}/{ext_id}.html"
         try:
             resp = await http.get(url)

@@ -1,6 +1,6 @@
 if(NOT ESP_PLATFORM)
 
-cmake_minimum_required(VERSION 3.2)
+cmake_minimum_required(VERSION 3.16)
 
 project(libsmb2
         LANGUAGES C

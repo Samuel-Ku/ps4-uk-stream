@@ -5,6 +5,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 enable_testing()
 
+# CatalogApi uses std::thread / std::mutex / std::condition_variable.
+find_package(Threads REQUIRED)
+
 function(c2d_add_catalog_test name)
     add_executable(${name} ${CMAKE_CURRENT_SOURCE_DIR}/../catalog/${name}.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog/Json.cpp
@@ -29,6 +32,25 @@ function(c2d_add_catalog_test_with_api name)
         ${CMAKE_CURRENT_SOURCE_DIR}/../../external/cJSON
     )
     target_compile_options(${name} PRIVATE -Wall -Wextra)
+    target_link_libraries(${name} Threads::Threads)
+    add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
+function(c2d_add_catalog_test_with_fake name)
+    # Test file uses a FakeHttpClient (header-only) instead of Browser.
+    add_executable(${name} ${CMAKE_CURRENT_SOURCE_DIR}/../catalog/${name}.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog/Json.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog/CatalogApi.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../external/cJSON/cJSON.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/FakeHttpClient.h
+    )
+    target_include_directories(${name} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../external/cJSON
+    )
+    target_compile_options(${name} PRIVATE -Wall -Wextra)
+    target_link_libraries(${name} Threads::Threads)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
@@ -47,3 +69,4 @@ c2d_add_catalog_test(test_json)
 c2d_add_catalog_test_with_api(test_catalog_api)
 c2d_add_catalog_test_widget(test_keyboard)
 c2d_add_catalog_test_widget(test_keyboard_utf8)
+c2d_add_catalog_test_with_fake(test_catalog_api_async)

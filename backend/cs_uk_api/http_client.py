@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 import httpx
 
 from .config import SETTINGS
+from .providers.base import ProviderError
 
 _client: httpx.AsyncClient | None = None
 
@@ -13,7 +16,7 @@ def get_client() -> httpx.AsyncClient:
         _client = httpx.AsyncClient(
             timeout=httpx.Timeout(SETTINGS.upstream_timeout_s),
             headers={"User-Agent": "cs-uk-api/0.1 (+https://github.com/)"},
-            follow_redirects=True,
+            follow_redirects=False,
         )
     return _client
 
@@ -23,3 +26,41 @@ async def close_client() -> None:
     if _client is not None:
         await _client.aclose()
         _client = None
+
+
+async def safe_get(
+    http: httpx.AsyncClient,
+    url: str,
+    *,
+    allowed_hosts: set[str],
+    headers: dict[str, str] | None = None,
+    params: dict[str, str] | None = None,
+) -> httpx.Response:
+    """GET with manual redirect handling and SSRF protection.
+
+    `follow_redirects` is disabled on the shared client so redirects
+    don't silently cross to arbitrary hosts. When the upstream returns
+    a 3xx with a `Location` header, the redirect target's netloc must
+    be in `allowed_hosts`; otherwise the call raises
+    `ProviderError("not_found", ...)`. Allowed redirects are followed
+    by re-invoking the helper so the host check applies to every hop.
+    """
+    response = await http.get(
+        url, follow_redirects=False, headers=headers, params=params
+    )
+    if 300 <= response.status_code < 400:
+        location = response.headers.get("Location")
+        if location:
+            host = urlparse(location).netloc
+            if host not in allowed_hosts:
+                raise ProviderError(
+                    "not_found", f"redirect to disallowed host: {host}"
+                )
+            return await safe_get(
+                http,
+                location,
+                allowed_hosts=allowed_hosts,
+                headers=headers,
+                params=None,
+            )
+    return response

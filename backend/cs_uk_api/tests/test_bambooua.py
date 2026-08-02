@@ -236,3 +236,28 @@ async def test_bambooua_browse_unknown_section_raises():
     with respx.mock(assert_all_called=False):
         with pytest.raises(ProviderError):
             await BambooUAProvider().browse("nonexistent", 1, httpx.AsyncClient())
+
+
+@pytest.mark.asyncio
+async def test_bambooua_content_bad_external_id_raises_not_found():
+    """Regression: `content()` must reject external_ids that do not
+    match the `<category>/<numeric-slug>` regex before interpolating
+    into the URL — otherwise a caller-supplied `../../etc/passwd`
+    would escape the upstream URL path."""
+    with respx.mock(assert_all_called=False):
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await BambooUAProvider().content("../../etc/passwd", http)
+    assert exc.value.code == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_bambooua_stream_bad_content_id_raises_not_found():
+    """Regression: `stream()` strips any `s<N>e<M>` suffix and
+    rebuilds the content URL from the embedded external_id; reject
+    payload that escapes the slug charset before the first HTTP call."""
+    with respx.mock(assert_all_called=False):
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await BambooUAProvider().stream("../../etc/passwd", None, http)
+    assert exc.value.code == "not_found"

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <utility>
 #include <string>
 #include <vector>
 
@@ -16,6 +17,10 @@ public:
     int integer(const std::string &key, int fallback = 0) const;
     std::vector<JsonValue> arr(const std::string &key) const;
     std::vector<JsonValue> asArray() const;
+    // Read this node as a string (no key). Returns empty if not a string.
+    std::string str() const;
+    // Iterate object members. Each pair is (key, value). Empty if not an object.
+    std::vector<std::pair<std::string, JsonValue>> obj() const;
 private:
     cJSON *node_;
 };

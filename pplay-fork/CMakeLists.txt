@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.2)
+cmake_minimum_required(VERSION 3.16)
 #set(CMAKE_VERBOSE_MAKEFILE ON)
 
 ####################
@@ -43,6 +43,7 @@ find_package(ass REQUIRED)
 # sources
 file(GLOB PPLAY_SRC
         src/*.c*
+        src/catalog/*.c*
         src/filer/*.c*
         src/filer/Browser/*.c*
         src/filer/ftplib/*.c*
@@ -55,6 +56,7 @@ file(GLOB PPLAY_SRC
 # includes
 set(PPLAY_INC
         src
+        src/catalog
         src/filer
         src/filer/Browser
         src/filer/ftplib

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Per-provider live gate (issue #30, spec §7.1).
+# scripts/gate.sh — per-provider live gate (issue #30, spec §7.1).
 #
-# usage: gate.sh <provider> [query]   — gate one provider
-#        gate.sh --all                — gate every registered provider
+# usage:
+#   gate.sh <provider> [query]   — gate one provider
+#   gate.sh --all                — gate every registered provider
 #
 # Pipeline per provider (spec §7.1):
 #   search → content → stream → mpv plays 1 frame (GATE PASS/FAIL)
@@ -17,14 +18,30 @@
 #   ffprobe the resolved URL → codec/resolution/bitrate; anything that
 #   is not H.264 is flagged "ps4-soft-decode-risk" (mpv on PS4 decodes
 #   in software).
-set -uo pipefail
+#
+# Why `set -euo pipefail`:
+#   -e: exit on any unhandled failure (avoids running mpv on a bad URL).
+#   -u: catch unset-variable typos (PROVIDER, QUERY, PORT).
+#   -o pipefail: a failure in any pipeline segment propagates, so a
+#     silently-empty `$(curl ...)` assignment no longer masks the
+#     broken stage.
+#
+# Exit codes:
+#   0  — at least one provider passed, or all gates pass under --all.
+#   1  — GATE FAIL or all providers fail under --all.
+#   2  — missing dependency at preflight, or bad usage.
 
-usage() {
-    echo "usage: gate.sh <provider> [query] | gate.sh --all" >&2
+set -euo pipefail
+
+# --- preflight: required commands present? ---
+for c in uvicorn python3 curl mpv timeout ffprobe; do
+  if ! command -v "$c" >/dev/null 2>&1; then
+    echo "missing dep: $c" >&2
     exit 2
-}
+  fi
+done
 
-[ "$#" -ge 1 ] || usage
+[ "$#" -ge 1 ] || { echo "usage: gate.sh <provider> [query] | gate.sh --all" >&2; exit 2; }
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
@@ -34,24 +51,33 @@ PORT="${PORT:-8002}"
 BASE="http://127.0.0.1:${PORT}"
 TIMEOUT_S="${GATE_TIMEOUT_S:-40}"
 TMP="$(mktemp -d)"
-trap 'kill "${SERVER_PID:-}" 2>/dev/null || true; rm -rf "$TMP"' EXIT
+UVICORN_LOG="$TMP/uvicorn.log"
+SERVER_PID=""
+
+cleanup() {
+  if [[ -n "$SERVER_PID" ]]; then
+    kill "$SERVER_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
 
 start_server() {
-    uvicorn cs_uk_api.main:app --port "$PORT" --host 127.0.0.1 >"$TMP/uvicorn.log" 2>&1 &
+    uvicorn cs_uk_api.main:app --port "$PORT" --host 127.0.0.1 \
+        >"$UVICORN_LOG" 2>&1 &
     SERVER_PID=$!
     for _ in $(seq 1 30); do
-        if curl -fsS "$BASE/api/providers" >/dev/null 2>&1; then
+        if curl -fsS --max-time 2 "$BASE/api/providers" >/dev/null 2>&1; then
             return 0
         fi
         sleep 0.3
     done
-    echo "GATE ERROR: uvicorn did not start on :$PORT (see $TMP/uvicorn.log)" >&2
+    echo "GATE ERROR: uvicorn did not start on :$PORT (see $UVICORN_LOG)" >&2
     exit 1
 }
 
 # Headers arrive newline-joined (one "K: v" per line); render them into
 # the formats each tool wants:
-#   mpv    --http-header-fields: comma-separated list
+#   mpv    --http-header-fields: comma-separated list  (issue #38)
 #   ffprobe -headers:            newline-terminated string
 #   curl   -H:                   repeated options
 headers_mpv() {
@@ -64,7 +90,8 @@ playability_profile() {
     local hdr_args=()
     [ -n "$headers_str" ] && hdr_args=(-headers "$headers_str")
     if ffprobe -v error -print_format json -show_streams -show_format \
-        "${hdr_args[@]}" -rw_timeout 15000000 "$url" >"$TMP/ffprobe-$provider.json" 2>"$TMP/ffprobe-$provider.log"; then
+        "${hdr_args[@]}" -rw_timeout 15000000 "$url" \
+        >"$TMP/ffprobe-$provider.json" 2>"$TMP/ffprobe-$provider.log"; then
         echo "PROFILE $provider: $(python3 -m cs_uk_api.gate_tools profile "$TMP/ffprobe-$provider.json")"
     else
         echo "PROFILE $provider: ffprobe failed (stream may be transient)"
@@ -79,7 +106,9 @@ diagnose() {
     while IFS= read -r line; do
         [ -n "$line" ] && hdr_args+=(-H "$line")
     done <<< "$headers_str"
-    if curl -fsSL --max-time 15 -A "Mozilla/5.0" "${hdr_args[@]}" "$url" -o "$TMP/player-$provider.html" 2>/dev/null; then
+    if curl -fsSL --max-time 15 -A "Mozilla/5.0" "${hdr_args[@]}" "$url" \
+        -o "$TMP/player-$provider.html" 2>/dev/null; then
+        local markers
         markers=$(python3 -m cs_uk_api.gate_tools scan "$TMP/player-$provider.html")
         if [ "$markers" = "clean" ]; then
             echo "DIAG $provider: player HTML clean of JS markers — likely upstream/network issue (NOT not-portable)"
@@ -97,10 +126,15 @@ gate_one() {
     local tries=0 last_url="" last_headers=""
 
     # --- search ---
-    results=$(curl -fsS "$BASE/api/search?q=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))" "$query")&provider=$provider" 2>/dev/null) || {
+    # URL-encode the query inline so the curl URL contains the
+    # literal "api/search?q=" token that test_gate_script.py pins
+    # (alongside "api/content/" and "api/stream/"). urllib.parse.quote
+    # handles non-ASCII Cyrillic safely.
+    enc_query=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))" "$query")
+    if ! results=$(curl -fsS --max-time 30 "$BASE/api/search?q=$enc_query&provider=$provider"); then
         echo "GATE FAIL $provider: search (network or upstream)"
         return 1
-    }
+    fi
     count=$(python3 -c "import json,sys; print(len(json.loads(sys.argv[1])['results']))" "$results")
     if [ "$count" = "0" ]; then
         echo "GATE FAIL $provider: search returned 0 results"
@@ -111,20 +145,20 @@ gate_one() {
     while [ "$tries" -lt 3 ] && [ "$tries" -lt "$count" ]; do
         cid=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['results'][$tries]['id'])" "$results")
 
-        # --- content (failures advance the loop, like stream failures) ---
-        content=$(curl -fsS "$BASE/api/content/$cid" 2>/dev/null) || {
+        # --- content (failures advance the loop, like stream failures) — issue #39 ---
+        if ! content=$(curl -fsS --max-time 30 "$BASE/api/content/$cid" 2>/dev/null); then
             echo "GATE NOTE $provider: content ($cid) — trying next result"
             tries=$((tries + 1))
             continue
-        }
+        fi
         title=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['title'])" "$content")
 
         # --- stream ---
-        stream=$(curl -fsS "$BASE/api/stream/$cid" 2>/dev/null) || {
+        if ! stream=$(curl -fsS --max-time 30 "$BASE/api/stream/$cid" 2>/dev/null); then
             echo "GATE NOTE $provider: stream ($cid) — trying next result"
             tries=$((tries + 1))
             continue
-        }
+        fi
         url=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['url'])" "$stream")
         headers_str=$(python3 -c "
 import json, sys
@@ -133,11 +167,11 @@ for k, v in d.get('headers', {}).items():
     print(f'{k}: {v}')
 " "$stream")
 
-        # --- mpv gate (--http-header-fields is comma-separated) ---
-        MPV_EXTRA=()
-        [ -n "$headers_str" ] && MPV_EXTRA=(--http-header-fields="$(headers_mpv "$headers_str")")
+        # --- mpv gate (--http-header-fields is comma-separated) — issue #38 ---
+        local mpv_extra=()
+        [ -n "$headers_str" ] && mpv_extra=(--http-header-fields="$(headers_mpv "$headers_str")")
         if timeout "$TIMEOUT_S" mpv --no-config --no-video --frames=1 --msg-level=all=error \
-            "${MPV_EXTRA[@]}" "$url" >"$TMP/mpv.log" 2>&1; then
+            "${mpv_extra[@]}" "$url" >"$TMP/mpv.log" 2>&1; then
             echo "GATE PASS $provider: $title"
             playability_profile "$provider" "$url" "$headers_str"
             return 0
@@ -157,7 +191,8 @@ for k, v in d.get('headers', {}).items():
 start_server
 
 if [ "${1:-}" = "--all" ]; then
-    ids=$(curl -fsS "$BASE/api/providers" | python3 -c "import json,sys; print(' '.join(p['id'] for p in json.load(sys.stdin)))")
+    ids=$(curl -fsS "$BASE/api/providers" \
+        | python3 -c "import json,sys; print(' '.join(p['id'] for p in json.load(sys.stdin)))")
     [ -n "$ids" ] || { echo "GATE ERROR: no providers registered"; exit 1; }
     echo "Gating providers: $ids"
     rc=0

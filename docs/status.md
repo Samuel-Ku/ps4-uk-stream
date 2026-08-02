@@ -6,20 +6,44 @@ followed the plan at
 
 ## Delivered
 
-### Backend (FastAPI, Python) -- 16/16 tests passing
+### Backend (FastAPI, Python) -- 346 tests passing
 
 - `backend/cs_uk_api/` -- complete package.
-- Endpoints: `GET /api/search`, `GET /api/content/{id}`, `GET /api/stream/{id}`,
+- v1 endpoints: `GET /api/search`, `GET /api/content/{id}`, `GET /api/stream/{id}`,
   `GET /api/poster`, `GET /api/providers`, plus global logging middleware and
   error handler.
+- v2 endpoints (added for issue #17): `GET /api/sections`, `GET /api/browse`.
 - Pydantic models match the API contract in
   [`superpowers/specs/2026-08-01-ps4-uk-stream-design.md`](superpowers/specs/2026-08-01-ps4-uk-stream-design.md).
+  Includes `TranslationLevel` ("content" | "episode") for per-episode dub
+  selection (issue #9).
 - TTL cache (5m search / 30m content / 1h posters) with 12s total budget
   for `/api/search` across all providers.
-- Uakino provider: search, content (movie + series), stream -- all driven
-  by frozen HTML fixtures and `respx` mocks; no network in tests.
-- Live smoke test confirmed `/api/providers` returns the Uakino entry
-  and the validation/404 paths behave correctly.
+- Shared extractors layer (`providers/extractors.py`) for the
+  iframe / PlayerJson / regex pipeline used by v2 stream resolution.
+- **18 of 20 v2 providers landed** in `backend/cs_uk_api/providers/`
+  (issue #17). One (`banderakino`) skipped — live site offline (HTTP 522);
+  one (`banderakino` only) was non-portable. The remaining 18:
+  - `uakino`, `ufdub`, `unimay`, `kinotron`, `cikavaideya`, `hentaiukr`,
+    `bambooua`, `kinovezha`, `animeua`, `uaflix`, `coaninet`, `eneyida`,
+    `klontv`, `serialno`, `doramyworld`, `uaserialspro`, `anitubeinua`,
+    `simpsonsuatv`, `animeon`
+  - Each has its own `test_<id>.py` with 9–24 tests using `respx`-mocked
+    live-captured fixtures (no invented HTML). All providers apply
+    `re.fullmatch` slug validation at `content()` and `stream()`
+    boundaries; shared `safe_get` helper in `http_client.py` enforces
+    redirect host allowlists (SSRF defense-in-depth).
+  - Shared helpers: `extractors/regex.py` (file:/sources:/iframe regex),
+    `_tortuga.py` (Tortuga XOR-base64 decode, used by serialno +
+    kinovezha + uaserialspro), `_crypto_uaserialspro.py` (AES-256-CBC +
+    PBKDF2-HMAC-SHA512 player-config decrypt, requires `pycryptodome` dep).
+  - See [`docs/provider-triage.md`](provider-triage.md) for the full
+    per-provider status table.
+- Live gate tooling (`backend/scripts/live_gate.py`) drives
+  search → content → stream → mpv playback against the real site for
+  smoke-testing.
+- Live smoke test confirmed `/api/providers` returns all registered
+  providers and the validation/404 paths behave correctly.
 
 Run the backend:
 
@@ -118,19 +142,33 @@ should be done on a host that has both.
 
 ## Adding more providers
 
-The plan calls for 17+ providers (UAFlix, AnimeUA, KinoVezha, etc.).
-The Uakino provider is the reference implementation. To add a new
-provider:
+The v2 plan calls for 20 providers (issue #17). 18 are landed; 1 was
+skipped (Banderakino — site offline); 1 (Banderakino) was the only one
+not portable without a JS engine. The Uakino provider is the reference
+implementation. To add a new provider:
 
 1. Create `backend/cs_uk_api/providers/<id>.py` implementing `BaseProvider`
-   (`id`, `name`, `types`, `search`, `content`, `stream`).
+   (`id`, `name`, `types`, `search`, `content`, `stream`, optionally
+   `browse` and `episode_translations`).
 2. Add fixtures in `backend/cs_uk_api/tests/fixtures/<id>/` and a
-   `test_<id>.py` mirroring `test_uakino.py`.
-3. Register the provider in `backend/cs_uk_api/providers/_registry.py`
+   `test_<id>.py` mirroring `test_ufdub.py` (the most recent reference).
+   **Fixtures must be captured live via `curl -sS https://...`** —
+   spec ground rule (no invented HTML).
+3. Apply `re.fullmatch` slug validation at the start of `content()`
+   and `stream()` — pattern follows the upstream Kotlin's path grammar
+   (e.g. `r"\d+-[a-z0-9-]+"` or `r"[a-z0-9][a-z0-9-]*"`).
+4. Use `from ..http_client import safe_get` for all `http.get` calls
+   that follow URLs extracted from upstream HTML (SSRF defense — the
+   helper validates the redirect target against an `allowed_hosts` set).
+5. Use `from urllib.parse import quote` (or `quote_plus`) for any
+   query-string parameter that may contain non-ASCII or reserved chars
+   — never `.replace(' ', '+')`.
+6. Register the provider in `backend/cs_uk_api/providers/_registry.py`
    by adding a `register(NewProvider())` line.
-4. Update the spec's provider list in
-   `docs/superpowers/specs/2026-08-01-ps4-uk-stream-design.md` if any
-   scope decisions change.
+7. Update [`docs/provider-triage.md`](provider-triage.md) to flip the
+   row from `TBD` to `ready`.
+8. Smoke-test with `python -m cs_uk_api.scripts.live_gate --provider <id>`
+   to confirm the stream plays in mpv on the live site.
 
 No frontend changes are required for additional providers; the
 `CatalogApi` client only consumes the API contract.

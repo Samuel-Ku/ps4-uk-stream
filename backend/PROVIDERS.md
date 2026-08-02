@@ -57,9 +57,10 @@ accept them.
 
 ## Live gate (2026-08-01)
 
-`scripts/gate.sh` runs search → content → stream → mpv (1 frame) per
-provider and records a playability profile (codec / resolution / bitrate)
-with `ffprobe`. Results of the latest full run:
+`scripts/gate.sh <provider> [query]` is the canonical per-provider smoke test.
+It runs search → content → stream → mpv (1 frame). The table below records
+results from the latest full run; this documentation update did not re-run
+live providers.
 
 | provider    | gate | profile                          |
 |-------------|------|----------------------------------|

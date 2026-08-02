@@ -14,7 +14,6 @@ The real type is resolved authoritatively by ``/api/content`` from
 the Жанр list on the content page."""
 from __future__ import annotations
 
-import base64
 import json
 import re
 from typing import Any, cast
@@ -33,6 +32,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
+from ._tortuga import decode as _tor_decrypt
 from .base import BaseProvider, ProviderError
 
 BASE_URL = "https://kinovezha.tv"
@@ -93,6 +93,11 @@ _FILE_RE = re.compile(r"""file\s*:\s*["']([^"']+)["']""")
 # Episode-id suffix for movies (whose Player iframe is a single URL
 # rather than a season/episode map).
 MOVIE_SUFFIX = ":__movie__"
+
+# external_id is a numeric-prefixed slug (e.g. "2831-enn-droyid"). Gate
+# both content() and stream() against values that could escape the URL
+# path before interpolation.
+_SLUG_RE = re.compile(r"\d+-[a-z0-9][a-z0-9-]*")
 
 
 def _classify_from_tags(tags_text: str) -> str:
@@ -186,38 +191,6 @@ def _parse_cards(html: str, provider_id: str) -> list[SearchResult]:
     return results
 
 
-def _tor_decrypt(encoded: str) -> str | None:
-    """Resolve the obfuscated `file:` payload via the upstream
-    ``Decoder.torDecrypt`` algorithm — XOR-decode a base64 payload
-    whose first byte is the salt. The Android-side uses
-    ``android.util.Base64.DEFAULT`` (standard alphabet with padding)
-    so we mirror that.
-
-    Returns ``None`` when no branch produces a usable value so the
-    caller can surface ``parse_failed``."""
-    if not encoded:
-        return None
-    cleaned = re.sub(r"[^A-Za-z0-9+/]", "", encoded)
-    pad = len(cleaned) % 4
-    if pad > 1:
-        cleaned = cleaned + "=" * (4 - pad)
-    try:
-        decoded = base64.b64decode(cleaned, validate=False)
-    except (ValueError, base64.binascii.Error):  # type: ignore[attr-defined]
-        return None
-    if len(decoded) < 2:
-        return None
-    salt = decoded[0] & 0xFF
-    out = bytearray(len(decoded) - 1)
-    for i in range(1, len(decoded)):
-        f = (salt + 7 * (i - 1) + 13) % 256
-        out[i - 1] = decoded[i] ^ f
-    try:
-        return out.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
-
-
 def _resolve_file_value(html: str) -> str | None:
     """Pull the obfuscated `file:"…"` value out of the inline scripts on
     the player page, then run the upstream decoder. The Kotlin code
@@ -298,6 +271,8 @@ class KinoVezhaProvider(BaseProvider):
     async def content(
         self, external_id: str, http: httpx.AsyncClient
     ) -> ContentResponse:
+        if not _SLUG_RE.fullmatch(external_id):
+            raise ProviderError("not_found", "bad external_id")
         url = f"{BASE_URL}/{external_id}.html"
         try:
             resp = await http.get(url)
@@ -417,6 +392,8 @@ class KinoVezhaProvider(BaseProvider):
         else:
             ext_id = content_id
             ep_suffix = ""
+        if not _SLUG_RE.fullmatch(ext_id):
+            raise ProviderError("not_found", "bad external_id")
         content_url = f"{BASE_URL}/{ext_id}.html"
         try:
             resp = await http.get(content_url)

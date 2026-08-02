@@ -5,3 +5,4 @@ beautifulsoup4>=4.12
 lxml>=5.0
 pydantic>=2.6
 cachetools>=5.3
+pycryptodome>=3.20

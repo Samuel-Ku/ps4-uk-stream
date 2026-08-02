@@ -11,6 +11,7 @@ PPLAYConfig::PPLAYConfig(Main *main, int version)
         : Config("PPLAY", main->getIo()->getDataPath() + "pplay.cfg", version) {
 
     addOption({OPT_NETWORK, "http://samples.ffmpeg.org/"});
+    addOption({OPT_CATALOG_URL, "http://192.168.2.223:8000"});
 #ifdef __SWITCH__
     addOption({OPT_UMS_DEVICE, "ums0:/"});
 #endif
