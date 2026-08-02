@@ -19,7 +19,7 @@ using ui::kMarginX;
 using ui::kMarginY;
 using ui::kGap;
 using ui::kFocusOutline;
-using ui::scaleFocus;
+using ui::drawFocusBox;
 using ui::kKeyCellW;
 constexpr int kKeySize = kBodySize;
 } // namespace
@@ -106,14 +106,10 @@ void ScreenSearch::renderKeyboard() {
     // Pre-position cursor behind the focused cell; reset size based on the
     // widest key in the grid (some Cyrillic glyphs are wider than 64px
     // so we pad the cell). Scaled 1.05 about its center (v3 spec §5.1,
-    // issue #75).
-    float cx = startX + kbCol_ * cellW;
-    float cy = startY + kbRow_ * cellH;
-    float cw = cellW;
-    float ch = cellH;
-    scaleFocus(cx, cy, cw, ch);
-    cursor_->setPosition({cx, cy});
-    cursor_->setSize({cw, ch});
+    // issue #75; math lives in UiScale.h).
+    drawFocusBox(cursor_, {startX + kbCol_ * cellW, startY + kbRow_ * cellH,
+                           cellW, cellH},
+                 kFocusOutline);
 
     for (int r = 0; r < rows; ++r) {
         if (r > 0) oss << "\n";

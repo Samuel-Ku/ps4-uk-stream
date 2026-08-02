@@ -22,7 +22,7 @@ using ui::kMarginX;
 using ui::kMarginY;
 using ui::kGap;
 using ui::kFocusOutline;
-using ui::scaleFocus;
+using ui::drawFocusBox;
 
 } // namespace
 
@@ -152,25 +152,18 @@ void ScreenSections::renderLabels() {
     sectionList_->setString(sss.str());
 
     // Cursor placement: scaled 1.05 about its center on top of the
-    // outline (v3 spec §5.1, issue #75).
+    // outline (v3 spec §5.1, issue #75; math lives in UiScale.h).
     const float colY = providerPanel_->getPosition().y;
     const float rowH = kBodySize + 6.0f;
     if (column_ == Column::Providers) {
-        float x = kMarginX + 8;
-        float y = colY + 8 + providerIndex_ * rowH - 4;
-        float w = providerPanel_->getSize().x - 16;
-        float h = kBodySize + 8;
-        scaleFocus(x, y, w, h);
-        cursor_->setPosition({x, y});
-        cursor_->setSize({w, h});
+        drawFocusBox(cursor_, {kMarginX + 8, colY + 8 + providerIndex_ * rowH - 4,
+                               providerPanel_->getSize().x - 16, kBodySize + 8},
+                     kFocusOutline);
     } else {
-        float x = sectionPanel_->getPosition().x + 8;
-        float y = colY + 8 + sectionIndex_ * rowH - 4;
-        float w = sectionPanel_->getSize().x - 16;
-        float h = kBodySize + 8;
-        scaleFocus(x, y, w, h);
-        cursor_->setPosition({x, y});
-        cursor_->setSize({w, h});
+        drawFocusBox(cursor_, {sectionPanel_->getPosition().x + 8,
+                               colY + 8 + sectionIndex_ * rowH - 4,
+                               sectionPanel_->getSize().x - 16, kBodySize + 8},
+                     kFocusOutline);
     }
     cursor_->setVisibility(c2d::Visibility::Visible, false);
 }
