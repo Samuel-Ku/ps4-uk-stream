@@ -75,10 +75,10 @@ def test_blocked_content_returns_404_and_provider_was_called() -> None:
 
 
 def test_blocklist_cached_30min_short_circuits_second_request() -> None:
-    # Cache TTL: the blocklist store is built from SETTINGS.cache_content_s,
-    # whose default is 1800 s = 30 min. TtlCache exposes no public ttl, so
-    # assert on the private default plus the setting it was built from.
-    assert main_mod._blocklist_cache._default_ttl_s == 1800
+    # Cache TTL: the blocklist store is built from SETTINGS.cache_content_s
+    # (main.py), whose default is 1800 s = 30 min. Assert the structural
+    # invariant (cache built from the setting) plus the documented default.
+    assert main_mod._blocklist_cache._default_ttl_s == main_mod.SETTINGS.cache_content_s
     assert main_mod.SETTINGS.cache_content_s == 1800
 
     stub = _register_stub("blocked-b")

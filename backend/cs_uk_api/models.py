@@ -66,7 +66,13 @@ class StreamResponse(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
 
 
-HealthStatus = Literal["ok", "degraded", "down"]
+#: Wire status literals (v3 spec §2.1.3/§3.4) — the single source of truth:
+#: health.py imports these; no second copy of the strings exists anywhere.
+STATUS_OK = "ok"
+STATUS_DEGRADED = "degraded"
+STATUS_DOWN = "down"
+
+HealthStatus = Literal[STATUS_OK, STATUS_DEGRADED, STATUS_DOWN]
 
 
 class ProviderInfo(BaseModel):

@@ -60,10 +60,17 @@ def _disk_get(directory: str, u: str, ttl_s: int) -> tuple[bytes, str] | None:
 
 
 def _disk_put(directory: str, u: str, body: bytes, ctype: str) -> None:
-    """Best-effort atomic write (plain `<final>.tmp` + rename); never raises."""
+    """Best-effort atomic write (tmp + rename); never raises.
+
+    Naming convention: ``<final>.tmp.<pid>`` — the disk cache is
+    cross-process by design (ADR-0003), so a worker-unique pid keeps
+    concurrent ``--workers`` processes from interleaving writes into the
+    same tmp file and tearing the rename. Single-process caches may use
+    the plain ``<final>.tmp`` form.
+    """
     ext = _EXT_FOR_TYPE.get(ctype, ".jpg")
     final = os.path.join(directory, _disk_basename(u) + ext)
-    tmp = final + ".tmp"
+    tmp = final + ".tmp." + str(os.getpid())
     try:
         os.makedirs(directory, exist_ok=True)
         with open(tmp, "wb") as f:

@@ -15,15 +15,8 @@ from __future__ import annotations
 
 from collections import deque
 from datetime import UTC, datetime
-from typing import Literal
 
-HealthStatus = Literal["ok", "degraded", "down"]
-
-#: Wire status literals (v3 spec §2.1.3/§3.4) — one source of truth for the
-#: strings TRACKER emits; the same values are mirrored in models.HealthStatus.
-STATUS_OK = "ok"
-STATUS_DEGRADED = "degraded"
-STATUS_DOWN = "down"
+from .models import STATUS_DEGRADED, STATUS_DOWN, STATUS_OK, HealthStatus
 
 
 class HealthTracker:

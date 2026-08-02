@@ -50,6 +50,16 @@ _blocklist_cache = TtlCache(default_ttl_s=SETTINGS.cache_content_s)
 T = TypeVar("T")
 
 
+def _split_content_id(content_id: str) -> tuple[str, str]:
+    """Content id "provider:external" -> (provider, external).
+
+    The named accessor for the provider-by-prefix derivation shared by the
+    content and stream routes; malformed ids yield ("", "").
+    """
+    provider_id, _, external_id = content_id.partition(":")
+    return provider_id, external_id
+
+
 async def _upstream_guard(
     provider_id: str,
     coro: Awaitable[T],
@@ -214,7 +224,7 @@ async def content(content_id: str) -> ContentResponse:
     cached = _content_cache.get(cache_key)
     if cached is not None:
         return cached  # type: ignore[return-value]
-    provider_id, _, external_id = content_id.partition(":")
+    provider_id, external_id = _split_content_id(content_id)
     if provider_id not in PROVIDERS or not external_id:
         raise HTTPException(404, detail=ErrorResponse(error="not_found", message=content_id).model_dump())
     http = get_client()
@@ -237,7 +247,7 @@ async def content(content_id: str) -> ContentResponse:
 
 @app.get("/api/stream/{content_id:path}")
 async def stream(content_id: str, translation: str | None = None) -> StreamResponse:
-    provider_id, _, rest = content_id.partition(":")
+    provider_id, rest = _split_content_id(content_id)
     if provider_id not in PROVIDERS or not rest:
         raise HTTPException(404, detail=ErrorResponse(error="not_found", message=content_id).model_dump())
     provider = PROVIDERS[provider_id]
