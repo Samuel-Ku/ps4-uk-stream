@@ -44,16 +44,13 @@ echo "==> Configuring FFmpeg for PS4 (clang ${TARGET})"
 # through FFmpeg's libavformat. We only need file/HLS demuxing +
 # h264 decode, so disable these and skip the cross-compile dep chain.
 #
-# Patch FFmpeg's `os_support.h` + `network.h` to add an extra guard
-# against double-defining `socklen_t` and `sockaddr_storage`. FFmpeg's
-# own HAVE_SOCKLEN_T / HAVE_STRUCT_SOCKADDR_STORAGE config-time checks
-# return 0 under our cross-compile (clang's FreeBSD target emits these
-# as 0 because the test compilation uses a minimal sysroot stub that
-# doesn't include the FreeBSD headers), but the real FreeBSD sysroot
-# DOES define both — so we get duplicate-definition errors when
-# FFmpeg's headers are included after sys/socket.h. Adding
-# `#ifndef socklen_t` / `#ifndef sockaddr_storage` to FFmpeg's
-# typedef/struct guards resolves the collision.
+# Patch FFmpeg's `os_support.h` + `network.h` so the duplicate
+# definitions of `socklen_t` / `sockaddr_storage` disappear:
+# FFmpeg's HAVE_SOCKLEN_T / HAVE_STRUCT_SOCKADDR_STORAGE config checks
+# conclude 0 under this cross-target, while the real FreeBSD sysroot
+# headers DO provide both types — the appended
+# `&& !defined(__FreeBSD__)` makes the fallback blocks compile out on
+# this toolchain.
 sed -i 's@^#if !HAVE_SOCKLEN_T\(.*\)$@#if !HAVE_SOCKLEN_T \&\& !defined(__FreeBSD__)@' \
     libavformat/os_support.h
 sed -i 's@^#if !HAVE_STRUCT_SOCKADDR_STORAGE\(.*\)$@#if !HAVE_STRUCT_SOCKADDR_STORAGE \&\& !defined(__FreeBSD__)@' \

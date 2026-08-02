@@ -10,8 +10,8 @@
 set -euo pipefail
 # Resolve this script's absolute path so $0 stays valid even when
 # invoked via a relative path (e.g. `bash scripts/build-ps4-docker.sh`
-# from `ps4-uk-stream/`). ROOT = the directory holding pplay-fork
-# (one level above this script), so we can `cd $ROOT/pplay-fork`.
+# from `ps4-uk-stream/`). ROOT = the monorepo root (two levels above
+# this script), so we can `cd $ROOT/pplay-fork`.
 SCRIPT_PATH="$(readlink -f "$0")"
 ROOT="$(cd "$(dirname "$SCRIPT_PATH")/../.." && pwd)"
 # Allow `docker` or `podman`; default to docker, fall back to podman.

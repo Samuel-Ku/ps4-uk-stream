@@ -202,7 +202,10 @@ RUN mkdir -p /opt/oo/lib/pkgconfig && \
 # clang --target + sysroot recipe as the rest of the image; plain C
 # (no-asm) is deliberately chosen over the asm accelerated build so we
 # do not inherit FreeBSD sysroot / assembler quirks — the streams we
-# terminate are ~2 Mbps, far below what no-asm AES-GCM can do.
+# terminate are ~2 Mbps, far below what no-asm AES-GCM can do. The
+# `no-threads` knob drops OpenSSL's internal locking: fine as long as
+# we only ever make TLS calls from a single thread (the mpv network
+# path is single-threaded today); if that changes, revisit the knob.
 # Installed into its own prefix so nothing in the SDK tree is
 # overwritten; ffmpeg-ps4.sh finds it via PKG_CONFIG_PATH.
 # The bss_dgram.c sed: openssl's `#if defined(__FreeBSD__) && …`

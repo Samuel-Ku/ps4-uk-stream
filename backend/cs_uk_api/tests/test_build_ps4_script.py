@@ -69,7 +69,9 @@ def test_run_in_container_validates_and_reports() -> None:
     # readelf runs on the UNSIGNED elf (eboot.bin is a SELF container
     # the OpenOrbis readelf cannot parse).
     assert "readelf" in text
-    assert "-h" in text and "-n" in text
+    assert "-h" in text and "-S" in text
     assert "build/pplay.elf" in text
-    # paid (program auth id) per the plan's acceptance value.
+    # paid (program auth id) per the plan's acceptance value; checked
+    # in both source files and as bytes inside the signed artifact.
     assert "0x3800000000000011" in text
+    assert "to_bytes(8" in text

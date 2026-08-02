@@ -72,9 +72,27 @@ if [ "$SELF_MAGIC" != "4f153d1d" ]; then
 fi
 echo "==> readelf on build/pplay.elf (the unsigned ELF — eboot.bin is a"
 echo "    SELF container; the OpenOrbis readelf rejects SELF magic)"
-"$OO_PS4_TOOLCHAIN/bin/linux/readelf" -h -n build/pplay.elf \
+echo "==> (-S lists the .data.sce_* metadata sections; this ELF has no"
+echo "    NOTE segments — the module params are PROGBITS data, so there"
+echo "    is no decodable NID table by design)"
+"$OO_PS4_TOOLCHAIN/bin/linux/readelf" -h -S build/pplay.elf \
     | tee build/elf-readelf.txt
-echo "==> create-fself paid (program auth id) pinned in:"
-grep -n "0x3800000000000011" \
-    libcross2d/cmake/targets.cmake scripts/ps4-toolchain/pplay-create-fself.sh
+grep -q ".data.sce_module_param" build/elf-readelf.txt || {
+    echo "FAIL: .data.sce_module_param section missing from the ELF" >&2
+    exit 1
+}
+echo "==> paid (program auth id) 0x3800000000000011 pinned in both"
+grep -q "0x3800000000000011" libcross2d/cmake/targets.cmake
+grep -q "0x3800000000000011" scripts/ps4-toolchain/pplay-create-fself.sh
+echo "==> paid bytes present in the signed artifact"
+python3 -c "
+import sys
+d = open('build/eboot.bin', 'rb').read()
+needle = (0x3800000000000011).to_bytes(8, 'little')
+# The SELF auth id lives past the 64-byte ELF header block (observed at
+# offset 0x360 on 2026-08-02); scan the first 4 KiB.
+off = d[:4096].find(needle)
+print(f'paid 0x3800000000000011 found at header offset {off}')
+sys.exit(0 if off >= 0 else 1)
+" || { echo "FAIL: paid bytes not found near eboot.bin header" >&2; exit 1; }
 echo "==> OK: build/PPLA00001.pkg built and validated"
