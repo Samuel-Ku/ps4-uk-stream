@@ -5,7 +5,7 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
-from typing import Awaitable, Callable, TypeVar
+from typing import Awaitable, Callable, TypeVar, cast
 from urllib.parse import unquote
 
 import httpx
@@ -52,6 +52,12 @@ _blocklist_cache = TtlCache(default_ttl_s=SETTINGS.cache_content_s)
 
 T = TypeVar("T")
 
+# Sentinel for ``_upstream_guard(..., on_error=...)``: distinguishes the
+# parameter's "no default provided" state from a legitimate ``None`` default.
+# Callers that want to degrade to None on upstream failure must pass
+# ``on_error=None`` explicitly; omitting the kwarg means "raise 502".
+_UNSET: object = object()
+
 
 def _split_content_id(content_id: str) -> tuple[str, str]:
     """Content id "provider:external" -> (provider, external).
@@ -68,21 +74,27 @@ async def _upstream_guard(
     coro: Awaitable[T],
     log_label: str,
     *,
-    on_error: T | None = None,
+    on_error: T | object = _UNSET,
     exc_handler: Callable[[Exception], None] | None = None,
 ) -> T:
     """Await an upstream provider call with health recording + the 502 guard.
 
     The record+log+raise(502) pattern shared by every upstream try/except
-    site lives here and nowhere else:
-      - success -> ``TRACKER.record(provider_id, ok=True)`` and the result;
-      - failure -> ``TRACKER.record(provider_id, ok=False)`` + a warning
-        log, then either return ``on_error`` (search degrades one provider
-        to ``[]``) or raise the canonical 502 ``upstream_unreachable``;
-      - ``exc_handler`` runs first on failure, so a call site can translate
-        client-side errors (stream's invalid_translation / translation_missing
-        ProviderError codes) into their own HTTP statuses — those propagate
-        untouched because they are raised before any recording.
+    site lives here and nowhere else. The failure path runs in this order:
+
+      1. ``exc_handler(e)`` — if provided, runs first. It either raises
+         (translating the upstream error into a client-side response such
+         as 400/404) or returns. The helper does NOT record when the
+         handler raises; translation-level errors are not upstream-health
+         signals.
+      2. ``TRACKER.record(provider_id, ok=False)`` + warning log.
+      3. Either return ``on_error`` (when an explicit default was passed)
+         or raise the canonical 502 ``upstream_unreachable``.
+
+    ``on_error`` uses the ``_UNSET`` sentinel (NOT ``None``) as its
+    default, so callers can distinguish "no default" (raises 502) from
+    "degrade to None" (returns None). Pass ``on_error=None`` explicitly
+    when the degraded value legitimately is None.
     """
     try:
         result = await coro
@@ -91,9 +103,12 @@ async def _upstream_guard(
             exc_handler(e)
         TRACKER.record(provider_id, ok=False)
         log.warning("%s failed provider=%s err=%s", log_label, provider_id, e)
-        if on_error is not None:
-            return on_error
-        raise HTTPException(502, detail=ErrorResponse(error="upstream_unreachable", message=str(e)).model_dump()) from e
+        if on_error is _UNSET:
+            raise HTTPException(502, detail=ErrorResponse(error="upstream_unreachable", message=str(e)).model_dump()) from e
+        # The sentinel check above guarantees this is a real T (the caller
+        # passed an explicit default), but mypy cannot narrow ``T | object``
+        # to ``T`` from ``is not _UNSET`` alone.
+        return cast(T, on_error)
     TRACKER.record(provider_id, ok=True)
     return result
 
