@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from cs_uk_api.main import app
+import cs_uk_api.uakino_browser as uakino_browser
 
 client = TestClient(app)
 
@@ -118,3 +119,30 @@ def test_content_route_accepts_slash_in_content_id(monkeypatch):
         assert seen == ["dorama/722-story-of-kunning-palace"]
     finally:
         del PROVIDERS["slash-test"]
+
+
+def test_lifespan_closes_uakino_session():
+    """Regression: `UakinoSession` is lazily created on first request,
+    so the FastAPI lifespan shutdown must close it. Without this hook
+    SIGTERM orphans the headless Chromium child process.
+
+    Stub the module-level factory before the TestClient enters/exits
+    `with` so the on-exit lifespan handler invokes our close hook.
+    """
+    closes: list[None] = []
+
+    class _StubSession:
+        def __init__(self) -> None:
+            self._browser = object()
+
+        async def close(self) -> None:
+            closes.append(None)
+
+    saved = uakino_browser._session
+    uakino_browser._session = _StubSession()  # type: ignore[assignment]
+    try:
+        with TestClient(app) as tc:
+            tc.get("/api/providers")
+    finally:
+        uakino_browser._session = saved
+    assert closes == [None]

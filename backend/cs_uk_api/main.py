@@ -24,6 +24,7 @@ from .models import (
 from .poster_proxy import fetch as fetch_poster
 from .providers import PROVIDERS  # noqa: F401  (import for side effects)
 from .providers.base import ProviderError
+from .uakino_browser import get_session
 import cs_uk_api.providers._registry  # noqa: F401
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -37,6 +38,11 @@ _browse_cache = TtlCache(default_ttl_s=SETTINGS.cache_search_s)
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     yield
+    # The uakino browser session is lazily created on first request and
+    # runs a headless Chromium; close it on shutdown so SIGTERM doesn't
+    # orphan the browser process. `close()` is a no-op when the session
+    # was never started.
+    await get_session().close()
     await close_client()
 
 

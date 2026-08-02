@@ -4,11 +4,12 @@ import json
 import re
 import time
 from typing import TypedDict
-from urllib.parse import quote, urlencode, urljoin
+from urllib.parse import quote, urlencode, urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
 
+from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -20,6 +21,12 @@ from ..models import (
 )
 from ..uakino_browser import _UA, BASE_URL, UakinoSessionProtocol, get_session
 from .base import BaseProvider, ProviderError
+
+# ashdi.vip serves the playlist page; m3u8 manifests and segment URLs
+# stay on the same host. The host allowlist refuses SSRF pivots at the
+# Shared-IP boundary — uakino.best is reachable only through the
+# headless browser session, never via httpx.
+_STREAM_ALLOWED_HOSTS: frozenset[str] = frozenset({"ashdi.vip"})
 
 # Sections exposed by Uakino's new-theme navigation. The /animeukr URL is
 # the anime sub-site (Ukrainian-dubbed anime). Section ids are stable;
@@ -377,8 +384,10 @@ class UakinoProvider(BaseProvider):
 
         stream_page_url = str(chosen["file"])
         try:
-            resp = await http.get(
+            resp = await safe_get(
+                http,
                 stream_page_url,
+                allowed_hosts=set(_STREAM_ALLOWED_HOSTS),
                 headers={
                     "User-Agent": _DESKTOP_UA,
                     "Referer": f"{BASE_URL}/",
@@ -387,6 +396,8 @@ class UakinoProvider(BaseProvider):
             )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
+        if resp.url.host not in _STREAM_ALLOWED_HOSTS:
+            raise ProviderError("not_found", "unexpected upstream host")
         if resp.status_code != 200:
             raise ProviderError("not_found", f"stream page status {resp.status_code}")
 
@@ -396,6 +407,11 @@ class UakinoProvider(BaseProvider):
         )
         if m3u8_url is None:
             raise ProviderError("parse_failed", "no m3u8 link in stream page")
+        # The m3u8 URL is content we hand to the LAN client. Reject
+        # anything outside the ashdi.vip host so a hostile stream page
+        # can't redirect the PS4 into an internal address.
+        if urlparse(m3u8_url).netloc not in _STREAM_ALLOWED_HOSTS:
+            raise ProviderError("not_found", "m3u8 host not in allowlist")
         return StreamResponse(
             url=m3u8_url,
             type="m3u8",
@@ -406,10 +422,22 @@ class UakinoProvider(BaseProvider):
         self, section: str, page: int, http: httpx.AsyncClient
     ) -> tuple[list[SearchResult], bool]:
         html = await self._fetch(_section_url(section, page))
-        has_next = any(
-            m and int(m.group(1)) > page
-            for m in (
-                re.search(r"/page/(\d+)/", href) for href in re.findall(r'href="([^"]*)"', html)
-            )
-        )
+        # Host-fence the pagination discovery: only `/page/N/` anchors
+        # that point at uakino.best count as next-page evidence. The
+        # raw `href` regex would match cross-site links (e.g. a
+        # commenter's signature linking to `evil.com/page/2/`) and
+        # incorrectly mark `has_next=True`.
+        soup = BeautifulSoup(html, "lxml")
+        base_host = urlparse(BASE_URL).netloc
+        has_next = False
+        for a in soup.select("a[href*='/page/']"):
+            href = str(a.get("href") or "")
+            if urlparse(href).netloc not in (base_host, ""):
+                parsed = urlparse(urljoin(BASE_URL, href))
+                if parsed.netloc != base_host:
+                    continue
+            m = re.search(r"/page/(\d+)/", href)
+            if m and int(m.group(1)) > page:
+                has_next = True
+                break
         return _parse_cards(html), has_next

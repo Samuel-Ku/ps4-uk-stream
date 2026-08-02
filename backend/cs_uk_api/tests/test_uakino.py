@@ -236,6 +236,55 @@ async def test_uakino_stream_bad_content_id_raises_not_found():
     assert exc.value.code == "not_found"
 
 
+@pytest.mark.asyncio
+async def test_uakino_stream_rejects_off_allowlist_stream_page():
+    """Regression: the stream page URL must be fetched via safe_get with
+    the ashdi.vip host allowlist. A playlist whose `data-file` points
+    off-host cannot pivot the backend into a fresh SSRF surface."""
+    import json
+
+    from urllib.parse import quote
+
+    payload = json.dumps(
+        {
+            "success": True,
+            "response": (
+                '<div class="playlists-videos"><ul>'
+                '<li data-file="https://evil.com/vod/1" data-voice="Uk">Uk</li>'
+                "</ul></div>"
+            ),
+        }
+    )
+    session = FakeSession(
+        **{f"/engine/ajax/playlists.php?news_id={quote('99999')}&xfield=playlist&time=": (200, payload)}
+    )
+    with respx.mock(assert_all_called=False):
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(Exception):
+                await _provider(session).stream("99999", None, http)
+
+
+@pytest.mark.asyncio
+async def test_uakino_stream_rejects_off_allowlist_m3u8():
+    """Regression: the m3u8 URL extracted from the stream page must
+    stay on ashdi.vip — a hostile stream page cannot redirect the PS4
+    to an internal address."""
+    stream_page_html = (
+        "<html><body><script>"
+        "file:'https://evil.example/internal.m3u8'"
+        "</script></body></html>"
+    )
+    session = FakeSession(
+        **{"/engine/ajax/playlists.php": (200, _fixture("playlists_movie.json"))}
+    )
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ashdi.vip/vod/89434").respond(200, text=stream_page_html)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await _provider(session).stream("filmy:12567-dyuna", None, http)
+    assert exc.value.code == "not_found"
+
+
 # --------------------------------------------------------------------------
 # browse()
 # --------------------------------------------------------------------------
@@ -261,3 +310,22 @@ async def test_uakino_browse_unknown_section_raises():
         await UakinoProvider(session=FakeSession()).browse(
             "nonexistent", 1, httpx.AsyncClient()
         )
+
+
+@pytest.mark.asyncio
+async def test_uakino_browse_ignores_cross_site_pagination_links():
+    """Regression: pagination discovery must be host-scoped to
+    uakino.best. A page that contains a hostile `<a href="https://evil.com/page/2/">`
+    link must not flip `has_next` to True. The previous regex matched
+    any `href` containing `/page/N/`, so a single cross-site link
+    would force a phantom next page."""
+    from cs_uk_api.providers.uakino import UAKINO_SECTIONS
+
+    filmy_id = UAKINO_SECTIONS[0].id
+    session = FakeSession(
+        **{"/filmy/": (200, _fixture("browse_filmy_evil_pagination.html"))}
+    )
+    async with httpx.AsyncClient() as http:
+        results, has_next = await _provider(session).browse(filmy_id, 1, http)
+    assert has_next is False
+    assert len(results) == 1
