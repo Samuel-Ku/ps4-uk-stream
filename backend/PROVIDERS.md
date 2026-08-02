@@ -86,7 +86,7 @@ live providers.
 | hentaiukr   | ✅   | **hevc** 1280x720 — ⚠️ ps4-soft-decode-risk |
 | bambooua    | ✅   | h264 1920x960                    |
 | kinovezha   | ✅   | h264 1920x804                    |
-| uakino      | ⚠️   | FAIL — site moved to uakino.best behind Cloudflare (upstream, not portability) |
+| uakino      | ⛔   | known-broken — upstream moved to uakino.best: content/player pages 403 behind Cloudflare Turnstile, new DLE theme (all adapter selectors dead), search via POST only; not portable without a JS engine (research: `docs/research/uakino-reachability-2026-08-02.md`) |
 
 Gate queries: the default `Дюна` no longer matches upstream catalogs
 that rotated their listings (cikavaideya, hentaiukr, bambooua) — their

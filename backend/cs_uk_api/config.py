@@ -22,6 +22,7 @@ DEFAULT_POSTER_ALLOWED_HOSTS: tuple[str, ...] = (
     "serialno.tv",
     "simpsonsua.tv",
     "uafix.net",
+    "uakino.best",
     "uakino.club",
     "uaserials.com",
     "ufdub.com",

@@ -68,6 +68,7 @@ def test_default_allowlist_covers_provider_domains():
         "serialno.tv",
         "simpsonsua.tv",
         "uafix.net",
+        "uakino.best",
         "uakino.club",
         "uaserials.com",
         "ufdub.com",

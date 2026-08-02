@@ -168,7 +168,12 @@ should be done on a host that has both.
 The v2 plan calls for 20 providers (issue #17). 19 are landed; 1 was
 skipped (Banderakino — site offline, and the only one not portable
 without a JS engine). The Uakino provider is the reference
-implementation. To add a new provider:
+implementation — note: its live upstream moved to `uakino.best`
+(content/player pages are behind a Cloudflare Turnstile challenge, the
+site runs a new DLE theme), so the live gate cannot pass; fixture tests
+remain green. See
+[`docs/research/uakino-reachability-2026-08-02.md`](research/uakino-reachability-2026-08-02.md).
+To add a new provider:
 
 1. Create `backend/cs_uk_api/providers/<id>.py` implementing `BaseProvider`
    (`id`, `name`, `types`, `search`, `content`, `stream`, optionally
