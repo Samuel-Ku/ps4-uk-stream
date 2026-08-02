@@ -140,7 +140,10 @@ void CatalogApi::searchAsync(const std::string &query, SearchCb cb) {
 
 void CatalogApi::contentAsync(const std::string &id, ContentCb cb) {
     impl_->post([this, id, cb = std::move(cb)]() {
-        std::string url = impl_->base() + "/api/content?id=" + urlEncode(id);
+        // Backend exposes /api/content/{content_id:path} (path param,
+        // not a query string). urlEncode() percent-encodes ':' and '/'
+        // in the id, which Starlette decodes back before matching.
+        std::string url = impl_->base() + "/api/content/" + urlEncode(id);
         impl_->httpGet(url, [cb](bool ok, std::string body, std::string err) {
             if (!ok) { cb(false, {}, std::move(err)); return; }
             cb(true, parseContent(body), {});
@@ -150,8 +153,12 @@ void CatalogApi::contentAsync(const std::string &id, ContentCb cb) {
 
 void CatalogApi::streamAsync(const std::string &id, const std::string &translation, StreamCb cb) {
     impl_->post([this, id, translation, cb = std::move(cb)]() {
-        std::string url = impl_->base() + "/api/stream?id=" + urlEncode(id)
-                         + "&translation=" + urlEncode(translation);
+        // /api/stream/{content_id:path}; translation stays a query
+        // param because backend main.py defines it that way.
+        std::string url = impl_->base() + "/api/stream/" + urlEncode(id);
+        if (!translation.empty()) {
+            url += "?translation=" + urlEncode(translation);
+        }
         impl_->httpGet(url, [cb](bool ok, std::string body, std::string err) {
             if (!ok) { cb(false, {}, std::move(err)); return; }
             cb(true, parseStream(body), {});

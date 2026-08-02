@@ -276,6 +276,53 @@ int main() {
         CHECK_EQ(order.size(), 10u);
     }
 
+    // ----- URL contract: /api/content/{id} is a path param, not a query string -----
+    // Backend main.py:140 exposes "@app.get('/api/content/{content_id:path}')".
+    // The previous C++ builder used "/api/content?id=..." which 404s in
+    // production. This test pins the path-param shape via FakeHttpClient.lastUrl.
+    // `fake` is std::move()d into CatalogApi; we keep a raw pointer to it
+    // for the post-call assertion (raw pointer remains valid until the
+    // owning api goes out of scope).
+    {
+        auto fake_owned = std::make_unique<FakeHttpClient>();
+        FakeHttpClient *fake = fake_owned.get();
+        fake->set("/api/content", R"({"id":"uakino:film-x","type":"movie","title":"","description":"","poster":"","translations":[],"seasons":[]})");
+        CatalogApi api(kBase, std::move(fake_owned));
+        Wait w;
+        api.contentAsync("uakino:film-x", [&](bool, ContentItem, std::string) { w.fire(); });
+        w.wait();
+        CHECK_EQ(fake->lastUrl(),
+                 std::string(kBase) + "/api/content/uakino%3Afilm-x");
+    }
+
+    // ----- URL contract: /api/stream/{id}?translation=... -----
+    {
+        auto fake_owned = std::make_unique<FakeHttpClient>();
+        FakeHttpClient *fake = fake_owned.get();
+        fake->set("/api/stream", R"({"url":"https://cdn/x.m3u8","type":"m3u8","headers":{}})");
+        CatalogApi api(kBase, std::move(fake_owned));
+        Wait w;
+        api.streamAsync("uakino:film-x", "uk",
+                        [&](bool, StreamInfo, std::string) { w.fire(); });
+        w.wait();
+        CHECK_EQ(fake->lastUrl(),
+                 std::string(kBase) + "/api/stream/uakino%3Afilm-x?translation=uk");
+    }
+
+    // ----- URL contract: /api/stream/{id} without translation omits the query -----
+    {
+        auto fake_owned = std::make_unique<FakeHttpClient>();
+        FakeHttpClient *fake = fake_owned.get();
+        fake->set("/api/stream", R"({"url":"https://cdn/x.m3u8","type":"m3u8","headers":{}})");
+        CatalogApi api(kBase, std::move(fake_owned));
+        Wait w;
+        api.streamAsync("uakino:film-x", "",
+                        [&](bool, StreamInfo, std::string) { w.fire(); });
+        w.wait();
+        CHECK_EQ(fake->lastUrl(),
+                 std::string(kBase) + "/api/stream/uakino%3Afilm-x");
+    }
+
     // ----- Destruction safety: post a job then destruct immediately -----
     {
         auto fake = std::make_unique<FakeHttpClient>();

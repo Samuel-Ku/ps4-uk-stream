@@ -31,9 +31,14 @@ public:
         errors_[urlPrefix] = error;
     }
     int getCount() const { return getCount_; }
+    // Last URL passed to get() — tests use this to assert the C++
+    // builder hits the exact endpoint the backend expects (e.g.
+    // "/api/content/<urlencoded-id>" rather than "?id=...").
+    std::string lastUrl() const { return lastUrl_; }
 
     std::string get(const std::string &url, std::string &errorOut) override {
         ++getCount_;
+        lastUrl_ = url;
         const std::string *best = longestMatch(url, routes_);
         if (!best) {
             // Empty errorOut is the convention used by CatalogApi to
@@ -83,6 +88,7 @@ private:
     std::map<std::string, std::pair<std::vector<std::uint8_t>, std::string>> bytes_;
     std::map<std::string, std::string> errors_;
     int getCount_ = 0;
+    std::string lastUrl_;
 };
 
 } // namespace cs_test
