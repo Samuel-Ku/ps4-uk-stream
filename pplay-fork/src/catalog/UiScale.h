@@ -19,9 +19,22 @@ constexpr float kMarginY = 54.0f;
 // Inner spacing between panels/widgets (not screen-edge margins).
 constexpr float kGap = 16.0f;
 
-// Focus highlight: thick outline + filled wash (spec allows outline OR
-// scale-1.05; outline chosen for text-list screens).
+// Focus highlight: thick outline + filled wash + a 1.05 center-anchored
+// scale (v3 spec §5.1 requires BOTH the outline and the scale).
 constexpr float kFocusOutline = 3.0f;
+constexpr float kFocusScale = 1.05f;
+
+// Center-anchored focus scale: grows the box (x, y, w, h) by kFocusScale
+// about its center, in place. Scaling about the center is what makes the
+// focus "no-jump" — the element enlarges rather than shifting.
+inline void scaleFocus(float &x, float &y, float &w, float &h) {
+    const float sw = w * kFocusScale;
+    const float sh = h * kFocusScale;
+    x += (w - sw) / 2.0f;
+    y += (h - sh) / 2.0f;
+    w = sw;
+    h = sh;
+}
 
 // Results rows and poster thumbnails.
 constexpr float kRowHeight = 72.0f;      // list row stride

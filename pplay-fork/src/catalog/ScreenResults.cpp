@@ -19,6 +19,7 @@ using ui::kMarginX;
 using ui::kMarginY;
 using ui::kGap;
 using ui::kFocusOutline;
+using ui::scaleFocus;
 using ui::kRowHeight;
 constexpr int kPosterLazyLookahead = 2;
 } // namespace
@@ -250,8 +251,15 @@ void ScreenResults::renderRows() {
 
     const float rowsX = rowsText_->getPosition().x;
     const float posterY = posterBox_->getPosition().y;
-    cursor_->setPosition({rowsX - 4, posterY + selection_ * kRowHeight});
-    cursor_->setSize({rowsText_->getSize().x + 8, kRowHeight});
+    // Cursor scaled 1.05 about its center on top of the outline
+    // (v3 spec §5.1, issue #75).
+    float x = rowsX - 4;
+    float y = posterY + selection_ * kRowHeight;
+    float w = rowsText_->getSize().x + 8;
+    float h = kRowHeight;
+    scaleFocus(x, y, w, h);
+    cursor_->setPosition({x, y});
+    cursor_->setSize({w, h});
 
     // Right-side poster placeholder metadata.
     if (selection_ >= 0 && selection_ < static_cast<int>(items_.size())) {

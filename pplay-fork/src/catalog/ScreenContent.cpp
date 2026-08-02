@@ -25,6 +25,7 @@ using ui::kTitleSize;
 using ui::kMarginX;
 using ui::kMarginY;
 using ui::kFocusOutline;
+using ui::scaleFocus;
 constexpr size_t kDescMaxChars = 320;
 
 const char *typeLabel(const std::string &type) {
@@ -197,8 +198,15 @@ void ScreenContent::renderAll() {
     episodesLabel_->setString(e.str());
 
     const float epY = episodesLabel_->getPosition().y;
-    cursor_->setPosition({kMarginX - 4, epY + episodeIndex_ * (kBodySize + 4)});
-    cursor_->setSize({episodesLabel_->getSize().x + 8, kBodySize + 4});
+    // Cursor scaled 1.05 about its center on top of the outline
+    // (v3 spec §5.1, issue #75).
+    float x = kMarginX - 4;
+    float y = epY + episodeIndex_ * (kBodySize + 4);
+    float w = episodesLabel_->getSize().x + 8;
+    float h = kBodySize + 4;
+    scaleFocus(x, y, w, h);
+    cursor_->setPosition({x, y});
+    cursor_->setSize({w, h});
 }
 
 void ScreenContent::playEpisode(int seasonIdx, int epIdx, const std::string &translationId) {
