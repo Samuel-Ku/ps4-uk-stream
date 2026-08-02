@@ -8,7 +8,11 @@ instead of being emulated.
 
 ## Registry
 
-All eight adapters are registered and surfaced via `GET /api/providers`:
+All 19 adapters are registered and surfaced via `GET /api/providers`
+(verified by `tests/test_registry.py` — every provider module must be
+registered). The table below details the first eight with
+streaming-shape notes; the remaining eleven follow. Full per-provider
+status: [`docs/provider-triage.md`](../docs/provider-triage.md).
 
 | id          | site                          | sections                             | stream format |
 |-------------|-------------------------------|--------------------------------------|---------------|
@@ -20,6 +24,17 @@ All eight adapters are registered and surfaced via `GET /api/providers`:
 | hentaiukr   | hentaiukr.com                 | hentai                              | mp4           |
 | bambooua    | bambooua.com                  | cinema, dorama, anime, lakorn, voice, tv-show, done, world-bl, now | mp4 |
 | kinovezha   | kinovezha.tv                 | films, series, cartoons, s-cartoons  | m3u8          |
+| uaflix      | uafix.net                     | filmy, serialy, doramy, cartoons, multserialy, anime | mp4 |
+| animeua     | animeua.club                  | page, film, anime, ona, ova          | m3u8          |
+| coaninet    | coani.net (API)               | films, series                        | m3u8          |
+| klontv      | klon.fun                      | films, series                        | m3u8          |
+| serialno    | serialno.tv                   | series                               | m3u8          |
+| doramyworld | doramy.world                  | film, dorama, show                   | m3u8          |
+| eneyida     | eneyida.tv                    | films, series                        | m3u8          |
+| anitubeinua | anitube.in.ua                 | page                                 | m3u8          |
+| simpsonsuatv| simpsonsua.tv                 | updates, page                        | m3u8          |
+| animeon     | animeon.club                  | seasons, popular, page               | m3u8          |
+| uaserialspro| uaserials.com                 | films, series, fcartoon, cartoons, anime, exclusive | m3u8 |
 
 ## Streaming shape
 

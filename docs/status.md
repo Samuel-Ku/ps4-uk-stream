@@ -6,7 +6,7 @@ followed the plan at
 
 ## Delivered
 
-### Backend (FastAPI, Python) -- 346 tests passing
+### Backend (FastAPI, Python) -- 362 tests passing
 
 - `backend/cs_uk_api/` -- complete package.
 - v1 endpoints: `GET /api/search`, `GET /api/content/{id}`, `GET /api/stream/{id}`,
@@ -21,9 +21,9 @@ followed the plan at
   for `/api/search` across all providers.
 - Shared extractors layer (`providers/extractors.py`) for the
   iframe / PlayerJson / regex pipeline used by v2 stream resolution.
-- **18 of 20 v2 providers landed** in `backend/cs_uk_api/providers/`
-  (issue #17). One (`banderakino`) skipped — live site offline (HTTP 522);
-  one (`banderakino` only) was non-portable. The remaining 18:
+- **19 of 20 v2 providers landed** in `backend/cs_uk_api/providers/`
+  (issue #17). One skipped — `banderakino`, live site offline (HTTP 522)
+  and the only provider not portable without a JS engine. The registered 19:
   - `uakino`, `ufdub`, `unimay`, `kinotron`, `cikavaideya`, `hentaiukr`,
     `bambooua`, `kinovezha`, `animeua`, `uaflix`, `coaninet`, `eneyida`,
     `klontv`, `serialno`, `doramyworld`, `uaserialspro`, `anitubeinua`,
@@ -66,8 +66,10 @@ cd backend && . .venv/bin/activate && pytest cs_uk_api/tests -v
   `JsonDoc::parse`, `JsonValue::str`, `integer`, `arr`, `asArray`.
 - `pplay-fork/src/catalog/CatalogApi.{h,cpp}` -- DTOs (`SearchItem`,
   `ContentItem`, `StreamInfo`) and pure parsing functions
-  (`parseSearch`, `parseContent`, `parseStream`); the async network
-  methods are stubs pending Task 13.
+  (`parseSearch`, `parseContent`, `parseStream`); the network
+  methods call through an injected `HttpClient` interface (tests pass a
+  fake; the real `BrowserHttpClient` wire-up was deferred at plan time
+  and landed in Task 18).
 - `pplay-fork/src/catalog/OnscreenKeyboard.{h,cpp}` -- UTF-8 aware
   on-screen keyboard widget with focus grid, `append(char32_t)`,
   `backspace()`, `clear()`, and action keys (`space`, `back`, `clear`,
@@ -127,11 +129,11 @@ These tasks are part of the plan but require the full pPlay tree
 (libcross2d/SDL2/ffmpeg/mpv) and/or the OpenOrbis toolchain. They
 should be done on a host that has both.
 
-- **Task 16 -- End-to-end PS4 PKG build.** Run
+- **Task 19 -- End-to-end PS4 PKG build.** Run
   `./pplay-fork/scripts/build-ps4-docker.sh` on a Linux host with real
   Docker. Verify `pplay-fork/build/PPLA00001.pkg` exists, has the
   expected PKG magic, and is accepted by GoldHEN on the PS4.
-- **Task 17 -- On-console test.** Install the PKG, fill in
+- **Task 20 -- On-console test.** Install the PKG, fill in
   [`docs/ps4-test-report.md`](ps4-test-report.md), and tick the
   checklist.
 
@@ -150,22 +152,22 @@ should be done on a host that has both.
 
   Linux build: `cmake --build build-linux --target pplay` → OK
   (ELF 64-bit produced). Standalone ctest: 3/3 pass. Backend pytest:
-  346/346 pass.
+  362/362 pass.
 
 - **Task 19 (syntactic verification only, see above).** Scripts and
   Dockerfile validated; final Docker-based PS4 PKG build still needs
-  a host with Docker + the OpenOrbis toolchain (see Task 16 above).
+  a host with Docker + the OpenOrbis toolchain (see Task 19 above).
 
 - **Task 20 (done).** [`docs/ps4-test-report.md`](ps4-test-report.md)
   updated with the new "Пошук UA" menu entry, search → results →
-  content → play happy-path checklist, and Provider/Translation
-  matrices for the 18 v2 providers.
+  content → play happy-path   checklist, and Provider/Translation
+  matrices for the 19 v2 providers.
 
 ## Adding more providers
 
-The v2 plan calls for 20 providers (issue #17). 18 are landed; 1 was
-skipped (Banderakino — site offline); 1 (Banderakino) was the only one
-not portable without a JS engine. The Uakino provider is the reference
+The v2 plan calls for 20 providers (issue #17). 19 are landed; 1 was
+skipped (Banderakino — site offline, and the only one not portable
+without a JS engine). The Uakino provider is the reference
 implementation. To add a new provider:
 
 1. Create `backend/cs_uk_api/providers/<id>.py` implementing `BaseProvider`
