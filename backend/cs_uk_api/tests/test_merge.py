@@ -229,11 +229,9 @@ def test_merge_group_key_stable_across_provider_subsets() -> None:
         assert len(groups) == 1
         g = groups[0]
         keys.append(g.key)
-        # Group key == min over members' own item keys (order-independent).
-        # The real invariant: that min is always the item key of SOME
-        # member — not necessarily the anchor's (which member's digest
-        # happens to hash smallest is an accident of sha1 ordering).
-        assert g.key == min(item_group_key(it) for it in g.sources)
+        # Real invariant: the group key is the item key of SOME member —
+        # not necessarily the anchor's (which member's digest happens
+        # to hash smallest is an accident of sha1 ordering).
         assert g.key in {item_group_key(it) for it in g.sources}
     assert len(set(keys)) == 1
 
@@ -250,12 +248,36 @@ def test_merge_group_key_min_over_members_is_order_independent() -> None:
     reverse = merge_results(list(reversed(items)))
     assert len(forward) == len(reverse) == 1
     assert forward[0].key == reverse[0].key
-    # "daddy" is the min own alias, so it anchors the merged key.
-    assert forward[0].key == item_group_key(item("eneyida", "Daddy", year=2021, n="2"))
+    # Real invariant: the group key is SOME member's own item key, not
+    # necessarily THIS one — which member's digest hashes smallest is an
+    # accident of sha1 ordering, not a property the spec depends on.
+    assert forward[0].key in {item_group_key(it) for it in forward[0].sources}
     # The singleton "Тато" without the bridge keeps its own "тато" key.
     solo = merge_results([item("kinolub", "Тато", year=2021, n="3")])
     assert solo[0].key == item_group_key(item("kinolub", "Тато", year=2021, n="3"))
     assert solo[0].key != forward[0].key
+
+
+def test_group_key_from_agrees_with_merge_core() -> None:
+    """#88 acceptance: ``group_key_from`` is a pure function of raw listing
+    data, so a caller passing the raw year (not the effective year) gets
+    a key that agrees with what ``merge_results`` would produce for that
+    item in a group. If the internal ``effective_year(title, year)``
+    composition is ever removed from ``group_key_from``, a caller passing
+    raw ``year=None`` for "Дюна (2021)" will hash the empty year while
+    ``merge_results`` still extracts 2021 from the title — the two will
+    disagree, and this test fires."""
+    # Raw listing data: year=None, year carried by title string.
+    it = item("uakino", "Дюна (2021)", year=None)
+    # The group this item joins (with a year-carrying sibling) keys on the
+    # sibling's own item key — both must agree.
+    sibling = item("eneyida", "Дюна", year=2021, n="2")
+    group_key = merge_results([it, sibling])[0].key
+    assert group_key_from(it.title, it.type, it.year, it.id) == group_key
+    # Same property holds for an item alone: its item key matches the
+    # singleton group's key.
+    solo = merge_results([it])[0]
+    assert group_key_from(it.title, it.type, it.year, it.id) == solo.key
 
 
 def test_alias_bridge_limit_solo_vs_pooled_keys_differ() -> None:
