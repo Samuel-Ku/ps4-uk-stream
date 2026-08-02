@@ -10,6 +10,7 @@
 #endif
 
 #include <cstdio>
+#include <ctime>
 #include <sstream>
 
 namespace cs {
@@ -211,6 +212,22 @@ void ScreenContent::playEpisode(int seasonIdx, int epIdx, const std::string &tra
         epTitle = pendingTitle_;
     }
     streamTitle_ = epTitle;
+
+    // Capture play context for the #55 store.
+    pendingPlayEpisodeId_ = epId;
+    pendingPlayTranslationLabel_.clear();
+    if (seasonIdx >= 0 && seasonIdx < static_cast<int>(item_.seasons.size()) &&
+        epIdx >= 0 && epIdx < static_cast<int>(item_.seasons[seasonIdx].episodes.size())) {
+        for (const auto &t : item_.seasons[seasonIdx].episodes[epIdx].translations) {
+            if (t.first == translationId) pendingPlayTranslationLabel_ = t.second;
+        }
+    }
+    if (pendingPlayTranslationLabel_.empty()) {
+        for (const auto &t : item_.translations) {
+            if (t.first == translationId) pendingPlayTranslationLabel_ = t.second;
+        }
+    }
+
     api_->streamAsync(epId, translationId,
         [this](bool ok, StreamInfo info, std::string err) {
             if (ok) {
@@ -263,6 +280,39 @@ void ScreenContent::onUpdate() {
                 mf.name = f.name;
                 mf.path = f.path;
                 mf.type = f.type;
+
+                // v3 (issue #55): record what is playing so resume +
+                // source/dub memory survive restarts. groupKey stands in
+                // for the content id until backend grouping lands (#58+).
+                if (auto *st = CatalogContext::state()) {
+                    ResumeEntry base;
+                    base.groupKey = item_.id;
+                    base.provider = item_.id.substr(0, item_.id.find(':'));
+                    base.id = item_.id;
+                    if (!item_.seasons.empty()) base.episodeId = pendingPlayEpisodeId_;
+                    base.translationLabel = pendingPlayTranslationLabel_;
+                    base.updatedAt = static_cast<std::int64_t>(std::time(nullptr));
+                    st->setResume(base);
+                    if (item_.type != "movie") {  // movies are never remembered
+                        MemoryEntry m;
+                        m.groupKey = base.groupKey;
+                        m.provider = base.provider;
+                        m.translationLabel = base.translationLabel;
+                        m.updatedAt = base.updatedAt;
+                        st->setMemory(m);
+                    }
+                    st->save();
+                    player->setPositionSaver([base](long pos, long dur) mutable {
+                        auto *state = CatalogContext::state();
+                        if (!state) return;
+                        base.positionSec = pos;
+                        base.durationSec = dur;
+                        base.updatedAt = static_cast<std::int64_t>(std::time(nullptr));
+                        state->setResume(base);
+                        state->save();
+                    });
+                }
+
                 player->load(mf);
                 setVisibility(c2d::Visibility::Hidden, true);
                 return;

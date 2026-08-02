@@ -72,6 +72,11 @@ private:
     std::string streamTitle_;
     std::vector<std::pair<std::string, std::string>> streamHeaders_;
     std::string streamError_;
+
+    // What is actually being played (for the #55 resume/memory store):
+    // captured in playEpisode(), consumed at the player hand-off.
+    std::string pendingPlayEpisodeId_;
+    std::string pendingPlayTranslationLabel_;
 };
 
 } // namespace cs

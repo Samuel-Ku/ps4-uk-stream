@@ -102,3 +102,16 @@ c2d_add_catalog_test_widget(test_keyboard_utf8)
 c2d_add_catalog_test_with_fake(test_catalog_api_async)
 c2d_add_catalog_test_static(test_tmp_file)
 c2d_add_catalog_test_with_cache(test_poster_cache)
+
+# State store test: CatalogState + Json (read path); no HTTP involved.
+add_executable(test_catalog_state ${CMAKE_CURRENT_SOURCE_DIR}/../catalog/test_catalog_state.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog/CatalogState.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog/Json.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../external/cJSON/cJSON.c
+)
+target_include_directories(test_catalog_state PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../external/cJSON
+)
+target_compile_options(test_catalog_state PRIVATE -Wall -Wextra)
+add_test(NAME test_catalog_state COMMAND test_catalog_state)

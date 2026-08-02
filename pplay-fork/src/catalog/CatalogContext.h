@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CatalogApi.h"
+#include "CatalogState.h"
 
 #include <memory>
 
@@ -12,6 +13,9 @@ namespace cs {
 // marshal back to the UI thread via std::atomic flags + onUpdate polling
 // (libcross2d has no addAction/runOnUiThread helper, and pulling one in
 // is out of scope for v2).
+//
+// CatalogState rides alongside (#55): one store per process, written from
+// the UI thread only (playback hand-off + position saver both fire there).
 //
 // Lifetime: Main constructs the api in its constructor (one place) and
 // destructs it before Main::~Main. Screens keep a non-owning pointer.
@@ -25,6 +29,9 @@ class CatalogContext {
 public:
     static void set(std::unique_ptr<CatalogApi> api);
     static CatalogApi *get();
+
+    static void setState(std::unique_ptr<CatalogState> state);
+    static CatalogState *state();
 };
 
 } // namespace cs

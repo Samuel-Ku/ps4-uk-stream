@@ -171,6 +171,12 @@ Main::Main(const c2d::Vector2f &size) : C2DRenderer(size) {
         // app data path so cold starts don't re-fetch them upstream.
         api->setPosterCacheDir(getIo()->getDataPath() + "cache/catalog/");
         cs::CatalogContext::set(std::move(api));
+
+        // v3 (issue #55): resume + source/dub memory store. load() is
+        // tolerant: missing/corrupt file just means empty state.
+        auto state = std::make_unique<cs::CatalogState>(getIo()->getDataPath() + "catalog_state.json");
+        state->load();
+        cs::CatalogContext::setState(std::move(state));
     }
 }
 

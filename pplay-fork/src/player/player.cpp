@@ -145,7 +145,20 @@ void Player::onLoadEvent() {
     setFullscreen(true);
 }
 
+void Player::setPositionSaver(std::function<void(long, long)> saver) {
+    positionSaver_ = std::move(saver);
+    positionSaverElapsed_ = 0.0f;
+}
+
 void Player::onStopEvent(int reason) {
+    // Final resume write (#55) before the hook is dropped.
+    if (positionSaver_) {
+        auto saver = std::move(positionSaver_);
+        positionSaver_ = nullptr;
+        if (reason != MPV_END_FILE_REASON_ERROR) {
+            saver(mpv->getPosition(), mpv->getDuration());
+        }
+    }
     main->getStatus()->hide();
     main->getMenuVideo()->reset();
     osd->reset();
@@ -210,6 +223,15 @@ void Player::onUpdate() {
 
     if (isVisible()) {
         Rectangle::onUpdate();
+    }
+
+    // Periodic resume write (#55): every 10 s of active (playing) playback.
+    if (positionSaver_ && mpv->isAvailable() && !mpv->isStopped() && !mpv->isPaused()) {
+        positionSaverElapsed_ += main->getDeltaTime().asSeconds();
+        if (positionSaverElapsed_ >= 10.0f) {
+            positionSaverElapsed_ = 0.0f;
+            positionSaver_(mpv->getPosition(), mpv->getDuration());
+        }
     }
 }
 

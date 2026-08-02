@@ -6,6 +6,7 @@ namespace cs {
 
 namespace {
 std::unique_ptr<CatalogApi> g_api;
+std::unique_ptr<CatalogState> g_state;
 std::mutex g_mu;
 } // namespace
 
@@ -20,6 +21,16 @@ CatalogApi *CatalogContext::get() {
     // / dtor) happen at well-defined serial points — before any screen
     // touches the api, and after all screens have been removed.
     return g_api.get();
+}
+
+void CatalogContext::setState(std::unique_ptr<CatalogState> state) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    g_state = std::move(state);
+}
+
+CatalogState *CatalogContext::state() {
+    // Same lifetime argument as ::get().
+    return g_state.get();
 }
 
 } // namespace cs
