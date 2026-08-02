@@ -37,7 +37,11 @@ def _public_dns(monkeypatch):
 @pytest.fixture(autouse=True)
 def _allowlist(monkeypatch):
     monkeypatch.setattr(
-        poster_proxy, "SETTINGS", replace(SETTINGS, poster_allowed_hosts=_TEST_ALLOWLIST)
+        poster_proxy,
+        "SETTINGS",
+        # poster_cache_dir=None: keep these tests on the memory layer; the
+        # disk layer is exercised in test_poster_disk_cache.py.
+        replace(SETTINGS, poster_allowed_hosts=_TEST_ALLOWLIST, poster_cache_dir=None),
     )
 
 

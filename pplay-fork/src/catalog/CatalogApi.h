@@ -98,6 +98,13 @@ public:
                      int page, BrowseCb cb);
     void loadPoster(const std::string &url, PosterCb cb);
 
+    // Enable the on-disk poster cache rooted at `dir` (7-day TTL), used by
+    // loadPoster before any network fetch. Call once at startup, before the
+    // first loadPoster (the cache object is only ever touched on the worker
+    // thread, like the HttpClient). Never calling this keeps the legacy
+    // always-fetch behaviour.
+    void setPosterCacheDir(std::string dir);
+
     // Pure parsing (testable without network).
     static std::vector<SearchItem> parseSearch(const std::string &raw);
     static ContentItem parseContent(const std::string &raw);

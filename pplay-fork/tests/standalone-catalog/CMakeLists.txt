@@ -25,6 +25,7 @@ function(c2d_add_catalog_test_with_api name)
     add_executable(${name} ${CMAKE_CURRENT_SOURCE_DIR}/../catalog/${name}.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog/Json.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog/CatalogApi.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog/PosterCache.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../../external/cJSON/cJSON.c
     )
     target_include_directories(${name} PRIVATE
@@ -41,6 +42,7 @@ function(c2d_add_catalog_test_with_fake name)
     add_executable(${name} ${CMAKE_CURRENT_SOURCE_DIR}/../catalog/${name}.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog/Json.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog/CatalogApi.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog/PosterCache.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../../external/cJSON/cJSON.c
         ${CMAKE_CURRENT_SOURCE_DIR}/FakeHttpClient.h
     )
@@ -74,9 +76,29 @@ function(c2d_add_catalog_test_static name)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
+# Tests that need the disk poster cache in addition to CatalogApi.
+function(c2d_add_catalog_test_with_cache name)
+    add_executable(${name} ${CMAKE_CURRENT_SOURCE_DIR}/../catalog/${name}.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog/Json.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog/CatalogApi.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog/PosterCache.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../external/cJSON/cJSON.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/FakeHttpClient.h
+    )
+    target_include_directories(${name} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../src/catalog
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../external/cJSON
+    )
+    target_compile_options(${name} PRIVATE -Wall -Wextra)
+    target_link_libraries(${name} Threads::Threads)
+    add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
 c2d_add_catalog_test(test_json)
 c2d_add_catalog_test_with_api(test_catalog_api)
 c2d_add_catalog_test_widget(test_keyboard)
 c2d_add_catalog_test_widget(test_keyboard_utf8)
 c2d_add_catalog_test_with_fake(test_catalog_api_async)
 c2d_add_catalog_test_static(test_tmp_file)
+c2d_add_catalog_test_with_cache(test_poster_cache)

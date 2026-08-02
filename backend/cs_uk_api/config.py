@@ -45,7 +45,10 @@ class Settings:
     cache_search_s: int
     cache_content_s: int
     cache_poster_s: int
+    poster_cache_dir: str | None
+    poster_disk_ttl_s: int
     providers: tuple[str, ...]
+    block_russian: bool
 
 
 def load_settings() -> Settings:
@@ -63,7 +66,14 @@ def load_settings() -> Settings:
         cache_search_s=int(os.environ.get("CS_UK_CACHE_SEARCH", "300")),
         cache_content_s=int(os.environ.get("CS_UK_CACHE_CONTENT", "1800")),
         cache_poster_s=int(os.environ.get("CS_UK_CACHE_POSTER", "3600")),
+        # v3 (issue #54): posters persist on disk for 7 days. Empty string
+        # disables the disk layer (memory-only, pre-v3 behaviour).
+        poster_cache_dir=os.environ.get(
+            "CS_UK_POSTER_CACHE_DIR", os.path.expanduser("~/.cache/cs-uk-api/posters")
+        ) or None,
+        poster_disk_ttl_s=int(os.environ.get("CS_UK_POSTER_DISK_TTL", str(7 * 24 * 3600))),
         providers=providers or ("uakino",),
+        block_russian=os.environ.get("CS_UK_BLOCK_RUSSIAN", "1") == "1",
     )
 
 

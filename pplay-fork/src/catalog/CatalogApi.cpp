@@ -1,6 +1,7 @@
 #include "CatalogApi.h"
 #include "HttpClient.h"
 #include "Json.h"
+#include "PosterCache.h"
 
 #include <cctype>
 #include <condition_variable>
@@ -94,6 +95,10 @@ public:
     // Accessor used by public async methods to build URLs without poking
     // at private state from outside Impl.
     const std::string &base() const { return base_; }
+
+    // Poster disk cache; set once at startup (see setPosterCacheDir).
+    // Worker-thread only, like http_.
+    std::unique_ptr<DiskPosterCache> posterCache_;
 
 private:
     void loop() {
@@ -189,10 +194,28 @@ void CatalogApi::browseAsync(const std::string &provider, const std::string &sec
     });
 }
 
+void CatalogApi::setPosterCacheDir(std::string dir) {
+    // Startup-only call site (Main ctor / test setup), before any poster
+    // traffic: direct assignment is safe because no loadPoster job can be
+    // queued yet.
+    impl_->posterCache_ = std::make_unique<DiskPosterCache>(std::move(dir));
+}
+
 void CatalogApi::loadPoster(const std::string &url, PosterCb cb) {
     impl_->post([this, url, cb = std::move(cb)]() {
-        impl_->httpGetBytes(url, [cb](bool ok, std::vector<std::uint8_t> bytes,
-                                      std::string ct, std::string err) {
+        if (impl_->posterCache_) {
+            std::vector<std::uint8_t> bytes;
+            std::string ct;
+            if (impl_->posterCache_->get(url, bytes, ct)) {
+                cb(true, std::move(bytes), std::move(ct), {});
+                return;
+            }
+        }
+        impl_->httpGetBytes(url, [this, url, cb](bool ok, std::vector<std::uint8_t> bytes,
+                                                 std::string ct, std::string err) {
+            if (ok && impl_->posterCache_) {
+                impl_->posterCache_->put(url, bytes, ct);
+            }
             cb(ok, std::move(bytes), std::move(ct), std::move(err));
         });
     });

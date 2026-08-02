@@ -165,9 +165,12 @@ Main::Main(const c2d::Vector2f &size) : C2DRenderer(size) {
     const std::string catalogUrl =
         config->getOption(OPT_CATALOG_URL)->getString();
     if (!catalogUrl.empty()) {
-        cs::CatalogContext::set(
-            std::make_unique<cs::CatalogApi>(catalogUrl,
-                                             cs::makeBrowserHttpClient()));
+        auto api = std::make_unique<cs::CatalogApi>(catalogUrl,
+                                                    cs::makeBrowserHttpClient());
+        // v3 (issue #54): posters persist on disk (7-day TTL) under the
+        // app data path so cold starts don't re-fetch them upstream.
+        api->setPosterCacheDir(getIo()->getDataPath() + "cache/catalog/");
+        cs::CatalogContext::set(std::move(api));
     }
 }
 
