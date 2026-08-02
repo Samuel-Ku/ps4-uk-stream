@@ -118,8 +118,12 @@ def test_search_returns_200_with_failures_when_some_providers_fail():
         r = client.get("/api/search?q=test")
         assert r.status_code == 200
         body = r.json()
-        assert len(body["results"]) == 1
-        assert body["results"][0]["provider"] == "one-result"
+        # v3 (issue #71): response is grouped. One group, one source
+        # (the other provider raised). The provider on the lone source
+        # matches the pre-#71 flat-results expectation.
+        assert len(body["groups"]) == 1
+        assert len(body["groups"][0]["sources"]) == 1
+        assert body["groups"][0]["sources"][0]["provider"] == "one-result"
         assert "failures" in body
         assert len(body["failures"]) == 1
         assert body["failures"][0]["provider"] == "boom"
@@ -142,7 +146,7 @@ def test_search_omits_failures_field_when_all_providers_succeed():
         r = client.get("/api/search?q=test")
         assert r.status_code == 200
         body = r.json()
-        assert body["results"] == []
+        assert body["groups"] == []
         assert "failures" not in body
     finally:
         PROVIDERS.clear()
@@ -152,7 +156,7 @@ def test_search_omits_failures_field_when_all_providers_succeed():
 
 def test_search_returns_200_with_failures_when_all_providers_fail_individually():
     """When all providers raise but wait_for doesn't fire, the response is
-    200 with empty results and a populated failures list. 502 is reserved
+    200 with empty groups and a populated failures list. 502 is reserved
     for the total-timeout case."""
     saved = dict(PROVIDERS)
     try:
@@ -164,7 +168,7 @@ def test_search_returns_200_with_failures_when_all_providers_fail_individually()
         r = client.get("/api/search?q=test")
         assert r.status_code == 200
         body = r.json()
-        assert body["results"] == []
+        assert body["groups"] == []
         assert len(body["failures"]) == 2
         assert {f["provider"] for f in body["failures"]} == {"a", "b"}
         for f in body["failures"]:
@@ -320,7 +324,7 @@ def test_search_does_not_cache_502_responses():
         PROVIDERS["hang"] = _Ok()
         r2 = client.get("/api/search?q=once")
         assert r2.status_code == 200
-        assert r2.json()["results"] == []
+        assert r2.json()["groups"] == []
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved)
@@ -369,9 +373,11 @@ def test_search_returns_200_with_partial_results_when_overall_budget_fires():
         r = client.get("/api/search?q=mixed")
         assert r.status_code == 200
         body = r.json()
-        # Fast provider contributes a result.
-        assert len(body["results"]) == 1
-        assert body["results"][0]["provider"] == "one-result"
+        # Fast provider contributes a result, surfaced as one group with
+        # one source (v3 issue #71: groups replace the flat results list).
+        assert len(body["groups"]) == 1
+        assert len(body["groups"][0]["sources"]) == 1
+        assert body["groups"][0]["sources"][0]["provider"] == "one-result"
         # Slow provider contributes a synthetic timeout row.
         assert "failures" in body
         timeout_rows = [f for f in body["failures"] if f["provider"] == "slow"]
@@ -398,6 +404,6 @@ def test_exclude_unset_omits_failures_when_not_set():
     ``exclude_unset`` semantics (used by the route via FastAPI's
     ``response_model_exclude_unset``) must omit the field entirely
     when no failures were passed during construction."""
-    resp = SearchResponse(query="q", results=[])
+    resp = SearchResponse(query="q", groups=[])
     assert resp.failures == []
-    assert resp.model_dump(exclude_unset=True) == {"query": "q", "results": []}
+    assert resp.model_dump(exclude_unset=True) == {"query": "q", "groups": []}

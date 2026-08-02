@@ -18,7 +18,7 @@ from .country import is_blocked_country
 from .health import TRACKER
 from .home import build_home_rows
 from .http_client import close_client, get_client
-from .merge import group_key_from
+from .merge import group_key_from, merge_results
 from .models import (
     BrowseResponse,
     ContentResponse,
@@ -28,6 +28,7 @@ from .models import (
     ProviderFailure,
     ProviderInfo,
     ProviderSections,
+    SearchGroup,
     SearchResponse,
     SearchResult,
     StreamResponse,
@@ -285,6 +286,14 @@ async def search(
     out_results: list[SearchResult] = []
     failures: list[ProviderFailure] = []
 
+    # Drain done tasks into pid-keyed maps so we can iterate PROVIDERS in
+    # registration order below. ``asyncio.wait`` returns done as a set,
+    # which has nondeterministic iteration order — that propagates into
+    # the response and breaks stable test assertions + UI source-order.
+    # The PROVIDERS dict preserves insertion order (Python 3.7+), so we
+    # use it as the canonical traversal key for results/failures too.
+    results_by_pid: dict[str, list[SearchResult]] = {}
+    failures_by_pid: dict[str, ProviderFailure] = {}
     for task in done:
         if task.cancelled():
             continue
@@ -298,28 +307,38 @@ async def search(
             # structured signal rather than a partial response.
             log.warning("search unexpected escapee provider=%s err=%r", pid, e)
             TRACKER.record(pid, ok=False)
-            failures.append(
-                ProviderFailure(provider=pid, code="internal", message=str(e))
+            failures_by_pid[pid] = ProviderFailure(
+                provider=pid, code="internal", message=str(e)
             )
             continue
         if isinstance(content, ProviderFailure):
             TRACKER.record(pid, ok=False)
-            failures.append(content)
+            failures_by_pid[pid] = content
         else:
             TRACKER.record(pid, ok=True)
-            out_results.extend(content)
+            results_by_pid[pid] = content
 
     # Pending tasks: the overall budget fired before they completed.
     # Per ADR-0002, each one gets a synthetic ``timeout`` row.
     for task in pending:
         pid = tasks[task]
-        failures.append(
-            ProviderFailure(
-                provider=pid,
-                code="timeout",
-                message=f"overall budget {SETTINGS.search_total_timeout_s}s exceeded",
-            )
+        failures_by_pid[pid] = ProviderFailure(
+            provider=pid,
+            code="timeout",
+            message=f"overall budget {SETTINGS.search_total_timeout_s}s exceeded",
         )
+
+    # Emit results + failures in PROVIDERS registration order so the
+    # response is deterministic regardless of which asyncio task
+    # finishes first. The UI relies on stable source order for the
+    # source-switching chip strip. Use ``prov`` to avoid shadowing the
+    # function's ``provider`` query parameter (which is typed as ``str``).
+    for prov in PROVIDERS.values():
+        pid = prov.id
+        if pid in results_by_pid:
+            out_results.extend(results_by_pid[pid])
+        if pid in failures_by_pid:
+            failures.append(failures_by_pid[pid])
 
     if not done and failures:
         # Every provider timed out — total failure is a server-side
@@ -340,10 +359,29 @@ async def search(
     # with populated failures (a flapping provider should not become a
     # permanent cache bypass per ADR-0003). The 502 path never reaches
     # this code because it raises above.
+    #
+    # v3 (issue #71): cross-provider duplicates are merged server-side
+    # via ``merge_results`` (issue #52 / v3 spec §4). The result is a
+    # ``groups: list[SearchGroup]`` payload — one entry per group_key,
+    # each carrying the full per-provider ``sources`` list. The UI
+    # renders one card per group; opening it hits
+    # ``/api/content/{group_key}`` (issue #70) which then loads the
+    # merged detail with the same ``g1:…`` key.
+    groups = [
+        SearchGroup(
+            group_key=mg.key,
+            title=mg.sources[0].title,
+            year=mg.sources[0].year,
+            type=mg.sources[0].type,
+            poster=mg.sources[0].poster,
+            sources=list(mg.sources),
+        )
+        for mg in merge_results(out_results)
+    ]
     if failures:
-        resp = SearchResponse(query=q, results=out_results, failures=failures)
+        resp = SearchResponse(query=q, groups=groups, failures=failures)
     else:
-        resp = SearchResponse(query=q, results=out_results)
+        resp = SearchResponse(query=q, groups=groups)
     _search_cache.set(cache_key, resp)
     return resp
 

@@ -124,15 +124,20 @@ def test_api_search_ignores_retired_providers():
         PROVIDERS["kept"] = _make_provider("kept")
         PROVIDERS["retiree"] = _make_provider("retiree")
 
-        # Both providers are queried before retirement.
+        # v3 (issue #71): /api/search returns groups; flatten sources
+        # across all groups to enumerate the providers that responded.
         r = client.get("/api/search?q=q1")
-        providers_in_results = {item["provider"] for item in r.json()["results"]}
+        providers_in_results = {
+            s["provider"] for g in r.json()["groups"] for s in g["sources"]
+        }
         assert {"kept", "retiree"} <= providers_in_results
 
         # After retirement: only "kept" results returned.
         del PROVIDERS["retiree"]
         r = client.get("/api/search?q=q2")
-        providers_in_results = {item["provider"] for item in r.json()["results"]}
+        providers_in_results = {
+            s["provider"] for g in r.json()["groups"] for s in g["sources"]
+        }
         assert "kept" in providers_in_results
         assert "retiree" not in providers_in_results
     finally:

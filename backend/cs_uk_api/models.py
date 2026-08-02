@@ -44,9 +44,41 @@ class ProviderFailure(BaseModel):
     message: str  # str(exc); human-readable, surfaced for debugging only
 
 
+class SearchGroup(BaseModel):
+    """One merged cross-provider card (issue #71).
+
+    Mirrors ``HomeItem`` (issue #70) at the row level — same
+    group_key contract, same first-seen-wins canonical fields — but
+    also carries the full per-provider ``sources`` list so the UI can
+    render the merged-source label and switch sources when the user
+    opens the merged detail screen.
+
+    The ``group_key`` is the same stateless identity used by
+    ``/api/content/{group_key}`` (issue #70): a client that picks a
+    card from /api/search can drive the detail screen with the
+    ``group_key`` field as-is, no translation.
+    """
+
+    group_key: str
+    title: str
+    year: int | None = None
+    type: MediaType
+    poster: str | None = None
+    #: Per-provider ``SearchResult`` rows that collapsed into this
+    #: group. Always non-empty (an empty group was dropped upstream).
+    #: Order = first-seen in the merge pass; the first source also
+    #: wins the canonical title/year/type/poster fields above.
+    sources: list[SearchResult]
+
+
 class SearchResponse(BaseModel):
     query: str = Field(min_length=1, max_length=80)
-    results: list[SearchResult]
+    #: Merged cross-provider groups (issue #71). One entry per
+    #: group_key — same title from N providers collapses into one
+    #: ``SearchGroup`` carrying all N ``sources``. The UI renders one
+    #: card per group and uses ``sources`` to drive source-switching
+    #: into ``/api/content/{group_key}`` (issue #70).
+    groups: list[SearchGroup]
     #: Per-provider failure attribution (ADR-0002, issue #81).
     #: Empty list is omitted from JSON by the route via ``exclude_unset``
     #: semantics: clients that don't know about the field see today's
