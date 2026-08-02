@@ -32,9 +32,9 @@ status: [`docs/provider-triage.md`](../docs/provider-triage.md).
 | doramyworld | doramy.world                  | film, dorama, show                   | m3u8          |
 | eneyida     | eneyida.tv                    | films, series                        | m3u8          |
 | anitubeinua | anitube.in.ua                 | page                                 | m3u8          |
-| simpsonsuatv| simpsonsua.tv                 | updates, page                        | m3u8          |
+| simpsonsuatv | simpsonsua.tv                 | updates, page                        | m3u8          |
 | animeon     | animeon.club                  | seasons, popular, page               | m3u8          |
-| uaserialspro| uaserials.com                 | films, series, fcartoon, cartoons, anime, exclusive | m3u8 |
+| uaserialspro | uaserials.com                 | films, series, fcartoon, cartoons, anime, exclusive | m3u8 |
 
 ## Streaming shape
 

@@ -15,6 +15,12 @@ implementation plan.
 
 ## Quick start
 
+0. Backend dependencies: `cd backend && pip install -r requirements.txt`.
+   The uakino provider additionally needs a system Chromium binary
+   (default `/usr/bin/chromium`, override with `UAKINO_CHROMIUM`): its
+   Cloudflare gate only passes for in-page `fetch()` calls, so the API
+   runs a headless browser session for that one provider
+   (see `backend/cs_uk_api/scripts/README.md`).
 1. Run the backend on a Linux host in the same LAN as the PS4:
    `cd backend && uvicorn cs_uk_api.main:app --host 0.0.0.0 --port 8000`
 2. Build the PS4 PKG (see `pplay-fork/`).
