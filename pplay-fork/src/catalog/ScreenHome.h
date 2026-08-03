@@ -19,6 +19,7 @@
 
 #include "main.h"
 #include "CatalogApi.h"
+#include "CatalogState.h"
 #include "cross2d/c2d.h"
 
 #include <atomic>

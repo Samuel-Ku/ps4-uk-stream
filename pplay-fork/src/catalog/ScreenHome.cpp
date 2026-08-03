@@ -444,7 +444,7 @@ void ScreenHome::activateFocused() {
         return;
     }
     const auto &item = row.data.items[focusedCardIndex_];
-    auto *content = new ScreenContent(main_, item.groupKey);
+    auto *content = new ScreenContent(main_, item.groupKey, item.title);
     setChild(content);
 }
 
