@@ -183,6 +183,9 @@ class AnimeONProvider(BaseProvider):
     name = "AnimeON"
     types: tuple[MediaTypeStr, ...] = ("anime",)
     sections = ANIMEON_SECTIONS
+    # v3 (issue #70): the ``page`` section is animeon's "Нове аніме"
+    # listing — contributes to the «Новинки» row.
+    newest_section = "page"
 
     async def _get_json(
         self,

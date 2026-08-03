@@ -37,19 +37,19 @@ sections themselves are still the source of truth.
 | 5 | Extractor layer (`iframe`, `playerjson`, `regex`) | DONE |
 | 6 | Uakino reference adapter | DONE (capture-first, respx tests) |
 | 7 | FastAPI routes (search, content, stream, sections, browse, poster, providers) | DONE |
-| 8 | Provider triage (`PROVIDERS.md`) | NOT STARTED — see GitHub issue #14 |
-| 9 | Group 1 — simple-iframe providers | NOT STARTED |
-| 10 | Group 2 — playerjson providers | NOT STARTED |
-| 11 | Group 3 — custom extractors / API clients | NOT STARTED |
-| 12 | Group 4 — HentaiUkr | NOT STARTED |
-| 13 | Live gate tooling + PROVIDERS.md finalization | NOT STARTED |
+| 8 | Provider triage (`PROVIDERS.md`) | DONE — `docs/provider-triage.md` (updated 2026-08-02) |
+| 9 | Group 1 — simple-iframe providers | DONE — ufdub, unimay, kinotron, cikavaideya, animeua, uaflix, kinovezha, bambooua, coaninet |
+| 10 | Group 2 — playerjson providers | DONE — klontv, serialno, doramyworld |
+| 11 | Group 3 — custom extractors / API clients | DONE — eneyida, uaserialspro, anitubeinua, simpsonsuatv, animeon |
+| 12 | Group 4 — HentaiUkr | DONE |
+| 13 | Live gate tooling + PROVIDERS.md finalization | DONE — `backend/scripts/live_gate.py` |
 | 14 | pPlay fork — vendored cJSON + Json wrapper | DONE |
-| 15 | pPlay fork — `CatalogApi` parsing skeleton (browser wire-up deferred) | DONE (skeleton) |
-| 16 | pPlay fork — `OnscreenKeyboard` | DONE (skeleton; per-issue #15 one bug to fix) |
-| 17 | pPlay fork — config + main menu entry | NOT STARTED (blocked on full toolchain) |
-| 18 | pPlay fork — full catalog screens | NOT STARTED (blocked on full toolchain) |
-| 19 | PS4 PKG build via OpenOrbis Docker | NOT STARTED (blocked on user hardware) |
-| 20 | On-console test and report | NOT STARTED (blocked on user hardware) |
+| 15 | pPlay fork — `CatalogApi` parsing skeleton (browser wire-up deferred) | DONE (browser wire-up landed in Task 18) |
+| 16 | pPlay fork — `OnscreenKeyboard` | DONE (issue #15 bug fixed) |
+| 17 | pPlay fork — config + main menu entry | DONE — «Пошук UA» menu entry (see status.md Task 18) |
+| 18 | pPlay fork — full catalog screens | DONE — wired through shared `CatalogContext` (see status.md Task 18) |
+| 19 | PS4 PKG build via OpenOrbis Docker | PARTIAL — scripts/Dockerfile verified (`bash -n`); final Docker build blocked on user hardware |
+| 20 | On-console test and report | PARTIAL — `docs/ps4-test-report.md` checklist updated; on-console run blocked on user hardware |
 
 GitHub tracking is the live source of truth — see
 [`docs/superpowers/specs/2026-08-01-ps4-uk-stream-design.md` § Tracking]
@@ -992,7 +992,7 @@ Verified integration points (read from the actual tree):
 
 ## Task 19: PS4 PKG build via OpenOrbis Docker
 
-Same as old plan Task 16 verbatim (`Dockerfile.ps4`, `scripts/build-ps4-docker.sh`, `scripts/ffmpeg-ps4.sh`, artifact validation: PKG magic `\x7fPKG`, `readoelf` NID table, `auth_id 0x3800000000000011`).
+Same as old plan Task 16 verbatim (`Dockerfile.ps4`, `scripts/build-ps4-docker.sh`, `scripts/ffmpeg-ps4.sh`, artifact validation: PKG magic `\x7FCNT` — `7f 43 4e 54`, per `docs/ps4-test-report.md`; `readoelf` NID table, `auth_id 0x3800000000000011`).
 
 - [ ] Commit `build(ps4): OpenOrbis Docker pipeline and PS4 ffmpeg.sh`.
 

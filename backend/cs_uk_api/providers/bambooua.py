@@ -23,8 +23,9 @@ from ..models import (
     Season,
     Section,
     StreamResponse,
-    Translation,
+     Translation,
 )
+from ..country import extract_country
 from .base import BaseProvider, ProviderError
 
 BASE_URL = "https://bambooua.com"
@@ -320,6 +321,7 @@ class BambooUAProvider(BaseProvider):
         description = (
             (meta.graph[0].description or "") if meta and meta.graph else ""
         )
+        country: str | None = extract_country(soup)
         groups = _extract_playlist(resp.text)
         media_type = _type_from_url(url)
         seasons: list[Season] | None = None
@@ -333,6 +335,7 @@ class BambooUAProvider(BaseProvider):
             poster=poster,
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
+            country=country,
         )
 
     @staticmethod

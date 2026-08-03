@@ -20,7 +20,7 @@ def test_search_result_round_trip():
 
 def test_search_query_length_is_validated():
     with pytest.raises(ValidationError):
-        SearchResponse(query="", results=[])
+        SearchResponse(query="", groups=[])
 
 
 def test_content_movie_requires_translations():

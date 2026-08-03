@@ -44,6 +44,10 @@ struct ContentItem {
     std::string title;
     std::string description;
     std::string poster;
+    // Stateless cross-provider group identity (issue #69): resume/memory
+    // records anchor on this, not on the provider-scoped id. Empty when
+    // the backend predates the field.
+    std::string groupKey;
     // "content" — translations list applies to the whole item
     // "episode" — translations live on each Episode
     std::string translationsLevel = "content";
@@ -60,6 +64,64 @@ struct ContentItem {
         std::vector<Episode> episodes;
     };
     std::vector<Season> seasons;
+    // Issue #62 / v3 spec §3.3: chip-strip roster of every provider that
+    // surfaced this group in /api/home. Each entry carries the
+    // provider's content id so the chip can drive a refetch
+    // (/api/content/{groupKey}?source=<p>) without re-running /api/home.
+    // For single-source responses the array has one entry whose id
+    // equals `id` above; the chip strip collapses to a no-choice state
+    // (single chip, unselectable).
+    struct Source {
+        std::string provider;
+        std::string id;
+    };
+    std::vector<Source> sources;
+};
+
+// Memory policy (issue #74): series-form content is remembered, movies
+// never are. Form is keyed on seasons presence — `type` carries a STYLE
+// tag ("anime", "cartoon", "dorama"), which is orthogonal to form, so an
+// anime MOVIE (style=anime, no seasons) must not be remembered.
+inline bool shouldRememberMemory(const ContentItem &item) {
+    return !item.seasons.empty();
+}
+
+struct ProviderInfo {
+    std::string id;
+    std::string name;
+    // Issue #73 — provider health as reported by /api/providers. Mirrors
+    // the backend's HealthStatus literal: "ok" / "degraded" / "down".
+    std::string status;
+    // Last upstream-error timestamp from the tracker (issue #53). Empty
+    // when the provider has not errored in the current tracker window.
+    long long lastErrorAt = 0;
+};
+
+// Issue #61 / #70 — Home is a list of rows, each a labeled list of
+// cross-provider items. A HomeItem is the merged identity of one title
+// across providers — group_key is the stable key (resume/memory anchor),
+// providers is the union of provider ids that surfaced this row.
+struct HomeItem {
+    std::string groupKey;
+    std::string title;
+    int year = 0;
+    std::string type;       // media type: "movie" / "series" / ...
+    std::string poster;
+    std::vector<std::string> providers;
+    // Issue #89 — every per-item group key that contributed to this row.
+    // The canonical group_key is one of these; a resume record keyed by
+    // any element of this list matches the row.
+    std::vector<std::string> memberKeys;
+};
+
+struct HomeRow {
+    std::string title;      // "Новинки", "Фільми", etc.
+    std::string type;       // routing key: "newest" / "popular" / media type
+    std::vector<HomeItem> items;
+};
+
+struct HomeResponse {
+    std::vector<HomeRow> rows;
 };
 
 struct StreamInfo {
@@ -87,22 +149,50 @@ public:
     using StreamCb = std::function<void(bool ok, StreamInfo info, std::string error)>;
     using SectionsCb = std::function<void(bool ok, std::vector<ProviderSections> providers, std::string error)>;
     using BrowseCb = std::function<void(bool ok, BrowseItem item, std::string error)>;
+    using ProvidersCb = std::function<void(bool ok, std::vector<ProviderInfo> providers, std::string error)>;
+    using HomeCb = std::function<void(bool ok, HomeResponse resp, std::string error)>;
     using PosterCb = std::function<void(bool ok, std::vector<std::uint8_t> bytes,
                                         std::string contentType, std::string error)>;
 
     void searchAsync(const std::string &query, SearchCb cb);
+    // Issue #63 — provider-scoped variant. When `provider` is non-empty
+    // the backend restricts the result set to that provider's catalog.
+    void searchAsyncWithProvider(const std::string &query,
+                                 const std::string &provider, SearchCb cb);
     void contentAsync(const std::string &id, ContentCb cb);
+    // Issue #62: source-filter variant. When `source` is non-empty the
+    // backend resolves the same group_key under a different provider and
+    // returns that source's `content_id` in the response. The id passed
+    // is the group_key (or, on legacy backends, the first provider's id).
+    void contentAsyncForSource(const std::string &groupKey, const std::string &source, ContentCb cb);
     void streamAsync(const std::string &id, const std::string &translation, StreamCb cb);
     void sectionsAsync(SectionsCb cb);
+    // Issue #73 — provider health snapshot. The chip strip and search
+    // filter refresh provider status from this endpoint on every screen
+    // load; the result is fed into CatalogContext::setProviderStatuses().
+    void providersAsync(ProvidersCb cb);
+    // Issue #61 — Home is the merged cross-provider view: «Новинки»
+    // (+ conditional «Популярні зараз» + five type rows). Items carry
+    // group_key for resume/memory continuity.
+    void homeAsync(HomeCb cb);
     void browseAsync(const std::string &provider, const std::string &section,
                      int page, BrowseCb cb);
     void loadPoster(const std::string &url, PosterCb cb);
+
+    // Enable the on-disk poster cache rooted at `dir` (7-day TTL), used by
+    // loadPoster before any network fetch. Call once at startup, before the
+    // first loadPoster (the cache object is only ever touched on the worker
+    // thread, like the HttpClient). Never calling this keeps the legacy
+    // always-fetch behaviour.
+    void setPosterCacheDir(std::string dir);
 
     // Pure parsing (testable without network).
     static std::vector<SearchItem> parseSearch(const std::string &raw);
     static ContentItem parseContent(const std::string &raw);
     static StreamInfo parseStream(const std::string &raw);
     static std::vector<ProviderSections> parseSections(const std::string &raw);
+    static std::vector<ProviderInfo> parseProviders(const std::string &raw);
+    static HomeResponse parseHome(const std::string &raw);
     static BrowseItem parseBrowse(const std::string &raw);
 
 private:

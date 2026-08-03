@@ -18,15 +18,24 @@ From the monorepo root:
 ```
 
 The script will:
-1. Build the `ps4-uk-build` Docker image (one-time, ~5 min).
+1. Build the `ps4-uk-build` Docker image (one-time, ~10 min — includes
+   a cross-build of OpenSSL 3.0 for the PS4 sysroot, #35).
 2. Run the image, mounting the `pplay-fork/` tree.
-3. Inside the image: build FFmpeg for the OpenOrbis target, then build
-   pPlay with `-DPLATFORM_PS4=ON`.
+3. Inside the image (`run-in-ps4-container.sh`): cross-build FFmpeg
+   with `--enable-openssl` (https/tls protocols), then build pPlay
+   with `-DPLATFORM_PS4=ON`, then fake-sign with create-fself
+   (`paid=0x3800000000000011`, `ptype=npdrm_exec`) and pack the
+   installable pkg via PkgTool.Core.
+4. Validate the artifacts (PKG magic `7f 43 4e 54`, SELF magic
+   `4f 15 3d 1d`, readelf on the unsigned ELF) and print the FFmpeg
+   protocol-config evidence.
 
 The resulting artifacts:
-- `pplay-fork/build/eboot.bin` — fake-signed ELF (auth_id `0x3800000000000011`).
+- `pplay-fork/build/eboot.bin` — fake-signed SELF (auth_id `0x3800000000000011`).
+- `pplay-fork/build/pplay.elf` — the unsigned ELF (readelf inspects this one).
 - `pplay-fork/build/param.sfo` — title metadata.
-- `pplay-fork/build/PPLA00001.pkg` — installable on a jailbroken PS4.
+- `pplay-fork/build/PPLA00001.pkg` — installable on a jailbroken PS4
+  (normalised name for `IV0000-PPLA00001_00-PPLAY00000000000.pkg`).
 
 ## Install
 

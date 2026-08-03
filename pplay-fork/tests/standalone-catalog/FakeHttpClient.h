@@ -31,6 +31,7 @@ public:
         errors_[urlPrefix] = error;
     }
     int getCount() const { return getCount_; }
+    int getBytesCount() const { return getBytesCount_; }
     // Last URL passed to get() — tests use this to assert the C++
     // builder hits the exact endpoint the backend expects (e.g.
     // "/api/content/<urlencoded-id>" rather than "?id=...").
@@ -60,6 +61,7 @@ public:
                   std::vector<std::uint8_t> &bytesOut,
                   std::string &ctOut,
                   std::string &errorOut) override {
+        ++getBytesCount_;
         const std::string *best = longestMatch(url, bytes_);
         if (!best) { errorOut.clear(); return false; }
         bytesOut = bytes_.at(*best).first;
@@ -88,6 +90,7 @@ private:
     std::map<std::string, std::pair<std::vector<std::uint8_t>, std::string>> bytes_;
     std::map<std::string, std::string> errors_;
     int getCount_ = 0;
+    int getBytesCount_ = 0;
     std::string lastUrl_;
 };
 

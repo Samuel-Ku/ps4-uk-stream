@@ -23,12 +23,12 @@ once they pass the live gate (search → content → stream → plays in mpv).
 
 | Provider id | Upstream plugin | Kotlin sources | Search | Player | JS dep | Verdict |
 | ----------- | --------------- | -------------- | ------ | ------ | ------ | ------- |
-| uakino | [UakinoProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UakinoProvider) | `UakinoProvider.kt` (14.6 KB) | HTML | iframe → regex | mild | **ready** |
+| uakino | [UakinoProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UakinoProvider) | `UakinoProvider.kt` (14.6 KB) | HTML | iframe → regex | mild | **not portable** (upstream moved to `uakino.best` — new DLE theme, all adapter selectors dead; content/player behind Cloudflare Turnstile 403; search via POST only; fixture tests remain green, live gate cannot pass — research `docs/research/uakino-reachability-2026-08-02.md`) |
 | uaflix | [UAFlixProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UAFlixProvider) | `UAFlixProvider.kt` (14.9 KB) | HTML, has mainPage | iframe → regex | mild | **ready** |
 | animeua | [AnimeUAProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/AnimeUAProvider) | `AnimeUAProvider.kt` (8.2 KB), `Tracker.kt` | HTML | iframe → JSON `file:` (dubs or m3u8) | mild | **ready** |
 | kinovezha | [KinoVezhaProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/KinoVezhaProvider) | `KinoVezhaProvider.kt` (10.3 KB) | HTML | iframe → regex (torDecrypt) | mild | **ready** |
 | banderakino | [BanderakinoProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/BanderakinoProvider) | `BanderakinoProvider.kt` (14.2 KB) | HTML | TBD | TBD | **not portable (live site offline — HTTP 522 from `banderakino.online`, DNS NXDOMAIN for `banderakino.pp.ua`)** |
-| bambooua | [BambooUAProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/BambooUAProvider) | `BambooUAProvider.kt` (8.9 KB), `JSONModel.kt` | HTML + JSON | TBD | mild | TBD |
+| bambooua | [BambooUAProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/BambooUAProvider) | `BambooUAProvider.kt` (8.9 KB), `JSONModel.kt` | HTML + JSON | inline `const playlist` JSON on the content page | mild | **ready** |
 | coaninet | [CoaninetProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/CoaninetProvider) | `CoaninetProvider.kt` (12.3 KB) | JSON API | pre-resolved HLS master | none | **ready** |
 | klontv | [KlonTVProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/KlonTVProvider) | `KlonTVProvider.kt` (10.0 KB), `Tracker.kt` | HTML | iframe → regex | mild | **ready** |
 | uaserialspro | [UASerialsProProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UASerialsProProvider) | `UASerialsProProvider.kt` (20.5 KB) | HTML | AES-256-CBC + PBKDF2 + Tortuga XOR | mild (adds pycryptodome dep) | **ready** |
@@ -70,7 +70,7 @@ Group 3 (heavy, needs deeper triage):
 2. `uaserialspro` — landed in `backend/cs_uk_api/providers/uaserialspro.py` (20 tests, ready; AES-256-CBC + PBKDF2 player-config decrypt + Tortuga XOR; adds `pycryptodome>=3.20` dep; Tortuga XOR + AES helpers extracted to shared `_tortuga.py` / `_crypto.py` modules used by serialno/kinovezha too)
 3. `anitubeinua` — landed in `backend/cs_uk_api/providers/anitubeinua.py` (19 tests, ready; DLE + ashdi.vip iframe + `qeruya.cyou` Referer; supports `translations_level="episode"`; per-episode studio dubs from playlist JSON; 764 lines)
 4. `simpsonsuatv` — landed in `backend/cs_uk_api/providers/simpsonsuatv.py` (20 tests, ready; DLE + ashdi.vip iframe; 2 sections (`updates` carousel + `multserialy-ukrainskoyu` listing); multi-iframe selection + SSRF redirect guard; TitleMap with upstream-vs-live drift noted)
-5. `animeon` — read the source before committing; packed JS risk
+5. `animeon` — landed in `backend/cs_uk_api/providers/animeon.py` (24 tests, ready; JSON API + XOR-decoded iframe → ashdi.vip direct m3u8)
 
 Group 4:
 

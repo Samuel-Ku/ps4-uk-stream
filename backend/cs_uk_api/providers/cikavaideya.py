@@ -18,8 +18,9 @@ from ..models import (
     Season,
     Section,
     StreamResponse,
-    Translation,
+     Translation,
 )
+from ..country import extract_country
 from .base import BaseProvider, ProviderError
 
 BASE_URL = "https://cikava-ideya.top"
@@ -234,6 +235,7 @@ class CikavaIdeyaProvider(BaseProvider):
         flist = soup.select(".flist li")
         tags_text = flist[2].get_text(" ", strip=True) if len(flist) >= 3 else ""
         player_json = _parse_player_json(soup)
+        country: str | None = extract_country(soup)
         seasons: list[Season] | None = None
         if player_json and "Player1" in player_json:
             seasons = self._build_seasons(player_json["Player1"], external_id)
@@ -245,6 +247,7 @@ class CikavaIdeyaProvider(BaseProvider):
             poster=poster,
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
+            country=country,
         )
 
     @staticmethod

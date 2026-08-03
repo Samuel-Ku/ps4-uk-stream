@@ -11,6 +11,7 @@ dependencies = [
   "pydantic>=2.6",
   "cachetools>=5.3",
   "pycryptodome>=3.20",
+  "playwright>=1.40",
 ]
 
 [project.optional-dependencies]
@@ -25,6 +26,11 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["cs_uk_api/tests"]
+markers = [
+    "unit: pure-Python unit tests (no I/O, no providers, no HTTP)",
+    "integration: tests that exercise the FastAPI app (TestClient, providers)",
+    "e2e: end-to-end tests against a live backend",
+]
 
 [tool.mypy]
 python_version = "3.11"

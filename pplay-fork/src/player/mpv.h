@@ -8,8 +8,15 @@
 #include <cstdio>
 #include <string>
 
+#ifdef __PS4__
+// OpenOrbisSDK doesn't ship libmpv; pull in a tiny shim that declares
+// just the symbols src/player/{mpv,player,video_texture}.{h,cpp}
+// reference. See ps4_stubs/mpv_stub.h.
+#include "ps4_stubs/mpv_stub.h"
+#else
 #include <mpv/client.h>
 #include <mpv/render_gl.h>
+#endif
 #include "media_info.h"
 
 class Mpv {

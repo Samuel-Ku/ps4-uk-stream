@@ -8,11 +8,15 @@ instead of being emulated.
 
 ## Registry
 
-All eight adapters are registered and surfaced via `GET /api/providers`:
+All 19 adapters are registered and surfaced via `GET /api/providers`
+(verified by `tests/test_registry.py` — every provider module must be
+registered). The table below details the first eight with
+streaming-shape notes; the remaining eleven follow. Full per-provider
+status: [`docs/provider-triage.md`](../docs/provider-triage.md).
 
 | id          | site                          | sections                             | stream format |
 |-------------|-------------------------------|--------------------------------------|---------------|
-| uakino      | uakino.club (→ uakino.best)   | filmy, serials, animeukr, cartoons   | mp4           |
+| uakino      | uakino.best                  | filmy, serials, animeukr, cartoons   | m3u8        |
 | ufdub       | ufdub.com                     | filmy, serialy, doramy, cartoons, multserialy, anime | mp4 |
 | unimay      | unimay.media (API)            | updates, projects                    | m3u8          |
 | kinotron    | kinotron.tv                   | films, serials, cartoons, cartoon-series, anime | m3u8 |
@@ -20,6 +24,17 @@ All eight adapters are registered and surfaced via `GET /api/providers`:
 | hentaiukr   | hentaiukr.com                 | hentai                              | mp4           |
 | bambooua    | bambooua.com                  | cinema, dorama, anime, lakorn, voice, tv-show, done, world-bl, now | mp4 |
 | kinovezha   | kinovezha.tv                 | films, series, cartoons, s-cartoons  | m3u8          |
+| uaflix      | uafix.net                     | filmy, serialy, doramy, cartoons, multserialy, anime | mp4 |
+| animeua     | animeua.club                  | page, film, anime, ona, ova          | m3u8          |
+| coaninet    | coani.net (API)               | films, series                        | m3u8          |
+| klontv      | klon.fun                      | films, series                        | m3u8          |
+| serialno    | serialno.tv                   | series                               | m3u8          |
+| doramyworld | doramy.world                  | film, dorama, show                   | m3u8          |
+| eneyida     | eneyida.tv                    | films, series                        | m3u8          |
+| anitubeinua | anitube.in.ua                 | page                                 | m3u8          |
+| simpsonsuatv | simpsonsua.tv                 | updates, page                        | m3u8          |
+| animeon     | animeon.club                  | seasons, popular, page               | m3u8          |
+| uaserialspro | uaserials.com                 | films, series, fcartoon, cartoons, anime, exclusive | m3u8 |
 
 ## Streaming shape
 
@@ -44,7 +59,13 @@ All eight adapters are registered and surfaced via `GET /api/providers`:
   `sNeM` episode.
 - **kinovezha**: content page → player page with an obfuscated
   `file:"…"` value (upstream tor-decrypt) → direct `.m3u8` HLS stream.
-- **uakino**: HTML content pages with embedded MP4 URLs.
+- **uakino**: personal-use exception to the no-headless-JS rule: a warm
+  headless-Chromium session serves every uakino.best request as an
+  in-page `fetch()` (Cloudflare's silent per-request JS check never
+  issues a cf_clearance cookie; see
+  `docs/research/uakino-bypass-2026-08-02.md`). Streams are
+  `ashdi.vip/vod/{id}` pages whose `file:'…m3u8'` lines yield direct
+  `.m3u8` HLS; only that CDN hop uses plain httpx.
 
 ## Content ids
 
@@ -71,7 +92,7 @@ live providers.
 | hentaiukr   | ✅   | **hevc** 1280x720 — ⚠️ ps4-soft-decode-risk |
 | bambooua    | ✅   | h264 1920x960                    |
 | kinovezha   | ✅   | h264 1920x804                    |
-| uakino      | ⚠️   | FAIL — site moved to uakino.best behind Cloudflare (upstream, not portability) |
+| uakino      | ⛔   | public stance: known-broken — Cloudflare's per-request JS check blocks plain HTTP (research: `docs/research/uakino-reachability-2026-08-02.md`). Personal-use exception implemented (#51): headless-Chromium session + new-theme extraction, verified live (search/content/stream → playable m3u8, 2026-08-02) |
 
 Gate queries: the default `Дюна` no longer matches upstream catalogs
 that rotated their listings (cikavaideya, hentaiukr, bambooua) — their

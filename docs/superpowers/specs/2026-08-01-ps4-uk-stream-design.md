@@ -91,11 +91,17 @@ pPlay stays a clean media player; the fragile scraping logic lives on the host a
 - Single upstream call timeout: 8 s. Total `/api/search` budget: 12 s, fanned out to all active providers in parallel. Same 12 s budget for `/api/browse`.
 
 ### 3.2 Types
-```json
-MediaType  = "movie" | "series" | "anime" | "cartoon" | "dorama"
-StreamType = "mp4" | "m3u8" | "hls" | "dash"
+
+The catalog domain is governed by [ADR-0001: Catalog taxonomy: form + style](../../adr/0001-catalog-taxonomy-form-and-style.md). Authoritative definitions live in [CONTEXT.md](../../../CONTEXT.md).
+
+```text
+MediaForm        = "movie" | "series"                                       # required on every item
+MediaStyle       = "anime" | "cartoon" | "dorama"                           # optional, frozenset on item
+StreamType       = "mp4" | "m3u8" | "hls" | "dash"
 TranslationLevel = "content" | "episode"
 ```
+
+The single `MediaType` literal from the original v2 spec is obsolete: form and style are independent axes, so ambiguous content like "дитяче аніме мультики" can carry both `form: "series"` and `styles: {"anime", "cartoon"}`. Examples in §3.3–§3.6 still illustrate the legacy `type` field for readability — in the actual contract `type` is replaced by `form` + `styles`.
 
 ### 3.3 `GET /api/sections`
 - 200 response:

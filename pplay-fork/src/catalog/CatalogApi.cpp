@@ -1,6 +1,7 @@
 #include "CatalogApi.h"
 #include "HttpClient.h"
 #include "Json.h"
+#include "PosterCache.h"
 
 #include <cctype>
 #include <condition_variable>
@@ -95,6 +96,10 @@ public:
     // at private state from outside Impl.
     const std::string &base() const { return base_; }
 
+    // Poster disk cache; set once at startup (see setPosterCacheDir).
+    // Worker-thread only, like http_.
+    std::unique_ptr<DiskPosterCache> posterCache_;
+
 private:
     void loop() {
         for (;;) {
@@ -138,12 +143,44 @@ void CatalogApi::searchAsync(const std::string &query, SearchCb cb) {
     });
 }
 
+void CatalogApi::searchAsyncWithProvider(const std::string &query,
+                                         const std::string &provider, SearchCb cb) {
+    impl_->post([this, query, provider, cb = std::move(cb)]() {
+        std::string url = impl_->base() + "/api/search?q=" + urlEncode(query);
+        if (!provider.empty()) {
+            url += "&provider=" + urlEncode(provider);
+        }
+        impl_->httpGet(url, [cb](bool ok, std::string body, std::string err) {
+            if (!ok) { cb(false, {}, std::move(err)); return; }
+            cb(true, parseSearch(body), {});
+        });
+    });
+}
+
 void CatalogApi::contentAsync(const std::string &id, ContentCb cb) {
     impl_->post([this, id, cb = std::move(cb)]() {
         // Backend exposes /api/content/{content_id:path} (path param,
         // not a query string). urlEncode() percent-encodes ':' and '/'
         // in the id, which Starlette decodes back before matching.
         std::string url = impl_->base() + "/api/content/" + urlEncode(id);
+        impl_->httpGet(url, [cb](bool ok, std::string body, std::string err) {
+            if (!ok) { cb(false, {}, std::move(err)); return; }
+            cb(true, parseContent(body), {});
+        });
+    });
+}
+
+void CatalogApi::contentAsyncForSource(const std::string &groupKey,
+                                       const std::string &source, ContentCb cb) {
+    impl_->post([this, groupKey, source, cb = std::move(cb)]() {
+        // /api/content/{group_key:path}?source=<provider>. Backend
+        // re-resolves the group under the named provider and returns the
+        // source's content_id (which is then assigned to out.id in the
+        // parser's synthesized single-entry `sources` list).
+        std::string url = impl_->base() + "/api/content/" + urlEncode(groupKey);
+        if (!source.empty()) {
+            url += "?source=" + urlEncode(source);
+        }
         impl_->httpGet(url, [cb](bool ok, std::string body, std::string err) {
             if (!ok) { cb(false, {}, std::move(err)); return; }
             cb(true, parseContent(body), {});
@@ -176,6 +213,26 @@ void CatalogApi::sectionsAsync(SectionsCb cb) {
     });
 }
 
+void CatalogApi::providersAsync(ProvidersCb cb) {
+    impl_->post([this, cb = std::move(cb)]() {
+        std::string url = impl_->base() + "/api/providers";
+        impl_->httpGet(url, [cb](bool ok, std::string body, std::string err) {
+            if (!ok) { cb(false, {}, std::move(err)); return; }
+            cb(true, parseProviders(body), {});
+        });
+    });
+}
+
+void CatalogApi::homeAsync(HomeCb cb) {
+    impl_->post([this, cb = std::move(cb)]() {
+        std::string url = impl_->base() + "/api/home";
+        impl_->httpGet(url, [cb](bool ok, std::string body, std::string err) {
+            if (!ok) { cb(false, {}, std::move(err)); return; }
+            cb(true, parseHome(body), {});
+        });
+    });
+}
+
 void CatalogApi::browseAsync(const std::string &provider, const std::string &section,
                              int page, BrowseCb cb) {
     impl_->post([this, provider, section, page, cb = std::move(cb)]() {
@@ -189,10 +246,28 @@ void CatalogApi::browseAsync(const std::string &provider, const std::string &sec
     });
 }
 
+void CatalogApi::setPosterCacheDir(std::string dir) {
+    // Startup-only call site (Main ctor / test setup), before any poster
+    // traffic: direct assignment is safe because no loadPoster job can be
+    // queued yet.
+    impl_->posterCache_ = std::make_unique<DiskPosterCache>(std::move(dir));
+}
+
 void CatalogApi::loadPoster(const std::string &url, PosterCb cb) {
     impl_->post([this, url, cb = std::move(cb)]() {
-        impl_->httpGetBytes(url, [cb](bool ok, std::vector<std::uint8_t> bytes,
-                                      std::string ct, std::string err) {
+        if (impl_->posterCache_) {
+            std::vector<std::uint8_t> bytes;
+            std::string ct;
+            if (impl_->posterCache_->get(url, bytes, ct)) {
+                cb(true, std::move(bytes), std::move(ct), {});
+                return;
+            }
+        }
+        impl_->httpGetBytes(url, [this, url, cb](bool ok, std::vector<std::uint8_t> bytes,
+                                                 std::string ct, std::string err) {
+            if (ok && impl_->posterCache_) {
+                impl_->posterCache_->put(url, bytes, ct);
+            }
             cb(ok, std::move(bytes), std::move(ct), std::move(err));
         });
     });
@@ -230,6 +305,7 @@ ContentItem CatalogApi::parseContent(const std::string &raw) {
     out.title = r.str("title");
     out.description = r.str("description");
     out.poster = r.str("poster");
+    out.groupKey = r.str("group_key");
 
     // translations_level controls where translations live.
     // "content" (default) → on ContentItem; "episode" → on each Episode.
@@ -262,6 +338,29 @@ ContentItem CatalogApi::parseContent(const std::string &raw) {
             cs2.episodes.push_back(std::move(ep));
         }
         out.seasons.push_back(std::move(cs2));
+    }
+
+    // Issue #62 / v3 spec §3.3: chip-strip roster of every provider that
+    // served this group. When the backend omits the field (legacy / single
+    // provider / test fixture), synthesize a single-entry roster from `id`
+    // so the UI never shows a bogus empty strip.
+    for (const auto &src : r.arr("sources")) {
+        ContentItem::Source s;
+        s.provider = src.str("provider");
+        s.id = src.str("id");
+        if (!s.provider.empty() && !s.id.empty()) {
+            out.sources.push_back(std::move(s));
+        }
+    }
+    if (out.sources.empty() && !out.id.empty()) {
+        ContentItem::Source s;
+        // Convention: ids are `<provider>:<inner_id>`. Strip the prefix so
+        // the chip's backend filter (`?source=<p>`) lines up with the
+        // provider id registered on the home / sections response.
+        const auto sep = out.id.find(':');
+        s.provider = (sep == std::string::npos) ? out.id : out.id.substr(0, sep);
+        s.id = out.id;
+        out.sources.push_back(std::move(s));
     }
     return out;
 }
@@ -305,6 +404,69 @@ std::vector<ProviderSections> CatalogApi::parseSections(const std::string &raw) 
             if (!sec.id.empty()) ps.sections.push_back(std::move(sec));
         }
         out.push_back(std::move(ps));
+    }
+    return out;
+}
+
+std::vector<ProviderInfo> CatalogApi::parseProviders(const std::string &raw) {
+    std::vector<ProviderInfo> out;
+    auto doc = JsonDoc::parse(raw);
+    if (!doc) return out;
+    auto root = doc->root();
+    // Bare array form (the actual /api/providers response). Accept
+    // {"providers": [...]} for symmetry with parseSections.
+    auto arr = root.has("providers") ? root.arr("providers") : root.asArray();
+    for (const auto &p : arr) {
+        ProviderInfo info;
+        info.id = p.str("id");
+        info.name = p.str("name");
+        info.status = p.str("status");
+        // Defensive: status is "ok" / "degraded" / "down" — anything
+        // else collapses to "unknown" downstream.
+        if (info.status != "ok" && info.status != "degraded" &&
+            info.status != "down") {
+            info.status = "ok";
+        }
+        // last_error_at is a unix timestamp (large int) — JsonValue
+        // exposes integer() with a default.
+        const auto lastError = p.integer("last_error_at", 0);
+        info.lastErrorAt = static_cast<long long>(lastError);
+        if (!info.id.empty()) out.push_back(std::move(info));
+    }
+    return out;
+}
+
+HomeResponse CatalogApi::parseHome(const std::string &raw) {
+    HomeResponse out;
+    auto doc = JsonDoc::parse(raw);
+    if (!doc) return out;
+    auto root = doc->root();
+    for (const auto &rowJson : root.arr("rows")) {
+        HomeRow row;
+        row.title = rowJson.str("title");
+        row.type = rowJson.str("type");
+        for (const auto &itJson : rowJson.arr("items")) {
+            HomeItem it;
+            it.groupKey = itJson.str("group_key");
+            it.title = itJson.str("title");
+            it.year = itJson.integer("year", 0);
+            it.type = itJson.str("type");
+            it.poster = itJson.str("poster");
+            for (const auto &p : itJson.arr("providers")) {
+                const std::string pid = p.str();
+                if (!pid.empty()) it.providers.push_back(pid);
+            }
+            for (const auto &mk : itJson.arr("member_keys")) {
+                const std::string k = mk.str();
+                if (!k.empty()) it.memberKeys.push_back(k);
+            }
+            // Defensive: a row with empty group_key is useless for resume
+            // and round-trip with /api/content/{gk}; drop it.
+            if (!it.groupKey.empty()) row.items.push_back(std::move(it));
+        }
+        // Defensive: empty rows are filtered server-side, but if the
+        // backend drifts and ships one, skip it.
+        if (!row.items.empty()) out.rows.push_back(std::move(row));
     }
     return out;
 }

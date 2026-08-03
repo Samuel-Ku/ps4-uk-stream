@@ -5,6 +5,8 @@
 #ifndef PPLAY_PLAYER_H
 #define PPLAY_PLAYER_H
 
+#include <functional>
+
 #include "menus/menu_video_submenu.h"
 #include "media_file.h"
 #include "mpv.h"
@@ -61,6 +63,13 @@ public:
 
     const std::string &getTitle() const;
 
+    // Catalog hook (issue #55): while set, called with (positionSec,
+    // durationSec) roughly every 10 s of active playback, and once when
+    // playback stops. Set by the catalog layer right before load();
+    // cleared on stop. On PS4 there is no real position yet (mpv stub) —
+    // the saver still fires and simply records zeros.
+    void setPositionSaver(std::function<void(long positionSec, long durationSec)> saver);
+
     bool onInput(c2d::Input::Player *players) override;
 
 private:
@@ -86,6 +95,10 @@ private:
     Mpv *mpv;
 
     bool fullscreen = false;
+
+    // catalog resume reporting (#55)
+    std::function<void(long, long)> positionSaver_;
+    float positionSaverElapsed_ = 0.0f;
 };
 
 #endif //PPLAY_PLAYER_H

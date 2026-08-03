@@ -28,8 +28,9 @@ from ..models import (
     Season,
     Section,
     StreamResponse,
-    Translation,
+     Translation,
 )
+from ..country import extract_country
 from .base import BaseProvider, ProviderError
 
 BASE_URL = "https://klon.fun"
@@ -281,6 +282,7 @@ class KlonTVProvider(BaseProvider):
         ) or None
         desc_el = soup.select_one(".info-clamp__hid")
         description = desc_el.get_text(strip=True) if desc_el else ""
+        country: str | None = extract_country(soup)
         # Player URL: the upstream Kotlin reads
         # `document.select(playerSelector).attr("data-src")` where
         # `playerSelector = "div.film-player iframe"`. The iframe
@@ -322,6 +324,7 @@ class KlonTVProvider(BaseProvider):
             poster=poster,
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
+            country=country,
         )
 
     @staticmethod

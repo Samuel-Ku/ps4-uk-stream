@@ -329,6 +329,10 @@ class SimpsonsUATvProvider(BaseProvider):
     name = "SimpsonsUA"
     types = ("cartoon", "series")
     sections = SIMPSONSUATV_SECTIONS
+    # v3 (issue #70): "Останні оновлення" contributes to «Новинки».
+    # (The second section, ``"page"``, is the full catalogue and does
+    # NOT opt into «Новинки» — only the ``updates`` slot does.)
+    newest_section = "updates"
 
     async def _get(
         self,

@@ -55,34 +55,42 @@ def test_sections_omits_providers_without_sections():
         del PROVIDERS["empty-test"]
 
 
-def test_browse_returns_results_for_uakino_section():
+def test_browse_returns_results_for_uakino_section(monkeypatch):
     """Browse a Uakino section and confirm pagination + result shape."""
     import pathlib
 
-    import httpx
-    import respx
-
     from cs_uk_api.providers import PROVIDERS
+    from cs_uk_api.providers import uakino as uakino_mod
 
     fixture = (pathlib.Path(__file__).parent / "fixtures" / "uakino" / "browse_filmy.html").read_text(encoding="utf-8")
+
+    class _FakeSession:
+        async def fetch(self, path, method="GET", data=None):
+            if path == "/filmy/":
+                return 200, fixture
+            raise AssertionError(f"unexpected fetch {method} {path}")
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(uakino_mod, "get_session", lambda: _FakeSession())
+
     p = PROVIDERS["uakino"]
     first_section_id = p.sections[0].id
-    with respx.mock(assert_all_called=False) as router:
-        router.get(host="uakino.club", path__startswith="/filmy/").respond(200, text=fixture)
-        # The endpoint caches per (provider, section, page), so the cache key
-        # must be unique across tests; clear it for the page=1 case.
-        from cs_uk_api import main as m
-        m._browse_cache.clear()
-        r = client.get(f"/api/browse?provider=uakino&section={first_section_id}&page=1")
+    # The endpoint caches per (provider, section, page), so the cache key
+    # must be unique across tests; clear it for the page=1 case.
+    from cs_uk_api import main as m
+    m._browse_cache.clear()
+    r = client.get(f"/api/browse?provider=uakino&section={first_section_id}&page=1")
     assert r.status_code == 200
     data = r.json()
     assert data["provider"] == "uakino"
     assert data["section"] == first_section_id
     assert data["page"] == 1
     assert data["has_next"] is True
-    assert len(data["results"]) == 2
+    assert len(data["results"]) == 40
     titles = [x["title"] for x in data["results"]]
-    assert any("Дюна" in t for t in titles)
+    assert any("Після життя" in t for t in titles)
 
 
 def test_browse_unknown_provider_returns_400():

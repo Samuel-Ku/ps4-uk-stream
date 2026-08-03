@@ -24,6 +24,7 @@ from bs4 import BeautifulSoup, Tag
 from pydantic import BaseModel, ValidationError
 
 from ..extractors import RegexExtractor
+from ..country import extract_country
 from ..models import (
     ContentResponse,
     Episode,
@@ -320,6 +321,7 @@ class DoramyWorldProvider(BaseProvider):
         poster = urljoin(BASE_URL, str(og["content"])) if og and og.get("content") else None
         year = _extract_year(soup)
         description = _extract_description(soup)
+        country: str | None = extract_country(soup)
         media_type = _type_from_url(url)
         translations_models = _parse_player(resp.text)
         translations: list[Translation] = [
@@ -343,6 +345,7 @@ class DoramyWorldProvider(BaseProvider):
             poster=poster,
             translations=translations,
             seasons=seasons,
+            country=country,
         )
 
     @staticmethod

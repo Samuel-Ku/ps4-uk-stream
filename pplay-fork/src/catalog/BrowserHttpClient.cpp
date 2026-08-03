@@ -11,8 +11,10 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <unistd.h>
 #include <memory>
 #include <string>
 #include <utility>
@@ -21,6 +23,46 @@
 namespace cs {
 
 namespace {
+
+// RAII wrapper around a `mkstemp`-allocated temp file. Deletes the
+// file in its destructor unless `keep()` was called. Lets the early
+// `return false` paths in `getBytes` clean up the tmp file without
+// having to remember a `std::remove` before each one.
+class TmpFile {
+public:
+    TmpFile() = default;
+    ~TmpFile() {
+        if (!released_ && !path_.empty()) {
+            std::remove(path_.c_str());
+        }
+    }
+    TmpFile(const TmpFile &) = delete;
+    TmpFile &operator=(const TmpFile &) = delete;
+
+    // Allocate a unique name under /tmp. Returns false on `mkstemp`
+    // failure; the caller should treat that as `mkstemp_failed`.
+    bool create(const std::string &prefix, std::string &errorOut) {
+        path_ = prefix + "_XXXXXX";
+        std::vector<char> buf(path_.begin(), path_.end());
+        buf.push_back('\0');
+        const int fd = ::mkstemp(buf.data());
+        if (fd < 0) {
+            errorOut = "mkstemp_failed";
+            path_.clear();
+            return false;
+        }
+        ::close(fd);
+        path_.assign(buf.data());
+        return true;
+    }
+
+    const std::string &path() const { return path_; }
+    void keep() { released_ = true; }
+
+private:
+    std::string path_;
+    bool released_ = false;
+};
 
 class BrowserHttpClient final : public HttpClient {
 public:
@@ -50,8 +92,14 @@ public:
         // read the temp file back into bytesOut. This sidesteps the
         // Browser::write_bytes filepipe==NULL assert on read-only FSes
         // (HIGH review finding).
-        const std::string tmp = "/tmp/cs_catalog_poster.bin";
-        std::remove(tmp.c_str());
+        // Unique tmp name per call avoids races between concurrent
+        // Browse + Search posters hitting the same path. TmpFile's
+        // destructor unlinks the file on every early-return path
+        // below; `keep()` releases it after a successful read.
+        TmpFile tmp;
+        if (!tmp.create("/tmp/cs_catalog_poster", errorOut)) {
+            return false;
+        }
 
         browser_.open_novisit(url, 12);
         if (browser_.error()) {
@@ -62,7 +110,7 @@ public:
 
         const std::string body = browser_.response();
         {
-            std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+            std::ofstream out(tmp.path(), std::ios::binary | std::ios::trunc);
             if (!out) {
                 errorOut = "error_write_bytes";
                 return false;
@@ -70,23 +118,30 @@ public:
             out.write(body.data(), static_cast<std::streamsize>(body.size()));
         }
 
-        std::ifstream in(tmp, std::ios::binary);
+        std::ifstream in(tmp.path(), std::ios::binary);
         if (!in) {
             errorOut = "error_write_bytes";
-            std::remove(tmp.c_str());
             return false;
         }
         bytesOut.assign(std::istreambuf_iterator<char>(in),
                         std::istreambuf_iterator<char>());
-        std::remove(tmp.c_str());
+        tmp.keep();
 
         // Content-Type is best-effort: pull it from the response header.
+        // RFC 7230 says header field names are case-insensitive, so scan
+        // for both casings.
         contentTypeOut.clear();
         const std::string info = browser_.info();
-        constexpr std::string_view kCtKey = "Content-Type:";
-        auto pos = info.find(kCtKey);
-        if (pos != std::string::npos) {
-            pos += kCtKey.size();
+        constexpr const char *kCtKeys[] = {"Content-Type:", "content-type:"};
+        std::size_t pos = std::string::npos;
+        for (const char *key : kCtKeys) {
+            pos = info.find(key);
+            if (pos != std::string::npos) {
+                pos += std::strlen(key);
+                break;
+            }
+        }
+        if (pos != std::string::npos && pos < info.size()) {
             while (pos < info.size() && (info[pos] == ' ' || info[pos] == '\t')) ++pos;
             auto end = info.find_first_of("\r\n", pos);
             contentTypeOut = info.substr(pos, end == std::string::npos

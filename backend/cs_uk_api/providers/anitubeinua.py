@@ -443,6 +443,8 @@ class AnitubeinuaProvider(BaseProvider):
     name = "Anitubeinua"
     types = ("anime",)
     sections = ANITUBEINUA_SECTIONS
+    # v3 (issue #70): "Нові" contributes to «Новинки».
+    newest_section = "page"
 
     async def _get(
         self,

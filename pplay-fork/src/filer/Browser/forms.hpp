@@ -251,7 +251,7 @@ class forms_class {
 
 
 ///=======constructor/destruct of form_class - extracting and storing raw forms======///
-forms_class::forms_class(std::string whole_html)
+inline forms_class::forms_class(std::string whole_html)
 {
     //we get the raw forms inside the class
     form_raw_container.clear();
@@ -259,7 +259,7 @@ forms_class::forms_class(std::string whole_html)
     get_after_delimiter(whole_html,"form ",form_raw_container);
     filter_inside_form();
 }
-void forms_class::initialize(std::string whole_html)
+inline void forms_class::initialize(std::string whole_html)
 {
     form_raw_container.clear();
     all_forms.clear();
@@ -267,24 +267,24 @@ void forms_class::initialize(std::string whole_html)
     get_after_delimiter(whole_html,"form",form_raw_container);
     filter_inside_form();
 }
-forms_class::forms_class()
+inline forms_class::forms_class()
 {
 };
-forms_class::~forms_class()
+inline forms_class::~forms_class()
 {
 }
 ///==================================================================================///
 
 
 ///========================return the total number of forms==========================///
-int forms_class::size()
+inline int forms_class::size()
 {
     return all_forms.size();
 }
 ///==================================================================================///
 
 ///===================================clear the form=================================///
-void forms_class::form_class::clear()
+inline void forms_class::form_class::clear()
 {
         select.clear();
         input.clear();
@@ -295,7 +295,7 @@ void forms_class::form_class::clear()
         multipart_=false;
         form_work_on.clear();
 }
-void forms_class::form_class2::clear()
+inline void forms_class::form_class2::clear()
 {
         select.clear();
         input.clear();
@@ -308,7 +308,7 @@ void forms_class::form_class2::clear()
 ///==================================================================================///
 
 ///=======================Overloading of the streaming operator======================///
-void forms_class::form_class::stream_it(std::ostream & flux) const
+inline void forms_class::form_class::stream_it(std::ostream & flux) const
 {
     std::string output = "";
     output +="--- FORM report. Uses ";
@@ -361,7 +361,7 @@ void forms_class::form_class::stream_it(std::ostream & flux) const
     output +="--- end of FORM\n";
     flux << output;
 }
-void forms_class::form_class2::stream_it(std::ostream & flux) const
+inline void forms_class::form_class2::stream_it(std::ostream & flux) const
 {
     std::string output = "";
     output +="--- FORM report. Uses ";
@@ -414,12 +414,12 @@ void forms_class::form_class2::stream_it(std::ostream & flux) const
     output +="--- end of FORM\n";
     flux << output;
 }
-std::ostream &operator<<( std::ostream &flux, forms_class::form_class const& form_to_display  )
+inline std::ostream &operator<<( std::ostream &flux, forms_class::form_class const& form_to_display  )
 {
     form_to_display.stream_it(flux); // <- we change it here
     return flux;
 }
-std::ostream &operator<<( std::ostream &flux, forms_class::form_class2 const& form_to_display  )
+inline std::ostream &operator<<( std::ostream &flux, forms_class::form_class2 const& form_to_display  )
 {
     form_to_display.stream_it(flux); // <- we change it here
     return flux;
@@ -428,7 +428,7 @@ std::ostream &operator<<( std::ostream &flux, forms_class::form_class2 const& fo
 
 
 ///================Print all the forms with all their data inside====================///
-std::string forms_class::all()
+inline std::string forms_class::all()
 {
     std::string output = "";
     for(unsigned int i =0;i<all_forms.size();i++) {
@@ -488,7 +488,7 @@ std::string forms_class::all()
 
 
 ///================Overloading of the [ ] in form to fill by the name ===============///
-std::string *forms_class::form_class::operator[ ]  (std::string name)
+inline std::string *forms_class::form_class::operator[ ]  (std::string name)
 {
     //search in the form we want what is the type of the [name]
     //then push_back this on the form we want to post (original
@@ -595,7 +595,7 @@ std::string *forms_class::form_class::operator[ ]  (std::string name)
 
 
 ///=====overloadind of operator [] to loop through forms(hopefully it will work)=====///
-forms_class::form_class forms_class::operator[ ]  (int ite)
+inline forms_class::form_class forms_class::operator[ ]  (int ite)
 {
     if( (unsigned int) ite>=all_forms.size() || ite<0) {
         if(all_forms.size()!=0) {
@@ -613,7 +613,7 @@ forms_class::form_class forms_class::operator[ ]  (int ite)
 
 
 ///=================fill the class form_class with all the data=====================///
-void forms_class::filter_inside_form()
+inline void forms_class::filter_inside_form()
 {
     for(unsigned int ii=0; ii < form_raw_container.size(); ii++) {
         ///maybe we can fork those in the background... or make it multithreaded but it will not be multiplatform
@@ -625,7 +625,7 @@ void forms_class::filter_inside_form()
 
 
 ///================Create a form from the raw form==================================///
-forms_class::form_class forms_class::crack(std::string form_part)
+inline forms_class::form_class forms_class::crack(std::string form_part)
 {
     form_class my_new_form;
 
@@ -721,7 +721,7 @@ forms_class::form_class forms_class::crack(std::string form_part)
 
 
 ///============Split inputs from form -- if not inputs return enpty string==========///
-void forms_class::get_raw_inputs(std::string raw_form, std::vector <std::string> &raw_inputs_container)
+inline void forms_class::get_raw_inputs(std::string raw_form, std::vector <std::string> &raw_inputs_container)
 {
     remove_html_comments(raw_form);
     std::string raw_form_lower;

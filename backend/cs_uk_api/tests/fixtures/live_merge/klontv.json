@@ -1,0 +1,83 @@
+[
+ {
+  "id": "klontv:series/7686-dity-duny",
+  "provider": "klontv",
+  "type": "series",
+  "title": "Діти Дюни",
+  "year": null,
+  "poster": "https://klon.fun/uploads/posts/2023-11/dity-duny.webp",
+  "url": "https://klon.fun/serialy/7686-dity-duny.html"
+ },
+ {
+  "id": "klontv:series/8431-duna",
+  "provider": "klontv",
+  "type": "series",
+  "title": "Дюна",
+  "year": null,
+  "poster": "https://klon.fun/uploads/posts/2023-11/duna.webp",
+  "url": "https://klon.fun/serialy/8431-duna.html"
+ },
+ {
+  "id": "klontv:films/501-duna",
+  "provider": "klontv",
+  "type": "movie",
+  "title": "Дюна",
+  "year": null,
+  "poster": "https://klon.fun/uploads/posts/2022-10/duna.webp",
+  "url": "https://klon.fun/filmy/501-duna.html"
+ },
+ {
+  "id": "klontv:films/11872-duna",
+  "provider": "klontv",
+  "type": "movie",
+  "title": "Дюна",
+  "year": null,
+  "poster": "https://klon.fun/uploads/posts/2024-03/duna.webp",
+  "url": "https://klon.fun/filmy/11872-duna.html"
+ },
+ {
+  "id": "klontv:series/16053-duna-proroctvo",
+  "provider": "klontv",
+  "type": "series",
+  "title": "Дюна: Пророцтво",
+  "year": null,
+  "poster": "https://klon.fun/uploads/posts/2024-11/duna-proroctvo.webp",
+  "url": "https://klon.fun/serialy/16053-duna-proroctvo.html"
+ },
+ {
+  "id": "klontv:films/13177-padloid-sterviatnyk",
+  "provider": "klontv",
+  "type": "movie",
+  "title": "Падлоїд / Стерв'ятник",
+  "year": null,
+  "poster": "https://klon.fun/uploads/posts/2024-05/padloid-sterviatnyk.webp",
+  "url": "https://klon.fun/filmy/13177-padloid-sterviatnyk.html"
+ },
+ {
+  "id": "klontv:films/11719-duna-chastyna-druga",
+  "provider": "klontv",
+  "type": "movie",
+  "title": "Дюна: Частина друга",
+  "year": null,
+  "poster": "https://klon.fun/uploads/posts/2024-03/duna-chastyna-druga.webp",
+  "url": "https://klon.fun/filmy/11719-duna-chastyna-druga.html"
+ },
+ {
+  "id": "klontv:films/8082-ogolenyi-strakh",
+  "provider": "klontv",
+  "type": "movie",
+  "title": "Оголений страх",
+  "year": null,
+  "poster": "https://klon.fun/uploads/posts/2023-11/ogolenyi-strakh.webp",
+  "url": "https://klon.fun/filmy/8082-ogolenyi-strakh.html"
+ },
+ {
+  "id": "klontv:films/4456-duna-khodorovskogo",
+  "provider": "klontv",
+  "type": "movie",
+  "title": "\"Дюна\" Ходоровського",
+  "year": null,
+  "poster": "https://klon.fun/uploads/posts/2023-08/duna-khodorovskogo.webp",
+  "url": "https://klon.fun/filmy/4456-duna-khodorovskogo.html"
+ }
+]

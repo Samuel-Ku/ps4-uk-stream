@@ -105,6 +105,8 @@ class UnimayProvider(BaseProvider):
     name = "Unimay"
     types = ("movie", "anime")
     sections = UNIMAY_SECTIONS
+    # v3 (issue #70): "Останні релізи" contributes to «Новинки».
+    newest_section = "updates"
 
     async def search(
         self, query: str, http: httpx.AsyncClient

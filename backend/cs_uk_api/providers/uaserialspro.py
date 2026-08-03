@@ -47,8 +47,9 @@ from ..models import (
     Season,
     Section,
     StreamResponse,
-    Translation,
+        Translation,
 )
+from ..country import extract_country
 from ._crypto_uaserialspro import decrypt_player_data
 from ._tortuga import decode as _tortuga_decode
 from .base import BaseProvider, ProviderError
@@ -336,6 +337,7 @@ class UASerialsProProvider(BaseProvider):
                     translation = inner.get_text(strip=True).replace("|", "/")
                 break
         translations = [Translation(id="uk", label=translation or "Українська")]
+        country: str | None = extract_country(soup)
         # AES-decrypt the player data-tag1 to get the player URL.
         data_tag1_el = soup.select_one("div.fplayer player-control")
         if data_tag1_el is None or not data_tag1_el.get("data-tag1"):
@@ -365,6 +367,7 @@ class UASerialsProProvider(BaseProvider):
             poster=poster,
             translations=translations,
             seasons=seasons,
+            country=country,
         )
 
     @staticmethod

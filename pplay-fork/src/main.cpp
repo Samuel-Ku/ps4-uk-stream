@@ -2,7 +2,12 @@
 // Created by cpasjuste on 02/10/18.
 //
 #include "main.h"
+#include "catalog/BrowserHttpClient.h"
+#include "catalog/CatalogApi.h"
+#include "catalog/CatalogContext.h"
 #include "catalog/ScreenSections.h"
+#include "catalog/ScreenHome.h"
+#include "catalog/ScreenSearch.h"
 #include "io.h"
 #include "filer.h"
 #include "menu_main.h"
@@ -47,6 +52,7 @@ extern "C" int sceSystemServiceLoadExec(const char *path, const char *args[]);
 using namespace c2d;
 using namespace c2d::config;
 using namespace pplay;
+using namespace cs;
 
 Main::Main(const c2d::Vector2f &size) : C2DRenderer(size) {
 
@@ -112,7 +118,8 @@ Main::Main(const c2d::Vector2f &size) : C2DRenderer(size) {
 #endif
     items.emplace_back("Network", "network.png", MenuItem::Position::Top);
     // Catalog UA menu entry (issue #17 — backend at OPT_CATALOG_URL).
-    // Falls back to "network.png" if "catalog.png" is missing.
+    // Issue #61 — single «Каталог UA» entry replaces the separate
+    // «Пошук UA»; Home opens ScreenHome which owns the loupe shortcut.
     items.emplace_back("Каталог UA", "catalog.png", MenuItem::Position::Top);
     items.emplace_back("Options", "options.png", MenuItem::Position::Top);
     items.emplace_back("Exit", "exit.png", MenuItem::Position::Bottom);
@@ -149,9 +156,45 @@ Main::Main(const c2d::Vector2f &size) : C2DRenderer(size) {
     Main::add(messageBox);
 
     scrapper = new Scrapper(this);
+
+    // Catalog UA — single shared CatalogApi per process, owned by the
+    // CatalogContext singleton so the four catalog screens (Sections,
+    // Search, Results, Content) can reach it without Main having to
+    // thread it through every constructor. The api runs an internal
+    // worker thread that owns the Browser-backed HttpClient; all UI
+    // marshalling happens via std::atomic flags inside the screens.
+    const std::string catalogUrl =
+        config->getOption(OPT_CATALOG_URL)->getString();
+    if (!catalogUrl.empty()) {
+        auto api = std::make_unique<cs::CatalogApi>(catalogUrl,
+                                                    cs::makeBrowserHttpClient());
+        // v3 (issue #54): posters persist on disk (7-day TTL) under the
+        // app data path so cold starts don't re-fetch them upstream.
+        api->setPosterCacheDir(getIo()->getDataPath() + "cache/catalog/");
+        cs::CatalogContext::set(std::move(api));
+
+        // v3 (issue #55): resume + source/dub memory store. load() is
+        // tolerant: missing/corrupt file just means empty state.
+        auto state = std::make_unique<cs::CatalogState>(getIo()->getDataPath() + "catalog_state.json");
+        state->load();
+        cs::CatalogContext::setState(std::move(state));
+    }
 }
 
 Main::~Main() {
+    // Drop the api before anything else: its worker thread is blocked
+    // on a cv, and any in-flight request must finish before libcurl's
+    // global teardown happens in libcross2d's static destructors.
+    cs::CatalogContext::set(nullptr);
+    // Drop the tracked catalog screen. They're also in our children
+    // list (DeleteMode::Auto will clean them up too), but clearing the
+    // pointer here keeps the relationship explicit and matches the
+    // show() site that set it.
+    if (catalogScreen_ != nullptr) {
+        remove(catalogScreen_);
+        delete catalogScreen_;
+        catalogScreen_ = nullptr;
+    }
     delete (scrapper);
     delete (config);
     delete (timer);
@@ -223,13 +266,17 @@ void Main::show(MenuType type) {
             filer->getDir(config->getOption(OPT_UMS_DEVICE)->getString());
 #endif
     } else if (type == MenuType::Catalog) {
-        // The placeholder screen compiles and links; the full
-        // Sections/Search/Results/Content screens are added in the
-        // next plan pass. Until then, this entry surfaces in the
-        // main menu and shows a blank screen rather than crashing.
-        // Main::add is the c2d scene-graph attachment point (no push
-        // helper on C2DRenderer).
-        Main::add(new ScreenSections(this));
+        // Issue #61 — ScreenHome is the single catalog entry point. The
+        // screen owns loupe → ScreenSearch and rows → ScreenResults /
+        // ScreenContent. Drop any previously pushed catalog screen so
+        // the children list does not grow on every menu entry.
+        if (catalogScreen_ != nullptr) {
+            remove(catalogScreen_);
+            delete catalogScreen_;
+            catalogScreen_ = nullptr;
+        }
+        catalogScreen_ = new ScreenHome(this);
+        Main::add(catalogScreen_);
     } else {
 #ifdef __SWITCH__
         usbHsFsExit();

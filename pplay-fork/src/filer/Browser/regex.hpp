@@ -51,7 +51,7 @@ void get_from_intern(std::string raw_input, std::string word,std::string word2, 
 std::string  to_string(unsigned int integer);
 
 ///========================Conver a u integer to string==============================///
-std::string to_string(unsigned int integer)
+inline std::string to_string(unsigned int integer)
 {
 	std::ostringstream o;
 	o << integer;
@@ -60,7 +60,7 @@ std::string to_string(unsigned int integer)
 ///==================================================================================///
 
 ///===========================SPLIT A STRING FROM A DELIMITER========================///
-std::vector<std::string> &split(const std::string &s, char delim, std::vector<std::string> &elems) {
+inline std::vector<std::string> &split(const std::string &s, char delim, std::vector<std::string> &elems) {
     std::stringstream ss(s);
     std::string item;
     while (std::getline(ss, item, delim))
@@ -68,7 +68,7 @@ std::vector<std::string> &split(const std::string &s, char delim, std::vector<st
     return elems;
 }
 
-std::vector<std::string> split(const std::string &s, char delim) {
+inline std::vector<std::string> split(const std::string &s, char delim) {
     std::vector<std::string> elems;
     split(s, delim, elems);
     return elems;
@@ -76,7 +76,7 @@ std::vector<std::string> split(const std::string &s, char delim) {
 ///=================================================================================///
 
 ///==============================UPPER IT FROM STRING===============================///
-void upper_it(const std::string &income, std::string & outcome)
+inline void upper_it(const std::string &income, std::string & outcome)
 {
     char c;
     int i=0;
@@ -89,7 +89,7 @@ void upper_it(const std::string &income, std::string & outcome)
 ///=================================================================================///
 
 ///==============================LOWER IT FROM STRING===============================///
-void lower_it(const std::string &income, std::string & outcome)
+inline void lower_it(const std::string &income, std::string & outcome)
 {
     char c;
     int i=0;
@@ -102,7 +102,7 @@ void lower_it(const std::string &income, std::string & outcome)
 ///=================================================================================///
 
 ///===============================SEARCH FOR A WORD (any)===========================///
-bool word_in(const std::string &the_string, const std::string &to_search)
+inline bool word_in(const std::string &the_string, const std::string &to_search)
 {
     std::string temp;
     lower_it(the_string,temp);
@@ -112,7 +112,7 @@ bool word_in(const std::string &the_string, const std::string &to_search)
 ///=================================================================================///
 
 ///=================REPLACE SOMETHING IN A STRING WITH SOMETHING ELSE===============///
-void replaceAll(std::string& str, const std::string& from, const std::string& to)
+inline void replaceAll(std::string& str, const std::string& from, const std::string& to)
 {
     if(from.empty())
         return;
@@ -127,7 +127,7 @@ void replaceAll(std::string& str, const std::string& from, const std::string& to
 ///=================================REMOVE COMMENTS=================================///
 //Remove 1 comments -> return true
 //No more comments  -> return false
-bool remove_html_comment(std::string & html_response)
+inline bool remove_html_comment(std::string & html_response)
 {
     //save the start position of the start of a comment
     std::basic_string <char>::size_type position_start         = html_response.find ("<!--");
@@ -146,7 +146,7 @@ bool remove_html_comment(std::string & html_response)
     else
         return false;
 }
-void remove_html_comments(std::string & html_response)
+inline void remove_html_comments(std::string & html_response)
 {
     bool check_if_still_comments = true;
     while(check_if_still_comments)
@@ -159,7 +159,7 @@ void remove_html_comments(std::string & html_response)
 //EVERYTHING DEPENDS ON IF THE HTML HAS "<" or ">" BETWEEN SOME QUOTES SOMEWHERE
 //BUT WHO'S THE DUMBASS WHO WILL WRITE HTML LIKE THAT???
 ///========================RETURN "seeking *= *\"(.*)\""============================///
-std::string get_after_equal(std::string html_response, std::string seeking)
+inline std::string get_after_equal(std::string html_response, std::string seeking)
 {
     //0- Remove all comments because we don't want to search inside of them
     remove_html_comments(html_response);
@@ -250,7 +250,7 @@ std::string get_after_equal(std::string html_response, std::string seeking)
 ///=================================================================================///
 
 ///====GET  "< *seeking(.*)< */or\ *seeking" and append it to the form_container====///
-void get_after_delimiter(std::string html_response, std::string seeking, std::vector <std::string> &form_container)
+inline void get_after_delimiter(std::string html_response, std::string seeking, std::vector <std::string> &form_container)
 {
     //0- Remove all comments because we don't want to search inside of them
     remove_html_comments(html_response);
@@ -351,7 +351,7 @@ void get_after_delimiter(std::string html_response, std::string seeking, std::ve
 ///=================================================================================///
 
 ///================GET "< *seeking(.*)>" and append it to a container===============///
-void get_between_two(std::string raw_input, std::string seeking, std::vector <std::string> & container)
+inline void get_between_two(std::string raw_input, std::string seeking, std::vector <std::string> & container)
 {
     //0- Remove all comments because we don't want to search inside of them
     remove_html_comments(raw_input);
@@ -430,7 +430,7 @@ void get_between_two(std::string raw_input, std::string seeking, std::vector <st
 // search for the first '>' from beg
 // search for the first '<' from the end
 //that's it! return :)
-std::string get_between_two_closed(std::string raw_input,std::string seeking)
+inline std::string get_between_two_closed(std::string raw_input,std::string seeking)
 {
     //0- Remove all comments because we don't want to search inside of them
     remove_html_comments(raw_input);
@@ -468,7 +468,7 @@ std::string get_between_two_closed(std::string raw_input,std::string seeking)
 //the search if based on word and not on word2 for efficiency because
 //word is less common than word2
 // "(< *a .* href *=.*< *[/|\]] *a *>)"
-void get_from_intern(std::string raw_input, std::string word,std::string word2, std::vector <std::string> & container)
+inline void get_from_intern(std::string raw_input, std::string word,std::string word2, std::vector <std::string> & container)
 {
 
     // Remove all comments because we don't want to search inside of them

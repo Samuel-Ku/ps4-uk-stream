@@ -9,6 +9,7 @@ from urllib.parse import urljoin
 import httpx
 from bs4 import BeautifulSoup, Tag
 
+from ..country import extract_country
 from ..models import ContentResponse, Episode, MediaType, SearchResult, Season, Section, StreamResponse, Translation
 from .base import BaseProvider, ProviderError
 
@@ -97,13 +98,14 @@ class EneyidaProvider(BaseProvider):
         if r.status_code != 200: raise ProviderError("not_found", f"status {r.status_code}")
         soup = BeautifulSoup(r.text, "lxml"); h1 = soup.select_one("h1")
         if not h1: raise ProviderError("parse_failed", "title missing")
+        country: str | None = extract_country(soup)
         img = soup.select_one(".full img") or soup.select_one("img[src*='/uploads/']")
         iframe = soup.select_one("iframe")
         if not iframe: raise ProviderError("parse_failed", "player missing")
         typ: MediaType = "series" if kind == "series" else "movie"
         seasons: list[Season] | None = [Season(number=1, episodes=[Episode(number=1, id=external_id+MOVIE_SUFFIX, title="Фільм")])]
         if typ == "series": seasons = await self._seasons(str(iframe.get("src")), external_id, http)
-        return ContentResponse(id=f"{self.id}:{external_id}", type=typ, title=h1.get_text(strip=True), poster=urljoin(BASE_URL, str(img.get("src"))) if img else None, translations=[Translation(id="uk", label="Українська")], seasons=seasons)
+        return ContentResponse(id=f"{self.id}:{external_id}", type=typ, title=h1.get_text(strip=True), poster=urljoin(BASE_URL, str(img.get("src"))) if img else None, translations=[Translation(id="uk", label="Українська")], seasons=seasons, country=country)
 
     async def _seasons(self, player: str, ext: str, http: httpx.AsyncClient) -> list[Season] | None:
         try: r = await http.get(player)
