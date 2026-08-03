@@ -193,6 +193,20 @@ RUN mkdir -p /opt/oo/lib/pkgconfig && \
     printf 'prefix=/opt/oo\nexec_prefix=${prefix}\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\n\nName: freetype2\nDescription: FreeType (PS4 / OpenOrbisSDK)\nVersion: 2.9.0\nLibs: -L${libdir} -lfreetype\nCflags: -I${includedir}/freetype2\n' > /opt/oo/lib/pkgconfig/freetype2.pc && \
     ls /opt/oo/lib/pkgconfig/
 
+# The .pc stubs above live in /opt/oo/lib/pkgconfig, but pkg-config's
+# default pc_path (verified inside the image with
+# `pkg-config --variable pc_path pkg-config`) is the host's
+# /usr/{lib,share}/pkgconfig tree — it does NOT include /opt/oo. So
+# even with the stubs present, `pkg_search_module(SDL2 sdl2)` in
+# libcross2d's CMakeLists.txt fails with "None of the required 'sdl2'
+# found" until PKG_CONFIG_PATH explicitly points at the stub tree.
+# The previous build (#32) succeeded because PKG_CONFIG_PATH happened
+# to be set in the build shell session — Docker does not pass host
+# env vars by default, so this was a hidden assumption. Pin the var
+# in the image so any subsequent cmake configure inside the container
+# sees the stubs, regardless of host env state.
+ENV PKG_CONFIG_PATH=/opt/oo/lib/pkgconfig
+
 # Cross-build OpenSSL 3.0 for the PS4 target (#35): FFmpeg is
 # configured with `--disable-autodetect --enable-protocol='… https,tls'`,
 # but without OpenSSL the https/tls protocols silently configure as
