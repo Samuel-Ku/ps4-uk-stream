@@ -9,23 +9,23 @@
 
 **Date:** YYYY-MM-DD
 **Firmware:** 11.00
-**HEN:** GoldHEN <version>
-**PKG:** PPLA00001 v3.7-uk-stream-<git-sha>
-**Backend:** http://192.168.2.223:8000, commit <git-sha>
+**HEN:** GoldHEN (version to fill on the console)
+**PKG:** PPLA00001 v3.7-uk-stream-42e565a (7,012,352 bytes)
+**Backend:** <http://192.168.2.166:8765> (port 8000 is the user's own app on dhcpcd)
 **PS4 IP:** 192.168.2.105 (FTP port 2121, GoldHEN)
 
 ## Build verification (run on the Linux host before installing) `[harness]`
 
 - [x] `./pplay-fork/scripts/build-ps4-docker.sh` exits 0
-      (verified by #32, commits 4874b6a + fd3b32f)
+      (verified on commit 42e565a: PKG produced, validations all pass)
 - [x] `pplay-fork/build/PPLA00001.pkg` exists, size > 1 MB
-      (verified by #32: 6.8 MB artifact)
+      (verified on 42e565a: **7,012,352 bytes**, 7.01 MB)
 - [x] `head -c 4 pplay-fork/build/PPLA00001.pkg | xxd` → `7f 43 4e 54`
-      (`\x7FCNT` PKG magic; verified by #32)
+      (`\x7FCNT` PKG magic; verified on 42e565a)
 - [x] `pplay-fork/build/eboot.bin` exists, magic `4f 15 3d 1d` (SCE
       SELF wrapper from create-fself, fake-signed with
       `paid=0x3800000000000011`; verified at offset 864 of the SELF
-      by #32)
+      on 42e565a)
 
 ## Agent-host verification (Linux host, before installing) `[harness]`
 
@@ -36,12 +36,15 @@ good binary.
 - [x] `cmake --build pplay-fork/tests/standalone-catalog/build` builds
       every test binary (no link errors)
 - [x] `ctest --test-dir pplay-fork/tests/standalone-catalog/build` is
-      100% green (verified: **17/17** on commit 44a5e8d)
+      100% green (verified: **17/17** on commit 42e565a, after the
+      `std::filesystem` → POSIX refactor in PosterCache.cpp)
 - [x] Backend test suite is 100% green (verified: **370+ passed**
       on commit 44a5e8d — see `docs/status.md` Task 20)
 - [x] `pplay-fork/src/catalog/ScreenHome.*` and `ScreenContent.*`
       compile clean under `-Wall -Wextra` (no warnings introduced by
-      the v3 work)
+      the v3 work; the only remaining warnings are the pre-existing
+      `-Wc++17-extensions` for nested `namespace cs { namespace ... }`,
+      which don't fail the build)
 
 ## Setup commands used
 
@@ -58,7 +61,11 @@ lftp -c "open -u anonymous, ftp://192.168.2.105; \
 ### Configure the backend URL
 
 In the PS4 main menu of pPlay, open Settings -> "Адреса сервера" and set
-it to the Linux host's LAN IP: `http://192.168.2.223:8000`. Save.
+it to the Linux host's LAN IP and the port the ps4-uk-stream backend is
+running on. The host's IP is `192.168.2.166`; the port the agent started
+the backend on is **8765** (the documented 8000 is occupied by the user's
+own app on the same host, so the agent had to move to 8765). Use
+`<http://192.168.2.166:8765>`. Save.
 
 ### Copy data/ to the PS4 internal HDD
 
