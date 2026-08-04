@@ -10,6 +10,7 @@ exact byte layout observed in /tmp/pplay-upstream/pplay/IV0001-PPLA00001_00-PPLA
 """
 from __future__ import annotations
 
+import dataclasses
 import struct
 from pathlib import Path
 
@@ -19,9 +20,11 @@ from scripts.audit_upstream_pkg import (
     HEADER_SIZE,
     MAGIC_CNT,
     MAGIC_PKG,
+    NAMES_TABLE_OFFSET,
     FileEntry,
     parse_pkg,
     sha256_prefix,
+    sha_prefixes_for_entries,
 )
 
 
@@ -32,6 +35,9 @@ def test_magic_constants_are_correct():
     assert MAGIC_CNT == b"\x7fCNT"
     assert MAGIC_PKG == b"\x7fPKG"
     assert HEADER_SIZE == 0x200
+    # Locked in: every .CNT/.PKG we have observed puts the names table at 0x2E00.
+    # If this changes, the postmortem investigation needs to be redone.
+    assert NAMES_TABLE_OFFSET == 0x2E00
 
 
 # --- sha256_prefix -------------------------------------------------------
@@ -54,7 +60,7 @@ def test_sha256_prefix_is_content_addressed():
 def test_file_entry_frozen_dataclass():
     """FileEntry must be immutable — see ecc/common/coding-style.md."""
     e = FileEntry(name="eboot.bin", data_offset=0, data_size=1024, index=0)
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         e.name = "param.sfo"  # type: ignore[misc]
 
 
@@ -73,12 +79,10 @@ def _build_fixture(tmp_path: Path, *, entries: list[tuple[str, int, int]]) -> Pa
         0x2E00–         names table (NULL-terminated ASCII, 4-byte aligned)
         ... body data (zeros, sized to fit the largest data_offset+size)
 
-    Why the 0x2E00 offset for names: even when item_count is small, PkgTool.Core
-    writes the names table at a fixed offset (the layout between header end
-    and names table is reserved for hash chains + footer). The test fixture
-    stays faithful to this so the implementation can use a constant offset.
+    The names table offset is taken from the implementation constant, not
+    hardcoded here, so this fixture stays faithful if the offset is ever
+    re-derived.
     """
-    NAMES_TABLE_FIXED_OFFSET = 0x2E00
     total_data = sum(size for _, _, size in entries)
     max_end = max((off + size for _, off, size in entries), default=0)
 
@@ -106,7 +110,7 @@ def _build_fixture(tmp_path: Path, *, entries: list[tuple[str, int, int]]) -> Pa
         file_table += struct.pack(
             ">IIIIII",
             1,                  # id (file)
-            name_offsets[i],    # name_offset (relative to NAMES_TABLE_FIXED_OFFSET)
+            name_offsets[i],    # name_offset (relative to NAMES_TABLE_OFFSET)
             0,                  # flags1
             0,                  # flags2
             data_offset,        # data_offset
@@ -114,9 +118,9 @@ def _build_fixture(tmp_path: Path, *, entries: list[tuple[str, int, int]]) -> Pa
         )
         file_table += b"\x00" * 8  # pad
 
-    # Pad between file_table_end and NAMES_TABLE_FIXED_OFFSET with zeros.
+    # Pad between file_table_end and NAMES_TABLE_OFFSET with zeros.
     file_table_end = 0x2A80 + len(file_table)
-    gap = bytearray(NAMES_TABLE_FIXED_OFFSET - file_table_end)
+    gap = bytearray(NAMES_TABLE_OFFSET - file_table_end)
 
     # Body data — zeros sized to fit the largest entry.
     body = bytearray(max_end)
@@ -145,8 +149,7 @@ def test_parse_pkg_reads_5_entries(tmp_path):
     path = _build_fixture(tmp_path, entries=entries)
     result = parse_pkg(path)
     assert len(result) == 5
-    names = [e.name for e in result]
-    assert names == [e[0] for e in entries]
+    assert [e.name for e in result] == [name for name, _, _ in entries]
 
 
 def test_parse_pkg_reads_data_offsets_and_sizes(tmp_path):
@@ -166,8 +169,41 @@ def test_parse_pkg_reads_data_offsets_and_sizes(tmp_path):
 def test_parse_pkg_returns_immutable_entries(tmp_path):
     path = _build_fixture(tmp_path, entries=[("a.bin", 0, 10)])
     entries = parse_pkg(path)
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         entries[0].name = "b.bin"  # type: ignore[misc]
+
+
+# --- sha_prefixes_for_entries --------------------------------------------
+
+def test_sha_prefixes_for_entries_returns_separate_dict(tmp_path):
+    """The dict is keyed by entry.index — entries themselves stay frozen."""
+    entries_spec = [
+        ("a.bin", 0, 8),
+        ("b.bin", 16, 8),
+    ]
+    path = _build_fixture(tmp_path, entries=entries_spec)
+    entries = parse_pkg(path)
+    # Write two different bodies at the declared offsets so SHA differs.
+    with path.open("r+b") as f:
+        f.seek(0)
+        f.write(b"AAAAAAAA")     # 8 bytes at offset 0
+        f.seek(16)
+        f.write(b"BBBBBBBB")     # 8 bytes at offset 16
+    prefixes = sha_prefixes_for_entries(path, entries)
+    # Two different contents → two different prefixes.
+    assert prefixes[entries[0].index] != prefixes[entries[1].index]
+    # The SHA for "AAAAAAAA" in bytes 0..4 hex = sha256("AAAAAAAA")[:4].
+    expected_a = sha256_prefix(b"AAAAAAAA")
+    assert prefixes[entries[0].index] == expected_a
+
+
+def test_sha_prefixes_for_entries_handles_zero_size(tmp_path):
+    """Directory entries with data_size == 0 get an empty SHA, no read."""
+    entries_spec = [("dir/", 0, 0)]
+    path = _build_fixture(tmp_path, entries=entries_spec)
+    entries = parse_pkg(path)
+    prefixes = sha_prefixes_for_entries(path, entries)
+    assert prefixes[entries[0].index] == ""
 
 
 # --- Fixture parity with upstream ----------------------------------------

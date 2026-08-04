@@ -22,17 +22,20 @@ OpenOrbis .CNT (7F 43 4E 54) and Sony .PKG (7F 50 4B 47) share the same
 layout. The body of the file is encrypted, but the file table is plain.
 The interesting offsets are:
 
-  0x0000  magic (4) + revision (4) + pkg_type (2) + header_size (2)
-          + item_count (4) + total_size (8) + data_offset (8)
-          + data_count (8) + content_id (36) + ...
-  0x0x2A80  item_count entries, each 32 bytes, big-endian:
-              id (4) | name_table_offset (4) | flags1 (4) | flags2 (4)
-              | data_offset (4) | data_size (4) | pad (8)
-  0x2A80 + 32*item_count  names table, null-terminated ASCII strings
-          packed back-to-back (no length prefix).
+  0x0000        magic (4) + revision (4) + pkg_type (2) + header_size (2)
+                + item_count (4) + total_size (8) + data_offset (8)
+                + data_count (8) + content_id (36) + ...
+  0x2A80        item_count entries, each 32 bytes, big-endian:
+                  id (4) | name_table_offset (4) | flags1 (4) | flags2 (4)
+                  | data_offset (4) | data_size (4) | pad (8)
+  0x2E00        names table: null-terminated ASCII strings packed
+                back-to-back (no length prefix). Fixed offset, NOT
+                `0x2A80 + 32*item_count` — PkgTool.Core reserves space
+                for hash chains + footer in the gap between file table
+                end and the names table.
 
-See docs/postmortem-ps4-install-attempts.md Bug #18 for the full
-investigation that derived this layout empirically.
+See docs/postmortem-ps4-install-attempts.md Bug #18 for the empirical
+probing that produced these offsets.
 """
 from __future__ import annotations
 
@@ -49,14 +52,14 @@ MAGIC_CNT = b"\x7fCNT"  # OpenOrbis PkgTool.Core output
 MAGIC_PKG = b"\x7fPKG"  # Sony PKG (same body layout)
 HEADER_SIZE = 0x200
 
-# The file table lives at a fixed offset in every .CNT/.PKG we have seen
-# (Bug #18): header (0x200 bytes) + 4 SHA256 hashes of body chunks
-# (4 * 32 bytes = 0x80) + another 0x80 of header parity + 0x800 of
-# pre-table padding. PkgTool.Core / orbis-pub-cmd both emit the table
-# here. See docstring.
+# The file table and names table live at fixed offsets in every .CNT/.PKG
+# we have observed (Bug #18) — including both upstream pPlay 3.8 and the
+# 7 MB CI build. PkgTool.Core and orbis-pub-cmd both emit the file table
+# at 0x2A80 and the names table at 0x2E00. See the docstring and
+# docs/postmortem-ps4-install-attempts.md for the empirical derivation.
 FILE_TABLE_OFFSET = 0x2A80
 FILE_ENTRY_SIZE = 32
-NAMES_TABLE_OFFSET = 0x2E00  # observed empirically; depends on file_table size
+NAMES_TABLE_OFFSET = 0x2E00  # fixed offset; same on every observed .CNT/.PKG
 
 BIG_ENDIAN = "big"
 
@@ -111,8 +114,9 @@ def _read_file_table(f: BinaryIO, item_count: int) -> list[FileEntry]:
     """Read `item_count` 32-byte entries starting at FILE_TABLE_OFFSET."""
     entries: list[FileEntry] = []
     for i in range(item_count):
-        # Seek to the absolute position of this entry — _read_name() before
-        # this call may have moved the file cursor to the end of the name.
+        # The previous iteration's _read_name() left the cursor at the
+        # end of its null terminator inside the names table. Reseek to
+        # the absolute start of this entry before reading it.
         f.seek(FILE_TABLE_OFFSET + i * FILE_ENTRY_SIZE)
         raw = _read_exact(f, FILE_ENTRY_SIZE, f"file entry {i}")
         # Each entry: id(I) name_table_offset(I) flags1(I) flags2(I)
@@ -152,50 +156,65 @@ def _read_name(f: BinaryIO, name_off: int) -> str:
     return buf.decode("ascii", errors="replace")
 
 
-def _sha_for_entry(f: BinaryIO, entry: FileEntry, chunk: int = 65536) -> str:
-    """Read the file's bytes-bytes and return SHA256 prefix.
+def sha256_prefix_of_stream(
+    f: BinaryIO, offset: int, size: int, n: int = 4, chunk: int = 65536
+) -> str:
+    """Read `size` bytes from `f` starting at `offset`; return SHA256[:n] hex.
 
     The PKG body is encrypted (AES-CTR), but for the audit we don't need
     real ciphertext SHA — we want a fingerprint that's stable across
     PKG files at the byte level. Reading the raw bytes-as-stored gives us
     that: same input file → same SHA; different input → different SHA.
     """
-    f.seek(entry.data_offset)
+    f.seek(offset)
     h = hashlib.sha256()
-    remaining = entry.data_size
+    remaining = size
     while remaining > 0:
         block = f.read(min(chunk, remaining))
         if not block:
             break
         h.update(block)
         remaining -= len(block)
-    return h.hexdigest()[:8]
+    return h.hexdigest()[: n * 2]
+
+
+def sha_prefixes_for_entries(
+    path: Path, entries: list[FileEntry], n: int = 4
+) -> dict[int, str]:
+    """Open `path` and compute SHA256[:n] for every entry's data span.
+
+    Returns a dict keyed by `entry.index`. Returns an empty string for
+    entries whose data span lies past EOF (e.g. stub directory entries
+    with `data_size == 0`).
+    """
+    prefixes: dict[int, str] = {}
+    with path.open("rb") as f:
+        for entry in entries:
+            if entry.data_size == 0:
+                prefixes[entry.index] = ""
+            else:
+                prefixes[entry.index] = sha256_prefix_of_stream(
+                    f, entry.data_offset, entry.data_size, n=n
+                )
+    return prefixes
 
 
 def parse_pkg(path: Path) -> list[FileEntry]:
     """Parse the file table of a .PKG/.CNT and return the entries.
 
-    Reads the header + file table only. Body is only read on demand
-    for SHA256 fingerprinting.
+    Reads only the header + file table. Body is never touched; use
+    `sha_prefixes_for_entries` separately if you want fingerprints.
     """
     with path.open("rb") as f:
         _revision, item_count = _check_magic(path, f)
-        entries = _read_file_table(f, item_count)
-        # Compute SHA256 prefix for each entry by reading the on-disk bytes.
-        # Reading the file again in a second pass keeps the seek state simple.
-        for entry in entries:
-            entry_sha_prefix = _sha_for_entry(f, entry)
-            # Attach via object.__setattr__ because FileEntry is frozen;
-            # we'd rather keep the API simple by re-reading.
-            object.__setattr__(entry, "_sha_prefix", entry_sha_prefix)
-    return entries
+        return _read_file_table(f, item_count)
 
 
 # --- CLI ------------------------------------------------------------------
 
 
-def _format_line(entry: FileEntry) -> str:
-    sha = getattr(entry, "_sha_prefix", "")
+def _format_line(entry: FileEntry, sha_prefixes: dict[int, str]) -> str:
+    sha = sha_prefixes.get(entry.index, "")
     return f"{entry.name:<28}  {entry.data_offset:>10}  {entry.data_size:>10}  {sha}"
 
 
@@ -216,6 +235,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Include header fields (magic, item_count, file size).",
     )
+    parser.add_argument(
+        "--no-sha",
+        action="store_true",
+        help="Skip the body fingerprint pass (faster, only the file table).",
+    )
     args = parser.parse_args(argv)
 
     failed = 0
@@ -231,13 +255,22 @@ def main(argv: list[str] | None = None) -> int:
             failed += 1
             continue
 
+        sha_prefixes: dict[int, str] = {}
+        if not args.no_sha:
+            try:
+                sha_prefixes = sha_prefixes_for_entries(path, entries)
+            except (ValueError, OSError) as e:
+                print(f"ERROR: {path}: sha pass failed: {e}", file=sys.stderr)
+                failed += 1
+                continue
+
         if args.verbose:
             print(f"# {path}")
             print(f"# size: {path.stat().st_size} B")
             print(f"# entries: {len(entries)}")
             print(f"# {'name':<28}  {'offset':>10}  {'size':>10}  {'sha256[:4]':<8}")
         for entry in entries:
-            print(_format_line(entry))
+            print(_format_line(entry, sha_prefixes))
         if args.verbose and len(args.pkg) > 1:
             print()
     return 0 if failed == 0 else 1
