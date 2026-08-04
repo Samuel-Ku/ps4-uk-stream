@@ -14,12 +14,35 @@
 **Backend:** <http://192.168.2.166:8765> (port 8000 is the user's own app on dhcpcd)
 **PS4 IP:** 192.168.2.105 (FTP port 2121, GoldHEN)
 
+## Bug #18 verification (issue #97)
+
+After merging #96 (dynamic gp4 enumeration), `pplay_pkg` should emit
+a 33 MB ± 1 MB PKG with the same 5 PS4 system files in its file
+table as upstream pPlay 3.8 (icon0.png, param.sfo, playgo-chunk.dat,
+playgo-chunk.sha, playgo-manifest.xml).
+
+- [ ] PKG size is 33 MB ± 1 MB (was 7 MB on 42e565a) — re-run
+      `bash pplay-fork/scripts/build-ps4-docker.sh` after the #96
+      merge and read `pplay-fork/build/bug-18-verification.txt`
+- [ ] PKG SHA-256: *see `pplay-fork/build/bug-18-verification.txt`*
+      (copied here on the next build):
+      `__FILL_IN_AFTER_DOCKER_BUILD__`
+- [ ] eboot.bin magic `4f 15 3d 1d` and paid `0x3800000000000011`
+      still present (regression check)
+
+> The verification is run inside the `ps4-uk-build` container by
+> `pplay-fork/scripts/verify-bug18.sh` (step `[6/5]` of the in-container
+> pipeline). On a successful run it writes
+> `pplay-fork/build/bug-18-verification.txt` — read that file on the
+> host and paste the `pkg_sha256` value above.
+
 ## Build verification (run on the Linux host before installing) `[harness]`
 
 - [x] `./pplay-fork/scripts/build-ps4-docker.sh` exits 0
       (verified on commit 42e565a: PKG produced, validations all pass)
 - [x] `pplay-fork/build/PPLA00001.pkg` exists, size > 1 MB
-      (verified on 42e565a: **7,012,352 bytes**, 7.01 MB)
+      (verified on 42e565a: **7,012,352 bytes**, 7.01 MB — pre-#95/#96;
+      post-#96 this should be ~33 MB, see "Bug #18 verification" above)
 - [x] `head -c 4 pplay-fork/build/PPLA00001.pkg | xxd` → `7f 43 4e 54`
       (`\x7FCNT` PKG magic; verified on 42e565a)
 - [x] `pplay-fork/build/eboot.bin` exists, magic `4f 15 3d 1d` (SCE

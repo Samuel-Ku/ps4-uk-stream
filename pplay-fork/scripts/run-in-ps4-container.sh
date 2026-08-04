@@ -104,3 +104,12 @@ print(f'paid 0x3800000000000011 found at header offset {off}')
 sys.exit(0 if off >= 0 else 1)
 " || { echo "FAIL: paid bytes not found near eboot.bin header" >&2; exit 1; }
 echo "==> OK: build/PPLA00001.pkg built and validated"
+
+echo "==> [6/6] Verify Bug #18 fix (issue #97)"
+# In-container verification: PKG must be 33 MB ± 1 MB, magic must be
+# .CNT, and the file table must contain the same 5 PS4 system files
+# as upstream pPlay 3.8 (icon0.png, param.sfo, playgo-chunk.dat,
+# playgo-chunk.sha, playgo-manifest.xml). The script writes
+# build/bug-18-verification.txt; the host reads it back to update
+# docs/ps4-test-report.md.
+bash pplay-fork/scripts/verify-bug18.sh

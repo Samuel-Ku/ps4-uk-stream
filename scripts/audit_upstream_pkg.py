@@ -210,6 +210,17 @@ def parse_pkg(path: Path) -> list[FileEntry]:
         return _read_file_table(f, item_count)
 
 
+def parse_pkg_names(path: Path) -> set[str]:
+    """Return the set of NAMED files in the .PKG/.CNT file table.
+
+    Directory entries (id=0, empty name) are excluded. Used by
+    `verify-bug18.sh` (issue #97) to assert our PKG contains the same
+    5 PS4 system files as upstream without re-reading the body for
+    SHAs. Cheap: parses only the header + file table.
+    """
+    return {e.name for e in parse_pkg(path) if e.name}
+
+
 # --- CLI ------------------------------------------------------------------
 
 

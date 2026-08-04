@@ -23,6 +23,7 @@ from scripts.audit_upstream_pkg import (
     NAMES_TABLE_OFFSET,
     FileEntry,
     parse_pkg,
+    parse_pkg_names,
     sha256_prefix,
     sha_prefixes_for_entries,
 )
@@ -248,3 +249,44 @@ def test_real_upstream_pkg_size_matches():
     # icon0.png is 42307 B
     icon = next(e for e in entries if e.name == "icon0.png")
     assert icon.data_size == 42307
+
+
+# --- parse_pkg_names ----------------------------------------------------
+
+
+def test_parse_pkg_names_returns_named_files(tmp_path):
+    """parse_pkg_names returns ONLY the named file entries (id != 0).
+    The 5 PS4 system files from upstream pPlay 3.8 — which is what
+    verify-bug18.sh (issue #97) compares against — are:
+    icon0.png, param.sfo, playgo-chunk.dat, playgo-chunk.sha,
+    playgo-manifest.xml.
+    """
+    entries = [
+        ("icon0.png", 0, 42307),
+        ("param.sfo", 50000, 1104),
+        ("playgo-chunk.dat", 60000, 416),
+        ("playgo-chunk.sha", 70000, 2068),
+        ("playgo-manifest.xml", 80000, 368),
+    ]
+    path = _build_fixture(tmp_path, entries=entries)
+    names = parse_pkg_names(path)
+    assert names == {
+        "icon0.png",
+        "param.sfo",
+        "playgo-chunk.dat",
+        "playgo-chunk.sha",
+        "playgo-manifest.xml",
+    }
+
+
+def test_parse_pkg_names_excludes_directory_entries(tmp_path):
+    """Directory entries (id=0, empty name) must be filtered out."""
+    entries = [
+        ("", 0, 0),         # dir entry
+        ("a.bin", 100, 50),
+        ("", 200, 0),       # another dir entry
+        ("b.bin", 300, 50),
+    ]
+    path = _build_fixture(tmp_path, entries=entries)
+    names = parse_pkg_names(path)
+    assert names == {"a.bin", "b.bin"}
