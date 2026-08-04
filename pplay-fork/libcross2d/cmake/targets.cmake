@@ -104,28 +104,56 @@ if (PLATFORM_PS4 AND NOT COMMAND add_self)
         )
     endfunction()
 
+    function(add_pkgtree PROJECT)
+        # Stage the full runtime file tree (romfs + datadir + eboot.bin)
+        # into ${CMAKE_CURRENT_BINARY_DIR}/${PS4_PKG_TITLE_ID} so the
+        # pkg-tool `add_pkg` can wrap it without duplicating the staging.
+        # See issue #95: previously add_pkg only copied sce_sys into the
+        # destination tree, which left sce_module/*.prx / mpv/subfont.ttf
+        # / skin/* un-shipped — the .pkg that resulted was 7 MB vs the
+        # upstream 33 MB pPlay 3.8 artifact (Bug #18).
+        set(PKG_DIR "${CMAKE_CURRENT_BINARY_DIR}/${PS4_PKG_TITLE_ID}")
+        set(STAGE_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/pkgtree_stage.cmake")
+        set(ROMFS_DIR "${CMAKE_CURRENT_BINARY_DIR}/data_romfs")
+        set(DATADIR_DIR "${CMAKE_CURRENT_BINARY_DIR}/data_datadir")
+        set(EBOOT_BIN "${CMAKE_CURRENT_BINARY_DIR}/eboot/eboot.bin")
+        add_custom_target(${PROJECT}.pkgtree
+                DEPENDS ${PROJECT}.eboot
+                DEPENDS ${PROJECT}.data
+                COMMAND ${CMAKE_COMMAND}
+                    -DPKG_DIR=${PKG_DIR}
+                    -DROMFS_DIR=${ROMFS_DIR}
+                    -DDATADIR_DIR=${DATADIR_DIR}
+                    -DEBOOT_BIN=${EBOOT_BIN}
+                    -P "${STAGE_SCRIPT}"
+                COMMENT "add_pkgtree: staging ${PKG_DIR}"
+                VERBATIM
+        )
+    endfunction()
+
     function(add_pkg PROJECT ROMFS_DIR TITLE_ID TITLE VERSION)
         set(PKG_DIR "${CMAKE_CURRENT_BINARY_DIR}/${TITLE_ID}")
         set(PKG_OUT "${CMAKE_CURRENT_BINARY_DIR}/${TITLE_ID}.pkg")
-        # sce_sys param.sfo comes from data/ps4/romfs/sce_sys (right.sprx,
-        # icon0.png) bundled by libcross2d upsteam. We only need to make
-        # sure the FS layout that PkgTool.Core expects is present.
+        # All runtime-file staging lives in add_pkgtree (issue #95).
+        # The .pkg's on-disk layout is ${PKG_DIR}/{sce_sys,sce_module,skin,mpv,…,eboot.bin}
+        # and is produced by `cmake --target pplay.pkgtree`.
+        #
+        # TODO(#96): the pkg.gp4 generator below still hardcodes the
+        # 4-file list that ships with the upstream pPlay fork. Once
+        # #96 lands, the <files> block must be derived from ${PKG_DIR}
+        # (a `file(GLOB_RECURSE)` walk), not enumerated by hand.
+        # Until then, `cmake --target pplay_pkg` produces a 7 MB .pkg
+        # even though `cmake --target pplay.pkgtree` produces the full
+        # staging tree; the discrepancy is the unreleased half of
+        # Bug #18.
         add_custom_target(${PROJECT}_pkg
-                DEPENDS ${PROJECT}.eboot
+                DEPENDS ${PROJECT}.pkgtree
                 # Generate pkg.gp4 first so PkgTool.Core has something
                 # to read. The generator script is also written below
                 # (the file(WRITE) is at function scope so it always
                 # runs at configure time; the PRE_BUILD hook then
                 # runs `cmake -P` against it on each build).
                 COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/gen_pkg_gp4.cmake"
-                COMMAND ${CMAKE_COMMAND} -E remove_directory "${PKG_DIR}"
-                COMMAND ${CMAKE_COMMAND} -E make_directory "${PKG_DIR}/sce_sys"
-                COMMAND ${CMAKE_COMMAND} -E make_directory "${PKG_DIR}/eboot.bin"
-                COMMAND ${CMAKE_COMMAND} -E copy_directory
-                    "${ROMFS_DIR}/sce_sys" "${PKG_DIR}/sce_sys"
-                COMMAND ${CMAKE_COMMAND} -E copy
-                    "${CMAKE_CURRENT_BINARY_DIR}/eboot/eboot.bin"
-                    "${PKG_DIR}/eboot.bin/eboot.bin"
                 COMMAND PkgTool.Core
                     pkg_build
                     "${CMAKE_CURRENT_BINARY_DIR}/pkg.gp4"
@@ -290,8 +318,13 @@ endif (PLATFORM_VITA)
 if (PLATFORM_PS4)
     string(REPLACE "." "" PS4_PKG_VERSION_CLEAN ${PS4_PKG_VERSION})
     add_self(${PROJECT_NAME})
+    # pplay.pkgtree: stage every runtime file (sce_module/*.prx, mpv/*,
+    # skin/*, sce_sys/*, eboot.bin) into ${PS4_PKG_TITLE_ID}/. Issue #95.
+    # pplay_pkg depends on pplay.pkgtree (which depends on pplay.data)
+    # so the data_romfs / data_datadir staging is reachable transitively;
+    # we no longer need the explicit `add_dependencies(... _pkg ... .data)`.
+    add_pkgtree(${PROJECT_NAME})
     add_pkg(${PROJECT_NAME} ${CMAKE_CURRENT_BINARY_DIR}/data_romfs ${PS4_PKG_TITLE_ID} ${PS4_PKG_TITLE} ${PS4_PKG_VERSION})
-    add_dependencies(${PROJECT_NAME}_pkg ${PROJECT_NAME}.data)
     add_custom_target(${PROJECT_NAME}_${TARGET_PLATFORM}_release
             DEPENDS ${PROJECT_NAME}_pkg
             COMMAND ${CMAKE_COMMAND} -E remove -f ${CMAKE_BINARY_DIR}/${PROJECT_NAME}-${VERSION_MAJOR}.${VERSION_MINOR}_${TARGET_PLATFORM}.zip

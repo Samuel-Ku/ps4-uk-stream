@@ -50,6 +50,14 @@ echo "==> [3/5] cmake build pplay + eboot.bin"
 cmake --build build -j"$(nproc)"
 cmake --build build --target pplay.eboot
 
+echo "==> [3b/5] stage runtime files into PPLA00001/ (issue #95)"
+# pplay.pkgtree materialises sce_module/*.prx, mpv/subfont.ttf, skin/*,
+# sce_sys/*, and eboot.bin/eboot.bin into build/PPLA00001/. Without this
+# step the 7 MB vs 33 MB gap documented in Bug #18 reappears.
+cmake --build build --target pplay.pkgtree
+echo "staged files:"
+find build/PPLA00001 -type f | sort
+
 echo "==> [4/5] cmake build pkg"
 cmake --build build --target pplay_pkg
 cp "$PKG_OUT" build/PPLA00001.pkg
