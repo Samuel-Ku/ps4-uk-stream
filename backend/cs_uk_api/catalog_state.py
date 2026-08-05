@@ -156,7 +156,7 @@ async def load_home() -> HomeResponse:
                 asyncio.gather(*tasks, return_exceptions=False),
                 timeout=_config.SETTINGS.search_total_timeout_s,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             for t in tasks:
                 if not t.done():
                     t.cancel()

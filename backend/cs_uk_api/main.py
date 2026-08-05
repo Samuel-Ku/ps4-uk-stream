@@ -22,6 +22,7 @@ from .config import SETTINGS
 from .country import is_blocked_country
 from .health import TRACKER
 from .http_client import close_client, get_client
+from .jellyfin import router as jellyfin_router
 from .merge import group_key_from, item_group_key, merge_results
 from .models import (
     BrowseResponse,
@@ -152,6 +153,11 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="cs-uk-api", version="0.1.0", lifespan=lifespan)
+
+# Jellyfin facade (spec #100): mounted at the Jellyfin paths, deliberately
+# NOT under /api/* — the native contract is untouched and a Jellyfin
+# client pointed at host:port finds a server without configuration.
+app.include_router(jellyfin_router)
 
 
 @app.middleware("http")
