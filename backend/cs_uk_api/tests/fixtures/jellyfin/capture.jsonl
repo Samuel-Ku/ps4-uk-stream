@@ -1,0 +1,10 @@
+{"ts": 1700000000.0, "method": "GET", "path": "/System/Info/Public", "query": {}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 200}
+{"ts": 1700000000.0, "method": "POST", "path": "/Users/AuthenticateByName", "query": {}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 200}
+{"ts": 1700000000.0, "method": "GET", "path": "/UserViews", "query": {"userId": "fdc808859fc45eb8ac5aa6faddc12c72"}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 404}
+{"ts": 1700000000.0, "method": "GET", "path": "/Items", "query": {"userId": "fdc808859fc45eb8ac5aa6faddc12c72", "parentId": "fdc808859fc45eb8ac5aa6faddc12c72"}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 404}
+{"ts": 1700000000.0, "method": "GET", "path": "/Items/00000000000000000000000000000000", "query": {"userId": "fdc808859fc45eb8ac5aa6faddc12c72"}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 404}
+{"ts": 1700000000.0, "method": "POST", "path": "/Items/00000000000000000000000000000000/PlaybackInfo", "query": {}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 404}
+{"ts": 1700000000.0, "method": "GET", "path": "/Videos/00000000000000000000000000000000/stream", "query": {}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 404}
+{"ts": 1700000000.0, "method": "POST", "path": "/Sessions/Playing", "query": {}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 404}
+{"ts": 1700000000.0, "method": "GET", "path": "/Items/00000000000000000000000000000000/Images/Primary", "query": {}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 404}
+{"ts": 1700000000.0, "method": "POST", "path": "/Sessions/Logout", "query": {}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 404}

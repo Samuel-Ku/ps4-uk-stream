@@ -1,0 +1,13 @@
+{
+  "name": "jellyfin-capture-driver",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Capture-first driver (ticket #103): drives the official @jellyfin/sdk — the exact network layer Jellyfin Web/desktop and Switchfin use — against the facade to freeze the request surface",
+  "type": "module",
+  "scripts": {
+    "capture": "node capture.mjs"
+  },
+  "dependencies": {
+    "@jellyfin/sdk": "^0.13.0"
+  }
+}

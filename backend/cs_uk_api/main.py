@@ -23,6 +23,7 @@ from .country import is_blocked_country
 from .health import TRACKER
 from .http_client import close_client, get_client
 from .jellyfin import router as jellyfin_router
+from .jellyfin.capture import capture_request
 from .merge import group_key_from, item_group_key, merge_results
 from .models import (
     BrowseResponse,
@@ -166,6 +167,9 @@ async def log_requests(request: Request, call_next):
     response: Response = await call_next(request)
     latency_ms = int((time.monotonic() - started) * 1000)
     log.info("%s %s -> %s (%dms)", request.method, request.url.path, response.status_code, latency_ms)
+    # Capture-first (ticket #103): record facade request sequences for
+    # fixture freezing. No-op unless CS_UK_JF_CAPTURE_DIR is set.
+    capture_request(request, response)
     return response
 
 
