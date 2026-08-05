@@ -51,6 +51,10 @@ class Settings:
     providers: tuple[str, ...]
     block_russian: bool
     home_row_limit: int
+    # v3 (Jellyfin facade, spec D4/D10): fixed opaque token; the
+    # ``load_settings`` env default mirrors this so explicit
+    # ``Settings(...)`` constructions (tests) stay valid.
+    jellyfin_token: str = "jellyfin-dev-token"
 
 
 def load_settings() -> Settings:
@@ -82,6 +86,12 @@ def load_settings() -> Settings:
         block_russian=os.environ.get("CS_UK_BLOCK_RUSSIAN", "1") == "1",
         # v3 (issue #70): per-row cap for «Новинки» + type rows.
         home_row_limit=int(os.environ.get("CS_UK_HOME_ROW_LIMIT", "20")),
+        # v3 (Jellyfin facade, spec D4/D10): the fixed opaque Jellyfin
+        # token. Accept-any-credentials login (the LAN API stays open),
+        # but subsequent facade requests must present this token via
+        # ``X-Emby-Token`` or ``Authorization: MediaBrowser Token="…"``.
+        # Default: a stable dev value; override in production.
+        jellyfin_token=os.environ.get("CS_UK_JF_TOKEN", "jellyfin-dev-token"),
     )
 
 
