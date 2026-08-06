@@ -61,8 +61,8 @@ good binary.
 - [x] `ctest --test-dir pplay-fork/tests/standalone-catalog/build` is
       100% green (verified: **17/17** on commit 42e565a, after the
       `std::filesystem` → POSIX refactor in PosterCache.cpp)
-- [x] Backend test suite is 100% green (verified: **370+ passed**
-      on commit 44a5e8d — see `docs/status.md` Task 20)
+- [x] Backend test suite is 100% green (verified: **632 passed**
+      on commit 141d574, feat/v2-providers #102–#105)
 - [x] `pplay-fork/src/catalog/ScreenHome.*` and `ScreenContent.*`
       compile clean under `-Wall -Wextra` (no warnings introduced by
       the v3 work; the only remaining warnings are the pre-existing
