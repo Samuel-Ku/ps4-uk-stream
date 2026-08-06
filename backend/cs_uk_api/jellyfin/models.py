@@ -57,7 +57,8 @@ class AuthenticationResult(BaseModel):
 
 
 class BaseItemDto(BaseModel):
-    """Minimal Jellyfin ``BaseItemDto`` (spec D5/D9, ticket #104).
+    """Minimal Jellyfin ``BaseItemDto`` (spec D5/D9, ticket #104; detail
+    + hierarchy fields, ticket #105).
 
     Only the fields a Switchfin-style client consumes for library and
     item-card rendering: identity, display name, media type, year,
@@ -65,6 +66,12 @@ class BaseItemDto(BaseModel):
     dict clients read to decide whether art exists for the item; the
     ``Primary`` value is an opaque cache-buster derived from the poster
     URL (D9: tag present *iff* the item has a poster).
+
+    Ticket #105 adds the detail + hierarchy surface a client needs to
+    render one item's page and to walk Series → Season → Episode:
+    ``Overview`` (description), ``IndexNumber``/``ParentIndexNumber``
+    (position inside a season / season number) and ``SeriesId`` (the
+    owning series' ``g1:`` key) on Season/Episode items.
     """
 
     Name: str | None = None
@@ -75,6 +82,11 @@ class BaseItemDto(BaseModel):
     ProductionYear: int | None = None
     ParentId: str | None = None
     ImageTags: dict[str, str] = Field(default_factory=dict)
+    Overview: str | None = None
+    IndexNumber: int | None = None
+    ParentIndexNumber: int | None = None
+    SeriesId: str | None = None
+    SeriesName: str | None = None
 
 
 class BaseItemDtoQueryResult(BaseModel):

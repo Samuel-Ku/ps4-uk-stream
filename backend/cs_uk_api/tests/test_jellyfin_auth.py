@@ -108,6 +108,25 @@ def test_media_browser_token_header_form_accepted(client: TestClient) -> None:
         assert r.status_code == 200
 
 
+def test_media_browser_client_info_header_accepted(client: TestClient) -> None:
+    # The real @jellyfin/sdk (web/desktop/Switchfin) sends the token as
+    # the trailing field of a client/device identity header, not as the
+    # bare form above. The regex must find Token= anywhere after the
+    # MediaBrowser scheme.
+    header = (
+        f'MediaBrowser Client="SwitchfinLike", Device="Capture PS4", '
+        f'DeviceId="capture-ps4-dev", Version="1.0.0", Token="{TOKEN}"'
+    )
+    r = client.get("/System/Info", headers={"Authorization": header})
+    assert r.status_code == 200
+
+
+def test_media_browser_client_info_header_wrong_token_is_401(client: TestClient) -> None:
+    header = f'MediaBrowser Client="x", Device="y", DeviceId="z", Version="1.0.0", Token="{WRONG}"'
+    r = client.get("/System/Info", headers={"Authorization": header})
+    assert r.status_code == 401
+
+
 def test_media_browser_token_missing_in_authorization_is_401(client: TestClient) -> None:
     r = client.get("/System/Info", headers={"Authorization": 'MediaBrowser Token=""'})
     assert r.status_code == 401

@@ -21,11 +21,12 @@ from typing import cast
 
 from . import config as _config
 from .cache import TtlCache
+from .country import is_blocked_country
 from .health import TRACKER
 from .home import build_home_rows
 from .http_client import get_client
 from .merge import item_group_key
-from .models import HomeResponse, SearchResult
+from .models import ContentResponse, HomeResponse, SearchResult
 from .providers import PROVIDERS
 
 log = logging.getLogger("cs_uk_api.catalog_state")
@@ -33,6 +34,13 @@ log = logging.getLogger("cs_uk_api.catalog_state")
 #: v3 (issue #70): the merged home view — «Новинки» + «Популярні зараз»
 #: + the five type rows — is a curated snapshot, refreshed every 30 min.
 home_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_home_s)
+
+#: Content-detail + blocked-country caches (ADR-0003). Moved here from
+#: ``main.py`` so the Jellyfin facade's ticket #105 detail resolver reads
+#: the SAME stores the native ``/api/content`` route uses — one TTL, one
+#: cache key shape (``content:{provider}:{external}``), one clear().
+content_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_content_s)
+blocklist_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_content_s)
 
 #: v3 (issue #60): side cache keyed by group_key → {provider →
 #: SearchResult}. Populated from the raw SearchResult listings the home
@@ -193,10 +201,66 @@ def resolve_group(group_key: str) -> dict[str, SearchResult] | None:
     return per_provider.get(group_key)
 
 
+async def resolve_group_content(group_key: str) -> ContentResponse | None:
+    """Resolve a ``g1:`` group key to ONE provider's content detail.
+
+    The facade's ticket #105 detail path: a ``g1:`` key maps to the same
+    ``{provider: SearchResult}`` map the native ``/api/home`` populates;
+    the first-seen provider (same order the home row's chip strip shows)
+    is asked for its ContentResponse. The response comes from the SAME
+    ``content_cache`` / ``blocklist_cache`` stores the native
+    ``/api/content`` route uses — one TTL, one cache-key shape, one
+    ``clear()`` — so a detail view and a native content call never cache
+    two different shapes of the same title.
+
+    Returns ``None`` when the key is absent (cold cache, D2's "item
+    unavailable" 404) or the provider's ``content()`` raises (the facade
+    degrades to 404; it never surfaces a 502 like a native route would —
+    Jellyfin clients treat both as "skip this item").
+    """
+    per_provider = resolve_group(group_key)
+    if per_provider is None:
+        return None
+    # First-seen provider; the SearchResult's composite id
+    # (``provider:external``) is split back to the bare external id the
+    # provider's content() expects (animeon rejects composite ids).
+    provider_id, item = next(iter(per_provider.items()))
+    _, _, external_id = item.id.partition(":")
+    cache_key = f"content:{provider_id}:{external_id}"
+    if blocklist_cache.get(cache_key) is not None:
+        return None
+    cached = content_cache.get(cache_key)
+    if cached is not None:
+        return cast(ContentResponse, cached)
+    provider = PROVIDERS.get(provider_id)
+    if provider is None:
+        return None
+    http = get_client()
+    resp = None
+    try:
+        resp = await provider.content(external_id, http)
+        TRACKER.record(provider_id, ok=True)
+    except Exception as e:  # noqa: BLE001
+        log.warning("group content failed provider=%s key=%s err=%s", provider_id, group_key, e)
+        TRACKER.record(provider_id, ok=False)
+    if resp is None:
+        return None
+    if _config.SETTINGS.block_russian and is_blocked_country(resp.country):
+        blocklist_cache.set(cache_key, True)
+        log.info("blocked Russian content id=%s country=%s", cache_key, resp.country)
+        return None
+    resp.group_key = group_key
+    content_cache.set(cache_key, resp)
+    return resp
+
+
 __all__ = [
+    "blocklist_cache",
+    "content_cache",
     "get_home",
     "home_cache",
     "load_home",
     "resolve_group",
+    "resolve_group_content",
     "sources_cache",
 ]

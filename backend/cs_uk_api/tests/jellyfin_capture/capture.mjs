@@ -73,17 +73,32 @@ async function main() {
 	});
 
 	// 3. Open library: Views list for the signed-in user.
-	await run("GET /Users/{id}/Views", () =>
+	const views = await run("GET /Users/{id}/Views", () =>
 		userId ? getUserViewsApi(api).getUserViews({ userId }) : Promise.reject(new Error("no user")),
 	);
+	const firstViewId = views?.data?.Items?.[0]?.Id;
 
-	// 4. List items in a view: the home rows.
-	await run("GET /Items (library)", () =>
-		getItemsApi(api).getItems({ userId, parentId: userId }),
+	// 4. List items in the first view: the home-row cards.
+	const library = await run("GET /Items (library)", () =>
+		firstViewId && userId ? getItemsApi(api).getItems({ userId, parentId: firstViewId }) : Promise.reject(new Error("no view")),
 	);
+	const firstItemId = library?.data?.Items?.[0]?.Id;
 
-	// 5. Item detail: a movie/series card.
-	await run("GET /Items/{id} (detail)", () =>
+	// 5. Item detail: the first listed card (movie/series), plus its
+	//    season children when the card is a series. The all-zeros id is
+	//    the cold-cache fallback (unknown key -> 404, never 5xx).
+	await run("GET /Items/{id} (detail, listed)", () =>
+		firstItemId && userId ? getUserLibraryApi(api).getItem({ userId, itemId: firstItemId }) : Promise.reject(new Error("no item")),
+	);
+	let firstSeasonId = null;
+	const listedType = library?.data?.Items?.[0]?.Type;
+	if (firstItemId && listedType === "Series") {
+		const seasons = await run("GET /Items?parentId=series (seasons)", () =>
+			userId ? getItemsApi(api).getItems({ userId, parentId: firstItemId }) : Promise.reject(new Error("no user")),
+		);
+		firstSeasonId = seasons?.data?.Items?.[0]?.Id;
+	}
+	await run("GET /Items/{id} (detail, unknown)", () =>
 		userId ? getUserLibraryApi(api).getItem({ userId, itemId: "00000000000000000000000000000000" }) : Promise.reject(new Error("no user")),
 	);
 
@@ -104,9 +119,9 @@ async function main() {
 		}),
 	);
 
-	// 7. Poster route.
+	// 7. Poster route: the listed card's art when available.
 	await run("GET /Items/{id}/Images/Primary", () =>
-		getImageApi(api).getItemImage({ itemId: "00000000000000000000000000000000", imageType: "Primary" }),
+		firstItemId ? getImageApi(api).getItemImage({ itemId: firstItemId, imageType: "Primary" }) : getImageApi(api).getItemImage({ itemId: "00000000000000000000000000000000", imageType: "Primary" }),
 	);
 
 	// Logout: report session ended (native no-op semantics).

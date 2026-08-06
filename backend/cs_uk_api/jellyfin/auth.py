@@ -25,11 +25,15 @@ from ..config import SETTINGS
 log = logging.getLogger("cs_uk_api.jellyfin")
 
 #: ``Authorization: MediaBrowser Token="<token>"`` — the form Jellyfin
-#: clients send on authenticated requests. ``Token`` is unquoted in the
-#: wild too, so accept both.
+#: clients send on authenticated requests. Real clients (web, desktop,
+#: Switchfin, and the capture driver's SDK) prefix the header with their
+#: client/device identity — ``MediaBrowser Client="…", Device="…",
+#: DeviceId="…", Version="…", Token="<token>"`` — so the token field is
+#: matched anywhere after the ``MediaBrowser`` scheme, not anchored at
+#: the start. ``Token`` is unquoted in the wild too, so accept both.
 _MEDIA_BROWSER_TOKEN_RE = re.compile(
-    r'^\s*MediaBrowser\s+Token\s*=\s*("([^"]*)"|([^,\s]+))\s*$',
-    re.IGNORECASE,
+    r'^\s*MediaBrowser\s+.*\bToken\s*=\s*("([^"]*)"|([^,\s]+))\s*$',
+    re.IGNORECASE | re.DOTALL,
 )
 
 #: 401 semantics: Jellyfin answers sync with 401 + a JSON body carrying

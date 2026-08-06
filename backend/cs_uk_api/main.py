@@ -13,6 +13,8 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 
 from .cache import TtlCache
+from .catalog_state import blocklist_cache as _catalog_blocklist_cache
+from .catalog_state import content_cache as _catalog_content_cache
 from .catalog_state import get_home as _catalog_get_home
 from .catalog_state import home_cache as _catalog_home_cache
 from .catalog_state import load_home as _catalog_load_home
@@ -57,9 +59,9 @@ if not os.path.exists(DEFAULT_CHROMIUM):
     log.warning("uakino marked down at startup: chromium binary not found at %s", DEFAULT_CHROMIUM)
 
 _search_cache = TtlCache(default_ttl_s=SETTINGS.cache_search_s)
-_content_cache = TtlCache(default_ttl_s=SETTINGS.cache_content_s)
+_content_cache = _catalog_content_cache
 _browse_cache = TtlCache(default_ttl_s=SETTINGS.cache_search_s)
-_blocklist_cache = TtlCache(default_ttl_s=SETTINGS.cache_content_s)
+_blocklist_cache = _catalog_blocklist_cache
 
 #: Back-compat aliases (tests import these): the home snapshot + group-key
 #: resolution map now live in ``cs_uk_api.catalog_state`` (ticket #101),

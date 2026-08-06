@@ -56,9 +56,9 @@ def test_capture_covers_handshake_then_facade_surface() -> None:
     sequence = [(r["method"], r["path"]) for r in RECORDS]
     assert ("GET", "/System/Info/Public") == sequence[0]
     assert ("POST", "/Users/AuthenticateByName") == sequence[1]
-    # The five future namespaces the real client touches (Views, Items,
-    # PlaybackInfo, stream, sessions, poster) must all appear — a client
-    # scenario that vanishes silently would break this list.
+    # The namespaces the real client touches (Views, Items, PlaybackInfo,
+    # stream, sessions, poster) must all appear — a client scenario that
+    # vanishes silently would break this list.
     assert any(p.startswith("/UserViews") for _, p in sequence)
     assert any(p == "/Items" for _, p in sequence)
     assert any(p.startswith("/Items/") for _, p in sequence)
@@ -66,6 +66,22 @@ def test_capture_covers_handshake_then_facade_surface() -> None:
     assert any(p.startswith("/Videos/") for _, p in sequence)
     assert any(p.startswith("/Sessions/") for _, p in sequence)
     assert any(p.endswith("/Images/Primary") for _, p in sequence)
+
+
+def test_capture_surface_advanced_past_zero_ids() -> None:
+    """Post-#105 the detail route answers real ``g1:`` keys — not just
+    the all-zeros stub the client falls back to. The capture therefore
+    freezes the advanced surface: a live detail 200 and a live poster 302,
+    both on a real key the driver walked off the listing."""
+    detail = [r for r in RECORDS if r["method"] == "GET" and r["path"].startswith("/Items/")]
+    assert detail, "capture must include an /Items/{id} hit"
+    assert any(r["path"].startswith("/Items/g1:") and r["status"] == 200 for r in detail), (
+        "capture must resolve a real g1: item detail to 200"
+    )
+    view_listing = [r for r in RECORDS if r["method"] == "GET" and r["path"] == "/Items" and r["query"].get("parentId")]
+    assert view_listing and any(r["status"] == 200 for r in view_listing), (
+        "capture must open a real view (parentId) to 200"
+    )
 
 
 def test_capture_never_contains_live_token() -> None:

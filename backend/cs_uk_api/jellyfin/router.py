@@ -20,9 +20,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
-from ..catalog_state import get_home, load_home
+from ..catalog_state import get_home, load_home, resolve_group_content
 from ..config import SETTINGS
-from ..models import HomeItem, HomeRow
+from ..models import ContentResponse, Episode, HomeItem, HomeRow, Season
 from .auth import require_token
 from .models import (
     AuthenticationResult,
@@ -146,6 +146,112 @@ def _poster_for(item_id: str) -> str | None:
             if it.group_key == item_id:
                 return it.poster
     return None
+
+
+def _view_id_for_item(item_id: str) -> str | None:
+    """The view id that surfaced a ``g1:`` item, from the cached home.
+
+    Wraps the same home walk `_poster_for` uses so a detail page can
+    tell the client which library the item belongs to (D5). None when
+    the item is not in the current home snapshot.
+    """
+    home = get_home()
+    if home is None:
+        return None
+    for row in home.rows:
+        if any(it.group_key == item_id for it in row.items):
+            return _VIEW_ID_BY_TYPE[row.type]
+    return None
+
+
+def _content_dto(group_key: str, content: ContentResponse, server_id: str) -> BaseItemDto:
+    """Movie/Series detail built from a resolved ContentResponse.
+
+    ``ImageTags.Primary`` iff the poster route would serve the item a
+    poster (D9). The image tag is derived from the SAME home-card poster
+    ``/Items/{id}/Images/Primary`` resolves — not ``content.poster`` —
+    so the tag and the route always agree (a card with no art means no
+    tag AND a 404 image, never a dangling tag). Translations stay
+    server-side — the wire carries no translation surface. The item id
+    is the stateless ``g1:`` group key, so the client's bookmarks and
+    the native route agree.
+    """
+    dto = BaseItemDto(
+        Name=content.title,
+        ServerId=server_id,
+        Id=group_key,
+        Type="Movie" if content.type == "movie" else "Series",
+        ProductionYear=content.year,
+        Overview=content.description,
+    )
+    parent = _view_id_for_item(group_key)
+    if parent is not None:
+        dto.ParentId = parent
+    poster = _poster_for(group_key)
+    if poster is not None:
+        dto.ImageTags = {"Primary": _poster_tag(poster)}
+    return dto
+
+
+def _season_dto(group_key: str, season: Season, server_id: str, series_name: str) -> BaseItemDto:
+    """One Season under a series (D2 ids ``<group_key>:S<n>``, D3).
+
+    Carries the indexing fields Jellyfin clients breadcrumb on —
+    ``IndexNumber`` = season number. Seasons get no ``ImageTags`` (D9).
+    """
+    return BaseItemDto(
+        Name=f"Сезон {season.number}",
+        ServerId=server_id,
+        Id=f"{group_key}:S{season.number}",
+        Type="Season",
+        ParentId=group_key,
+        SeriesId=group_key,
+        SeriesName=series_name,
+        IndexNumber=season.number,
+    )
+
+
+def _episode_wire_id(provider_id: str, episode_id: str) -> str:
+    """The existing provider-scoped episode id, unchanged (D2).
+
+    Providers are not uniform about whether ``episode.id`` already
+    carries its ``{provider}:`` prefix (``uakino``/``kinotron`` embed
+    it; most others emit a bare ``{external}:sXeY``). Reproduce exactly
+    the id a native client hands ``/api/stream`` — parent provider
+    prefix only when the episode id does not already start with it — so
+    the PlaybackInfo/stream tickets can consume it unchanged.
+    """
+    if episode_id.startswith(f"{provider_id}:"):
+        return episode_id
+    return f"{provider_id}:{episode_id}"
+
+
+def _episode_dto(
+    group_key: str,
+    season: Season,
+    episode: Episode,
+    provider_id: str,
+    server_id: str,
+    series_name: str,
+) -> BaseItemDto:
+    """One Episode satellite (D2: id keeps the provider-scoped episode
+    suffix the PlaybackInfo/stream tickets consume; D3: ParentId = the
+    owning season id).
+
+    ``IndexNumber`` = number inside the season, ``ParentIndexNumber`` =
+    the season number. No ``ImageTags`` (D9).
+    """
+    return BaseItemDto(
+        Name=episode.title,
+        ServerId=server_id,
+        Id=_episode_wire_id(provider_id, episode.id),
+        Type="Episode",
+        ParentId=f"{group_key}:S{season.number}",
+        SeriesId=group_key,
+        SeriesName=series_name,
+        IndexNumber=episode.number,
+        ParentIndexNumber=season.number,
+    )
 
 
 async def _user_views() -> BaseItemDtoQueryResult:
@@ -272,16 +378,25 @@ async def items_listing(
     parent_id: str | None = Query(default=None, alias="parentId"),
     user_id: str | None = Query(default=None, alias="userId"),
 ) -> BaseItemDtoQueryResult:
-    """Library listing for one view (capture report: bare ``/Items``).
+    """Library listing for one view, OR children of a series/season
+    (ticket #105 hierarchy, D3).
 
-    ``parentId`` is the view's ``Id`` echoed from ``/UserViews``.
-    Unknown or absent view → empty result, matching Jellyfin's tolerant
-    answer for a stale parent (D5: no pagination in v1; each row is
-    capped at 20 by the home builder).
+    Two parent kinds are served by the same route:
+
+      - ``parentId`` = a view's ``Id`` (echoed from ``/UserViews``) —
+        the home-row cards, exactly the ticket #104 behaviour.
+      - ``parentId`` = a series' ``g1:`` group key → the season list
+        (``Type: Season``). ``parentId`` = a ``<group_key>:S<n>`` season
+        id → the season's episodes (``Type: Episode``).
+
+    Unknown or absent view → empty result (Jellyfin's tolerant answer
+    for a stale parent, D5). Cold resolution cache or a movie parent →
+    empty (a movie has no children, D3; episodes survive only under a
+    resolved season).
     """
     row_type = _VIEW_TYPE_BY_ID.get(parent_id or "")
     if row_type is None:
-        return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
+        return await _hierarchy(parent_id)
     home = await load_home()
     server_id = _server_id()
     for row in home.rows:
@@ -292,6 +407,89 @@ async def items_listing(
     # зараз» when no provider carries it) is an empty library, not an
     # error — same tolerant answer as an unknown parent.
     return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
+
+
+def _split_season_suffix(parent_id: str) -> tuple[str, int | None]:
+    """(group_key, season_number) for a season id, else (as-is, None).
+
+    Season ids are ``<group_key>:S<n>`` (D2); the group key never
+    carries an ``:S<n>`` tail, so ``rpartition`` cleanly separates the
+    trailing season marker. A series/movie group key returns itself.
+    """
+    if not parent_id.startswith("g1:"):
+        return parent_id, None
+    head, sep, tail = parent_id.rpartition(":")
+    if sep and tail.startswith("S") and tail[1:].isdigit():
+        return head, int(tail[1:])
+    return parent_id, None
+
+
+async def _hierarchy(parent_id: str | None) -> BaseItemDtoQueryResult:
+    """Seasons of a series, or episodes of a season (D3, ticket #105).
+
+    ``parent_id`` is a group key (series/movie → its seasons) or a
+    season id (``<group_key>:S<n>`` → that season's episodes). A movie
+    parent or an unresolved group key yields an empty result — the same
+    tolerant answer a stale view gets (D5); a cold resolution cache
+    means we cannot know the item, so there are no children to list.
+    """
+    if parent_id is None:
+        return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
+    group_key, season_number = _split_season_suffix(parent_id)
+
+    content = await resolve_group_content(group_key)
+    if content is None or content.seasons is None:
+        return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
+
+    server_id = _server_id()
+    provider_id = next(iter(content.id.split(":")), "")
+    if season_number is None:
+        # Series → its seasons; a movie resolves with seasons=None above.
+        dtos = [_season_dto(group_key, s, server_id, content.title) for s in content.seasons]
+    else:
+        season = next((s for s in content.seasons if s.number == season_number), None)
+        if season is None:
+            return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
+        dtos = [
+            _episode_dto(group_key, season, ep, provider_id, server_id, content.title)
+            for ep in season.episodes
+        ]
+    return BaseItemDtoQueryResult(Items=dtos, TotalRecordCount=len(dtos))
+
+
+@router.get(
+    "/Items/{item_id}",
+    response_model=BaseItemDto,
+    dependencies=[Depends(require_token)],
+)
+async def item_detail(item_id: str) -> BaseItemDto:
+    """Item detail (ticket #105, D2/D3): resolve a ``g1:`` key to its
+    ContentResponse via the shared resolution map, and return a
+    Movie/Series DTO.
+
+    Unresolvable ids 404 with the same "item unavailable" verdict as a
+    cold resolution cache (D2): ``g1:`` keys not in the cached home, and
+    episode ids — served through the season listing, not reverse-
+    resolvable on their own.
+    """
+    # Episode wire ids (``p1:s1e1``) are not reverse-resolvable: there is
+    # no group key in them. They are served exclusively through the
+    # season hierarchy, so /Items/{id} answers 404 for them.
+    if not item_id.startswith("g1:"):
+        raise HTTPException(status_code=404, detail="item_unavailable")
+    group_key, season_number = _split_season_suffix(item_id)
+    content = await resolve_group_content(group_key)
+    if content is None:
+        raise HTTPException(status_code=404, detail="item_unavailable")
+
+    if season_number is not None:
+        if content.seasons is None:
+            raise HTTPException(status_code=404, detail="item_unavailable")
+        season = next((s for s in content.seasons if s.number == season_number), None)
+        if season is None:
+            raise HTTPException(status_code=404, detail="item_unavailable")
+        return _season_dto(group_key, season, _server_id(), content.title)
+    return _content_dto(group_key, content, _server_id())
 
 
 @router.get(
