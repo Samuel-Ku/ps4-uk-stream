@@ -5,14 +5,15 @@ NOT under ``/api/*``, so the native contract is untouched and a Jellyfin
 client pointed at ``host:port`` finds a server without configuration.
 
 Ticket #102 scope: the handshake. Ticket #104 scope: the catalog
-surface — views, item listing, poster. Later tickets add item detail
-(#105), search (#106), PlaybackInfo (#107), the conditional stream
-handler (#108-#110) and sessions behind the same ``require_token`` gate.
+surface — views, item listing, poster. Ticket #105: item detail +
+hierarchy. Ticket #106: PlaybackInfo. Later tickets add the conditional
+stream handler, and sessions behind the same ``require_token`` gate.
 """
 
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
 from urllib.parse import quote
 
@@ -20,17 +21,24 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
-from ..catalog_state import get_home, load_home, resolve_group_content
+from ..catalog_state import get_home, load_home, resolve_group, resolve_group_content
 from ..config import SETTINGS
-from ..models import ContentResponse, Episode, HomeItem, HomeRow, Season
+from ..health import TRACKER
+from ..http_client import get_client
+from ..models import ContentResponse, Episode, HomeItem, HomeRow, Season, StreamResponse
+from ..providers import PROVIDERS
 from .auth import require_token
 from .models import (
     AuthenticationResult,
     BaseItemDto,
     BaseItemDtoQueryResult,
+    MediaSourceInfo,
+    PlaybackInfoResponse,
     SystemInfoPublic,
     UserDto,
 )
+
+log = logging.getLogger("cs_uk_api.jellyfin")
 
 router = APIRouter(tags=["jellyfin"])
 
@@ -510,6 +518,124 @@ async def item_primary_image(item_id: str) -> RedirectResponse:
         url=f"/api/poster?u={quote(poster_url, safe='')}",
         status_code=302,
     )
+
+
+async def _stream_provider_and_id(item_id: str) -> tuple[str, str] | None:
+    """Resolve a playable item id to ``(provider_id, stream_id)``.
+
+    Two id families are playable (D2/D3):
+
+      - a movie's ``g1:`` group key → the group's first-seen provider
+        (the same provider the detail page shows first), whose BARE
+        external id is what the native ``/api/stream`` route consumes.
+        Playability is decided on the content's FORM — ``content.type
+        == "movie"`` — the same verdict detail renders as ``Type="Movie"``,
+        NOT the card's style literal (``SearchResult.type`` can say
+        ``"anime"`` for an anime FILM; conflating style with form would
+        404 a film the client just opened as a Movie). The shared
+        ``resolve_group_content`` also carries the blocklist verdict, so
+        a blocked title never gets a stream.
+      - an episode wire id (``p1:s1e1``-style) → the provider is the id
+        prefix; the episode suffix is handed to ``stream()`` exactly, no
+        group-key resolution (episodes are not reverse-lookupable, D2).
+
+    Returns ``None`` when the id is not directly playable: a series/
+    season item (a show is not a playable thing — the client plays
+    episodes, D3), a season suffix, a cold group key, a blocked title,
+    or an id whose provider prefix is unknown. The caller 404s on None
+    (D2 "item unavailable").
+    """
+    # Series/season keys and cold groups: the title is not playable on its own.
+    if item_id.startswith("g1:"):
+        group_key, season_number = _split_season_suffix(item_id)
+        if season_number is not None:
+            return None
+        content = await resolve_group_content(group_key)
+        if content is None or content.type != "movie":
+            return None
+        per_provider = resolve_group(group_key)
+        if per_provider is None:
+            return None
+        provider_id, result = next(iter(per_provider.items()))
+        _, _, external_id = result.id.partition(":")
+        return provider_id, external_id
+
+    # Provider-scoped episode wire id — split the prefix and hand the
+    # suffix straight to stream(), exactly like /api/stream/{id}.
+    provider_id, _, episode_id = item_id.partition(":")
+    if provider_id not in PROVIDERS or not episode_id:
+        return None
+    return provider_id, episode_id
+
+
+async def _resolve_stream(item_id: str) -> StreamResponse | None:
+    """The upstream ``StreamResponse`` behind a playable item id, or None.
+
+    Runs the provider's ``stream()`` exactly as the native
+    ``/api/stream/{id}`` route does — same bare ids, ``translation=None``
+    (default voice), same shared ``httpx`` client. A refusal (unknown
+    slug, upstream down, parse failure) degrades to None → 404, the
+    facade's standing "never 5xx" posture (D2).
+    """
+    resolved = await _stream_provider_and_id(item_id)
+    if resolved is None:
+        return None
+    provider_id, external_id = resolved
+    provider = PROVIDERS[provider_id]
+    http = get_client()
+    try:
+        stream = await provider.stream(external_id, None, http)
+        TRACKER.record(provider_id, ok=True)
+        return stream
+    except Exception as e:  # noqa: BLE001
+        log.warning("jellyfin playback stream failed provider=%s id=%s err=%s",
+                    provider_id, item_id, e)
+        TRACKER.record(provider_id, ok=False)
+        return None
+
+
+def _container_from_type(stream_type: str) -> str:
+    """StreamResponse.type → Jellyfin ``Container`` (D6).
+
+    The native types are already Jellyfin container strings (``mp4``,
+    ``m3u8``, ``hls``, ``dash``); pass them through verbatim rather than
+    inventing a second mapping that could disagree.
+    """
+    return stream_type
+
+
+@router.get(
+    "/Items/{item_id}/PlaybackInfo",
+    response_model=PlaybackInfoResponse,
+    dependencies=[Depends(require_token)],
+)
+@router.post(
+    "/Items/{item_id}/PlaybackInfo",
+    response_model=PlaybackInfoResponse,
+    dependencies=[Depends(require_token)],
+)
+async def playback_info(item_id: str) -> PlaybackInfoResponse:
+    """PlaybackInfo: one thin MediaSource per playable item (D6).
+
+    The @jellyfin/sdk hits this with POST (capture row 6) and the spec
+    declares GET; both spellings serve the identical envelope. The
+    container is learned from the provider's actual ``StreamResponse`` —
+    one upstream ``stream()`` call, the same cost a native client pays
+    for ``/api/stream``. ``Path`` is fictitious (bytes always come from
+    ``/Videos/{id}/stream``); ``PlaySessionId`` is a fresh UUID. Unplayed
+    ids 404 (D2); a series/season card is not playable and 404s too.
+    """
+    stream = await _resolve_stream(item_id)
+    if stream is None:
+        raise HTTPException(status_code=404, detail="item_unavailable")
+    play_session_id = str(uuid.uuid4())
+    source = MediaSourceInfo(
+        Id=item_id,
+        Container=_container_from_type(stream.type),
+        Path=f"/videos/{item_id}",
+        PlaySessionId=play_session_id,
+    )
+    return PlaybackInfoResponse(MediaSources=[source], PlaySessionId=play_session_id)
 
 
 __all__ = ["require_token", "router"]

@@ -99,3 +99,44 @@ class BaseItemDtoQueryResult(BaseModel):
 
     Items: list[BaseItemDto] = Field(default_factory=list)
     TotalRecordCount: int = 0
+
+
+class MediaStreamInfo(BaseModel):
+    """One entry of ``MediaSourceInfo.MediaStreams`` (spec D6, ticket #106).
+
+    Deliberately ONLY ``{"Type": "Video"}`` — no codec, resolution, or
+    bitrate fields. Lying about codecs risks forcing a transcode path
+    the facade cannot serve; ``IsDirectStream: true`` tells the client
+    the bytes are what they are.
+    """
+
+    Type: str = "Video"
+
+
+class MediaSourceInfo(BaseModel):
+    """The thin ``MediaSources[0]`` of PlaybackInfo (spec D6).
+
+    ``Id`` = the item id (the ``g1:`` group key or the provider-scoped
+    episode wire id); ``Container`` = the provider's ``StreamResponse``
+    type (mp4/m3u8/hls); ``Path`` is a FICTITIOUS stable string — the
+    bytes always come from ``/Videos/{id}/stream``, never from Path.
+    """
+
+    Id: str
+    Container: str
+    MediaStreams: list[MediaStreamInfo] = Field(default_factory=lambda: [MediaStreamInfo()])
+    IsDirectStream: bool = True
+    Path: str
+    PlaySessionId: str
+
+
+class PlaybackInfoResponse(BaseModel):
+    """``GET/POST /Items/{id}/PlaybackInfo`` envelope (spec D6).
+
+    Exactly one MediaSource. The top-level ``PlaySessionId`` mirrors the
+    source's — real Jellyfin echoes it in both places, and clients read
+    either.
+    """
+
+    MediaSources: list[MediaSourceInfo]
+    PlaySessionId: str
