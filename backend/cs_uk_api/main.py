@@ -6,7 +6,7 @@ import os
 import time
 from contextlib import asynccontextmanager
 from typing import Awaitable, Callable, TypeVar, cast
-from urllib.parse import unquote
+
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -635,9 +635,11 @@ async def stream(content_id: str, translation: str | None = None) -> StreamRespo
 
 @app.get("/api/poster")
 async def poster(u: str = Query(...)) -> Response:
-    raw = unquote(u)
-    fetched = await fetch_poster(raw, get_client())
+    # FastAPI already percent-decodes the query param once; the value is
+    # the canonical poster URL as stored. No second unquote here — it
+    # would corrupt URLs that legitimately contain "%" (e.g. "%20").
+    fetched = await fetch_poster(u, get_client())
     if fetched is None:
-        raise HTTPException(404, detail=ErrorResponse(error="poster_unavailable", message=raw).model_dump())
+        raise HTTPException(404, detail=ErrorResponse(error="poster_unavailable", message=u).model_dump())
     body, ctype = fetched
     return Response(content=body, media_type=ctype)

@@ -8,7 +8,7 @@ token) without carrying the full server's JSON surface.
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SystemInfoPublic(BaseModel):
@@ -54,3 +54,36 @@ class AuthenticationResult(BaseModel):
     AccessToken: str
     ServerId: str
     SessionInfo: str | None = None
+
+
+class BaseItemDto(BaseModel):
+    """Minimal Jellyfin ``BaseItemDto`` (spec D5/D9, ticket #104).
+
+    Only the fields a Switchfin-style client consumes for library and
+    item-card rendering: identity, display name, media type, year,
+    parent view id, and the primary-image tag. ``ImageTags`` is the
+    dict clients read to decide whether art exists for the item; the
+    ``Primary`` value is an opaque cache-buster derived from the poster
+    URL (D9: tag present *iff* the item has a poster).
+    """
+
+    Name: str | None = None
+    ServerId: str | None = None
+    Id: str | None = None
+    Type: str | None = None
+    CollectionType: str | None = None
+    ProductionYear: int | None = None
+    ParentId: str | None = None
+    ImageTags: dict[str, str] = Field(default_factory=dict)
+
+
+class BaseItemDtoQueryResult(BaseModel):
+    """``ItemsResult``-style envelope every list endpoint returns.
+
+    ``TotalRecordCount`` is what Jellyfin clients use to render
+    scrolling; the facade caps every listing at the home row size (20),
+    so it always equals ``len(Items)`` (D5: no pagination in v1).
+    """
+
+    Items: list[BaseItemDto] = Field(default_factory=list)
+    TotalRecordCount: int = 0
