@@ -96,20 +96,18 @@ endif ()
 stage_tree("${ROMFS_DIR}" "${PKG_DIR}")
 stage_tree("${DATADIR_DIR}" "${PKG_DIR}")
 
-# 3. eboot.bin -> ${PKG_DIR}/eboot.bin/eboot.bin (PkgTool.Core convention).
+# 3. eboot.bin -> ${PKG_DIR}/eboot.bin (flat, PkgTool.Core convention).
+#    PkgTool.Core identifies the app's main executable by the gp4
+#    targ_path "eboot.bin" (see /opt/oo/samples/*/pkg.gp4). A nested
+#    "eboot.bin/eboot.bin" is NOT recognised as image0 — the resulting
+#    pkg has no main executable and the console installer rejects it
+#    with CE-34629-4 (data corrupted). Bug #18 root cause.
 execute_process(
-    COMMAND "${CMAKE_COMMAND}" -E make_directory "${PKG_DIR}/eboot.bin"
-    RESULT_VARIABLE _mkdir_rc
-)
-if (NOT _mkdir_rc EQUAL 0)
-    message(FATAL_ERROR "pkgtree_stage.cmake: mkdir ${PKG_DIR}/eboot.bin failed (rc=${_mkdir_rc})")
-endif ()
-execute_process(
-    COMMAND "${CMAKE_COMMAND}" -E copy "${EBOOT_BIN}" "${PKG_DIR}/eboot.bin/eboot.bin"
+    COMMAND "${CMAKE_COMMAND}" -E copy "${EBOOT_BIN}" "${PKG_DIR}/eboot.bin"
     RESULT_VARIABLE _rc
 )
 if (NOT _rc EQUAL 0)
-    message(FATAL_ERROR "pkgtree_stage.cmake: copy ${EBOOT_BIN} -> ${PKG_DIR}/eboot.bin/eboot.bin failed (rc=${_rc})")
+    message(FATAL_ERROR "pkgtree_stage.cmake: copy ${EBOOT_BIN} -> ${PKG_DIR}/eboot.bin failed (rc=${_rc})")
 endif ()
 
 # 4. Sanity banner for the runbook / pytest harness.

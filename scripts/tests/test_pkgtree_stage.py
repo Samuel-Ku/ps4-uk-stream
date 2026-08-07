@@ -129,7 +129,7 @@ def test_pkgtree_stages_named_files(tmp_path):
       - sce_sys/param.sfo         (data/ps4/romfs)
       - sce_sys/icon0.png
       - sce_sys/about/right.sprx
-      - eboot.bin/eboot.bin       (the PkgTool.Core nested-path convention)
+      - eboot.bin                (flat — the PkgTool.Core gp4 convention)
     """
     romfs_files = {
         "sce_sys": {
@@ -176,13 +176,13 @@ def test_pkgtree_stages_named_files(tmp_path):
         pkg_dir / "sce_module" / "libSceFios2.prx",
         pkg_dir / "mpv" / "subfont.ttf",
         pkg_dir / "skin" / "btn_play.png",
-        pkg_dir / "eboot.bin" / "eboot.bin",
+        pkg_dir / "eboot.bin",
     ]
     for path in expected:
         assert path.exists(), f"missing: {path}"
         assert path.is_file(), f"not a regular file: {path}"
-    # eboot.bin/eboot.bin must have the original eboot bytes
-    assert (pkg_dir / "eboot.bin" / "eboot.bin").read_bytes() == eboot.read_bytes()
+    # eboot.bin must have the original eboot bytes
+    assert (pkg_dir / "eboot.bin").read_bytes() == eboot.read_bytes()
 
 
 # --- acceptance #2: no extra files leak into sce_sys --------------------
@@ -272,7 +272,7 @@ def _sha256(p: Path) -> str:
 
 def test_pkgtree_handles_missing_data_dirs(tmp_path):
     """When datadir/ is absent, mpv/ should be absent in the dest.
-    Empty romfs → only eboot.bin/eboot.bin lands in dest.
+    Empty romfs → only eboot.bin lands in dest.
     """
     romfs = tmp_path / "romfs"
     romfs.mkdir()
@@ -288,9 +288,9 @@ def test_pkgtree_handles_missing_data_dirs(tmp_path):
         eboot_bin=eboot,
     )
     assert result.returncode == 0, result.stderr
-    # Only eboot.bin/eboot.bin should be present.
+    # Only eboot.bin should be present.
     files = [p.relative_to(pkg_dir) for p in pkg_dir.rglob("*") if p.is_file()]
-    assert files == [Path("eboot.bin/eboot.bin")], files
+    assert files == [Path("eboot.bin")], files
 
 
 # --- missing required vars fail fast ------------------------------------

@@ -55,6 +55,7 @@ echo "==> Building PS4 PKG inside ps4-uk-build"
 cp "$ROOT/pplay-fork/scripts/run-in-ps4-container.sh" "$BUILD_CTX/run-in-container.sh"
 "$RUNTIME" run --rm \
     -v "$ROOT/pplay-fork":/work \
+    -v "$ROOT":/repo \
     -v "$BUILD_CTX/run-in-container.sh":/run-in-container.sh:ro \
     --entrypoint /bin/bash \
     ps4-uk-build \

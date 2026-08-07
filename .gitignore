@@ -29,3 +29,6 @@ pplay-fork/build-ps4/
 
 # Capture driver deps (npm install in tests/jellyfin_capture)
 node_modules/
+
+# CTest-generated artifact directory
+Testing/

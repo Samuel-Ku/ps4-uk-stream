@@ -13,7 +13,7 @@ what PkgTool.Core expects:
 - <files> contains one <file targ_path=... orig_path=...> per staged file
 - targ_path is RELATIVE to PKG_DIR (not absolute)
 - <rootdir> contains a <dir> per top-level subdir
-- eboot.bin/eboot.bin (PkgTool.Core's nested-path convention) survives
+- eboot.bin (flat — the gp4 convention that PkgTool.Core maps to image0) survives
 - output is deterministic across re-runs
 """
 from __future__ import annotations
@@ -85,6 +85,9 @@ def _build_source_fixture(
     pkg_dir.mkdir()
     for top, files in subdirs.items():
         subdir = pkg_dir / top
+        if isinstance(files, bytes):
+            subdir.write_bytes(files)
+            continue
         subdir.mkdir()
         for rel, data in files.items():
             target = subdir / rel
@@ -111,9 +114,7 @@ RUNTIME_FIXTURE: dict[str, dict[str, bytes]] = {
     "mpv": {
         "subfont.ttf": b"OTTO" + b"\x00" * 60,
     },
-    "eboot.bin": {
-        "eboot.bin": b"\x4f\x15\x3d\x1d" + b"\x00" * 60,
-    },
+    "eboot.bin": b"\x4f\x15\x3d\x1d" + b"\x00" * 60,
 }
 
 
@@ -157,7 +158,7 @@ def test_gpkg_gen_includes_every_file(tmp_path):
         "sce_module/libSceFios2.prx",
         "skin/btn_play.png",
         "mpv/subfont.ttf",
-        "eboot.bin/eboot.bin",
+        "eboot.bin",
     }
     actual_targ_paths = {e.get("targ_path") for e in entries}
     assert actual_targ_paths == expected_targ_paths, (
@@ -197,17 +198,18 @@ def test_gpkg_gen_targ_path_is_relative(tmp_path):
         )
 
 
-# --- acceptance #3: eboot.bin/eboot.bin nested-path convention ---------
+# --- acceptance #3: eboot.bin flat-path convention ---------------------
 
 
-def test_gpkg_gen_handles_eboot_nested_path(tmp_path):
-    """PkgTool.Core requires eboot.bin to live in a directory of the
-    same name (the nested-path convention). The generator must
-    reference it as 'eboot.bin/eboot.bin' (one entry, not two) and
-    the orig_path must be the actual host path."""
+def test_gpkg_gen_handles_eboot_flat_path(tmp_path):
+    """PkgTool.Core maps the gp4 file with targ_path 'eboot.bin' to
+    image0 (the app's main executable). The generator must emit the
+    flat targ_path and the orig_path must be the actual host path.
+    (A nested 'eboot.bin/eboot.bin' is NOT recognised and produces a
+    pkg the console rejects with CE-34629-4 — Bug #18 root cause.)"""
     pkg_dir = _build_source_fixture(
         tmp_path,
-        subdirs={"eboot.bin": {"eboot.bin": b"\x4f\x15\x3d\x1d"}},
+        subdirs={"eboot.bin": b"\x4f\x15\x3d\x1d"},
     )
     gp4_path = tmp_path / "pkg.gp4"
 
@@ -219,8 +221,8 @@ def test_gpkg_gen_handles_eboot_nested_path(tmp_path):
     eboot_entries = [e for e in entries if "eboot" in e.get("targ_path", "")]
     assert len(eboot_entries) == 1, f"expected 1 eboot entry, got {len(eboot_entries)}"
     e = eboot_entries[0]
-    assert e.get("targ_path") == "eboot.bin/eboot.bin", e.get("targ_path")
-    assert e.get("orig_path") == str(pkg_dir / "eboot.bin" / "eboot.bin"), e.get("orig_path")
+    assert e.get("targ_path") == "eboot.bin", e.get("targ_path")
+    assert e.get("orig_path") == str(pkg_dir / "eboot.bin"), e.get("orig_path")
 
 
 # --- acceptance #4: <rootdir> reflects top-level subdirs ---------------
@@ -240,7 +242,7 @@ def test_gpkg_gen_rootdir_reflects_top_level_dirs(tmp_path):
     rootdir = tree.getroot().find("rootdir")
     assert rootdir is not None, "<rootdir> block missing"
     top_dirs = {d.get("targ_name") for d in rootdir.findall("dir")}
-    expected_top_dirs = {"sce_sys", "sce_module", "skin", "mpv", "eboot.bin"}
+    expected_top_dirs = {"sce_sys", "sce_module", "skin", "mpv"}
     assert top_dirs == expected_top_dirs, (
         f"top-level <dir> mismatch:\n  expected={expected_top_dirs}\n  actual={top_dirs}"
     )

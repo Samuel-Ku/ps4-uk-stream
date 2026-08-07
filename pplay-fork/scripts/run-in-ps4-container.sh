@@ -111,5 +111,6 @@ echo "==> [6/6] Verify Bug #18 fix (issue #97)"
 # as upstream pPlay 3.8 (icon0.png, param.sfo, playgo-chunk.dat,
 # playgo-chunk.sha, playgo-manifest.xml). The script writes
 # build/bug-18-verification.txt; the host reads it back to update
-# docs/ps4-test-report.md.
-bash pplay-fork/scripts/verify-bug18.sh
+# docs/ps4-test-report.md. /work is the pplay-fork tree; the monorepo
+# root (docs/ + scripts/) is mounted at /repo.
+bash scripts/verify-bug18.sh
