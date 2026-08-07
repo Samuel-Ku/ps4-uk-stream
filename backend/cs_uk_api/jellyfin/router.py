@@ -8,8 +8,9 @@ Ticket #102: the handshake. Ticket #104: the catalog surface — views,
 item listing, poster. Ticket #105: item detail + hierarchy. Ticket
 #106: PlaybackInfo. Ticket #107: the conditional stream handler
 (``GET /Videos/{id}/stream``) with byte proxying, Range support, and
-HLS segment rewriting. Sessions land later, behind the same
-``require_token`` gate.
+HLS segment rewriting. Ticket #108: sessions no-op endpoints
+(``/Sessions/Playing|Progress|Stopped|Logout`` → 204), all behind the
+same ``require_token`` gate.
 """
 
 from __future__ import annotations
@@ -935,6 +936,45 @@ async def video_segment(item_id: str, url: str = Query(...)) -> Response:
         raise HTTPException(status_code=404, detail="item_unavailable")
     upstream, closer = opened
     return _streaming_response(upstream, closer, "application/octet-stream")
+
+
+@router.post("/Sessions/Playing", dependencies=[Depends(require_token)])
+async def sessions_playing() -> Response:
+    """Playback-start report (D8): accept, answer 204, store nothing.
+
+    The @jellyfin/sdk posts a full PlaybackStartInfo body here the moment
+    playback starts (capture row 6). The facade has no session state and
+    keeps none — the response exists so the client's report lands.
+    """
+    return Response(status_code=204)
+
+
+@router.post("/Sessions/Progress", dependencies=[Depends(require_token)])
+async def sessions_progress() -> Response:
+    """Playback-progress report (D8): accept, answer 204, store nothing."""
+    return Response(status_code=204)
+
+
+@router.post("/Sessions/Stopped", dependencies=[Depends(require_token)])
+async def sessions_stopped() -> Response:
+    """Playback-stop report (D8): accept, answer 204, store nothing.
+
+    Resume/history are out of scope (D8) — this is where a real server
+    would persist the stop position; the facade forgets it on purpose.
+    """
+    return Response(status_code=204)
+
+
+@router.post("/Sessions/Logout", dependencies=[Depends(require_token)])
+async def sessions_logout() -> Response:
+    """Session-end report (D8, capture verdict): accept, answer 204.
+
+    The SDK's ``reportSessionEnded`` treats the logout call as the
+    SignedOut signal and halts on anything but a 204, so the facade must
+    answer exactly that. No token/session state is dropped — there is
+    none to drop.
+    """
+    return Response(status_code=204)
 
 
 __all__ = ["require_token", "router"]
