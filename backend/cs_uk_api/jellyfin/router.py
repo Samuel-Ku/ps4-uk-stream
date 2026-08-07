@@ -527,33 +527,38 @@ async def item_primary_image(item_id: str) -> RedirectResponse:
     )
 
 
-async def _stream_provider_and_id(item_id: str) -> tuple[str, str] | None:
-    """Resolve a playable item id to ``(provider_id, stream_id)``.
+async def _resolve_stream(item_id: str) -> StreamResponse | None:
+    """The upstream ``StreamResponse`` behind a playable item id, or None.
 
-    Two id families are playable (D2/D3):
+    Resolves the two playable id families (D2/D3) to their provider, then
+    runs ``provider.stream()`` exactly as the native ``/api/stream/{id}``
+    route does — same bare external ids, ``translation=None`` (default
+    voice), same shared ``httpx`` client:
 
       - a movie's ``g1:`` group key → the group's first-seen provider
         (the same provider the detail page shows first), whose BARE
-        external id is what the native ``/api/stream`` route consumes.
-        Playability is decided on the content's FORM — ``content.type
-        == "movie"`` — the same verdict detail renders as ``Type="Movie"``,
-        NOT the card's style literal (``SearchResult.type`` can say
-        ``"anime"`` for an anime FILM; conflating style with form would
-        404 a film the client just opened as a Movie). The shared
-        ``resolve_group_content`` also carries the blocklist verdict, so
-        a blocked title never gets a stream.
+        external id is what stream() consumes. Playability is decided on
+        the content's FORM — ``content.type == "movie"`` — the same
+        verdict detail renders as ``Type="Movie"``, NOT the card's style
+        literal (``SearchResult.type`` can say ``"anime"`` for an anime
+        FILM; conflating style with form would 404 a film the client just
+        opened as a Movie). The shared ``resolve_group_content`` also
+        carries the blocklist verdict, so a blocked title never gets a
+        stream.
       - an episode wire id (``p1:s1e1``-style) → the provider is the id
         prefix; the episode suffix is handed to ``stream()`` exactly, no
         group-key resolution (episodes are not reverse-lookupable, D2).
 
-    Returns ``None`` when the id is not directly playable: a series/
-    season item (a show is not a playable thing — the client plays
-    episodes, D3), a season suffix, a cold group key, a blocked title,
-    or an id whose provider prefix is unknown. The caller 404s on None
-    (D2 "item unavailable").
+    Unplayable ids (a series/season item — a show is not a playable
+    thing, the client plays episodes, D3 — a season suffix, a cold group
+    key, a blocked title, an unknown provider prefix) yield None. Rather
+    than a middle-man tuple hop, the resolution and the stream call live
+    in the same module: this IS the seam the routes cross, so a refusal
+    degrades to None → 404, the facade's standing "never 5xx" posture
+    (D2), and the provider+health recording stays colocated with it.
     """
-    # Series/season keys and cold groups: the title is not playable on its own.
     if item_id.startswith("g1:"):
+        # Series/season keys and cold groups: not playable on their own.
         group_key, season_number = _split_season_suffix(item_id)
         if season_number is not None:
             return None
@@ -565,29 +570,13 @@ async def _stream_provider_and_id(item_id: str) -> tuple[str, str] | None:
             return None
         provider_id, result = next(iter(per_provider.items()))
         _, _, external_id = result.id.partition(":")
-        return provider_id, external_id
+    else:
+        # Provider-scoped episode wire id — split the prefix and hand the
+        # suffix straight to stream(), exactly like /api/stream/{id}.
+        provider_id, _, external_id = item_id.partition(":")
+        if provider_id not in PROVIDERS or not external_id:
+            return None
 
-    # Provider-scoped episode wire id — split the prefix and hand the
-    # suffix straight to stream(), exactly like /api/stream/{id}.
-    provider_id, _, episode_id = item_id.partition(":")
-    if provider_id not in PROVIDERS or not episode_id:
-        return None
-    return provider_id, episode_id
-
-
-async def _resolve_stream(item_id: str) -> StreamResponse | None:
-    """The upstream ``StreamResponse`` behind a playable item id, or None.
-
-    Runs the provider's ``stream()`` exactly as the native
-    ``/api/stream/{id}`` route does — same bare ids, ``translation=None``
-    (default voice), same shared ``httpx`` client. A refusal (unknown
-    slug, upstream down, parse failure) degrades to None → 404, the
-    facade's standing "never 5xx" posture (D2).
-    """
-    resolved = await _stream_provider_and_id(item_id)
-    if resolved is None:
-        return None
-    provider_id, external_id = resolved
     provider = PROVIDERS[provider_id]
     http = get_client()
     try:

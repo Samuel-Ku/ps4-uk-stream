@@ -1,11 +1,11 @@
-{"ts": 1786041145.7332976, "method": "GET", "path": "/System/Info/Public", "query": {}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 200}
-{"ts": 1786041145.7430687, "method": "POST", "path": "/Users/AuthenticateByName", "query": {}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 200}
-{"ts": 1786041145.7478416, "method": "GET", "path": "/UserViews", "query": {"userId": "fdc808859fc45eb8ac5aa6faddc12c72"}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 200}
-{"ts": 1786041145.7540412, "method": "GET", "path": "/Items", "query": {"userId": "fdc808859fc45eb8ac5aa6faddc12c72", "parentId": "ac357d43a6e459568e061ae4368543d5"}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 200}
-{"ts": 1786041146.1374972, "method": "GET", "path": "/Items/g1:971abeb2217e4642", "query": {"userId": "fdc808859fc45eb8ac5aa6faddc12c72"}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 200}
-{"ts": 1786041146.1409402, "method": "GET", "path": "/Items/00000000000000000000000000000000", "query": {"userId": "fdc808859fc45eb8ac5aa6faddc12c72"}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 404}
-{"ts": 1786041146.144705, "method": "POST", "path": "/Items/00000000000000000000000000000000/PlaybackInfo", "query": {}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 404}
-{"ts": 1786041146.1484487, "method": "GET", "path": "/Videos/00000000000000000000000000000000/stream", "query": {}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 404}
-{"ts": 1786041146.1555521, "method": "POST", "path": "/Sessions/Playing", "query": {}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 404}
-{"ts": 1786041146.1620796, "method": "GET", "path": "/Items/g1:971abeb2217e4642/Images/Primary", "query": {}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 302}
-{"ts": 1786041146.306258, "method": "POST", "path": "/Sessions/Logout", "query": {}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 404}
+{"ts": 1786117496.7607164, "method": "GET", "path": "/System/Info/Public", "query": {}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 200}
+{"ts": 1786117496.7830322, "method": "POST", "path": "/Users/AuthenticateByName", "query": {}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 200}
+{"ts": 1786117509.4509404, "method": "GET", "path": "/UserViews", "query": {"userId": "fdc808859fc45eb8ac5aa6faddc12c72"}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 200}
+{"ts": 1786117509.4754014, "method": "GET", "path": "/Items", "query": {"userId": "fdc808859fc45eb8ac5aa6faddc12c72", "parentId": "ac357d43a6e459568e061ae4368543d5"}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 200}
+{"ts": 1786117509.6738503, "method": "GET", "path": "/Items/g1:971abeb2217e4642", "query": {"userId": "fdc808859fc45eb8ac5aa6faddc12c72"}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 200}
+{"ts": 1786117509.70641, "method": "GET", "path": "/Items/00000000000000000000000000000000", "query": {"userId": "fdc808859fc45eb8ac5aa6faddc12c72"}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 404}
+{"ts": 1786117509.7303534, "method": "POST", "path": "/Items/00000000000000000000000000000000/PlaybackInfo", "query": {}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 404}
+{"ts": 1786117509.7651756, "method": "GET", "path": "/Videos/00000000000000000000000000000000/stream", "query": {}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 404}
+{"ts": 1786117509.8025737, "method": "POST", "path": "/Sessions/Playing", "query": {}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 204}
+{"ts": 1786117509.8320608, "method": "GET", "path": "/Items/g1:971abeb2217e4642/Images/Primary", "query": {}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 302}
+{"ts": 1786117509.974192, "method": "POST", "path": "/Sessions/Logout", "query": {}, "headers": {"authorization": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 204}

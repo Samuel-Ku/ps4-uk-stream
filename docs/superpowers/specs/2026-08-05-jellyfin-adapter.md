@@ -132,20 +132,29 @@ This resolves the "JSON mapping + redirect vs full proxy" question: **neither al
 
 Approved before implementation, so we pinned the endpoint set against a real client instead of guessing. The `@jellyfin/sdk` v0.13 network layer (the exact protocol family Switchfin/Jellyfin Web use) was driven against the live facade for the base scenarios; every request it emitted was recorded by the request middleware and frozen at `backend/cs_uk_api/tests/fixtures/jellyfin/capture.jsonl`.
 
-### What the real client actually requests (10 requests, in order)
+### What the real client actually requests (in order)
 
 | # | Method | Path | Query | Status (today) |
 | --- | --- | --- | --- | --- |
 | 1 | GET | `/System/Info/Public` | — | 200 |
 | 2 | POST | `/Users/AuthenticateByName` | — | 200 |
-| 3 | GET | `/UserViews` | `userId=<uuid>` | 404 |
-| 4 | GET | `/Items` | `userId`, `parentId` | 404 |
-| 5 | GET | `/Items/{id}` | `userId` | 404 |
-| 6 | POST | `/Items/{id}/PlaybackInfo` | — | 404 |
-| 7 | GET | `/Videos/{id}/stream` | — | 404 |
-| 8 | POST | `/Sessions/Playing` | — | 404 |
-| 9 | GET | `/Items/{id}/Images/Primary` | — | 404 |
-| 10 | POST | `/Sessions/Logout` | — | 404 |
+| 3 | GET | `/UserViews` | `userId=<uuid>` | 200 |
+| 4 | GET | `/Items` | `userId`, `parentId` | 200 |
+| 5 | GET | `/Items/{id}` | `userId` | 200 (listed) / 404 (unknown) |
+| 6 | POST | `/Items/{id}/PlaybackInfo` | — | 404 (unknown id only) |
+| 7 | GET | `/Videos/{id}/stream` | — | 404 (unknown id only) |
+| 8 | POST | `/Sessions/Playing` | — | 204 |
+| 9 | GET | `/Items/{id}/Images/Primary` | — | 302 |
+| 10 | POST | `/Sessions/Logout` | — | 204 |
+
+The statuses are the *refreshed* surface (footer-fresh replay of
+`npm run capture` after D8 landed): every real key resolves —
+views 200, library 200, a listed `g1:` item details 200, its poster
+302 — while the driver's all-zeros stub id keeps 404ing the four
+keyed routes (detail, PlaybackInfo, stream; the poster on the zero id
+is skipped), because that id is not a real catalog key. Sessions
+answer 204 no-ops. The contract test asserts these are never 5xx and
+that a live `g1:` detail + poster surface exists.
 
 Capture verdicts vs the guessed 10-endpoint list:
 
@@ -156,4 +165,4 @@ Capture verdicts vs the guessed 10-endpoint list:
 
 ### Fetch of the driver
 
-`backend/cs_uk_api/tests/jellyfin_capture/` holds `capture.mjs` (+ `package.json`) — the `@jellyfin/sdk` driver that reproduced the above. Running it against a live facade (`CS_UK_JF_CAPTURE_DIR` set, `npm run capture`) regenerates `capture.jsonl`; the contract test `tests/test_jellyfin_capture.py` replays the frozen sequence through the TestClient seam and asserts the facade never 5xxes on the real client surface (today every non-handshake call is a clean 404, tightening as each endpoint lands).
+`backend/cs_uk_api/tests/jellyfin_capture/` holds `capture.mjs` (+ `package.json`) — the `@jellyfin/sdk` driver that reproduced the above. Running it against a live facade (`CS_UK_JF_CAPTURE_DIR` set, `npm run capture`) regenerates `capture.jsonl`; the contract test `tests/test_jellyfin_capture.py` replays the frozen sequence through the TestClient seam and asserts the facade answers the real client surface deterministically — never 5xx, no crash — on the current surface: views/items/detail 200, poster 302, sessions 204, unknown-id routes a clean 404.
