@@ -47,5 +47,32 @@ not replay a stale 302 fixture.
 - `test_jellyfin_views.py` poster tests → assert 200 (match code).
 - Capture report D9 still documents 302; router doc says 302 is the bug.
 
-Next run: confirm whether the capture fixture should be regenerated (live 200)
-or the router reverted to 302 per D9.
+# Run #2 (2026-08-07) — divergence resolved
+
+Re-read spec D9 (lines 78-98) and the frozen fixture row
+`backend/cs_uk_api/tests/fixtures/jellyfin/capture.jsonl`:
+`{"path":"/Items/g1:.../Images/Primary","status":302}` — captured against the
+**old** code, before the inline-200 fix. `capture.mjs` only logs settlement
+status, does not pin 302.
+
+## Verdict
+- Spec D9 (line 95) + frozen fixture + `capture.mjs` still assert **302**
+  (redirect to `/api/poster`).
+- Live router (router.py:736-767) + live tests (`test_jellyfin_views.py:408,
+  424) serve **200 inline**.
+- Router doc (router.py:750-753): the 302 is a Switchfin console error storm —
+  so **200 inline is the correct fix**; spec D9, the fixture, and `capture.mjs`
+  are **stale**, not the code.
+
+Cause is **test/fixture drift**, not upstream of the facade. Loop stop
+condition met. No code change required; the code is correct. The contract
+fixture/spec must be regenerated to 200 so `test_capture_surface_landed_statuses`
+asserts the live router instead of masking the divergence.
+
+## Recommendation (out of loop scope — code change)
+1. Regenerate `capture.jsonl` (run `npm run capture` against live facade) so the
+   poster row records 200, OR relax
+   `test_capture_surface_landed_statuses` (test_jellyfin_capture.py:98) to assert
+   the current router status rather than the frozen fixture's.
+2. Update spec D9 line 95 from "→ 302 to /api/poster" to "→ 200 inline (302
+   storms the Switchfin console)".
