@@ -1,0 +1,413 @@
+# Switchfin manual-test step definitions (tickets #144-#146).
+#
+# Each step is verified against the uvicorn request-log middleware line
+# `METHOD path -> status (ms)`, which is logged with `request.url.path`
+# (no query string). `expect[].request` is a REGEX over that whole line;
+# `status` is the allowed status(es). Because the middleware strips the
+# query string, a Switchfin library call `GET /Users/{user}/Items?parentId=…`
+# logs as `GET /Users/{user}/Items` — the patterns below accept both the
+# SDK spelling (`/Items`) and the server spelling (`/Users/{user}/Items`).
+#
+# Phase semantics:
+#   handshake — issued by the runner itself (no phone needed, #144)
+#   open      — tap a home row -> library listing (`/Items`)
+#   detail    — tap the first card -> item + poster
+#   play      — type-aware: Movie = 1 tap, Series = 4 taps (#146)
+#
+# View ids are the router's `_VIEW_ID_BY_TYPE` uuid5 values
+# (`uuid.uuid5(NAMESPACE_URL, "cs-uk-api-view:{type}")`), kept as data
+# documentation — the runner never matches on them, it matches wire lines
+# (the middleware logs `request.url.path`, and the view id only appears in
+# the stripped query string):
+#   newest=ac357d43a6e459568e061ae4368543d5
+#   popular=ddb2b5eddfe650b0accff62e2ee4bc20
+#   movie=94fd742a60855d2b8de4e4404f67e03a
+#   series=11004dd120c5517f8143c4d2c8d11050
+#   anime=a67dde2ef4695bceadb88d28d6a8a55b
+#   cartoon=6df359d3895d57238985daa902e73416
+#   dorama=fea6fe2911a85e5d87c0150ccf69aa90
+timeout_s: 8
+
+steps:
+  # ---- handshake (#144): runner self-issues these, no phone needed -----
+  - name: login
+    phase: handshake
+    method: POST
+    path: /Users/AuthenticateByName
+    body: {Username: switchfin-test, Pw: switchfin-test}
+    capture_token: true
+    expect:
+      - request: "POST /Users/AuthenticateByName -> 200"
+        status: 200
+
+  - name: views
+    phase: handshake
+    method: GET
+    path: /UserViews
+    use_token: true
+    expect:
+      - request: "GET /UserViews -> 200"
+        status: 200
+
+  # ---- open each library view + its first card (#145) ------------------
+  - name: open_view_newest
+    phase: open
+    view: newest
+    tap: view_newest_x
+    expect:
+      - request: "GET (/Users/[^ ]+)?/Items -> 200"
+        status: 200
+
+  - name: open_first_card_newest
+    phase: detail
+    view: newest
+    tap: first_card
+    expect:
+      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ ]+) -> 200"
+        status: 200
+        capture: gk
+      - request: "GET /Items/[^ ]+/Images/Primary -> 200"
+        status: 200
+
+  - name: open_view_popular
+    phase: open
+    view: popular
+    tap: view_popular_x
+    expect:
+      - request: "GET (/Users/[^ ]+)?/Items -> 200"
+        status: 200
+
+  - name: open_first_card_popular
+    phase: detail
+    view: popular
+    tap: first_card
+    expect:
+      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ ]+) -> 200"
+        status: 200
+        capture: gk
+      - request: "GET /Items/[^ ]+/Images/Primary -> 200"
+        status: 200
+
+  - name: open_view_movie
+    phase: open
+    view: movie
+    tap: view_movie_x
+    expect:
+      - request: "GET (/Users/[^ ]+)?/Items -> 200"
+        status: 200
+
+  - name: open_first_card_movie
+    phase: detail
+    view: movie
+    tap: first_card
+    expect:
+      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ ]+) -> 200"
+        status: 200
+        capture: gk
+      - request: "GET /Items/[^ ]+/Images/Primary -> 200"
+        status: 200
+
+  - name: open_view_series
+    phase: open
+    view: series
+    tap: view_series_x
+    expect:
+      - request: "GET (/Users/[^ ]+)?/Items -> 200"
+        status: 200
+
+  - name: open_first_card_series
+    phase: detail
+    view: series
+    tap: first_card
+    expect:
+      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ ]+) -> 200"
+        status: 200
+        capture: gk
+      - request: "GET /Items/[^ ]+/Images/Primary -> 200"
+        status: 200
+
+  - name: open_view_anime
+    phase: open
+    view: anime
+    tap: view_anime_x
+    expect:
+      - request: "GET (/Users/[^ ]+)?/Items -> 200"
+        status: 200
+
+  - name: open_first_card_anime
+    phase: detail
+    view: anime
+    tap: first_card
+    expect:
+      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ ]+) -> 200"
+        status: 200
+        capture: gk
+      - request: "GET /Items/[^ ]+/Images/Primary -> 200"
+        status: 200
+
+  - name: open_view_cartoon
+    phase: open
+    view: cartoon
+    tap: view_cartoon_x
+    expect:
+      - request: "GET (/Users/[^ ]+)?/Items -> 200"
+        status: 200
+
+  - name: open_first_card_cartoon
+    phase: detail
+    view: cartoon
+    tap: first_card
+    expect:
+      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ ]+) -> 200"
+        status: 200
+        capture: gk
+      - request: "GET /Items/[^ ]+/Images/Primary -> 200"
+        status: 200
+
+  - name: open_view_dorama
+    phase: open
+    view: dorama
+    tap: view_dorama_x
+    expect:
+      - request: "GET (/Users/[^ ]+)?/Items -> 200"
+        status: 200
+
+  - name: open_first_card_dorama
+    phase: detail
+    view: dorama
+    tap: first_card
+    expect:
+      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ ]+) -> 200"
+        status: 200
+        capture: gk
+      - request: "GET /Items/[^ ]+/Images/Primary -> 200"
+        status: 200
+
+  # ---- type-aware play (#146) ------------------------------------------
+  # The runner reads the first card's `Type` (Movie vs Series) from a
+  # self-issued detail request, then executes that branch's taps:
+  #   movie  : play_button                       (1 tap)
+  #   series : seasons_tab -> first_season -> first_episode -> play_button
+  - name: play_newest
+    phase: play
+    view: newest
+    branches:
+      movie:
+        - tap: play_button
+          expect:
+            - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
+              status: 200
+            - request: "GET /Videos/[^ ]+/stream -> (200|302)"
+              status: [200, 302]
+            - request: "POST /Sessions/Playing -> 204"
+              status: 204
+      series:
+        - tap: seasons_tab
+          expect:
+            - request: "GET /Shows/[^ ]+/Seasons -> 200"
+              status: 200
+        - tap: first_season
+          expect:
+            - request: "GET /Shows/[^ ]+/Episodes -> 200"
+              status: 200
+        - tap: first_episode
+        - tap: play_button
+          expect:
+            - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
+              status: 200
+            - request: "GET /Videos/[^ ]+/stream -> (200|302)"
+              status: [200, 302]
+            - request: "POST /Sessions/Playing -> 204"
+              status: 204
+
+  - name: play_popular
+    phase: play
+    view: popular
+    branches:
+      movie:
+        - tap: play_button
+          expect:
+            - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
+              status: 200
+            - request: "GET /Videos/[^ ]+/stream -> (200|302)"
+              status: [200, 302]
+            - request: "POST /Sessions/Playing -> 204"
+              status: 204
+      series:
+        - tap: seasons_tab
+          expect:
+            - request: "GET /Shows/[^ ]+/Seasons -> 200"
+              status: 200
+        - tap: first_season
+          expect:
+            - request: "GET /Shows/[^ ]+/Episodes -> 200"
+              status: 200
+        - tap: first_episode
+        - tap: play_button
+          expect:
+            - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
+              status: 200
+            - request: "GET /Videos/[^ ]+/stream -> (200|302)"
+              status: [200, 302]
+            - request: "POST /Sessions/Playing -> 204"
+              status: 204
+
+  - name: play_movie
+    phase: play
+    view: movie
+    branches:
+      movie:
+        - tap: play_button
+          expect:
+            - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
+              status: 200
+            - request: "GET /Videos/[^ ]+/stream -> (200|302)"
+              status: [200, 302]
+            - request: "POST /Sessions/Playing -> 204"
+              status: 204
+      series:
+        - tap: seasons_tab
+          expect:
+            - request: "GET /Shows/[^ ]+/Seasons -> 200"
+              status: 200
+        - tap: first_season
+          expect:
+            - request: "GET /Shows/[^ ]+/Episodes -> 200"
+              status: 200
+        - tap: first_episode
+        - tap: play_button
+          expect:
+            - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
+              status: 200
+            - request: "GET /Videos/[^ ]+/stream -> (200|302)"
+              status: [200, 302]
+            - request: "POST /Sessions/Playing -> 204"
+              status: 204
+
+  - name: play_series
+    phase: play
+    view: series
+    branches:
+      movie:
+        - tap: play_button
+          expect:
+            - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
+              status: 200
+            - request: "GET /Videos/[^ ]+/stream -> (200|302)"
+              status: [200, 302]
+            - request: "POST /Sessions/Playing -> 204"
+              status: 204
+      series:
+        - tap: seasons_tab
+          expect:
+            - request: "GET /Shows/[^ ]+/Seasons -> 200"
+              status: 200
+        - tap: first_season
+          expect:
+            - request: "GET /Shows/[^ ]+/Episodes -> 200"
+              status: 200
+        - tap: first_episode
+        - tap: play_button
+          expect:
+            - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
+              status: 200
+            - request: "GET /Videos/[^ ]+/stream -> (200|302)"
+              status: [200, 302]
+            - request: "POST /Sessions/Playing -> 204"
+              status: 204
+
+  - name: play_anime
+    phase: play
+    view: anime
+    branches:
+      movie:
+        - tap: play_button
+          expect:
+            - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
+              status: 200
+            - request: "GET /Videos/[^ ]+/stream -> (200|302)"
+              status: [200, 302]
+            - request: "POST /Sessions/Playing -> 204"
+              status: 204
+      series:
+        - tap: seasons_tab
+          expect:
+            - request: "GET /Shows/[^ ]+/Seasons -> 200"
+              status: 200
+        - tap: first_season
+          expect:
+            - request: "GET /Shows/[^ ]+/Episodes -> 200"
+              status: 200
+        - tap: first_episode
+        - tap: play_button
+          expect:
+            - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
+              status: 200
+            - request: "GET /Videos/[^ ]+/stream -> (200|302)"
+              status: [200, 302]
+            - request: "POST /Sessions/Playing -> 204"
+              status: 204
+
+  - name: play_cartoon
+    phase: play
+    view: cartoon
+    branches:
+      movie:
+        - tap: play_button
+          expect:
+            - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
+              status: 200
+            - request: "GET /Videos/[^ ]+/stream -> (200|302)"
+              status: [200, 302]
+            - request: "POST /Sessions/Playing -> 204"
+              status: 204
+      series:
+        - tap: seasons_tab
+          expect:
+            - request: "GET /Shows/[^ ]+/Seasons -> 200"
+              status: 200
+        - tap: first_season
+          expect:
+            - request: "GET /Shows/[^ ]+/Episodes -> 200"
+              status: 200
+        - tap: first_episode
+        - tap: play_button
+          expect:
+            - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
+              status: 200
+            - request: "GET /Videos/[^ ]+/stream -> (200|302)"
+              status: [200, 302]
+            - request: "POST /Sessions/Playing -> 204"
+              status: 204
+
+  - name: play_dorama
+    phase: play
+    view: dorama
+    branches:
+      movie:
+        - tap: play_button
+          expect:
+            - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
+              status: 200
+            - request: "GET /Videos/[^ ]+/stream -> (200|302)"
+              status: [200, 302]
+            - request: "POST /Sessions/Playing -> 204"
+              status: 204
+      series:
+        - tap: seasons_tab
+          expect:
+            - request: "GET /Shows/[^ ]+/Seasons -> 200"
+              status: 200
+        - tap: first_season
+          expect:
+            - request: "GET /Shows/[^ ]+/Episodes -> 200"
+              status: 200
+        - tap: first_episode
+        - tap: play_button
+          expect:
+            - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
+              status: 200
+            - request: "GET /Videos/[^ ]+/stream -> (200|302)"
+              status: [200, 302]
+            - request: "POST /Sessions/Playing -> 204"
+              status: 204

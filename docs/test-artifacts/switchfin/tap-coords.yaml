@@ -1,0 +1,26 @@
+# Tap coordinates recorded by `scripts/switchfin_test.py --calibrate`.
+#
+# Each key is a UI element on the phone; the runner turns it into an
+# `adb shell input tap <x> <y>` command. Populated interactively — this
+# file ships empty as a scaffold (ticket #144 needs no taps; #145 fills
+# it via the `getevent -l` calibration walkthrough).
+#
+# Elements:
+#   login_button          — the sign-in button on the server screen
+#   view_<name>_x         — the home-screen row for a library view
+#   first_card            — the first card in an opened library
+#   play_button           — the play action on the detail screen
+#   seasons_tab / first_season / first_episode — series playback sequence
+login_button: {x: 0, y: 0}
+view_newest_x: {x: 0, y: 0}
+view_popular_x: {x: 0, y: 0}
+view_movie_x: {x: 0, y: 0}
+view_series_x: {x: 0, y: 0}
+view_anime_x: {x: 0, y: 0}
+view_cartoon_x: {x: 0, y: 0}
+view_dorama_x: {x: 0, y: 0}
+first_card: {x: 0, y: 0}
+play_button: {x: 0, y: 0}
+seasons_tab: {x: 0, y: 0}
+first_season: {x: 0, y: 0}
+first_episode: {x: 0, y: 0}

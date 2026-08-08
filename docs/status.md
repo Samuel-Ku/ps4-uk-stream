@@ -54,6 +54,16 @@ boundary validation is `fullmatch` everywhere; uakino movies without a
   [query]` / `gate.sh --all`) drives search → content → stream → mpv
   playback against the real site for smoke-testing (issue #30, spec
   §7.1); `backend/cs_uk_api/scripts/README.md` documents it.
+- Switchfin manual-test pipeline (`scripts/switchfin_test.py`, issues
+  #143–#146): cold-starts the uvicorn backend, tails its request-log
+  middleware line (`METHOD path -> status (ms)`) as the detection
+  channel, and verifies the wire. The 2 handshake steps (login + views)
+  are self-issued headlessly; with a phone attached it drives the real
+  Switchfin client via `adb shell input tap` through all 7 library
+  views (open + first card + type-aware play), applies a per-step logcat
+  error filter, and writes `docs/switchfin-test-report.md`. Step
+  definitions are data in `docs/test-artifacts/switchfin/steps.yaml` +
+  `tap-coords.yaml` (populated by `--calibrate`).
 - Live smoke test confirmed `/api/providers` returns all registered
   providers and the validation/404 paths behave correctly.
 
