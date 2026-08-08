@@ -390,3 +390,86 @@ async def test_cikavaideya_stream_bad_slug_raises():
                     "../admin:__movie__", None, http
                 )
     assert exc_info.value.code == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_cikavaideya_content_removed_title_raises_gated():
+    """Regression (#139): a content page whose Player1 is a trailer-only
+    map (``{"Трейлер": "https://www.youtube.com/embed/..."}``) under the
+    upstream-removed marker «Видалено на прохання правовласника» used to
+    CRASH ``_build_seasons`` with ``AttributeError: 'str' object has no
+    attribute 'keys'`` — the fundaciya title the #136 sweep surfaced as
+    no_episodes with provider health-down. The right verdict is ``gated``
+    (ADR-0002: deliberate unavailability, not an upstream-health signal),
+    mirroring eneyida's «Контент недоступний» (#137)."""
+    from cs_uk_api.providers.base import ProviderError
+
+    content_html = _fixture("content_fundaciya.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://cikava-ideya.top/104-fundaciya-2021c.html").respond(
+            200, text=content_html
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await CikavaIdeyaProvider().content("104-fundaciya-2021c", http)
+    assert exc_info.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_cikavaideya_content_no_player_raises_gated():
+    """Regression (#139): a content page with an EMPTY
+    ``switches = Object({})`` (no Player1 at all — the folaut title the
+    #136 sweep flagged as no_episodes) is deliberate unavailability, not
+    a parse success with zero seasons. ``content()`` must raise ``gated``
+    so the ADR-0002 catalog sweep (``filter_gated_items``, cikavaideya is
+    now ``can_gate``) drops the card instead of surfacing a dead
+    episode-rail."""
+    from cs_uk_api.providers.base import ProviderError
+
+    content_html = _fixture("content_folaut.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://cikava-ideya.top/239-folaut.html").respond(
+            200, text=content_html
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await CikavaIdeyaProvider().content("239-folaut", http)
+    assert exc_info.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_cikavaideya_stream_dead_ashdi_raises_gated():
+    """Regression (#139): ashdi.vip answers a removed VOD with the 33-byte
+    ``<center>Файл не знайдено</center>`` page (captured live for vsesvit
+    s1e1, ashdi/vod/127413). ``stream()`` must raise ``gated``
+    (upstream-removed content, ADR-0002 — no health impact), not
+    ``parse_failed`` — which the #136 sweep saw as PlaybackInfo
+    ``item_unavailable`` + provider health-down.
+
+    Production-form id: bare external_id + ``:s1e1`` (no ``cikavaideya:``
+    prefix handed to ``stream()``)."""
+    from cs_uk_api.providers.base import ProviderError
+
+    content_html = _fixture("content_series.html")
+    ashdi_html = _fixture("ashdi_vod_127413.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://cikava-ideya.top/226-jak-vlashtovanij-vsesvit.html"
+        ).respond(200, text=content_html)
+        router.get("https://ashdi.vip/vod/127413").respond(200, text=ashdi_html)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await CikavaIdeyaProvider().stream(
+                    "226-jak-vlashtovanij-vsesvit:s1e1", None, http
+                )
+    assert exc_info.value.code == "gated"
+
+
+def test_cikavaideya_can_gate_true():
+    """Regression (#139): cikavaideya's ``gated`` verdicts must flow
+    through ``filter_gated_items`` during ``load_home`` (ADR-0002 catalog
+    sweep) so a removed/trailer-only/no-player title is dropped from the
+    catalog instead of surfacing a dead episode-rail — and so the verdict
+    lands in ``gated_cache`` BEFORE ``resolve_group_content`` would
+    otherwise record a health-down on the group-content path."""
+    assert CikavaIdeyaProvider.can_gate is True

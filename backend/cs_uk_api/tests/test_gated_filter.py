@@ -177,6 +177,44 @@ async def test_filter_gated_items_keeps_transient_upstream_errors() -> None:
 
 
 @pytest.mark.asyncio
+async def test_resolve_group_content_gated_backstop_no_health_down() -> None:
+    """ADR-0002 backstop (#139): a cold-cache g1: detail call whose
+    content() raises ``gated`` must NOT record a health-down, and must
+    cache the verdict so later calls short-circuit. ``filter_gated_items``
+    normally warms ``gated_cache`` during ``load_home``; a sweep timeout
+    or a title added after the home build would otherwise leave the
+    group-content path recording ``ok=False`` on a gated title."""
+    from cs_uk_api import catalog_state
+    from cs_uk_api.catalog_state import resolve_group_content
+    from cs_uk_api.health import TRACKER
+    from cs_uk_api.merge import item_group_key
+
+    PROVIDERS.clear()
+    gated = _GatedStub()
+    item = _item("gated-stub", "g1")
+    PROVIDERS["gated-stub"] = gated
+
+    # Seed the group's sources map WITHOUT running the load_home sweep,
+    # so `gated_cache` is cold when the detail call resolves.
+    group_key = item_group_key(item)
+    catalog_state.sources_cache.set(
+        catalog_state._SOURCES_KEY, {group_key: {"gated-stub": item}}
+    )
+    assert catalog_state.gated_cache.get("content:gated-stub:g1") is None
+
+    content = await resolve_group_content(group_key)
+    assert content is None
+    assert TRACKER.last_error_at("gated-stub") is None
+    assert catalog_state.gated_cache.get("content:gated-stub:g1") is True
+
+    # Second call short-circuits on the cached verdict — content() is
+    # not re-invoked.
+    PROVIDERS["gated-stub"]._content_calls.clear()  # type: ignore[attr-defined]
+    await resolve_group_content(group_key)
+    assert PROVIDERS["gated-stub"]._content_calls == []  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
 async def test_load_home_drops_gated_only_title() -> None:
     """A title available ONLY through a gated source disappears from the
     home rows (the sweep drops it before the rows are built)."""

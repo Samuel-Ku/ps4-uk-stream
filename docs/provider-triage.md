@@ -38,7 +38,7 @@ once they pass the live gate (search → content → stream → plays in mpv).
 | kinotron | [KinoTronProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/KinoTronProvider) | `KinoTronProvider.kt` (7.9 KB) | HTML | iframe → inline JSON | mild | **ready** |
 | hentaiukr | [HentaiUkrProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/HentaiUkrProvider) | `HentaiUkrProvider.kt` (5.3 KB) | JSON manifest + plur.cfg.json | mp4 (per-source highest-quality pick) | none | **ready** (in scope per spec; no hiding) |
 | doramyworld | [DoramyWorldProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/DoramyWorldProvider) | `DoramyWorldProvider.kt` (8.3 KB), `JSONModel.kt` | HTML + JSON | ashdi.vip iframe → data-player JSON | mild | **ready** |
-| cikavaideya | [CikavaIdeyaProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/CikavaIdeyaProvider) | `CikavaIdeyaProvider.kt` (8.2 KB) | HTML | regex (ashdi.vip `file:`) | mild | **ready** |
+| cikavaideya | [CikavaIdeyaProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/CikavaIdeyaProvider) | `CikavaIdeyaProvider.kt` (8.2 KB) | HTML | regex (ashdi.vip `file:`) | mild | **ready** (gated fix per #139: removed/trailer-only/no-player titles raise `gated` (ADR-0002), dead ashdi embed raises `gated`; `can_gate=True` so `filter_gated_items` drops them from home) |
 | ufdub | [UFDubProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UFDubProvider) | `UFDubProvider.kt` (6.1 KB) | HTML | iframe → regex | none | **ready** |
 | unimay | [UnimayProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UnimayProvider) | `UnimayProvider.kt` (6.6 KB) | JSON | hls.master URL | none | **ready** |
 | serialno | [SerialnoProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/SerialnoProvider) | `SerialnoProvider.kt` (10.1 KB) | HTML | iframe → torDecrypt | mild | **ready** |
@@ -51,7 +51,7 @@ Group 1 (simple, HTML-based, `<15 KB`):
 1. `ufdub` — landed in `backend/cs_uk_api/providers/ufdub.py` (10 tests, ready)
 2. `unimay` — landed in `backend/cs_uk_api/providers/unimay.py` (13 tests, ready; JSON API, not HTML)
 3. `kinotron` — landed in `backend/cs_uk_api/providers/kinotron.py` (9 tests, ready)
-4. `cikavaideya` — landed in `backend/cs_uk_api/providers/cikavaideya.py` (12 tests, ready)
+4. `cikavaideya` — landed in `backend/cs_uk_api/providers/cikavaideya.py` (24 tests, ready; #139 gated fix: a removed title (`.fmessage` «Видалено на прохання правовласника»), a trailer-only `{"Трейлер": youtube}` Player1, or an empty `Object({})` raises `gated` from `content()`, and a dead ashdi embed (`<center>Файл не знайдено</center>`) raises `gated` from `stream()` — ADR-0002 deliberate-unavailability verdicts, no health impact; `can_gate=True` drops those cards from the catalog during `load_home`)
 5. `animeua` — landed in `backend/cs_uk_api/providers/animeua.py` (9 tests, ready; supports `translations_level="episode"`)
 6. `uaflix` — landed in `backend/cs_uk_api/providers/uaflix.py` (21 tests, ready; uses shared `RegexExtractor`)
 7. `kinovezha`, `bambooua`

@@ -387,6 +387,17 @@ async def resolve_group_content(group_key: str) -> ContentResponse | None:
     try:
         resp = await provider.content(external_id, http)
         TRACKER.record(provider_id, ok=True)
+    except ProviderError as e:
+        if e.code == "gated":
+            # ADR-0002: a gated verdict never moves the health tracker.
+            # Cache it so every later group-key call short-circuits —
+            # the load_home sweep normally populates `gated_cache`
+            # first, but a cold-cache g1: detail call must not record a
+            # health-down here either (#139).
+            gated_cache.set(cache_key, True)
+            return None
+        log.warning("group content failed provider=%s key=%s err=%s", provider_id, group_key, e)
+        TRACKER.record(provider_id, ok=False)
     except Exception as e:  # noqa: BLE001
         log.warning("group content failed provider=%s key=%s err=%s", provider_id, group_key, e)
         TRACKER.record(provider_id, ok=False)

@@ -64,6 +64,20 @@ _PLAYER_JSON_RE = re.compile(
     re.DOTALL,
 )
 
+#: Upstream's deliberate-unavailable marker on a removed title: the
+#: `.fmessage` box reads «Видалено на прохання правовласника. Шукайте
+#: на інших сайтах.» (captured live 2026-08-08, content_fundaciya.html —
+#: Player1 then holds only a "Трейлер" youtube URL, no playable
+#: episodes). Upstream-removed content is NOT a provider-health signal →
+#: `gated` (ADR-0002), mirroring eneyida's «Контент недоступний» (#137).
+_REMOVED_MARKER = "Видалено на прохання правовласника"
+
+#: ashdi.vip answers a dead/removed VOD with a 47-byte
+#: `<center>Файл не знайдено</center>` page (captured live 2026-08-08,
+#: ashdi_vod_127413.html — vsesvit's first episode). Upstream-removed →
+#: `gated`, not `parse_failed`, so the health tracker stays green (#139).
+_ASHDI_NOT_FOUND = "Файл не знайдено"
+
 # Sentinel episode-id suffix for movies (whose Player1 is a single URL
 # rather than a season/episode map).
 MOVIE_SUFFIX = ":__movie__"
@@ -164,11 +178,73 @@ def _parse_player_json(soup: BeautifulSoup) -> dict[str, Any] | None:
     return None
 
 
+def _is_playable(player1: Any) -> bool:
+    """A Player1 value is playable when it is a single URL string
+    (movie) or a dict holding at least one real season map
+    (dict-of-episodes). A trailer-only map (`{"Трейлер": youtube}`) or an
+    empty `Object({})` carries no playable episode → not playable → the
+    title is `gated`."""
+    if isinstance(player1, str):
+        return True
+    if not isinstance(player1, dict):
+        return False
+    return any(isinstance(v, dict) for v in player1.values())
+
+
+def _removed_marker(soup: BeautifulSoup) -> bool:
+    """True iff the content page carries the upstream's removed-title
+    notice in its `.fmessage` box («Видалено на прохання
+    правовласника», captured live 2026-08-08, content_fundaciya.html).
+    Scoped to that box rather than the raw page so a user comment
+    quoting the phrase on an otherwise-playable title cannot
+    false-positive into `gated`."""
+    box = soup.select_one(".fmessage")
+    return box is not None and _REMOVED_MARKER in box.get_text()
+
+
+def _real_season_keys(player1: dict[str, Any]) -> list[str]:
+    """Ordered season keys of a series Player1 — dict-valued entries
+    only. Trailer-only keys (e.g. "Трейлер" → a youtube URL) are not
+    real seasons; skipping them keeps season numbering and episode
+    resolution (`_build_seasons` vs `_select_player_url`) in agreement
+    for a mixed map."""
+    return [
+        k
+        for k in sorted(player1.keys(), key=_numeric_sort_key)
+        if isinstance(player1[k], dict)
+    ]
+
+
+def _load_player1(soup: BeautifulSoup) -> str | dict[str, Any]:
+    """Extract Player1 from a content page, gating unplayable titles.
+
+    Raises ``ProviderError("gated", ...)`` (ADR-0002) when the page
+    carries the upstream's removed-title marker in its `.fmessage` box,
+    or when Player1 is absent / empty (`Object({})`) / trailer-only —
+    all deliberate upstream unavailability, not provider-health signals
+    (#139). Shared by `content()` and `stream()` so both judge the same
+    page the same way."""
+    if _removed_marker(soup):
+        raise ProviderError("gated", "upstream content removed")
+    player_json = _parse_player_json(soup)
+    player1 = player_json.get("Player1") if player_json else None
+    if player1 is None or not _is_playable(player1):
+        raise ProviderError("gated", "no playable player on content page")
+    return player1
+
+
 class CikavaIdeyaProvider(BaseProvider):
     id = "cikavaideya"
     name = "Цікава Ідея"
     types = ("movie", "series")
     sections = CIKAVA_SECTIONS
+    #: Gated verdicts (removed / trailer-only / no-player titles, dead
+    #: ashdi embeds) must flow through `filter_gated_items` so the
+    #: ADR-0002 catalog sweep drops those cards from home during
+    #: `load_home`; `resolve_group_content` additionally backstops a
+    #: cold-cache g1: detail call so a gated verdict never records a
+    #: health-down (#139).
+    can_gate = True
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         # DLE (CikavaIdeya's CMS) accepts a POST with the same fields
@@ -242,11 +318,10 @@ class CikavaIdeyaProvider(BaseProvider):
         # (sometimes more than one tag, separated by " / ").
         flist = soup.select(".flist li")
         tags_text = flist[2].get_text(" ", strip=True) if len(flist) >= 3 else ""
-        player_json = _parse_player_json(soup)
         country: str | None = extract_country(soup)
-        seasons: list[Season] | None = None
-        if player_json and "Player1" in player_json:
-            seasons = self._build_seasons(player_json["Player1"], external_id)
+        # Removed / trailer-only / no-player titles raise `gated` here
+        # (ADR-0002), before any season is built (#139).
+        seasons = self._build_seasons(_load_player1(soup), external_id)
         mb_form, mb_styles = model_b_axes(_classify_from_tags(tags_text))  # type: ignore[arg-type]
         return ContentResponse(
             id=f"cikavaideya:{external_id}",
@@ -275,10 +350,8 @@ class CikavaIdeyaProvider(BaseProvider):
                 number=1, id=f"{external_id}{MOVIE_SUFFIX}", title="Фільм",
             )])]
         seasons: list[Season] = []
-        for s_idx, season_key in enumerate(
-            sorted(player1.keys(), key=_numeric_sort_key), start=1
-        ):
-            episodes_raw = player1[season_key] or {}
+        for s_idx, season_key in enumerate(_real_season_keys(player1), start=1):
+            episodes_raw = player1[season_key]
             ep_keys = sorted(episodes_raw.keys(), key=_numeric_sort_key)
             episodes = [
                 Episode(
@@ -315,10 +388,8 @@ class CikavaIdeyaProvider(BaseProvider):
             raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
             raise ProviderError("not_found", f"status {resp.status_code}")
-        player_json = _parse_player_json(BeautifulSoup(resp.text, "lxml"))
-        if not player_json or "Player1" not in player_json:
-            raise ProviderError("parse_failed", "no player json on content page")
-        player_url = self._select_player_url(player_json["Player1"], ep_suffix)
+        player1 = _load_player1(BeautifulSoup(resp.text, "lxml"))
+        player_url = self._select_player_url(player1, ep_suffix)
         if player_url is None:
             raise ProviderError("parse_failed", f"no player url for {ep_suffix!r}")
         # The player URL lives on ashdi.vip; the upstream Kotlin calls
@@ -337,6 +408,12 @@ class CikavaIdeyaProvider(BaseProvider):
             raise ProviderError("unreachable", str(e)) from e
         if ashdi_resp.status_code != 200:
             raise ProviderError("not_found", f"status {ashdi_resp.status_code}")
+        if _ASHDI_NOT_FOUND in ashdi_resp.text:
+            # ashdi.vip's dead-VOD page (captured live 2026-08-08,
+            # ashdi_vod_127413.html) — upstream-removed content, not a
+            # provider-health signal → `gated` (ADR-0002), mirroring
+            # eneyida's «Контент недоступний» (#139).
+            raise ProviderError("gated", "upstream content removed")
         extracted = RegexExtractor().extract(ashdi_resp.text)
         if extracted is None or not extracted.url:
             raise ProviderError("parse_failed", "no m3u8 in ashdi page")
@@ -363,12 +440,13 @@ class CikavaIdeyaProvider(BaseProvider):
         if not m:
             return None
         s_idx, e_idx = int(m.group(1)), int(m.group(2))
-        seasons = sorted(player1.keys(), key=_numeric_sort_key)
+        # Same real-season ordering `_build_seasons` numbers, so a
+        # `:s<N>e<M>` id produced by content() resolves here to the same
+        # episode a trailer-only key can never shadow.
+        seasons = _real_season_keys(player1)
         if not (1 <= s_idx <= len(seasons)):
             return None
         episodes_raw = player1[seasons[s_idx - 1]]
-        if not isinstance(episodes_raw, dict):
-            return None
         ep_keys = sorted(episodes_raw.keys(), key=_numeric_sort_key)
         if not (1 <= e_idx <= len(ep_keys)):
             return None
