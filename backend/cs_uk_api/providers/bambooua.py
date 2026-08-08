@@ -222,16 +222,22 @@ class _PlaylistGroup(BaseModel):
 
 def _extract_playlist(html: str) -> list[_PlaylistGroup]:
     """Pull the `const playlist = [...]` array out of the page HTML.
-    Mirrors the upstream `playlistRegex` extraction."""
+
+    Mirrors the upstream `playlistRegex` extraction. Returns ``[]`` only
+    when the page has NO ``const playlist`` block — an empty array block
+    (``[]``) is returned as-is. A block that exists but won't parse
+    (invalid JSON, or not an array) raises ``parse_failed``: that is a
+    genuine parse gap (upstream shape change) which the health tracker
+    must see, not something to swallow into an empty-season 200 (#139)."""
     m = _PLAYLIST_RE.search(html)
     if not m:
         return []
     try:
         raw = json.loads(m.group(1))
-    except json.JSONDecodeError:
-        return []
+    except json.JSONDecodeError as e:
+        raise ProviderError("parse_failed", "playlist json invalid") from e
     if not isinstance(raw, list):
-        return []
+        raise ProviderError("parse_failed", "playlist not a list")
     out: list[_PlaylistGroup] = []
     for item in raw:
         if not isinstance(item, dict):
@@ -239,6 +245,22 @@ def _extract_playlist(html: str) -> list[_PlaylistGroup]:
         groups = _PlaylistGroup.model_validate(item)
         out.append(groups)
     return out
+
+
+def _require_playlist(groups: list[_PlaylistGroup]) -> None:
+    """Raise ``gated`` when a content page carries no playable manifest.
+
+    After ``_extract_playlist`` (which raises ``parse_failed`` on a
+    malformed block), an empty result means the page genuinely has no
+    manifest: the site serves subscription-gated titles («Для
+    підписників») to non-subscribers with an empty/missing
+    ``const playlist`` (live 2026-08-08: dorama/262-legenda-pro-nok-tu,
+    lakorn/1035-khemjira, tv-show/652-his-man-season-1). Deliberate
+    upstream unavailability → ``gated`` (ADR-0002), so the can_gate
+    catalog sweep drops the card during ``load_home`` instead of
+    surfacing a zero-season series (#139)."""
+    if not groups:
+        raise ProviderError("gated", "no playlist on content page")
 
 
 def _parse_jsonld(html: str) -> _JSONModel | None:
@@ -355,12 +377,11 @@ class BambooUAProvider(BaseProvider):
         )
         country: str | None = extract_country(soup)
         groups = _extract_playlist(resp.text)
+        _require_playlist(groups)
         if _playlist_fully_gated(groups):
             raise ProviderError("gated", "subscription required")
         media_type = _type_from_url(url)
-        seasons: list[Season] | None = None
-        if groups:
-            seasons = self._build_seasons(groups, external_id, media_type)
+        seasons = self._build_seasons(groups, external_id, media_type)
         mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"bambooua:{external_id}",
@@ -437,8 +458,7 @@ class BambooUAProvider(BaseProvider):
         if resp.status_code != 200:
             raise ProviderError("not_found", f"status {resp.status_code}")
         groups = _extract_playlist(resp.text)
-        if not groups:
-            raise ProviderError("parse_failed", "no playlist on content page")
+        _require_playlist(groups)
         media_url = self._select_file(groups, ep_suffix)
         if media_url is None:
             raise ProviderError("not_found", f"no file for {ep_suffix!r}")

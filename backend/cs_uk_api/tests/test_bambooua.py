@@ -195,6 +195,83 @@ async def test_bambooua_content_gated_series_raises_gated():
 
 
 @pytest.mark.asyncio
+async def test_bambooua_content_no_playlist_raises_gated():
+    """#139 no_episodes: a live title served with a title but NO
+    `const playlist` block (subscription-gated to non-subscribers,
+    captured 2026-08-08 from dorama/262-legenda-pro-nok-tu) must raise
+    `gated`, not fall through to a zero-season listing."""
+    content_html = _fixture("content_no_playlist.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://bambooua.com/dorama/262-legenda-pro-nok-tu-the-tale-of-nok-du.html"
+        ).respond(200, text=content_html)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await BambooUAProvider().content(
+                    "dorama/262-legenda-pro-nok-tu-the-tale-of-nok-du", http
+                )
+    assert exc.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_bambooua_content_empty_playlist_array_raises_gated():
+    """The `const playlist = []` variant of the same break (captured
+    live 2026-08-08 from tv-show/652-his-man-season-1): the array parses
+    but is empty — still nothing playable, still gated."""
+    content_html = _fixture("content_empty_playlist.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://bambooua.com/tv-show/652-his-man-season-1.html"
+        ).respond(200, text=content_html)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await BambooUAProvider().content(
+                    "tv-show/652-his-man-season-1", http
+                )
+    assert exc.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_bambooua_stream_no_playlist_raises_gated():
+    """stream() on a title with no playable manifest must answer gated
+    (never parse_failed → health-down) so a stale card for a removed or
+    subscription-gated title does not pollute the health tracker."""
+    content_html = _fixture("content_no_playlist.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://bambooua.com/dorama/262-legenda-pro-nok-tu-the-tale-of-nok-du.html"
+        ).respond(200, text=content_html)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await BambooUAProvider().stream(
+                    "dorama/262-legenda-pro-nok-tu-the-tale-of-nok-du:s1e1", None, http
+                )
+    assert exc.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_bambooua_extract_playlist_malformed_block_raises_parse_failed():
+    """A `const playlist` block that exists but won't parse is a genuine
+    parse gap (upstream shape change), not deliberate withholding: it
+    must raise `parse_failed` so the health tracker sees the break
+    instead of the title being swallowed into gated/zero-season (#139)."""
+    from cs_uk_api.providers.bambooua import _extract_playlist
+
+    with pytest.raises(ProviderError) as exc:
+        _extract_playlist("const playlist = [{broken];")
+    assert exc.value.code == "parse_failed"
+
+
+@pytest.mark.asyncio
+async def test_bambooua_extract_playlist_empty_array_is_not_a_parse_gap():
+    """`const playlist = []` parses fine (returns []) — it is the
+    deliberate empty-manifest shape content() gates, NOT a parse gap."""
+    from cs_uk_api.providers.bambooua import _extract_playlist
+
+    assert _extract_playlist("const playlist = [];") == []
+
+
+@pytest.mark.asyncio
 async def test_bambooua_stream_free_movie_resolves_m3u8():
     """REGRESSION: `content_id` is the external_id (`cinema/...`), not
     a URL. A live movie stream is HLS and must be typed as such."""

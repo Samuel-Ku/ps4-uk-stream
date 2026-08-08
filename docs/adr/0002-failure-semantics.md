@@ -231,6 +231,22 @@ semantics, not an upstream-health signal** — a refusal, not a failure:
   resolves BambooUA cards once, ~1 content fetch per card, parallel,
   cached afterwards) — accepted trade-off for instant hiding.
 
+### Amendment: empty/missing manifest verdict (2026-08-08)
+
+The `gated` trigger above covers the sponsor-placeholder playlist. A
+content page served WITHOUT any playable manifest — no `const playlist`
+block, or an empty `[]` — is also deliberate unavailability: the site
+withholds the manifest from non-subscribers for subscription-gated
+titles («Для підписників», live 2026-08-08:
+`dorama/262-legenda-pro-nok-tu`, `lakorn/1035-khemjira`,
+`tv-show/652-his-man-season-1`). Such pages raise `gated` ("no playlist
+on content page") from `content()`/`stream()`, joining the
+sponsor-placeholder verdict, so the `can_gate` catalog sweep drops the
+zero-season card during `load_home` instead of surfacing a series with
+no episodes (#139). A `const playlist` block that exists but fails to
+parse raises `parse_failed` instead — a genuine upstream shape change is
+a health signal and is never masked as `gated`.
+
 ## References
 
 - [`CONTEXT.md`](../../CONTEXT.md) — glossary of the failure-envelope
