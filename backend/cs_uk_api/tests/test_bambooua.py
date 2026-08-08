@@ -125,75 +125,140 @@ async def test_bambooua_browse_last_page_has_next_false():
 
 
 @pytest.mark.asyncio
-async def test_bambooua_content_movie_parses_title_poster():
-    content_html = _fixture("content_movie.html")
+async def test_bambooua_content_free_movie_parses_title_poster():
+    """A non-gated movie resolves its title/poster from the JSON-LD
+    block (live-captured fixture, cinema/1041)."""
+    content_html = _fixture("content_movie_free.html")
     with respx.mock(assert_all_called=True) as router:
-        router.get("https://bambooua.com/cinema/1159-aichaku.html").respond(
-            200, text=content_html
-        )
+        router.get(
+            "https://bambooua.com/cinema/1041-you-are-the-apple-of-my-eye.html"
+        ).respond(200, text=content_html)
         async with httpx.AsyncClient() as http:
-            c = await BambooUAProvider().content("cinema/1159-aichaku", http)
-    assert "Айчаку" in c.title
+            c = await BambooUAProvider().content(
+                "cinema/1041-you-are-the-apple-of-my-eye", http
+            )
     assert c.type == "movie"
     assert c.poster is not None
     assert c.poster.startswith("https://bambooua.com")
 
 
 @pytest.mark.asyncio
-async def test_bambooua_content_series_parses_seasons():
-    """Series pages expose a seasons list with one entry per playlist
-    folder (Субтитри / Озвучення). The dorama fixture has 6 episodes
-    in the Субтитри folder."""
-    content_html = _fixture("content_series.html")
-    with respx.mock(assert_all_called=True) as router:
-        router.get("https://bambooua.com/dorama/1158-dream-to-you.html").respond(
-            200, text=content_html
-        )
-        async with httpx.AsyncClient() as http:
-            c = await BambooUAProvider().content("dorama/1158-dream-to-you", http)
-    assert c.type == "dorama"
-    assert "Назустріч" in c.title
-    assert c.seasons is not None
-    # One season (Субтитри folder) with 6 episodes.
-    assert len(c.seasons) == 1
-    assert len(c.seasons[0].episodes) == 6
-    assert c.seasons[0].episodes[0].title.startswith("01")
-
-
-@pytest.mark.asyncio
-async def test_bambooua_stream_resolves_to_player_url():
-    """REGRESSION: `content_id` is the external_id (`cinema/1159-...`),
-    not a URL. The old implementation called `http.get(content_id)` which
-    raised `ValueError: unknown url type` on every call."""
+async def test_bambooua_content_gated_movie_raises_gated():
+    """GATED: the Aichaku movie's playlist is
+    `[{file: "/uploads/be_sponsors.mp4"}]` — the subscription-gate
+    promo clip. content() must refuse it with the `gated` verdict so
+    the promo never surfaces as playable content."""
     content_html = _fixture("content_movie.html")
     with respx.mock(assert_all_called=True) as router:
         router.get("https://bambooua.com/cinema/1159-aichaku.html").respond(
             200, text=content_html
         )
         async with httpx.AsyncClient() as http:
-            s = await BambooUAProvider().stream("cinema/1159-aichaku", None, http)
-    # The movie's playlist is `[{file: "/uploads/be_sponsors.mp4"}]`.
-    assert s.url == "https://bambooua.com/uploads/be_sponsors.mp4"
-    assert s.type == "mp4"
-    assert s.headers["Referer"] == "https://bambooua.com/"
+            with pytest.raises(ProviderError) as exc:
+                await BambooUAProvider().content("cinema/1159-aichaku", http)
+    assert exc.value.code == "gated"
 
 
 @pytest.mark.asyncio
-async def test_bambooua_stream_series_episode_resolves_url():
-    """Series stream: content_id encodes season+episode. The darama
-    fixture's playlist is `[{title:"Субтитри", folder:[6 episodes]}]`,
-    so the third episode's file is `/uploads/be_sponsors.mp4`."""
+async def test_bambooua_content_free_series_parses_seasons():
+    """A partially-gated series is NOT gated as a whole: Blood River
+    (live-captured fixture) has 10 free episodes + 9 "Для підписників"
+    placeholders. content() must still expose the season list."""
+    content_html = _fixture("content_series_free.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://bambooua.com/dorama/1119-blood-river.html").respond(
+            200, text=content_html
+        )
+        async with httpx.AsyncClient() as http:
+            c = await BambooUAProvider().content("dorama/1119-blood-river", http)
+    assert c.type == "dorama"
+    assert c.seasons is not None
+    # One season (Субтитри folder) with all 19 listed episodes.
+    assert len(c.seasons) == 1
+    assert len(c.seasons[0].episodes) == 19
+    assert c.seasons[0].episodes[0].title.startswith("Серія 01")
+
+
+@pytest.mark.asyncio
+async def test_bambooua_content_gated_series_raises_gated():
+    """GATED: the dream-to-you dorama fixture has ALL six episodes as
+    "Для підписників" sponsor placeholders → the whole item is gated."""
     content_html = _fixture("content_series.html")
     with respx.mock(assert_all_called=True) as router:
         router.get("https://bambooua.com/dorama/1158-dream-to-you.html").respond(
             200, text=content_html
         )
         async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await BambooUAProvider().content("dorama/1158-dream-to-you", http)
+    assert exc.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_bambooua_stream_free_movie_resolves_m3u8():
+    """REGRESSION: `content_id` is the external_id (`cinema/...`), not
+    a URL. A live movie stream is HLS and must be typed as such."""
+    content_html = _fixture("content_movie_free.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://bambooua.com/cinema/1041-you-are-the-apple-of-my-eye.html"
+        ).respond(200, text=content_html)
+        async with httpx.AsyncClient() as http:
             s = await BambooUAProvider().stream(
-                "dorama/1158-dream-to-you:s1e3", None, http
+                "cinema/1041-you-are-the-apple-of-my-eye", None, http
             )
-    assert s.url == "https://bambooua.com/uploads/be_sponsors.mp4"
-    assert s.type == "mp4"
+    assert s.url.endswith("index.m3u8")
+    assert s.type == "m3u8"
+    assert s.headers["Referer"] == "https://bambooua.com/"
+
+
+@pytest.mark.asyncio
+async def test_bambooua_stream_gated_movie_raises_gated():
+    """GATED: the Aichaku movie's stream IS the sponsor promo clip —
+    stream() must refuse instead of handing the ad to the player."""
+    content_html = _fixture("content_movie.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://bambooua.com/cinema/1159-aichaku.html").respond(
+            200, text=content_html
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await BambooUAProvider().stream("cinema/1159-aichaku", None, http)
+    assert exc.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_bambooua_stream_free_series_episode_resolves_m3u8():
+    """A free episode of a partially-gated series resolves to its real
+    m3u8 (Blood River s1e1)."""
+    content_html = _fixture("content_series_free.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://bambooua.com/dorama/1119-blood-river.html").respond(
+            200, text=content_html
+        )
+        async with httpx.AsyncClient() as http:
+            s = await BambooUAProvider().stream(
+                "dorama/1119-blood-river:s1e1", None, http
+            )
+    assert s.url == "https://ongoing3.bambooua.com/Blood_River/sub/s1/01/index.m3u8"
+    assert s.type == "m3u8"
+
+
+@pytest.mark.asyncio
+async def test_bambooua_stream_gated_series_episode_raises_gated():
+    """A "Для підписників" episode (s1e11 of the Blood River fixture)
+    is the sponsor placeholder → gated, never the ad clip."""
+    content_html = _fixture("content_series_free.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://bambooua.com/dorama/1119-blood-river.html").respond(
+            200, text=content_html
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await BambooUAProvider().stream(
+                    "dorama/1119-blood-river:s1e11", None, http
+                )
+    assert exc.value.code == "gated"
 
 
 @pytest.mark.asyncio

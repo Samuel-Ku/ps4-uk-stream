@@ -175,6 +175,62 @@ Concrete rules:
   with synthetic `timeout` rows or 502 `search_timeout` depending on
   whether any provider returned anything.
 
+## Amendment: subscription-gate verdict `gated` (2026-08-08)
+
+### Context
+
+BambooUA serves subscription-gated titles ("Для підписників") a sponsor
+promo clip (`/uploads/be_sponsors.mp4`) instead of the real video — the
+real m3u8 is never present on the page for non-subscribers. The provider
+previously resolved such titles to the promo clip, so the PS4 player
+played an advertisement instead of the content. Gating is only visible
+on the content page (the `const playlist` block), never on listing
+cards, so detection lives in `content()`/`stream()`, not in the scrapers
+that produce listings.
+
+### Decision
+
+A gated item raises `ProviderError("gated", ...)` from `content()` (when
+EVERY playable file in the playlist is the placeholder) and `stream()`
+(when the resolved file is the placeholder). The verdict is **client-side
+semantics, not an upstream-health signal** — a refusal, not a failure:
+
+- `/api/content` and `/api/stream` answer **404** with
+  `ErrorResponse(error="gated", ...)`, joining `not_found` /
+  `invalid_translation` / `translation_missing` as a deliberate
+  unavailability — never `502 upstream_unreachable`. The Jellyfin facade
+  degrades the same item to its standing 404 ("item unavailable").
+- The `gated` verdict does **not** move the health tracker: the route
+  handlers and the facade's `_resolve_stream` translate it to 404 BEFORE
+  `TRACKER.record(ok=False)` would run. A gated title is the site's
+  business model, not a broken provider.
+- Catalog filtering: `can_gate` providers' cards are resolved once per
+  cache window (`catalog_state.filter_gated_items`, run from
+  `load_home()`, `/api/search`, `/api/browse`) and known-gated cards are
+  dropped BEFORE merging rows. A merged title keeps its working sources;
+  a title available only through a gated source disappears from the
+  catalog (per the product decision: hide, don't play the promo).
+- Verdict caching: `gated_cache` stores `True` (gated) with the long
+  `cache_gated_s` TTL (24h) — an un-gated title stays hidden up to that
+  bound; `False` (known-good) uses `cache_content_s`, so a title that
+  un-gates re-enters the catalog when its content cache expires.
+- A sweep timeout degrades to keeping the cards (no partial drop based
+  on a guessed verdict); `stream()` still refuses gated items on every
+  path, so the promo clip never plays even then.
+
+### Consequences
+
+- The sponsor promo clip is never handed to a player: `stream()` refuses
+  it on every path (native route, Jellyfin facade, stale bookmarks).
+- `gated` is a new client-visible 404 code; no existing client needs a
+  change (404 was already a tolerated "skip this item").
+- A merged title survives with its remaining sources; only gated-only
+  titles vanish from the catalog — the product decision "hide from
+  search/browse".
+- The first cold `/api/home` build after deploy is slower (the sweep
+  resolves BambooUA cards once, ~1 content fetch per card, parallel,
+  cached afterwards) — accepted trade-off for instant hiding.
+
 ## References
 
 - [`CONTEXT.md`](../../CONTEXT.md) — glossary of the failure-envelope
@@ -184,9 +240,15 @@ Concrete rules:
 - `backend/cs_uk_api/main.py` (`/api/search` route, `run()` inner
   closure, `asyncio.wait_for` overall budget).
 - `backend/cs_uk_api/providers/base.py` — `BaseProvider.search()`,
-  `ProviderError(code, message)`.
+  `ProviderError(code, message)`, `BaseProvider.can_gate`.
+- `backend/cs_uk_api/providers/bambooua.py` — the `gated` verdict
+  source (sponsor-placeholder detection in `content()`/`stream()`).
+- `backend/cs_uk_api/catalog_state.py` — `gated_cache` +
+  `filter_gated_items` (the catalog sweep in `load_home()`).
+- `backend/cs_uk_api/jellyfin/router.py` — `_resolve_stream` (gated →
+  404 without health impact).
 - `backend/cs_uk_api/config.py` — `SETTINGS.upstream_timeout_s=8`,
-  `SETTINGS.search_total_timeout_s=12`.
+  `SETTINGS.search_total_timeout_s=12`, `SETTINGS.cache_gated_s`.
 - `backend/cs_uk_api/health.py` — `TRACKER` (provider health, unchanged
   by this ADR).
 - Obsolete: `docs/superpowers/specs/2026-08-01-ps4-uk-stream-design.md`

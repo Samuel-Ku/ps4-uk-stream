@@ -413,3 +413,38 @@ def test_stream_failure_degrades_to_404(client: TestClient) -> None:
 def test_requires_token_all_spellings(client: TestClient) -> None:
     assert client.post("/Items/g1:deadbeefdeadbeef/PlaybackInfo", json={}).status_code == 401
     assert client.get("/Items/g1:deadbeefdeadbeef/PlaybackInfo").status_code == 401
+
+
+def test_gated_stream_degrades_to_404_without_health_impact(client: TestClient) -> None:
+    """A `gated` verdict (BambooUA subscription-gate promo clip) is
+    client-side semantics, not an upstream failure (ADR-0002 amendment):
+    PlaybackInfo 404s like any unavailable item, and the provider health
+    tracker is NOT marked down."""
+    from cs_uk_api.health import TRACKER
+
+    class _Gated(_PlaybackStub):
+        async def stream(  # type: ignore[override]
+            self, content_id: str, translation: str | None, http: Any
+        ) -> StreamResponse:
+            raise ProviderError("gated", "subscription required")
+
+    stub = _Gated(
+        cards=[_card("p1", "dune-1", "Дюна", "movie", poster=_POSTER_MOVIE)],
+        content_by_external={"dune-1": _dune()},
+        streams={},
+    )
+    PROVIDERS["p1"] = stub
+    home = cast("dict[str, Any]", client.get("/api/home").json())
+    gk = next(
+        item["group_key"]
+        for row in home["rows"]
+        for item in row["items"]
+        if item["title"] == "Дюна"
+    )
+
+    r = client.post(
+        f"/Items/{gk}/PlaybackInfo", headers={"X-Emby-Token": TOKEN}, json={}
+    )
+    assert r.status_code == 404
+    # The gated verdict must not move the provider's health needle.
+    assert TRACKER.status("p1") == "ok"

@@ -46,6 +46,14 @@ class Settings:
     cache_content_s: int
     cache_home_s: int
     cache_poster_s: int
+    #: TTL of a subscription-gate "gated" verdict (True). Deliberately
+    #: LONGER than the home cache: the catalog sweep re-runs on every
+    #: home rebuild, and a cached verdict keeps the rebuild free.
+    #: Trade-off: a title that un-gates upstream stays hidden up to this
+    #: TTL (default 24h), bounded staleness in the ADR-0003 style. Known-
+    #: good (False) verdicts use ``cache_content_s`` instead, so an un-
+    #: gated title re-enters the catalog when its content cache expires.
+    cache_gated_s: int
     poster_cache_dir: str | None
     poster_disk_ttl_s: int
     providers: tuple[str, ...]
@@ -76,6 +84,7 @@ def load_settings() -> Settings:
         # documented staleness behaviour for the merged view.
         cache_home_s=int(os.environ.get("CS_UK_CACHE_HOME", "1800")),
         cache_poster_s=int(os.environ.get("CS_UK_CACHE_POSTER", "3600")),
+        cache_gated_s=int(os.environ.get("CS_UK_CACHE_GATED", "86400")),
         # v3 (issue #54): posters persist on disk for 7 days. Empty string
         # disables the disk layer (memory-only, pre-v3 behaviour).
         poster_cache_dir=os.environ.get(

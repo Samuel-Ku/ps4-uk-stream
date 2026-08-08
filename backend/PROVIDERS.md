@@ -56,7 +56,12 @@ status: [`docs/provider-triage.md`](../docs/provider-triage.md).
   from `plur.cfg.json`; highest-quality source (1080 > 720 > 480) wins.
 - **bambooua**: inline `const playlist` JSON on the content page; the
   stream URL is the resolved first group file (movies) or the requested
-  `sNeM` episode.
+  `sNeM` episode. Subscription-gated titles ("Для підписників") are
+  served a sponsor promo clip (`be_sponsors.mp4`) instead of the real
+  video — the real m3u8 is never on the page. Such items raise the
+  `gated` verdict from `content()`/`stream()`, the catalog sweep drops
+  them from listings, and `/api/content` + `/api/stream` answer 404
+  `gated` (the promo clip is never played).
 - **kinovezha**: content page → player page with an obfuscated
   `file:"…"` value (upstream tor-decrypt) → direct `.m3u8` HLS stream.
 - **uakino**: personal-use exception to the no-headless-JS rule: a warm

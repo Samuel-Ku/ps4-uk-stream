@@ -35,6 +35,12 @@ class BaseProvider(abc.ABC):
     #: «Новинки»; only providers with an explicit newest section
     #: (e.g. animeon's ``"page"``) round-robin into the merged list.
     newest_section: str | None = None
+    #: Providers that can serve subscription-gated placeholder streams
+    #: (a "Для підписників" sponsor clip instead of the real video —
+    #: e.g. BambooUA's ``be_sponsors.mp4``) set this True. The catalog
+    #: build then resolves their cards and drops gated ones before
+    #: merging rows, so a promo clip never surfaces as a playable card.
+    can_gate: bool = False
 
     def has_section(self, section_id: str) -> bool:
         return any(s.id == section_id for s in self.sections)

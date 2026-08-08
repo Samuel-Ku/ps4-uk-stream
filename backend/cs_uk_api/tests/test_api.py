@@ -278,6 +278,7 @@ def test_content_route_respects_block_russian_disabled(monkeypatch):
         cache_content_s=original.cache_content_s,
         cache_home_s=original.cache_home_s,
         cache_poster_s=original.cache_poster_s,
+        cache_gated_s=original.cache_gated_s,
         poster_cache_dir=original.poster_cache_dir,
         poster_disk_ttl_s=original.poster_disk_ttl_s,
         providers=original.providers,

@@ -18,7 +18,9 @@ from .catalog_state import content_cache as _catalog_content_cache
 from .catalog_state import get_home as _catalog_get_home
 from .catalog_state import home_cache as _catalog_home_cache
 from .catalog_state import load_home as _catalog_load_home
-from .catalog_state import resolve_group
+from .catalog_state import _GATE_CHECK_TIMEOUT_S, resolve_group
+from .catalog_state import filter_gated_items as _filter_gated_items
+from .catalog_state import gated_cache as _catalog_gated_cache
 from .catalog_state import sources_cache as _catalog_sources_cache
 from .config import SETTINGS
 from .country import is_blocked_country
@@ -133,14 +135,22 @@ async def _upstream_guard(
     return result
 
 
+def _content_provider_error(e: Exception) -> None:
+    """Subscription-gated content is a client-visible 404, not an
+    upstream-health signal — the item is deliberately unavailable."""
+    if isinstance(e, ProviderError) and e.code == "gated":
+        raise HTTPException(404, detail=ErrorResponse(error=e.code, message=e.message).model_dump()) from e
+
+
 def _stream_provider_error(e: Exception) -> None:
     """Translation-level validation errors are client-side semantics, not
-    upstream-health signals — they must not move the needle."""
+    upstream-health signals — they must not move the needle. A gated
+    stream is a deliberate "no playable file" verdict → 404."""
     if not isinstance(e, ProviderError):
         return
     if e.code == "invalid_translation":
         raise HTTPException(400, detail=ErrorResponse(error=e.code, message=e.message).model_dump()) from e
-    if e.code == "translation_missing":
+    if e.code in ("translation_missing", "gated"):
         raise HTTPException(404, detail=ErrorResponse(error=e.code, message=e.message).model_dump()) from e
 
 
@@ -230,6 +240,16 @@ async def browse(
         p.browse(section, page, get_client()),
         f"browse section={section} page={page}",
     )
+    if p.can_gate:
+        # Subscription-gate sweep: drop cards whose only stream is the
+        # sponsor promo clip before they surface in the listing.
+        try:
+            results = await asyncio.wait_for(
+                _filter_gated_items(results, get_client()),
+                timeout=_GATE_CHECK_TIMEOUT_S,
+            )
+        except TimeoutError:
+            pass  # keep the cards; stream() still refuses gated items
     resp = BrowseResponse(provider=provider, section=section, page=page, has_next=has_next, results=results)
     _browse_cache.set(cache_key, resp)
     return resp
@@ -348,6 +368,19 @@ async def search(
             message=f"overall budget {SETTINGS.search_total_timeout_s}s exceeded",
         )
 
+    # Subscription-gate sweep (can_gate providers): drop cards whose
+    # only stream is the sponsor promo clip. Bounded so a slow sweep
+    # degrades to keeping the cards instead of failing the search.
+    for prov in PROVIDERS.values():
+        if prov.can_gate and prov.id in results_by_pid:
+            try:
+                results_by_pid[prov.id] = await asyncio.wait_for(
+                    _filter_gated_items(results_by_pid[prov.id], http),
+                    timeout=_GATE_CHECK_TIMEOUT_S,
+                )
+            except TimeoutError:
+                pass
+
     # Emit results + failures in PROVIDERS registration order so the
     # response is deterministic regardless of which asyncio task
     # finishes first. The UI relies on stable source order for the
@@ -464,6 +497,8 @@ async def _content_by_id(content_id: str) -> ContentResponse:
     cache_key = f"content:{content_id}"
     if _blocklist_cache.get(cache_key) is not None:
         raise HTTPException(404, detail=ErrorResponse(error="not_found", message=content_id).model_dump())
+    if _catalog_gated_cache.get(cache_key) is True:
+        raise HTTPException(404, detail=ErrorResponse(error="gated", message=content_id).model_dump())
     cached = _content_cache.get(cache_key)
     if cached is not None:
         return cached  # type: ignore[return-value]
@@ -475,6 +510,7 @@ async def _content_by_id(content_id: str) -> ContentResponse:
         provider_id,
         PROVIDERS[provider_id].content(external_id, http),
         f"content id={content_id}",
+        exc_handler=_content_provider_error,
     )
     if SETTINGS.block_russian and is_blocked_country(resp.country):
         _blocklist_cache.set(cache_key, True)
@@ -562,6 +598,7 @@ async def _content_by_group_key_and_source(
             source,
             provider.content(external_id, http),
             f"content groupKey={group_key} source={source}",
+            exc_handler=_content_provider_error,
         )
     except HTTPException as e:
         # The guard raises 502 with ``{"error": "upstream_unreachable",

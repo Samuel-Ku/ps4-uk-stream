@@ -736,6 +736,7 @@ def test_home_route_does_not_hang_on_a_provider_that_hangs(
         cache_content_s=saved_settings.cache_content_s,
         cache_home_s=saved_settings.cache_home_s,
         cache_poster_s=saved_settings.cache_poster_s,
+        cache_gated_s=saved_settings.cache_gated_s,
         poster_cache_dir=saved_settings.poster_cache_dir,
         poster_disk_ttl_s=saved_settings.poster_disk_ttl_s,
         providers=saved_settings.providers,

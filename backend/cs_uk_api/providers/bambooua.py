@@ -16,6 +16,7 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 from pydantic import BaseModel
 
+from ..country import extract_country
 from ..models import (
     ContentResponse,
     Episode,
@@ -23,9 +24,9 @@ from ..models import (
     Season,
     Section,
     StreamResponse,
-     Translation,
+    StreamType,
+    Translation,
 )
-from ..country import extract_country
 from .base import BaseProvider, ProviderError
 
 BASE_URL = "https://bambooua.com"
@@ -63,6 +64,31 @@ _PATH_TYPE: tuple[tuple[str, str], ...] = (
 # Sentinel episode-id suffix for movies (whose playlist has a single
 # file URL rather than a season/episode map).
 MOVIE_SUFFIX = ":__movie__"
+
+#: The site's subscription-gate placeholder: gated titles ("Для
+#: підписників") are served this sponsor promo clip instead of the real
+#: video — the real m3u8 is never present on the page for non-subscribers.
+#: Any future variant keeps the "sponsor" marker in its path.
+_SPONSOR_MARKER = "sponsor"
+
+
+def _is_sponsor_file(path: str) -> bool:
+    """True when ``path`` is the subscription-gate placeholder clip."""
+    return _SPONSOR_MARKER in path.lower()
+
+
+def _playlist_fully_gated(groups: list[_PlaylistGroup]) -> bool:
+    """True when EVERY playable file in the playlist is the gate placeholder.
+
+    A series with some real episodes is NOT gated as a whole — its
+    free episodes stay playable; only the placeholder ones are refused
+    by ``stream()``."""
+    files: list[str] = [g.file for g in groups if g.file]
+    for g in groups:
+        files.extend(ep.file for ep in g.folder)
+    if not files:
+        return False
+    return all(_is_sponsor_file(f) for f in files)
 
 # The upstream `playlistRegex` extracts the inline JSON manifest.
 _PLAYLIST_RE = re.compile(r"const playlist\s*=\s*(\[.*?\]);", re.DOTALL)
@@ -236,6 +262,9 @@ class BambooUAProvider(BaseProvider):
     name = "BambooUA"
     types = ("movie", "series", "anime", "dorama")
     sections = BAMBOUA_SECTIONS
+    #: Gated titles resolve to a sponsor promo clip; the catalog build
+    #: drops those sources before they surface as cards.
+    can_gate = True
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         # The upstream POSTs to the bare mainUrl with the DLE search
@@ -323,6 +352,8 @@ class BambooUAProvider(BaseProvider):
         )
         country: str | None = extract_country(soup)
         groups = _extract_playlist(resp.text)
+        if _playlist_fully_gated(groups):
+            raise ProviderError("gated", "subscription required")
         media_type = _type_from_url(url)
         seasons: list[Season] | None = None
         if groups:
@@ -405,9 +436,14 @@ class BambooUAProvider(BaseProvider):
         media_url = self._select_file(groups, ep_suffix)
         if media_url is None:
             raise ProviderError("not_found", f"no file for {ep_suffix!r}")
+        if _is_sponsor_file(media_url):
+            raise ProviderError("gated", "subscription required")
+        # Live titles are HLS (hlsN.bambooua.com/…/index.m3u8) or plain
+        # mp4; label the stream by its actual URL, not a fixed "mp4".
+        stream_type: StreamType = "m3u8" if media_url.lower().endswith(".m3u8") else "mp4"
         return StreamResponse(
             url=urljoin(BASE_URL, media_url),
-            type="mp4",
+            type=stream_type,
             headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/0.1"},
         )
 

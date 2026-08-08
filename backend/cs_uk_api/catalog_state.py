@@ -19,15 +19,18 @@ import logging
 from collections.abc import Mapping, Sequence
 from typing import cast
 
+import httpx
+
 from . import config as _config
 from .cache import TtlCache
 from .country import is_blocked_country
 from .health import TRACKER
 from .home import build_home_rows
 from .http_client import get_client
-from .merge import item_group_key
+from .merge import group_key_from, item_group_key
 from .models import ContentResponse, HomeResponse, SearchResult
 from .providers import PROVIDERS
+from .providers.base import ProviderError
 
 log = logging.getLogger("cs_uk_api.catalog_state")
 
@@ -41,6 +44,13 @@ home_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_home_s)
 #: cache key shape (``content:{provider}:{external}``), one clear().
 content_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_content_s)
 blocklist_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_content_s)
+
+#: Subscription-gate verdict store: ``content:{provider}:{external}`` →
+#: True (gated) / False (known-good). Written by the catalog sweep and
+#: read by the routes so a gated verdict survives across home rebuilds
+#: without re-resolving (TTL is deliberately longer than the home cache,
+#: see ``Settings.cache_gated_s``).
+gated_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_gated_s)
 
 #: v3 (issue #60): side cache keyed by group_key → {provider →
 #: SearchResult}. Populated from the raw SearchResult listings the home
@@ -171,6 +181,38 @@ async def load_home() -> HomeResponse:
             await asyncio.gather(*tasks, return_exceptions=True)
             log.warning("home fan-out hit overall budget providers=%d", len(tasks))
 
+    # Subscription-gate sweep (BambooUA "Для підписників"): a card whose
+    # only stream is the sponsor promo clip is resolved once and dropped
+    # BEFORE the rows and the sources map are built, so the promo never
+    # surfaces as a playable card — and a merged title keeps its
+    # working sources (the gated provider just stops contributing).
+    http = get_client()
+
+    async def _sweep(mapping: dict[str, list[SearchResult]], pid: str) -> None:
+        mapping[pid] = await filter_gated_items(mapping[pid], http)
+
+    # Only can_gate providers need the sweep (the filter is a no-op for
+    # everyone else) — and only when their listing is non-empty.
+    sweep: list[asyncio.Task[None]] = []
+    for mapping in (newest_lists, popular_lists):
+        for pid, items in list(mapping.items()):
+            provider = PROVIDERS.get(pid)
+            if items and provider is not None and provider.can_gate:
+                sweep.append(asyncio.create_task(_sweep(mapping, pid)))
+    for per_pid in type_lists.values():
+        for pid, items in list(per_pid.items()):
+            provider = PROVIDERS.get(pid)
+            if items and provider is not None and provider.can_gate:
+                sweep.append(asyncio.create_task(_sweep(per_pid, pid)))
+    if sweep:
+        try:
+            _done, pending = await asyncio.wait(sweep, timeout=_GATE_CHECK_TIMEOUT_S)
+        finally:
+            for t in pending:
+                t.cancel()
+            if pending:
+                await asyncio.wait(pending, timeout=1)
+
     rows = build_home_rows(
         newest=newest_lists,
         popular=popular_lists,
@@ -186,6 +228,109 @@ async def load_home() -> HomeResponse:
 def get_home() -> HomeResponse | None:
     """Cached home snapshot without triggering a build (None on cold cache)."""
     return cast(HomeResponse, home_cache.get(_HOME_KEY))
+
+
+#: Cap on concurrent content-page fetches during the gate sweep, and
+#: the sweep's own time budget. The budget deliberately lives OUTSIDE
+#: the 12s search fan-out: a sweep timeout degrades to "keep the cards"
+#: (stream()/content() still refuse gated items, so the promo clip
+#: never plays) rather than failing the whole home build.
+_GATE_CHECK_CONCURRENCY = 24
+_GATE_CHECK_TIMEOUT_S = 25.0
+
+
+def _gate_cache_key(item: SearchResult) -> str:
+    """The shared ``content:{provider}:{external}`` key for a card."""
+    _, _, external = item.id.partition(":")
+    return f"content:{item.provider}:{external}"
+
+
+async def filter_gated_items(
+    items: Sequence[SearchResult], http: httpx.AsyncClient
+) -> list[SearchResult]:
+    """Drop subscription-gated sources from a listing (can_gate providers).
+
+    Gating is only knowable from the item's content page — the site
+    never marks listings — so every card of a ``can_gate`` provider is
+    resolved once. Verdicts are cached (``gated_cache``, TTL > home
+    cache) and the shared ``content_cache`` is populated with the same
+    shape the detail routes use, so the sweep is free on every later
+    rebuild and a resolved detail page never double-fetches.
+
+    Only KNOWN-gated items are dropped; a transient upstream error
+    keeps the card (dead providers are health-tracked elsewhere, and
+    ``stream()`` still refuses gated items on its own).
+    """
+    todo = [
+        it
+        for it in items
+        if it.provider in PROVIDERS and PROVIDERS[it.provider].can_gate
+    ]
+    if not todo:
+        return list(items)
+    sem = asyncio.Semaphore(_GATE_CHECK_CONCURRENCY)
+
+    async def check(item: SearchResult) -> bool:
+        """True iff ``item`` is KNOWN gated (cached or freshly resolved)."""
+        key = _gate_cache_key(item)
+        cached = gated_cache.get(key)
+        if cached is not None:
+            return bool(cached)
+        if content_cache.get(key) is not None:
+            gated_cache.set(key, False, ttl_s=_config.SETTINGS.cache_content_s)
+            return False
+        async with sem:
+            # Re-check under the lock: another sweep may have resolved
+            # the same card while we waited for the semaphore.
+            cached = gated_cache.get(key)
+            if cached is not None:
+                return bool(cached)
+            if content_cache.get(key) is not None:
+                gated_cache.set(key, False, ttl_s=_config.SETTINGS.cache_content_s)
+                return False
+            provider = PROVIDERS[item.provider]
+            _, _, external = item.id.partition(":")
+            try:
+                resp = await provider.content(external, http)
+            except ProviderError as e:
+                if e.code == "gated":
+                    gated_cache.set(key, True)
+                    return True
+                return False
+            except Exception:  # noqa: BLE001
+                return False
+            # Mirror the detail routes' cache shape (group_key set
+            # BEFORE caching, ADR-0003) + the blocklist check, so a
+            # later detail cache-hit behaves identically.
+            if _config.SETTINGS.block_russian and is_blocked_country(resp.country):
+                blocklist_cache.set(key, True)
+                return False
+            resp.group_key = group_key_from(resp.title, resp.type, resp.year, resp.id)
+            content_cache.set(key, resp)
+            # A known-good verdict follows the CONTENT TTL (not the long
+            # gated TTL): an un-gated title is re-checked when its
+            # content cache expires, so it re-enters the catalog as soon
+            # as the upstream publishes the real video.
+            gated_cache.set(key, False, ttl_s=_config.SETTINGS.cache_content_s)
+            return False
+
+    tasks = {asyncio.create_task(check(it)): it for it in todo}
+    gated_ids: set[str] = set()
+    try:
+        done, _pending = await asyncio.wait(tasks.keys(), timeout=_GATE_CHECK_TIMEOUT_S)
+    finally:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        await asyncio.wait(tasks.keys(), timeout=1)
+    for t in done:
+        item = tasks[t]
+        try:
+            if t.result():
+                gated_ids.add(item.id)
+        except Exception:  # noqa: BLE001, S110
+            pass
+    return [it for it in items if it.id not in gated_ids]
 
 
 def resolve_group(group_key: str) -> dict[str, SearchResult] | None:
@@ -227,6 +372,8 @@ async def resolve_group_content(group_key: str) -> ContentResponse | None:
     provider_id, item = next(iter(per_provider.items()))
     _, _, external_id = item.id.partition(":")
     cache_key = f"content:{provider_id}:{external_id}"
+    if gated_cache.get(cache_key) is True:
+        return None
     if blocklist_cache.get(cache_key) is not None:
         return None
     cached = content_cache.get(cache_key)
@@ -257,6 +404,8 @@ async def resolve_group_content(group_key: str) -> ContentResponse | None:
 __all__ = [
     "blocklist_cache",
     "content_cache",
+    "filter_gated_items",
+    "gated_cache",
     "get_home",
     "home_cache",
     "load_home",

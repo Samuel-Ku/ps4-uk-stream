@@ -34,6 +34,7 @@ from ..health import TRACKER
 from ..http_client import get_client
 from ..models import ContentResponse, Episode, HomeItem, HomeRow, Season, StreamResponse
 from ..providers import PROVIDERS
+from ..providers.base import ProviderError
 from .auth import require_token
 from .models import (
     AuthenticationResult,
@@ -583,6 +584,18 @@ async def _resolve_stream(item_id: str) -> StreamResponse | None:
         stream = await provider.stream(external_id, None, http)
         TRACKER.record(provider_id, ok=True)
         return stream
+    except ProviderError as e:
+        # A `gated` verdict is client-side semantics, NOT an upstream
+        # failure (ADR-0002 amendment): the item is deliberately
+        # unavailable — degrade to the standing 404 without marking
+        # the provider down.
+        if e.code == "gated":
+            log.info("jellyfin playback gated provider=%s id=%s", provider_id, item_id)
+            return None
+        log.warning("jellyfin playback stream failed provider=%s id=%s err=%s",
+                    provider_id, item_id, e)
+        TRACKER.record(provider_id, ok=False)
+        return None
     except Exception as e:  # noqa: BLE001
         log.warning("jellyfin playback stream failed provider=%s id=%s err=%s",
                     provider_id, item_id, e)
