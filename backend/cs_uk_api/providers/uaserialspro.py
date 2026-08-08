@@ -40,6 +40,8 @@ from urllib.parse import quote, urljoin
 import httpx
 from bs4 import BeautifulSoup, Tag
 
+from ..country import extract_country
+from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -47,14 +49,17 @@ from ..models import (
     Season,
     Section,
     StreamResponse,
-        Translation,
+    Translation,
 )
-from ..country import extract_country
 from ._crypto_uaserialspro import decrypt_player_data
 from ._tortuga import decode as _tortuga_decode
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, model_b_axes
 
 BASE_URL = "https://uaserials.com"
+# Hosts the upstream may legally redirect to: the DLE CMS and the
+# tortuga player. A hostile CMS response must not be able to pivot
+# either hop to an attacker-controlled host.
+_ALLOWED_HOSTS: frozenset[str] = frozenset({"uaserials.com", "tortuga.tw"})
 # tortuga.tw serves the HLS manifest with this Referer (mirrors the
 # upstream Kotlin source).
 TORTUGA_REFERER = "https://tortuga.tw/"
@@ -182,12 +187,15 @@ def _parse_card(card: Tag, provider_id: str, media_type: str) -> SearchResult | 
             if isinstance(src, str) and src:
                 poster_src = src
     poster = urljoin(BASE_URL, poster_src) if poster_src else None
+    mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
     return SearchResult(
         id=f"{provider_id}:{m.group(1)}",
         provider=provider_id,
         type=media_type,  # type: ignore[arg-type]
         title=title,
         poster=poster,
+        form=mb_form,
+        styles=mb_styles,
         url=urljoin(BASE_URL, href),
     )
 
@@ -219,6 +227,7 @@ def _parse_search_card(a: Tag, provider_id: str) -> SearchResult | None:
             if isinstance(src, str) and src:
                 poster_src = src
     poster = urljoin(BASE_URL, poster_src) if poster_src else None
+    mb_form, mb_styles = model_b_axes("series")
     return SearchResult(
         id=f"{provider_id}:{m.group(1)}",
         provider=provider_id,
@@ -227,6 +236,8 @@ def _parse_search_card(a: Tag, provider_id: str) -> SearchResult | None:
         year=None,
         poster=poster,
         url=urljoin(BASE_URL, href),
+        form=mb_form,
+        styles=mb_styles,
     )
 
 
@@ -346,9 +357,13 @@ class UASerialsProProvider(BaseProvider):
         player_url = _select_player_url(tabs)
         if player_url is None:
             raise ProviderError("parse_failed", "no player url in data-tag1")
+        # The player URL came from decrypted upstream HTML, so it goes
+        # through the redirect allowlist (#126).
         try:
-            player_resp = await http.get(
+            player_resp = await safe_get(
+                http,
                 player_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"User-Agent": USER_AGENT, "Referer": BASE_URL + "/"},
             )
         except httpx.HTTPError as e:
@@ -358,6 +373,7 @@ class UASerialsProProvider(BaseProvider):
         # Decode the `file:` field — Tortuga-encoded for movies, or a
         # JSON playlist for series.
         seasons = self._build_seasons_from_player(player_resp.text, external_id)
+        mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"uaserialspro:{external_id}",
             type=media_type,  # type: ignore[arg-type]
@@ -368,6 +384,8 @@ class UASerialsProProvider(BaseProvider):
             translations=translations,
             seasons=seasons,
             country=country,
+            form=mb_form,
+            styles=mb_styles,
         )
 
     @staticmethod
@@ -459,9 +477,13 @@ class UASerialsProProvider(BaseProvider):
         player_url = _select_player_url(tabs)
         if player_url is None:
             raise ProviderError("parse_failed", "no player url in data-tag1")
+        # The player URL came from decrypted upstream HTML, so it goes
+        # through the redirect allowlist (#126).
         try:
-            player_resp = await http.get(
+            player_resp = await safe_get(
+                http,
                 player_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"User-Agent": USER_AGENT, "Referer": BASE_URL + "/"},
             )
         except httpx.HTTPError as e:

@@ -171,6 +171,29 @@ async def test_serialno_stream_series_resolves_episode_m3u8():
 
 
 @pytest.mark.asyncio
+async def test_serialno_stream_rejects_player_redirect_to_disallowed_host():
+    """The player URL comes from upstream HTML, so it must go through
+    the SSRF redirect allowlist (issue #126): a player page that
+    redirects to an attacker-controlled host fails closed with
+    `not_found` instead of being followed."""
+    from cs_uk_api.providers.base import ProviderError
+
+    content_html = _fixture("content_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://serialno.tv/2075-1670.html").respond(
+            200, text=content_html
+        )
+        router.get("https://tortuga.tw/embed/2083").respond(
+            302, headers={"Location": "https://evil.example.com/pivot"}
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await SerialnoProvider().stream("2075-1670:s1e1", None, http)
+    assert exc_info.value.code == "not_found"
+    assert "disallowed host" in exc_info.value.message
+
+
+@pytest.mark.asyncio
 async def test_serialno_stream_series_season2_resolves():
     """The captured playlist has 2 seasons. An episode from season 2
     (s2e1) must resolve to a different m3u8 URL than s1e1, proving

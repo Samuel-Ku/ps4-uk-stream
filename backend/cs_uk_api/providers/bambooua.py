@@ -27,7 +27,7 @@ from ..models import (
     StreamType,
     Translation,
 )
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, model_b_axes
 
 BASE_URL = "https://bambooua.com"
 
@@ -157,6 +157,7 @@ def _parse_card(slide: Tag, provider_id: str) -> SearchResult | None:
         ext = _external_id_from_url(href)
     except ProviderError:
         return None
+    mb_form, mb_styles = model_b_axes(_type_from_url(href))  # type: ignore[arg-type]
     return SearchResult(
         id=f"{provider_id}:{ext}",
         provider=provider_id,
@@ -164,6 +165,8 @@ def _parse_card(slide: Tag, provider_id: str) -> SearchResult | None:
         title=title_el.get_text(strip=True),
         poster=poster,
         url=urljoin(BASE_URL, href),
+        form=mb_form,
+        styles=mb_styles,
     )
 
 
@@ -358,6 +361,7 @@ class BambooUAProvider(BaseProvider):
         seasons: list[Season] | None = None
         if groups:
             seasons = self._build_seasons(groups, external_id, media_type)
+        mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"bambooua:{external_id}",
             type=media_type,  # type: ignore[arg-type]
@@ -366,6 +370,8 @@ class BambooUAProvider(BaseProvider):
             poster=poster,
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
+            form=mb_form,
+            styles=mb_styles,
             country=country,
         )
 

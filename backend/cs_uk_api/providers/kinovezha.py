@@ -23,6 +23,8 @@ import httpx
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 
+from ..country import extract_country
+from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -32,11 +34,14 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from ..country import extract_country
 from ._tortuga import decode as _tor_decrypt
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, model_b_axes
 
 BASE_URL = "https://kinovezha.tv"
+# Hosts the upstream may legally redirect to: the DLE CMS and the
+# tortuga player. A hostile CMS response must not be able to pivot
+# either hop to an attacker-controlled host.
+_ALLOWED_HOSTS: frozenset[str] = frozenset({"kinovezha.tv", "tortuga.tw"})
 
 # Sections exposed by KinoVezha's main navigation. Per the upstream
 # Kotlin source's `mainPage = mainPageOf(...)`:
@@ -172,6 +177,7 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
     external_id = _external_id_from_url(href)
     if not external_id:
         return None
+    mb_form, mb_styles = model_b_axes(_classify_from_url(href))  # type: ignore[arg-type]
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
@@ -179,6 +185,8 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
+        form=mb_form,
+        styles=mb_styles,
     )
 
 
@@ -314,6 +322,7 @@ class KinoVezhaProvider(BaseProvider):
             seasons = [Season(number=1, episodes=[Episode(
                 number=1, id=f"{external_id}{MOVIE_SUFFIX}", title=title_el.get_text(strip=True),
             )])]
+        mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"kinovezha:{external_id}",
             type=media_type,  # type: ignore[arg-type]
@@ -323,6 +332,8 @@ class KinoVezhaProvider(BaseProvider):
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
             country=country,
+            form=mb_form,
+            styles=mb_styles,
         )
 
     @staticmethod
@@ -343,7 +354,11 @@ class KinoVezhaProvider(BaseProvider):
         player_url: str, external_id: str, http: httpx.AsyncClient
     ) -> list[Season] | None:
         try:
-            resp = await http.get(player_url)
+            resp = await safe_get(
+                http,
+                player_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+            )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
@@ -408,8 +423,14 @@ class KinoVezhaProvider(BaseProvider):
         player_url = self._extract_player_url(soup)
         if player_url is None:
             raise ProviderError("parse_failed", "no player iframe on content page")
+        # The player URL came from upstream HTML, so it goes through
+        # the redirect allowlist (#126).
         try:
-            player_resp = await http.get(player_url)
+            player_resp = await safe_get(
+                http,
+                player_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+            )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if player_resp.status_code != 200:

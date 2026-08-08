@@ -33,7 +33,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, model_b_axes
 
 BASE_URL = "https://klonua.com"
 # ashdi.vip hosts the HLS manifest for every title. The upstream
@@ -175,6 +175,7 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
     external_id = _external_id_from_url(href)
     if external_id is None:
         return None
+    mb_form, mb_styles = model_b_axes(_type_from_url(href))  # type: ignore[arg-type]
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
@@ -182,6 +183,8 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
+        form=mb_form,
+        styles=mb_styles,
     )
 
 
@@ -323,6 +326,7 @@ class KlonTVProvider(BaseProvider):
             seasons = [Season(number=1, episodes=[Episode(
                 number=1, id=f"{external_id}{MOVIE_SUFFIX}", title="Фільм",
             )])]
+        mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"klontv:{external_id}",
             type=media_type,  # type: ignore[arg-type]
@@ -332,6 +336,8 @@ class KlonTVProvider(BaseProvider):
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
             country=country,
+            form=mb_form,
+            styles=mb_styles,
         )
 
     @staticmethod

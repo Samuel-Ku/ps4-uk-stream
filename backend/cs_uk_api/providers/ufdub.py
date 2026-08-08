@@ -19,7 +19,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, model_b_axes
 
 BASE_URL = "https://ufdub.com"
 # Hosts the upstream may legally redirect to. The content page lives on
@@ -122,6 +122,7 @@ def _parse_card(card: Tag | BeautifulSoup, provider_id: str) -> SearchResult | N
         external_id = _external_id_from_url(href)
     except ProviderError:
         return None
+    mb_form, mb_styles = model_b_axes(_type_from_url(href))  # type: ignore[arg-type]
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
@@ -129,6 +130,8 @@ def _parse_card(card: Tag | BeautifulSoup, provider_id: str) -> SearchResult | N
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
+        form=mb_form,
+        styles=mb_styles,
     )
 
 
@@ -227,6 +230,7 @@ class UFDubProvider(BaseProvider):
         seasons: list[Season] | None = None
         if media_type == "series" or media_type == "anime":
             seasons = await self._parse_seasons(player_url, external_id, http)
+        mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"ufdub:{external_id}",
             type=media_type,  # type: ignore[arg-type]
@@ -235,6 +239,8 @@ class UFDubProvider(BaseProvider):
             poster=poster,
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
+            form=mb_form,
+            styles=mb_styles,
         )
 
     @staticmethod

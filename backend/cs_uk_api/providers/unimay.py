@@ -18,6 +18,8 @@ import httpx
 from ..models import (
     ContentResponse,
     Episode,
+    MediaForm,
+    MediaStyle,
     SearchResult,
     Season,
     Section,
@@ -55,6 +57,14 @@ def _type_from_api(type_field: str | None) -> str:
     if type_field == _TYPE_SERIES:
         return "anime"
     return "anime"
+
+
+def _unimay_axes(api_type: str) -> tuple[MediaForm, frozenset[MediaStyle]]:
+    """Model B axes for a unimay item. Unimay is an anime-only site:
+    ``movie`` means an anime film, ``anime`` an anime series — the
+    anime style tag applies to everything."""
+    form: MediaForm = "movie" if api_type == "movie" else "series"
+    return form, frozenset({"anime"})
 
 
 def _poster_url(uuid: str | None, *, width: int = 640) -> str | None:
@@ -123,6 +133,7 @@ class UnimayProvider(BaseProvider):
                 continue
             names = item.get("names") or {}
             images = item.get("images") or {}
+            mb_form, mb_styles = _unimay_axes(_type_from_api(item.get("type")))
             results.append(
                 SearchResult(
                     id=f"{self.id}:{code}",
@@ -132,6 +143,8 @@ class UnimayProvider(BaseProvider):
                     year=item.get("year"),
                     poster=_poster_url(images.get("poster")),
                     url=_project_url(code),
+                    form=mb_form,
+                    styles=mb_styles,
                 )
             )
         return results
@@ -162,6 +175,7 @@ class UnimayProvider(BaseProvider):
             code = release.get("code")
             if not code:
                 continue
+            mb_form, mb_styles = _unimay_axes(_type_from_api(release.get("type")))
             results.append(
                 SearchResult(
                     id=f"{self.id}:{code}",
@@ -170,6 +184,8 @@ class UnimayProvider(BaseProvider):
                     title=str(release.get("name") or code),
                     poster=_poster_url(release.get("posterUuid")),
                     url=_project_url(code),
+                    form=mb_form,
+                    styles=mb_styles,
                 )
             )
         # Updates section is never paginated.
@@ -188,6 +204,7 @@ class UnimayProvider(BaseProvider):
                 continue
             names = item.get("names") or {}
             images = item.get("images") or {}
+            mb_form, mb_styles = _unimay_axes(_type_from_api(item.get("type")))
             results.append(
                 SearchResult(
                     id=f"{self.id}:{code}",
@@ -197,6 +214,8 @@ class UnimayProvider(BaseProvider):
                     year=item.get("year"),
                     poster=_poster_url(images.get("poster")),
                     url=_project_url(code),
+                    form=mb_form,
+                    styles=mb_styles,
                 )
             )
         # The API's `last` field tells us if more pages exist.
@@ -227,6 +246,7 @@ class UnimayProvider(BaseProvider):
             ]
             if episodes:
                 seasons = [Season(number=1, episodes=episodes)]
+        mb_form, mb_styles = _unimay_axes(media_type)
         return ContentResponse(
             id=f"{self.id}:{external_id}",
             type=media_type,  # type: ignore[arg-type]
@@ -236,6 +256,8 @@ class UnimayProvider(BaseProvider):
             poster=_poster_url(images.get("banner"), width=2560),
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
+            form=mb_form,
+            styles=mb_styles,
         )
 
     async def stream(

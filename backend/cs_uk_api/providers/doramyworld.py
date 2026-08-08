@@ -23,8 +23,9 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 from pydantic import BaseModel, ValidationError
 
-from ..extractors import RegexExtractor
 from ..country import extract_country
+from ..extractors import RegexExtractor
+from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -34,12 +35,16 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, model_b_axes
 
 BASE_URL = "https://doramy.world"
 # ashdi.vip hosts the HLS manifest for each episode; the upstream Kotlin
 # uses the same Referer.
 ASHDI_REFERER = "https://ashdi.vip/"
+# Hosts the upstream may legally redirect to: the WordPress CMS and
+# the ashdi player CDN. A hostile CMS response must not be able to
+# pivot the player hop to an attacker-controlled host.
+_ALLOWED_HOSTS: frozenset[str] = frozenset({"doramy.world", "ashdi.vip"})
 
 # Sections exposed by DoramyWorld's main navigation. Per the upstream
 # `mainPage = mainPageOf(...)` declaration in DoramyWorldProvider.kt.
@@ -232,6 +237,7 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
         ext = _external_id_from_url(href)
     except ProviderError:
         return None
+    mb_form, mb_styles = model_b_axes(_type_from_url(href))  # type: ignore[arg-type]
     return SearchResult(
         id=f"{provider_id}:{ext}",
         provider=provider_id,
@@ -239,6 +245,8 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
+        form=mb_form,
+        styles=mb_styles,
     )
 
 
@@ -336,6 +344,7 @@ class DoramyWorldProvider(BaseProvider):
         seasons: list[Season] | None = None
         if translations_models:
             seasons = self._build_seasons(translations_models, external_id)
+        mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"doramyworld:{external_id}",
             type=media_type,  # type: ignore[arg-type]
@@ -346,6 +355,8 @@ class DoramyWorldProvider(BaseProvider):
             translations=translations,
             seasons=seasons,
             country=country,
+            form=mb_form,
+            styles=mb_styles,
         )
 
     @staticmethod
@@ -406,10 +417,15 @@ class DoramyWorldProvider(BaseProvider):
         if ashdi_url is None:
             raise ProviderError("not_found", f"no player url for {ep_suffix!r}")
         # ashdi.vip serves a page with `file:'...m3u8...'`. The shared
-        # RegexExtractor picks that pattern up cleanly.
+        # RegexExtractor picks that pattern up cleanly. The URL came
+        # from upstream HTML, so it goes through the redirect
+        # allowlist (#126).
         try:
-            ashdi_resp = await http.get(
-                ashdi_url, headers={"Referer": ASHDI_REFERER}
+            ashdi_resp = await safe_get(
+                http,
+                ashdi_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+                headers={"Referer": ASHDI_REFERER},
             )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e

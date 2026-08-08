@@ -88,7 +88,11 @@ status: [`docs/provider-triage.md`](../docs/provider-triage.md).
   empty fall back to the direct endpoint
   `/api/player/<playerId>/<translationId>` (`DirectPlayerResponse`),
   mirroring the upstream Kotlin `loadMovieLinks` — so films return a
-  real m3u8 instead of `not_found`.
+  real m3u8 instead of `not_found`. **Decision (#128): the direct
+  endpoint stays** — it makes episode-less movies playable rather
+  than detail-only, matching upstream behaviour and verified live in
+  #115; a movie is only unplayable when the direct endpoint itself
+  answers 4xx.
 - **anitubeinua**: content page → AJAX `load-playlist` blocks;
   `_parse_playlist` classifies blocks by `data-id` shape rather than
   block position, so a page serving 2 of the usual 4 blocks still

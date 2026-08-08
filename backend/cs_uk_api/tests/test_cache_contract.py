@@ -127,14 +127,14 @@ def test_search_cache_expiry():
         PROVIDERS["cache-stub"] = _register("cache-stub", search_calls, content_calls)
 
         _search_cache.clear()
-        _search_cache.set("search:all:expiry-q", _search_cache.get("search:all:expiry-q") or "marker", ttl_s=0)
+        _search_cache.set("search:all:expiry-q::", _search_cache.get("search:all:expiry-q::") or "marker", ttl_s=0)
         # The pre-seeded entry is already expired. Even if the route
         # returned the cached value, the cache is empty for the real query.
         client.get("/api/search?q=expiry-q")
         assert len(search_calls) == 1
 
         # Force expiry: set the cache entry's TTL to 0 in the past.
-        _search_cache.set("search:all:expiry-q", "stale", ttl_s=0)
+        _search_cache.set("search:all:expiry-q::", "stale", ttl_s=0)
         import time
 
         time.sleep(0.01)

@@ -197,8 +197,36 @@ async def test_cikavaideya_stream_resolves_to_m3u8():
     assert s.url.endswith(".m3u8")
     assert s.type == "m3u8"
     # ashdi.vip requires a Referer to serve the manifest; the upstream
-    # Kotlin sets `referer = "https://tortuga.wtf/"`.
-    assert s.headers.get("Referer") == "https://tortuga.wtf/"
+    # Kotlin sets `referer = "https://tortuga.wtf/"`.    assert s.headers.get("Referer") == "https://tortuga.wtf/"
+
+
+@pytest.mark.asyncio
+async def test_cikavaideya_stream_rejects_player_redirect_to_disallowed_host():
+    """The player URL comes from upstream HTML, so it must go through
+    the SSRF redirect allowlist (issue #126): a player page that
+    redirects to an attacker-controlled host fails closed with
+    `not_found` instead of being followed."""
+    from cs_uk_api.providers.base import ProviderError
+
+    content_html = _fixture("content_movie.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://cikava-ideya.top/281-duelianty.html").respond(
+            200, text=content_html
+        )
+        router.get("https://ashdi.vip/vod/228698").respond(
+            302, headers={"Location": "https://evil.example.com/pivot"}
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await CikavaIdeyaProvider().stream(
+                    "281-duelianty:__movie__", None, http
+                )
+    assert exc_info.value.code == "not_found"
+    assert "disallowed host" in exc_info.value.message
+
+
+
+
 
 
 @pytest.mark.asyncio

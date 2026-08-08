@@ -53,7 +53,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, MediaTypeStr, ProviderError
+from .base import BaseProvider, MediaTypeStr, ProviderError, model_b_axes
 
 BASE_URL = "https://animeon.club"
 MOON_BASE = "https://moonanime.art"
@@ -239,6 +239,7 @@ class AnimeONProvider(BaseProvider):
         encoded = quote_plus(query, safe="")
         data = await self._get_json(f"{BASE_URL}/api/anime?search={encoded}", http)
         results = (data or {}).get("results", []) if isinstance(data, dict) else []
+        mb_form, mb_styles = model_b_axes("anime")
         return [
             SearchResult(
                 id=f"{self.id}:{item['id']}",
@@ -246,6 +247,8 @@ class AnimeONProvider(BaseProvider):
                 type="anime",
                 title=str(item.get("titleUa", "")).strip(),
                 poster=_poster_url((item.get("image") or {}).get("preview")),
+                form=mb_form,
+                styles=mb_styles,
                 url=f"{BASE_URL}/anime/{item['id']}",
             )
             for item in results
@@ -285,6 +288,7 @@ class AnimeONProvider(BaseProvider):
             if "id" not in item:
                 continue
             image = item.get("image") or {}
+            mb_form, mb_styles = model_b_axes("anime")
             out.append(
                 SearchResult(
                     id=f"{ANIMEON_ID}:{item['id']}",
@@ -292,6 +296,8 @@ class AnimeONProvider(BaseProvider):
                     type="anime",
                     title=str(item.get("titleUa", "")).strip(),
                     poster=_poster_url(image.get("preview")),
+                    form=mb_form,
+                    styles=mb_styles,
                     url=f"{BASE_URL}/anime/{item['id']}",
                 )
             )
@@ -333,6 +339,7 @@ class AnimeONProvider(BaseProvider):
             }
         )
         season = self._build_season(anime_id, episodes_by_num, all_translations)
+        mb_form, mb_styles = model_b_axes("anime")
         return ContentResponse(
             id=f"{self.id}:{external_id}",
             type="anime",
@@ -345,6 +352,8 @@ class AnimeONProvider(BaseProvider):
             ],
             seasons=[season],
             translations_level="episode",
+            form=mb_form,
+            styles=mb_styles,
         )
 
     @staticmethod
@@ -394,6 +403,9 @@ class AnimeONProvider(BaseProvider):
                 names.append(name)
         if not names:
             names = ["Оригінал"]
+        # AnimeON movies are anime films — form=movie, styles={anime}
+        # (the default model_b_axes for "movie" would drop the style).
+        mb_form, mb_styles = model_b_axes("anime", form="movie")
         return ContentResponse(
             id=f"{self.id}:{external_id}",
             type="movie",
@@ -402,6 +414,8 @@ class AnimeONProvider(BaseProvider):
             description=description,
             poster=poster,
             translations=[Translation(id=name, label=name) for name in names],
+            form=mb_form,
+            styles=mb_styles,
             seasons=None,
             translations_level="content",
         )

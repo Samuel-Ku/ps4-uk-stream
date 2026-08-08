@@ -2,11 +2,24 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 
+# Model B axes (ADR-0001, expand step #129–#134): form is the
+# cinematic-vs-episodic split, styles the optional genre tags. Empty
+# frozenset = ordinary live-action (decided: empty, not "live").
+#
+# The legacy ``MediaType`` alias stays for the expand step — ``type``
+# remains on the wire alongside ``form``/``styles``. Removing it is the
+# contract step (#135), which is still pending.
 MediaType = Literal["movie", "series", "anime", "cartoon", "dorama"]
+MediaForm = Literal["movie", "series"]
+MediaStyle = Literal["anime", "cartoon", "dorama"]
 StreamType = Literal["mp4", "m3u8", "hls", "dash"]
 TranslationLevel = Literal["content", "episode"]
+
+
+def _empty_styles() -> frozenset[MediaStyle]:
+    return frozenset()
 
 
 class SearchResult(BaseModel):
@@ -17,6 +30,17 @@ class SearchResult(BaseModel):
     year: int | None = None
     poster: str | None = None
     url: str
+    # Model B axes (ADR-0001, expand #129): form + styles ride alongside
+    # ``type`` until the contract step (#135). Both optional in expand —
+    # an unpopulated item is treated as pass-any by the section/search
+    # filters (an explicit filter excludes an item without the axis).
+    form: MediaForm | None = None
+    styles: frozenset[MediaStyle] = Field(default_factory=_empty_styles)
+
+    @field_serializer("styles")
+    def _ser_styles(self, value: frozenset[MediaStyle]) -> list[str]:
+        # frozenset is not JSON-serializable; emit a stable sorted list.
+        return sorted(value)
 
 
 class ProviderFailure(BaseModel):
@@ -72,6 +96,10 @@ class SearchGroup(BaseModel):
     year: int | None = None
     type: MediaType
     poster: str | None = None
+    # Model B (expand #129): first-seen-wins, like the other canonical
+    # fields; ``form``/``styles`` come from the first source row.
+    form: MediaForm | None = None
+    styles: frozenset[MediaStyle] = Field(default_factory=_empty_styles)
     #: Per-provider ``SearchResult`` rows that collapsed into this
     #: group. Always non-empty (an empty group was dropped upstream).
     #: Order = first-seen in the merge pass; the first source also
@@ -85,6 +113,11 @@ class SearchGroup(BaseModel):
     #: before any other character so the yearful preference still
     #: wins on tie.
     member_keys: list[str] = Field(default_factory=list)
+
+    @field_serializer("styles")
+    def _ser_styles(self, value: frozenset[MediaStyle]) -> list[str]:
+        # frozenset is not JSON-serializable; emit a stable sorted list.
+        return sorted(value)
 
 
 class SearchResponse(BaseModel):
@@ -139,6 +172,14 @@ class ContentResponse(BaseModel):
     #: the same title yields the same key from any provider. Client resume/
     #: memory records anchor on this, not on the provider-scoped id.
     group_key: str = ""
+    # Model B (optional in expand): form + styles axes (ADR-0001).
+    form: MediaForm | None = None
+    styles: frozenset[MediaStyle] = Field(default_factory=_empty_styles)
+
+    @field_serializer("styles")
+    def _ser_styles(self, value: frozenset[MediaStyle]) -> list[str]:
+        # frozenset is not JSON-serializable; emit a stable sorted list.
+        return sorted(value)
 
 
 class StreamResponse(BaseModel):
@@ -168,6 +209,27 @@ class Section(BaseModel):
     id: str
     title: str
     type: MediaType
+    # Model B filter axes (ADR-0001): the section narrows its browse
+    # results by these match rules (CONTEXT.md «Section schema»):
+    #   form — exact-or-None: ``None`` passes everything, else
+    #     ``item.form == section.form`` must hold.
+    #   styles — 3-case filter: ``None`` passes anything (including
+    #     empty); ``frozenset()`` (∅) passes only ordinary-only items
+    #     (``item.styles == frozenset()``); a non-empty set passes iff
+    #     ``item.styles & section.styles`` is non-empty (intersection).
+    # Optional until the section migration populates them; both default
+    # to ``None`` (pass-all) so today's sections behave unchanged.
+    form: MediaForm | None = None
+    styles: frozenset[MediaStyle] | None = None
+
+    @field_serializer("styles")
+    def _ser_styles(self, value: frozenset[MediaStyle] | None) -> list[str] | None:
+        # frozenset is not JSON-serializable; emit a stable sorted list.
+        # None (pass-any) stays None on the wire to distinguish it from
+        # an explicit ∅ (ordinary-only) filter.
+        if value is None:
+            return None
+        return sorted(value)
 
 
 class ProviderSections(BaseModel):
@@ -224,11 +286,19 @@ class HomeItem(BaseModel):
     year: int | None = None
     type: MediaType
     poster: str | None = None
+    # Model B (optional in expand): form + styles axes (ADR-0001).
+    form: MediaForm | None = None
+    styles: frozenset[MediaStyle] = Field(default_factory=_empty_styles)
     #: Provider ids that contributed this row. Always non-empty (a row
     #: with zero providers was dropped upstream). Order = round-robin
     #: visit order across providers; first-seen wins for the title
     #: fields.
     providers: list[str] = Field(default_factory=list)
+
+    @field_serializer("styles")
+    def _ser_styles(self, value: frozenset[MediaStyle]) -> list[str]:
+        # frozenset is not JSON-serializable; emit a stable sorted list.
+        return sorted(value)
     #: Every per-item group key that contributed to this merged row
     #: (issue #89). The canonical ``group_key`` is the yearful-
     #: preferred-min of those — for a year-soft pair (yearful +

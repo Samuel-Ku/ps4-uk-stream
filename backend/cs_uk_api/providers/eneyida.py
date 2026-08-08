@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup, Tag
 from ..country import extract_country
 from ..http_client import safe_get
 from ..models import ContentResponse, Episode, MediaType, SearchResult, Season, Section, StreamResponse, Translation
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, model_b_axes
 
 BASE_URL = "https://eneyida.tv"
 _ALLOWED_HOSTS: frozenset[str] = frozenset({"eneyida.tv", "hdvbua.pro"})
@@ -61,7 +61,8 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
     title = a.get_text(" ", strip=True)
     img = card.select_one("img")
     poster_src = (img.get("data-src") or img.get("src")) if img else None
-    return SearchResult(id=f"{provider_id}:{ext}", provider=provider_id, type=_type_from_url(str(a["href"])), title=title, poster=urljoin(BASE_URL, str(poster_src)) if poster_src else None, url=urljoin(BASE_URL, str(a["href"])))
+    mb_form, mb_styles = model_b_axes(_type_from_url(str(a["href"])))
+    return SearchResult(id=f"{provider_id}:{ext}", provider=provider_id, type=_type_from_url(str(a["href"])), title=title, poster=urljoin(BASE_URL, str(poster_src)) if poster_src else None, url=urljoin(BASE_URL, str(a["href"])), form=mb_form, styles=mb_styles)
 
 
 def _file_url(html: str) -> str | None:
@@ -108,7 +109,8 @@ class EneyidaProvider(BaseProvider):
         typ: MediaType = "series" if kind == "series" else "movie"
         seasons: list[Season] | None = [Season(number=1, episodes=[Episode(number=1, id=external_id+MOVIE_SUFFIX, title="Фільм")])]
         if typ == "series": seasons = await self._seasons(str(iframe.get("src")), external_id, http)
-        return ContentResponse(id=f"{self.id}:{external_id}", type=typ, title=h1.get_text(strip=True), poster=urljoin(BASE_URL, str(img.get("src"))) if img else None, translations=[Translation(id="uk", label="Українська")], seasons=seasons, country=country)
+        mb_form, mb_styles = model_b_axes(typ)
+        return ContentResponse(id=f"{self.id}:{external_id}", type=typ, title=h1.get_text(strip=True), poster=urljoin(BASE_URL, str(img.get("src"))) if img else None, translations=[Translation(id="uk", label="Українська")], seasons=seasons, country=country, form=mb_form, styles=mb_styles)
 
     async def _seasons(self, player: str, ext: str, http: httpx.AsyncClient) -> list[Season] | None:
         try: r = await http.get(player)

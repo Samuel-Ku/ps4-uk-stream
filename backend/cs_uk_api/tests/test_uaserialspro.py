@@ -301,6 +301,31 @@ async def test_stream_movie_resolves_to_m3u8():
 
 
 @pytest.mark.asyncio
+async def test_stream_rejects_player_redirect_to_disallowed_host():
+    """The player URL comes from decrypted upstream HTML, so it must
+    go through the SSRF redirect allowlist (issue #126): a player page
+    that redirects to an attacker-controlled host fails closed with
+    `not_found` instead of being followed."""
+    from cs_uk_api.providers.base import ProviderError
+
+    content_html = _fixture("content.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://uaserials.com/12588-shopen-shopen.html").respond(
+            200, text=content_html
+        )
+        router.get("https://tortuga.tw/vod/129316").respond(
+            302, headers={"Location": "https://evil.example.com/pivot"}
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await UASerialsProProvider().stream(
+                    "12588-shopen-shopen:__movie__", None, http
+                )
+    assert exc_info.value.code == "not_found"
+    assert "disallowed host" in exc_info.value.message
+
+
+@pytest.mark.asyncio
 async def test_stream_bare_movie_id_without_movie_suffix():
     """Live-gate regression: the gate may call `/api/stream/{id}`
     straight from a search result, whose id is the bare external_id

@@ -39,12 +39,15 @@ from .models import (
     GroupContentResponse,
     GroupSourceContentResponse,
     HomeResponse,
+    MediaForm,
+    MediaStyle,
     ProviderFailure,
     ProviderInfo,
     ProviderSections,
     SearchGroup,
     SearchResponse,
     SearchResult,
+    Section,
     StreamResponse,
 )
 from .poster_proxy import fetch as fetch_poster
@@ -54,6 +57,11 @@ from .uakino_browser import DEFAULT_CHROMIUM, get_session
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("cs_uk_api")
+
+#: Valid ``?style=`` tokens (Model B, ticket #134). Kept as a module
+#: constant because ``MediaStyle.__args__`` is a typing special form
+#: that mypy rejects on attribute access.
+_STYLE_TOKENS: frozenset[str] = frozenset({"anime", "cartoon", "dorama"})
 
 # uakino's browser-session provider cannot work without a system Chromium
 # binary (v3 spec §2.1): mark it down deterministically at startup instead
@@ -267,17 +275,116 @@ async def browse(
             )
         except TimeoutError:
             pass  # keep the cards; stream() still refuses gated items
+    # Model B section filter (ADR-0001, ticket #134): the section's
+    # ``form``/``styles`` axes narrow its own browse results (CONTEXT.md
+    # «Section schema» match semantics — 3-case styles). Sections that
+    # haven't declared axes (both ``None``) pass everything, so this is
+    # a no-op for today's un-migrated sections.
+    section_def = next(s for s in p.sections if s.id == section)
+    if section_def.form is not None or section_def.styles is not None:
+        results = [r for r in results if _section_matches(r, section_def)]
     resp = BrowseResponse(provider=provider, section=section, page=page, has_next=has_next, results=results)
     _browse_cache.set(cache_key, resp)
     return resp
+
+
+def _section_matches(item: SearchResult, section: Section) -> bool:
+    """Model B section match semantics (CONTEXT.md «Section schema»).
+
+    - ``form``: ``None`` passes everything; else ``item.form ==
+      section.form`` must hold.
+    - ``styles``: 3-case — ``None`` passes anything (including empty);
+      ``frozenset()`` (∅) passes only ordinary-only items
+      (``item.styles == frozenset()``); a non-empty set passes iff
+      ``item.styles & section.styles`` is non-empty (intersection).
+    """
+    if section.form is not None and item.form != section.form:
+        return False
+    if section.styles is None:
+        return True
+    if not section.styles:
+        return not item.styles
+    return bool(item.styles & section.styles)
+
+
+def _parse_style_filter(raw: str | None) -> frozenset[MediaStyle] | None:
+    """Parse the ``?style=`` query param into a style filter set.
+
+    Decided semantics (CONTEXT.md «Search filter axes»): a comma-
+    separated list with intersection matching — an item passes iff it
+    carries at least one of the requested styles. Absent/empty = any
+    (``None``). There is deliberately NO ordinary-only token on search:
+    ``Section`` is the way to filter to ordinary-only (∅ styles), and
+    ``?style`` stays a plain intersection list.
+
+    Invalid style tokens raise a 400 — a typo should surface at the
+    API boundary, not silently pass everything.
+    """
+    if raw is None:
+        return None
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    if not parts:
+        return None
+    invalid = [p for p in parts if p not in _STYLE_TOKENS]
+    if invalid:
+        raise HTTPException(
+            400,
+            detail=ErrorResponse(
+                error="invalid_style",
+                message=f"unknown style token(s): {', '.join(invalid)}",
+            ).model_dump(),
+        )
+    return frozenset(cast(MediaStyle, p) for p in parts)
+
+
+def _style_key(style_filter: frozenset[MediaStyle] | None) -> str:
+    """Stable cache-key fragment for a style filter."""
+    if not style_filter:
+        return ""
+    return ",".join(sorted(style_filter))
+
+
+def _matches_axes(
+    item: SearchResult,
+    form: MediaForm | None,
+    style_filter: frozenset[MediaStyle] | None,
+) -> bool:
+    """Model B axis match for a single search result (ADR-0001).
+
+    - ``form``: exact-or-None — ``None`` passes, else
+      ``item.form == form`` must hold. An item whose provider hasn't
+      populated ``form`` yet (``None``) fails an explicit filter.
+    - ``style_filter``: ``None`` passes; a non-empty set passes iff
+      ``item.styles & style_filter`` is non-empty (intersection).
+    """
+    return (form is None or item.form == form) and (
+        style_filter is None or bool(item.styles & style_filter)
+    )
 
 
 @app.get("/api/search", response_model=SearchResponse, response_model_exclude_unset=True)
 async def search(
     q: str = Query(min_length=1, max_length=80),
     provider: str = Query("all"),
+    form: MediaForm | None = Query(default=None),  # noqa: B008
+    style: str | None = Query(default=None),
 ) -> SearchResponse:
     """Multi-provider search with per-provider failure attribution (ADR-0002).
+
+    Note: ``form`` carries a ``# noqa: B008`` — ruff's B008 immutable-
+    annotation check doesn't resolve the ``MediaForm`` type alias, so it
+    false-positives on that line only (the identical ``str``-typed
+    ``source`` param below passes clean).
+
+    Model B filter axes (ADR-0001, ticket #134):
+      - ``form=movie|series`` — exact-or-None; absent = any.
+      - ``style=anime|cartoon|dorama[,anime,...]`` — comma-separated
+        list, intersection semantics (an item passes iff it carries at
+        least one requested style); absent = any. No ordinary-only
+        token on search — that filter lives on Section (CONTEXT.md).
+    Both axes participate in the cache key, so filtered and unfiltered
+    searches for the same ``q`` never share an entry (ADR-0001
+    obligation, fulfilled here).
 
     Behaviour:
       - 200 OK with ``failures: list[ProviderFailure]`` whenever at least
@@ -290,7 +397,8 @@ async def search(
     """
     if provider != "all" and provider not in PROVIDERS:
         raise HTTPException(400, detail=ErrorResponse(error="unknown_provider", message=provider).model_dump())
-    cache_key = f"search:{provider}:{q}"
+    style_filter = _parse_style_filter(style)
+    cache_key = f"search:{provider}:{q}:{form or ''}:{_style_key(style_filter)}"
     cached = _search_cache.get(cache_key)
     if cached is not None:
         return cached  # type: ignore[return-value]
@@ -410,6 +518,15 @@ async def search(
         if pid in failures_by_pid:
             failures.append(failures_by_pid[pid])
 
+    # Model B axis filter (ADR-0001, ticket #134): apply ``form`` /
+    # ``style`` BEFORE the merge so a filtered search never forms a
+    # group from a non-matching member (a merged group's canonical
+    # ``form``/``styles`` come from its first source row).
+    if form is not None or style_filter is not None:
+        out_results = [
+            r for r in out_results if _matches_axes(r, form, style_filter)
+        ]
+
     if not done and failures:
         # Every provider timed out — total failure is a server-side
         # problem, not a per-provider outcome. Surface as a clean error
@@ -444,6 +561,10 @@ async def search(
             year=mg.sources[0].year,
             type=mg.sources[0].type,
             poster=mg.sources[0].poster,
+            # Model B (issue #129): first-seen-wins, like the other
+            # canonical fields.
+            form=mg.sources[0].form,
+            styles=mg.sources[0].styles,
             sources=list(mg.sources),
             # Issue #89: every per-item group key that contributed to
             # this merged card. Deduped, first-seen order. The canonical

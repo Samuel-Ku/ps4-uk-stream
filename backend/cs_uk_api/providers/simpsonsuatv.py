@@ -37,7 +37,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, model_b_axes
 
 BASE_URL = "https://simpsonsua.tv"
 BASE_URL_HOST = urlparse(BASE_URL).hostname
@@ -271,6 +271,7 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
         # page uses the titleMap. Both upstream and ours prefer the
         # map so the result is stable across listings.
         title = _title_for_slug(slug)
+    mb_form, mb_styles = model_b_axes("cartoon")
     return SearchResult(
         id=f"{provider_id}:{slug}",
         provider=provider_id,
@@ -278,6 +279,8 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
+        form=mb_form,
+        styles=mb_styles,
     )
 
 
@@ -462,6 +465,7 @@ class SimpsonsUATvProvider(BaseProvider):
         soup = BeautifulSoup(response.text, "lxml")
         title, description, poster = self._parse_meta(soup, external_id)
         seasons = await self._build_seasons(soup, str(response.url), external_id, http)
+        mb_form, mb_styles = model_b_axes("cartoon")
         return ContentResponse(
             id=f"{self.id}:{external_id}",
             type="cartoon",
@@ -470,6 +474,8 @@ class SimpsonsUATvProvider(BaseProvider):
             poster=poster,
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
+            form=mb_form,
+            styles=mb_styles,
         )
 
     def _parse_meta(

@@ -74,3 +74,20 @@ def test_gate_parses_merged_groups_contract_issue71():
     assert "['groups']" in text
     assert "['groups'][$tries]['sources'][0]['id']" in text
     assert "['results']" not in text
+
+
+def test_gate_episode_fallback_for_series_only_issue127():
+    """Regression (issue #127): series-only providers (serialno,
+    anitubeinua, doramyworld, simpsonsuatv) reject the bare search id
+    at /api/stream. gate.sh must fall back to the first episode id
+    from content()'s ``seasons`` and prefix the provider when the
+    episode id lacks it."""
+    text = GATE.read_text(encoding="utf-8")
+    assert "seasons" in text
+    assert "eps[0]['id']" in text
+    assert "first episode" in text
+    # The prefixing rule: episode ids may or may not carry the
+    # `<provider>:` prefix already (simpsonsuatv uses a full episode
+    # URL) — prefix only when absent.
+    assert '"$provider:"*)' in text
+    assert 'stream_cid="$provider:$ep_cid"' in text

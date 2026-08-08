@@ -27,7 +27,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, model_b_axes
 
 # Captured-fixture domain. The live site mirrors `uaflix.org` to
 # `uafix.net`; the markup is identical, so routing the provider
@@ -184,6 +184,7 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
         external_id = _external_id_from_url(href)
     except ProviderError:
         return None
+    mb_form, mb_styles = model_b_axes(_type_from_url(href))  # type: ignore[arg-type]
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
@@ -191,6 +192,8 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
+        form=mb_form,
+        styles=mb_styles,
     )
 
 
@@ -216,6 +219,7 @@ def _parse_search_card(card: Tag, provider_id: str) -> SearchResult | None:
         external_id = _external_id_from_url(href)
     except ProviderError:
         return None
+    mb_form, mb_styles = model_b_axes(_type_from_url(href))  # type: ignore[arg-type]
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
@@ -223,6 +227,8 @@ def _parse_search_card(card: Tag, provider_id: str) -> SearchResult | None:
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
+        form=mb_form,
+        styles=mb_styles,
     )
 
 
@@ -411,6 +417,7 @@ class UAFlixProvider(BaseProvider):
         seasons: list[Season] | None = None
         if media_type in ("series", "anime", "dorama"):
             seasons = _parse_seasons(soup, external_id)
+        mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"uaflix:{external_id}",
             type=media_type,  # type: ignore[arg-type]
@@ -420,6 +427,8 @@ class UAFlixProvider(BaseProvider):
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
             country=country,
+            form=mb_form,
+            styles=mb_styles,
         )
 
     async def stream(

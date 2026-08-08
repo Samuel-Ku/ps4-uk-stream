@@ -20,7 +20,7 @@ from ..models import (
     Translation,
 )
 from ..uakino_browser import _UA, BASE_URL, UakinoSessionProtocol, get_session
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, model_b_axes
 
 # ashdi.vip serves the playlist page; m3u8 manifests and segment URLs
 # stay on the same host. The host allowlist refuses SSRF pivots at the
@@ -130,6 +130,14 @@ def _parse_cards(html: str) -> list[SearchResult]:
             # Genre segments like drama_series, detective_series,
             # anime-series, cartoonseries all denote serialized content.
             kind = "series" if section.endswith("series") else "movie"
+        # The cartoons section («Мультфільми») is animated *films* — its
+        # items must be form=movie, not model_b_axes's default series for
+        # the style-tagged "cartoon" type (else ?form=movie&style=cartoon
+        # search and the section filter both miss them).
+        mb_form, mb_styles = model_b_axes(
+            kind,  # type: ignore[arg-type]
+            form="movie" if section == "cartoon" else None,
+        )
         results.append(
             SearchResult(
                 id=f"uakino:{section}:{item_id}-{slug}",
@@ -139,6 +147,8 @@ def _parse_cards(html: str) -> list[SearchResult]:
                 year=year,
                 poster=poster,
                 url=urljoin(BASE_URL, href),
+                form=mb_form,
+                styles=mb_styles,
             )
         )
     return results
@@ -343,6 +353,12 @@ class UakinoProvider(BaseProvider):
                 )
             ]
             translations = [Translation(id=v, label=v) for v in voices]
+            # animeukr section = anime series: keep the anime style on
+            # content so it matches the item's search/browse card
+            # (styles=["anime"]), not a plain series with no style.
+            mb_form, mb_styles = model_b_axes(
+                "anime" if section == "animeukr" else "series"
+            )
             return ContentResponse(
                 id=f"uakino:{external_id}",
                 type="series",
@@ -353,6 +369,8 @@ class UakinoProvider(BaseProvider):
                 translations=translations,
                 seasons=seasons,
                 translations_level="episode",
+                form=mb_form,
+                styles=mb_styles,
                 country=country,
             )
 
@@ -366,9 +384,13 @@ class UakinoProvider(BaseProvider):
         # the model requires at least one translation (issue #123, D2).
         if not translations:
             translations = [Translation(id="uk", label="Українська")]
+        movie_type = "anime" if "аніме" in " ".join(tags).lower() else "movie"
+        # A style-tagged movie (аніме-фільм) is form=movie, not series
+        # (model_b_axes defaults style-tagged types to series).
+        mb_form, mb_styles = model_b_axes(movie_type, form="movie")  # type: ignore[arg-type]
         return ContentResponse(
             id=f"uakino:{external_id}",
-            type="anime" if "аніме" in " ".join(tags).lower() else "movie",
+            type=movie_type,  # type: ignore[arg-type]
             title=title,
             year=year,
             description=description,
@@ -376,6 +398,8 @@ class UakinoProvider(BaseProvider):
             translations=translations,
             seasons=None,
             country=country,
+            form=mb_form,
+            styles=mb_styles,
         )
 
     async def stream(

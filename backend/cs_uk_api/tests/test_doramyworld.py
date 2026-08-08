@@ -213,6 +213,31 @@ async def test_doramyworld_stream_resolves_to_m3u8():
 
 
 @pytest.mark.asyncio
+async def test_doramyworld_stream_rejects_player_redirect_to_disallowed_host():
+    """The player URL comes from upstream HTML, so it must go through
+    the SSRF redirect allowlist (issue #126): a player page that
+    redirects to an attacker-controlled host fails closed with
+    `not_found` instead of being followed."""
+    from cs_uk_api.providers.base import ProviderError
+
+    content_html = _fixture("content_film.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://doramy.world/film/ekstremalna-robota/").respond(
+            200, text=content_html
+        )
+        router.get("https://ashdi.vip/vod/94600").respond(
+            302, headers={"Location": "https://evil.example.com/pivot"}
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await DoramyWorldProvider().stream(
+                    "film/ekstremalna-robota:s1e1", None, http
+                )
+    assert exc_info.value.code == "not_found"
+    assert "disallowed host" in exc_info.value.message
+
+
+@pytest.mark.asyncio
 async def test_doramyworld_stream_series_episode_resolves_m3u8():
     """Series stream: content_id encodes season+episode; the resolver
     walks the data-player JSON to pick the right ashdi.vip URL."""

@@ -214,6 +214,31 @@ async def test_kinovezha_stream_resolves_to_m3u8():
 
 
 @pytest.mark.asyncio
+async def test_kinovezha_stream_rejects_player_redirect_to_disallowed_host():
+    """The player URL comes from upstream HTML, so it must go through
+    the SSRF redirect allowlist (issue #126): a player page that
+    redirects to an attacker-controlled host fails closed with
+    `not_found` instead of being followed."""
+    from cs_uk_api.providers.base import ProviderError
+
+    content_html = _fixture("content_movie.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://kinovezha.tv/2809-volodari-vsesvitu.html").respond(
+            200, text=content_html
+        )
+        router.get("https://tortuga.tw/vod/129293").respond(
+            302, headers={"Location": "https://evil.example.com/pivot"}
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await KinoVezhaProvider().stream(
+                    "2809-volodari-vsesvitu", None, http
+                )
+    assert exc_info.value.code == "not_found"
+    assert "disallowed host" in exc_info.value.message
+
+
+@pytest.mark.asyncio
 async def test_kinovezha_stream_series_episode_resolves_to_m3u8():
     """Series episode: `content_id` includes the s{N}e{M} suffix. The
     provider splits it, fetches the player page, decodes the

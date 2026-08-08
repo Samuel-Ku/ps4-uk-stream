@@ -22,7 +22,7 @@ from ..models import (
     Translation,
     TranslationLevel,
 )
-from .base import BaseProvider, MediaTypeStr, ProviderError
+from .base import BaseProvider, MediaTypeStr, ProviderError, model_b_axes
 
 BASE_URL = "https://animeua.club"
 # The ashdi.vip CDN serves the HLS manifest only with this Referer; the
@@ -99,9 +99,16 @@ def _parse_cards(html: str, provider: str, media_type: MediaTypeStr) -> list[Sea
         title = title_el.get_text(" ", strip=True) if title_el else card.get_text(" ", strip=True)
         image = card.select_one(".img-fit-cover img")
         poster = urljoin(BASE_URL, str(image.get("data-src"))) if image and image.get("data-src") else None
+        # animeua is an anime-only site: every item carries the anime
+        # style; the form comes from the section/fixture type (film vs
+        # series — search results are all "anime" = series).
+        mb_form, mb_styles = model_b_axes(
+            "anime", form="movie" if media_type == "movie" else "series"
+        )
         results.append(SearchResult(
             id=f"{provider}:{external_id}", provider=provider, type=media_type,
             title=title, poster=poster, url=urljoin(BASE_URL, str(href)),
+            form=mb_form, styles=mb_styles,
         ))
     return results
 
@@ -308,6 +315,13 @@ class AnimeUAProvider(BaseProvider):
                 if names:
                     translations = [Translation(id=name, label=name) for name in names]
                 translations_level = "episode"
+        # kind="movie" (Повнометражка) means an anime film — form=movie
+        # with the anime style, not the default plain movie; kind="anime"
+        # means an anime series (form=series). The axes always carry the
+        # anime style — every entry on this site is animation.
+        mb_form, mb_styles = model_b_axes(
+            "anime", form="movie" if kind == "movie" else "series"
+        )
         return ContentResponse(
             id=f"{self.id}:{external_id}",
             type=kind,
@@ -316,6 +330,8 @@ class AnimeUAProvider(BaseProvider):
             description=description,
             poster=poster,
             translations=translations,
+            form=mb_form,
+            styles=mb_styles,
             seasons=seasons,
             translations_level=translations_level,
         )

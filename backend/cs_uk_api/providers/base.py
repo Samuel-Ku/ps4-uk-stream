@@ -7,12 +7,41 @@ import httpx
 
 from ..models import (
     ContentResponse,
+    MediaForm,
+    MediaStyle,
     SearchResult,
     Section,
     StreamResponse,
 )
 
 MediaTypeStr = Literal["movie", "series", "anime", "cartoon", "dorama"]
+
+#: Style-tagged MediaType values map 1:1 to a MediaStyle.
+_STYLE_BY_TYPE: dict[str, MediaStyle] = {
+    "anime": "anime",
+    "cartoon": "cartoon",
+    "dorama": "dorama",
+}
+
+
+def model_b_axes(
+    media_type: MediaTypeStr,
+    *,
+    form: MediaForm | None = None,
+) -> tuple[MediaForm, frozenset[MediaStyle]]:
+    """Map a legacy ``MediaType`` to Model B axes (ADR-0001, expand
+    step #129).
+
+    ``movie``/``series`` map directly with an empty style set (ordinary
+    live-action). Style-tagged types (``anime``/``cartoon``/``dorama``)
+    always carry their style; their ``form`` defaults to ``"series"``
+    unless the caller knows the item is a film and passes ``form``
+    explicitly (e.g. an anime movie in a ``films`` section).
+    """
+    if media_type in ("movie", "series"):
+        return media_type, frozenset()
+    style = _STYLE_BY_TYPE[media_type]
+    return (form or "series"), frozenset({style})
 
 
 class ProviderError(Exception):

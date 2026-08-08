@@ -145,6 +145,10 @@ def round_robin_dedup(
                 year=sample.year,
                 type=sample.type,
                 poster=sample.poster,
+                # Model B (issue #129): first-seen-wins, like the other
+                # canonical fields.
+                form=sample.form,
+                styles=sample.styles,
                 providers=providers,
                 member_keys=member_keys,
             )

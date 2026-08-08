@@ -6,7 +6,7 @@
 
 ---
 
-> **Shipped-vs-decided (2026-08-08 sync):** the sections below document the **decided target model** (Model B). The backend **still ships Model A** — a single `MediaType = Literal["movie", "series", "anime", "cartoon", "dorama"]` in `backend/cs_uk_api/models.py`, and `SearchResult.type` carries it. The Model B migration (form/styles axes on items, sections and search) is **not yet implemented**; it is the open obligation of ADR-0001, whose cache-key consequence (form/styles in the `/api/search` key) only activates once the filters ship. Until then, `MediaType` values `anime`/`cartoon`/`dorama` remain conflated with `movie`/`series` in practice.
+> **Shipped-vs-decided (2026-08-08 sync):** the sections below document the **decided target model** (Model B). The backend ships the Model B **expand step**: every item (search/browse/content/home) and `Section` carries optional `form`/`styles` axes, all 19 providers populate them via the shared `model_b_axes` mapping, and `/api/search` + `/api/browse` filter on them (tickets #129–#134). The **contract step is still pending** (#135): the legacy `MediaType` field remains on the wire, `type` still ships alongside `form`/`styles`, and `anime`/`cartoon`/`dorama` remain conflated with `movie`/`series` for clients that read only `type`.
 
 ## Catalog taxonomy (Model B — form + style)
 
@@ -94,7 +94,7 @@ Section {
 
 ---
 
-> **Shipped-vs-decided (2026-08-08 sync):** these filter axes are **decided, not shipped**. The route currently accepts only `q` (required) and `provider` (default `all`); `form`/`style` params do not exist yet, so the ADR-0001 cache-key obligation is dormant. `/api/browse` likewise takes no filter params beyond `provider`/`section`.
+> **Shipped (ticket #134, 2026-08-08):** `GET /api/search` accepts `form` and `style` as documented below, and `/api/browse` filters each section's results by its declared `form`/`styles` axes (undeclared axes pass everything). The `/api/search` cache key carries both axes, fulfilling the ADR-0001 obligation.
 
 ## Search filter axes (decided A)
 
@@ -246,7 +246,7 @@ Rules:
 - The key carries **every request parameter that can change the response** — nothing more.
 - The **provider axis is always present**: explicitly in `search:` / `browse:` keys, implicitly in `content:` keys because `content_id` is prefixed with the provider.
 - `q` is **not normalized** (no case-folding, no whitespace collapsing). A normalizer would have to mirror what 19 independent scrapers do with the query; where it disagrees, a hit returns results for a different search. Duplicate entries are the cheaper failure.
-- **Outstanding obligation from ADR-0001**: the `/api/search` key must gain the `form` and `styles` axes when those filters ship, or filtered and unfiltered searches collide.
+- **Fulfilled (ticket #134)**: the `/api/search` key carries the `form` and `styles` axes (`search:{provider}:{q}:{form}:{sorted-styles}`), so filtered and unfiltered searches never collide.
 
 ### Invalidation
 

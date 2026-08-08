@@ -10,7 +10,9 @@ from urllib.parse import quote, urljoin
 import httpx
 from bs4 import BeautifulSoup, Tag
 
+from ..country import extract_country
 from ..extractors import RegexExtractor
+from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -18,12 +20,15 @@ from ..models import (
     Season,
     Section,
     StreamResponse,
-     Translation,
+    Translation,
 )
-from ..country import extract_country
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, model_b_axes
 
 BASE_URL = "https://cikava-ideya.top"
+# Hosts the upstream may legally redirect to: the CMS and the ashdi
+# player CDN. A hostile CMS response must not be able to pivot the
+# player hop to an attacker-controlled host.
+_ALLOWED_HOSTS: frozenset[str] = frozenset({"cikava-ideya.top", "ashdi.vip"})
 # ashdi.vip hosts the HLS manifest for each episode. The upstream
 # Kotlin source sets the Referer to "https://tortuga.wtf/" so that the
 # CDN serves the manifest.
@@ -127,6 +132,7 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
     m = re.search(r"/(\d+-[a-z0-9-]+?)(?:\.html)?/?$", href)
     if not m:
         return None
+    mb_form, mb_styles = model_b_axes(_classify_from_tags(subtitle_text))  # type: ignore[arg-type]
     return SearchResult(
         id=f"{provider_id}:{m.group(1)}",
         provider=provider_id,
@@ -135,6 +141,8 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
         year=year,
         poster=poster,
         url=urljoin(BASE_URL, href),
+        form=mb_form,
+        styles=mb_styles,
     )
 
 
@@ -239,6 +247,7 @@ class CikavaIdeyaProvider(BaseProvider):
         seasons: list[Season] | None = None
         if player_json and "Player1" in player_json:
             seasons = self._build_seasons(player_json["Player1"], external_id)
+        mb_form, mb_styles = model_b_axes(_classify_from_tags(tags_text))  # type: ignore[arg-type]
         return ContentResponse(
             id=f"cikavaideya:{external_id}",
             type=_classify_from_tags(tags_text),  # type: ignore[arg-type]
@@ -248,6 +257,8 @@ class CikavaIdeyaProvider(BaseProvider):
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
             country=country,
+            form=mb_form,
+            styles=mb_styles,
         )
 
     @staticmethod
@@ -313,8 +324,15 @@ class CikavaIdeyaProvider(BaseProvider):
         # The player URL lives on ashdi.vip; the upstream Kotlin calls
         # M3u8Helper.generateM3u8 which hits the page and pulls the
         # `file: "https://.../index.m3u8"` URL out of an inline script.
+        # The URL came from upstream HTML, so it goes through the
+        # redirect allowlist (#126).
         try:
-            ashdi_resp = await http.get(player_url, headers={"Referer": ASHDI_REFERER})
+            ashdi_resp = await safe_get(
+                http,
+                player_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+                headers={"Referer": ASHDI_REFERER},
+            )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if ashdi_resp.status_code != 200:

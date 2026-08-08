@@ -56,11 +56,15 @@ async def test_uakino_search_parses_results_and_filters_junk():
     # the Дюна movie (2021) and both Дюна series are present
     movie = next(r for r in results if r.url.endswith("genre-action/12567-dyuna.html"))
     assert movie.type == "movie"
+    assert movie.form == "movie"
+    assert movie.styles == frozenset()
     assert movie.year == 2021
     assert movie.poster is not None
     assert movie.poster.startswith("https://uakino.best/")
     series = next(r for r in results if r.url.endswith("seriesss/10458-dyuna-1-sezon.html"))
     assert series.type == "series"
+    assert series.form == "series"
+    assert series.styles == frozenset()
     series2 = next(r for r in results if r.url.endswith("seriesss/drama_series/24872-duna-proroctvo-1-sezon.html"))
     assert series2.type == "series"
     # search must be a same-origin POST to /index.php
@@ -169,6 +173,9 @@ async def test_uakino_content_series_parses_episodes_and_voice_groups():
         )
 
     assert c.type == "series"
+    # Model B axes: a plain seriesss item → form=series, no style tag.
+    assert c.form == "series"
+    assert c.styles == frozenset()
     assert c.title == "Крамниця для вбивць 2 сезон"
     assert c.translations_level == "episode"
     assert c.seasons is not None and len(c.seasons) == 1

@@ -22,13 +22,13 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, cast
-
-from ..country import extract_country
 from urllib.parse import quote, urljoin
 
 import httpx
 from bs4 import BeautifulSoup, Tag
 
+from ..country import extract_country
+from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -39,9 +39,13 @@ from ..models import (
     Translation,
 )
 from ._tortuga import decode as _tor_decrypt
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, model_b_axes
 
 BASE_URL = "https://serialno.tv"
+# Hosts the upstream may legally redirect to: the DLE CMS and the
+# tortuga player. A hostile CMS response must not be able to pivot
+# either hop to an attacker-controlled host.
+_ALLOWED_HOSTS: frozenset[str] = frozenset({"serialno.tv", "tortuga.tw"})
 
 
 def _season_list(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -134,6 +138,7 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
     external_id = _external_id_from_url(href)
     if not external_id:
         return None
+    mb_form, mb_styles = model_b_axes("series")
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
@@ -141,6 +146,8 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
+        form=mb_form,
+        styles=mb_styles,
     )
 
 
@@ -262,6 +269,7 @@ class SerialnoProvider(BaseProvider):
             raise ProviderError("parse_failed", "no player iframe on content page")
         player_url = str(iframe["src"])
         seasons = await self._load_series_seasons(player_url, external_id, http)
+        mb_form, mb_styles = model_b_axes("series")
         return ContentResponse(
             id=f"serialno:{external_id}",
             type="series",
@@ -271,6 +279,8 @@ class SerialnoProvider(BaseProvider):
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
             country=country,
+            form=mb_form,
+            styles=mb_styles,
         )
 
     @staticmethod
@@ -290,7 +300,11 @@ class SerialnoProvider(BaseProvider):
         empty seasons list — the live gate will then see no episodes
         and stop, instead of crashing."""
         try:
-            resp = await http.get(player_url)
+            resp = await safe_get(
+                http,
+                player_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+            )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
@@ -359,7 +373,11 @@ class SerialnoProvider(BaseProvider):
             raise ProviderError("parse_failed", "no player iframe on content page")
         player_url = str(iframe["src"])
         try:
-            player_resp = await http.get(player_url)
+            player_resp = await safe_get(
+                http,
+                player_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+            )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if player_resp.status_code != 200:

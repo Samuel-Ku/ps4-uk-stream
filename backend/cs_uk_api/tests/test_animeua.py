@@ -67,6 +67,10 @@ async def test_animeua_series_parses_seasons_and_episode_translations():
             content = await AnimeUAProvider().content("7952-dandadan", http)
     assert content.id == "animeua:7952-dandadan"
     assert content.type == "anime"
+    # Model B axes: a `/serial/` player = anime series → form=series
+    # with the anime style (not the plain-series default).
+    assert content.form == "series"
+    assert content.styles == frozenset({"anime"})
     assert content.title == "Дандадан"
     assert content.year == 2024
     assert content.poster == "https://animeua.club/uploads/posts/2024-10/5458831_1730282979.webp"
