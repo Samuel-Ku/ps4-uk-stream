@@ -39,12 +39,21 @@ async def safe_get(
     """GET with manual redirect handling and SSRF protection.
 
     `follow_redirects` is disabled on the shared client so redirects
-    don't silently cross to arbitrary hosts. When the upstream returns
-    a 3xx with a `Location` header, the redirect target's netloc must
-    be in `allowed_hosts`; otherwise the call raises
-    `ProviderError("not_found", ...)`. Allowed redirects are followed
-    by re-invoking the helper so the host check applies to every hop.
+    don't silently cross to arbitrary hosts. The INITIAL request URL
+    must also be in `allowed_hosts` — it often comes from (possibly
+    decrypted) upstream HTML, so a hostile CMS could otherwise point
+    the backend at an arbitrary host and have it fetched directly from
+    its LAN position. When the upstream returns a 3xx with a `Location`
+    header, the redirect target's netloc must be in `allowed_hosts`;
+    otherwise the call raises `ProviderError("not_found", ...)`.
+    Allowed redirects are followed by re-invoking the helper so the
+    host check applies to every hop.
     """
+    initial_host = urlparse(url).netloc
+    if initial_host not in allowed_hosts:
+        raise ProviderError(
+            "not_found", f"disallowed host: {initial_host}"
+        )
     response = await http.get(
         url, follow_redirects=False, headers=headers, params=params
     )
