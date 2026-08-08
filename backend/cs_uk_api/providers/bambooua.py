@@ -93,28 +93,37 @@ def _playlist_fully_gated(groups: list[_PlaylistGroup]) -> bool:
 # The upstream `playlistRegex` extracts the inline JSON manifest.
 _PLAYLIST_RE = re.compile(r"const playlist\s*=\s*(\[.*?\]);", re.DOTALL)
 
-# external_id is "<category>/<numeric-slug>" (e.g. "cinema/1159-aichaku").
-# Gate content()/stream() against values that could escape the URL path;
-# without this the caller could interpolate "../" segments upstream's
-# http client would happily follow.
-_SLUG_RE = re.compile(r"[a-z][a-z-]+/\d+-[a-z0-9_-]+")
+# external_id is "<category>/<numeric-slug>" — single-segment
+# ("cinema/1159-aichaku") or multi-segment for /zhanr/ cards
+# ("zhanr/drama/1156-personasulli"). Gate content()/stream() against
+# values that could escape the URL path; without this the caller could
+# interpolate "../" segments upstream's http client would happily
+# follow. Segments are restricted to lowercase letters + hyphens, so
+# the only separators are literal slashes.
+_SEGMENT = r"[a-z][a-z-]+"  # one path-segment prefix (min 2 chars)
+_SLUG_RE = re.compile(rf"(?:{_SEGMENT}/)+\d+-[a-z0-9_-]+")
 
 
 def _external_id_from_url(href: str) -> str:
     """Return an opaque id encoding the URL path. Content URLs have the
-    form ``/kind/N-slug.html``; we collapse that to ``kind/N-slug`` so
-    ``content()`` can rebuild ``f"{BASE_URL}/{external_id}.html"``.
-    Multi-segment paths (e.g. ``/zhanr/romantyka/N-slug``) keep only
-    the last two segments — the rebuild drops the category prefix.
-    No captured upstream card has used one yet, but if it does, the
-    id stays stable and the rebuild is the best-effort guess."""
-    # Match the last two segments (the kind + slug) so the URL can be
-    # rebuilt with `f"{BASE_URL}/{external_id}.html"` regardless of any
-    # upstream category prefix.
-    m = re.search(r"/([a-z][a-z-]*?)/(\d+-[a-z0-9_-]+?)(?:\.html)?/?$", href)
+    form ``/kind/N-slug.html``; we keep the FULL path — every segment
+    prefix, e.g. ``zhanr/drama/N-slug`` — so ``content()`` can rebuild
+    ``f"{BASE_URL}/{external_id}.html"`` verbatim. Collapsing to the
+    last two segments drops the category prefix and yields a URL the
+    site 301-redirects (live 2026-08-08: ``/zhanr/drama/N-slug``
+    collapses to ``drama/N-slug`` -> 301; only the full path is a 200)."""
+    # Match the full URL — an optional scheme+host, then one or more
+    # `segment/` prefixes + the numeric slug — and rebuild it verbatim,
+    # regardless of any upstream category prefix. `re.match` anchors the
+    # start so a bare relative href (`zhanr/drama/1156.html`, no leading
+    # slash) is rejected instead of silently collapsing to `drama/...`.
+    m = re.match(
+        rf"(?:https?://[^/]+)?/((?:{_SEGMENT}/)+)(\d+-[a-z0-9_-]+?)(?:\.html)?/?$",
+        href,
+    )
     if not m:
         raise ProviderError("parse_failed", f"unrecognized url: {href}")
-    return f"{m.group(1)}/{m.group(2)}"
+    return f"{m.group(1)}{m.group(2)}"
 
 
 def _type_from_url(href: str) -> str:

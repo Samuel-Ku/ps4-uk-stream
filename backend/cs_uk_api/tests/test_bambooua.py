@@ -60,9 +60,11 @@ async def test_bambooua_search_classifies_by_url_path():
 
 @pytest.mark.asyncio
 async def test_bambooua_search_external_id_preserves_multi_segment():
-    """REGRESSION: catalog URLs like `/zhanr/romantyka/759-life-as-a-girl`
-    must keep the genre prefix in the external_id so the content URL
-    can be rebuilt verbatim."""
+    """REGRESSION (#139 id-collapse): catalog URLs like
+    `/zhanr/romantyka/1049-the_shapes_of_love` must keep the FULL path
+    in the external_id so the content URL can be rebuilt verbatim —
+    collapsing to the last two segments (`romantyka/1049-...`) produces
+    a URL that the site 301-redirects (only `/zhanr/...` is a 200)."""
     search_html = _fixture("search.html")
     with respx.mock(assert_all_called=True) as router:
         router.post("https://bambooua.com/").respond(200, text=search_html)
@@ -70,7 +72,71 @@ async def test_bambooua_search_external_id_preserves_multi_segment():
             results = await BambooUAProvider().search("love", http)
     zhanr = [r for r in results if "/zhanr/" in r.url]
     assert len(zhanr) == 1
-    assert zhanr[0].id == "bambooua:romantyka/1049-the_shapes_of_love"
+    assert zhanr[0].id == "bambooua:zhanr/romantyka/1049-the_shapes_of_love"
+
+
+@pytest.mark.asyncio
+async def test_bambooua_content_zhanr_full_path_is_gated_not_301():
+    """#139 id-collapse: the /zhanr/drama/1156-personasulli card keeps
+    the full path, so content() fetches the verbatim URL (the collapsed
+    `drama/1156-personasulli` form 301-redirects -> not_found, a
+    health-down). The resolved page is itself subscription-gated
+    (`const playlist = []`, captured 2026-08-08) -> gated, never a
+    transport/health failure."""
+    content_html = _fixture("content_zhanr_drama_1156.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://bambooua.com/zhanr/drama/1156-personasulli.html"
+        ).respond(200, text=content_html)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await BambooUAProvider().content(
+                    "zhanr/drama/1156-personasulli", http
+                )
+    assert exc.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_bambooua_stream_zhanr_full_path_uses_production_form_id():
+    """#139 id-collapse: stream() accepts the multi-segment production-form
+    id (no `provider:` prefix) and fetches the verbatim URL — a collapsed
+    `drama/1156-personasulli` form would 301-redirect -> not_found, a
+    health-down. The resolved page is subscription-gated (`const playlist
+    = []`, captured 2026-08-08), so stream() answers gated — never a
+    transport/health failure."""
+    content_html = _fixture("content_zhanr_drama_1156.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://bambooua.com/zhanr/drama/1156-personasulli.html"
+        ).respond(200, text=content_html)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await BambooUAProvider().stream(
+                    "zhanr/drama/1156-personasulli:s1e1", None, http
+                )
+    assert exc.value.code == "gated"
+
+
+def test_bambooua_external_id_from_url_keeps_full_path():
+    """#139 id-collapse: `_external_id_from_url` preserves the FULL
+    path (root-relative or absolute) so `content()` can rebuild the
+    verbatim 200 URL. A bare relative href with no leading slash must be
+    rejected (parse_failed) — matching it would silently collapse to the
+    301 form this fix exists to prevent."""
+    from cs_uk_api.providers.bambooua import _external_id_from_url
+
+    assert (
+        _external_id_from_url("/zhanr/drama/1156-personasulli.html")
+        == "zhanr/drama/1156-personasulli"
+    )
+    assert (
+        _external_id_from_url("https://bambooua.com/zhanr/romantyka/1049-the_shapes_of_love.html")
+        == "zhanr/romantyka/1049-the_shapes_of_love"
+    )
+    assert _external_id_from_url("/cinema/1159-aichaku.html") == "cinema/1159-aichaku"
+    with pytest.raises(ProviderError) as exc:
+        _external_id_from_url("zhanr/drama/1156-personasulli.html")
+    assert exc.value.code == "parse_failed"
 
 
 @pytest.mark.asyncio
