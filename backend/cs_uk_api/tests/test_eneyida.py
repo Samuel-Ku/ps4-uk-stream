@@ -114,6 +114,30 @@ async def test_eneyida_stream_series_resolves_episode_m3u8():
     assert stream.url.endswith("index.m3u8")
 
 
+@pytest.mark.asyncio
+async def test_eneyida_stream_dead_embed_raises_gated_not_parse_failed() -> None:
+    """Regression (issue #137): when the hdvbua embed is the upstream's
+    «Контент недоступний» page (upstream-removed content, captured live
+    2026-08-08), ``stream()`` must raise a ``gated`` verdict — the
+    facade's standing deliberate-unavailable path (404, health stays
+    green) — NOT ``parse_failed: media missing``, which would mark the
+    provider down for an upstream content removal."""
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://eneyida.tv/series/9758-duna-proroctvo.html").respond(
+            200, text=_fixture("content_series.html")
+        )
+        router.get("https://hdvbua.pro/embed/9549").respond(
+            200, text=_fixture("embed_unavailable.html")
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await EneyidaProvider().stream(
+                    "series/9758-duna-proroctvo:s1e1", None, http
+                )
+    assert exc_info.value.code == "gated"
+    assert "upstream content removed" in exc_info.value.message
+
+
 def test_eneyida_sections_lists_two():
     assert [section.id for section in EneyidaProvider().sections] == ["films", "series"]
 

@@ -23,6 +23,17 @@ _PATH_TYPE: tuple[tuple[tuple[str, ...], str], ...] = (
 )
 MOVIE_SUFFIX = ":__movie__"
 _SLUG_RE = re.compile(r"\d+-[a-z0-9-]+")
+# Upstream's deliberate-unavailable embed page: «Контент недоступний»
+# (captured live 2026-08-08 — 1441 bytes, the phrase in <title> and <h1>,
+# no `file:` payload). This is upstream-removed content, NOT a provider
+# bug, so stream() must surface the `gated` verdict (ADR-0002: a
+# deliberate-unavailable is client-side semantics, not an upstream
+# failure) instead of `parse_failed`.
+_CONTENT_UNAVAILABLE = "Контент недоступний"
+
+
+def _content_unavailable(html: str) -> bool:
+    return _CONTENT_UNAVAILABLE in html
 
 
 def _page_number(href: str) -> int:
@@ -130,6 +141,8 @@ class EneyidaProvider(BaseProvider):
         if not iframe: raise ProviderError("parse_failed", "player missing")
         try: p = await safe_get(http, str(iframe.get("src")), allowed_hosts=set(_ALLOWED_HOSTS))
         except httpx.HTTPError as e: raise ProviderError("unreachable", str(e)) from e
+        if p.status_code == 200 and _content_unavailable(p.text):
+            raise ProviderError("gated", "upstream content removed")
         raw = _file_url(p.text) if p.status_code == 200 else None
         if not raw: raise ProviderError("parse_failed", "media missing")
         if suffix and suffix != "__movie__":
