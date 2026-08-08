@@ -293,6 +293,81 @@ async def test_content_parses_title_description_and_translations():
 
 
 @pytest.mark.asyncio
+async def test_content_empty_translations_raises_gated():
+    """A present-but-empty `translations` list is deliberate upstream
+    withholding, not a parse failure. Live capture 2026-08-08: animeon
+    8096 "Коджін Сенші Оредам" (type `special`) answers
+    `/api/player/8096/translations` with exactly `{"translations":[]}`
+    — the series path must raise `gated` (ADR-0002) so the health
+    tracker stays green, never a `parse_failed` health signal."""
+    from cs_uk_api.providers.base import ProviderError
+
+    redirect_json = _fixture("8096_redirect.json")
+    content_json = _fixture("8096_content.json")
+    translations_json = _fixture("8096_translations.json")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://animeon.club/api/anime/8096").respond(
+            200, text=redirect_json
+        )
+        router.get("https://animeon.club/api/anime/8096-kodzhin-senshi-oredam").respond(
+            200, text=content_json
+        )
+        router.get("https://animeon.club/api/player/8096/translations").respond(
+            200, text=translations_json
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await AnimeONProvider().content("8096", http)
+    assert exc.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_stream_empty_translations_raises_gated():
+    """The bare-id stream path walks `/api/player/<id>/translations`
+    first (`_movie_stream` mirrors upstream `loadMovieLinks`); a
+    present-but-empty list must surface as `gated`, matching content().
+    Production-form id: no `provider:` prefix."""
+    from cs_uk_api.providers.base import ProviderError
+
+    translations_json = _fixture("8096_translations.json")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://animeon.club/api/player/8096/translations").respond(
+            200, text=translations_json
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await AnimeONProvider().stream("8096", None, http)
+    assert exc.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_content_missing_translations_key_raises_parse_failed():
+    """The gated discriminator is present-but-empty; a missing or
+    malformed `translations` key is an upstream shape change and must
+    surface as `parse_failed` — never silently gated (ADR-0002: a
+    parse failure is not masked as gated)."""
+    from cs_uk_api.providers.base import ProviderError
+
+    redirect_json = _fixture("content_redirect.json")
+    content_json = _fixture("content.json")
+    malformed = '{"episodes":[],"anotherPlayer":null}'
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://animeon.club/api/anime/913").respond(
+            200, text=redirect_json
+        )
+        router.get("https://animeon.club/api/anime/913-naruto").respond(
+            200, text=content_json
+        )
+        router.get("https://animeon.club/api/player/913/translations").respond(
+            200, text=malformed
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await AnimeONProvider().content("913", http)
+    assert exc.value.code == "parse_failed"
+
+
+@pytest.mark.asyncio
 async def test_content_movie_returns_movie_without_seasons():
     """Movies (`type: "movie"` on the info JSON) carry no episode list
     upstream; detail must render as a Movie card instead of 404ing.

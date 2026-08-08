@@ -168,6 +168,23 @@ def _poster_url(preview: str | None) -> str | None:
     return f"{BASE_URL}/api/uploads/images/{preview}"
 
 
+def _classify_translations(doc: dict[str, Any]) -> list[dict[str, Any]]:
+    """Classify a raw ``/api/player/<id>/translations`` payload.
+
+    A ``translations`` key that is present but empty (``{"translations":
+    []}``) is deliberate upstream withholding — live capture 2026-08-08:
+    animeon 8096 "Коджін Сенші Оредам" answers exactly this — so it
+    raises ``gated`` (ADR-0002: client-side 404, never a health signal).
+    A missing or malformed key is an upstream shape change and returns
+    ``[]`` for the caller to surface ``parse_failed`` instead."""
+    raw = doc.get("translations")
+    if isinstance(raw, list):
+        if not raw:
+            raise ProviderError("gated", "no translations")
+        return raw
+    return []
+
+
 def _is_ashdi(source: dict[str, Any]) -> bool:
     name = str(source.get("player_name", ""))
     return "ashdi" in name.lower()
@@ -462,13 +479,12 @@ class AnimeONProvider(BaseProvider):
     ) -> dict[int, list[dict[str, Any]]]:
         """Walk every (translation, player) pair from
         ``/api/player/<id>/translations`` and aggregate per-episode
-        source lists. Returns an empty dict when the API returns no
-        translations — the caller surfaces ``parse_failed``."""
+        source lists. A present-but-empty ``translations`` list is
+        deliberate withholding and raises ``gated`` (see
+        ``_classify_translations``); a missing/malformed key returns an
+        empty map for the caller to surface ``parse_failed``."""
         translations_doc = await self._ask_translations(anime_id, http)
-        translations: list[dict[str, Any]] = []
-        raw = translations_doc.get("translations")
-        if isinstance(raw, list):
-            translations = raw
+        translations = _classify_translations(translations_doc)
 
         episodes_by_num: dict[int, list[dict[str, Any]]] = {}
         for trans in translations:
@@ -707,7 +723,7 @@ class AnimeONProvider(BaseProvider):
         `/api/player/<playerId>/<translationId>`, whose `videoUrl`/
         `fileUrl` lead straight to the film."""
         doc = await self._ask_translations(anime_id, http)
-        translations = (doc or {}).get("translations") or []
+        translations = _classify_translations(doc or {})
         for trans in translations:
             t = trans.get("translation") or {}
             name = str(t.get("name") or "").strip()
