@@ -16,6 +16,14 @@ either a show (e.g. `simpsony`), a season (e.g. `s35`, `sezon-1`),
 or a specific episode (e.g. `4441-37-sezon-17-seriya`). The provider
 validates the slug at both `content()` and `stream()` boundaries to
 refuse path traversal before any HTTP request is made.
+
+Season cap: a show page's `content()` surfaces only the newest
+`_MAX_SHOW_SEASONS` seasons (audit #138 kept the cap — see the
+constant's comment for the measured rationale). The Simpsons archive
+has 37 seasons, and the CMS both serialises concurrent season fetches
+and rate-limits bursts, so enumerating every season runs close to the
+request budget and silently drops seasons to HTTP 429s. Older seasons
+remain reachable directly via their own season slug (e.g. `content("s5")`).
 """
 
 from __future__ import annotations
@@ -55,11 +63,22 @@ _ALLOWED_HOSTS: frozenset[str] = frozenset({"simpsonsua.tv", "ashdi.vip"})
 # 30s (issue #119), so season enumeration runs with a bounded concurrency.
 _SEASON_FETCH_CONCURRENCY = 6
 
-# How many seasons a show page surfaces. The CMS answers each season
-# page in ~0.8s and serialises concurrent requests, so fetching all 37
-# Simpsons seasons blows the request budget. We return the newest N
-# seasons (the hot path); older seasons remain reachable by searching
-# for the season page itself (e.g. `s5`) or by its season external id.
+# How many seasons a show page surfaces. Audit #138 (measured live on
+# simpsonsua.tv, 2026-08-08) found the cap is load-bearing, so it is
+# kept. A cap-off `content()` for The Simpsons (37 seasons, fetched
+# 6-wide) took 25.5s — inside the D6 >30s symptom budget but with no
+# headroom — and, decisively, the 38-request sweep tripped CMS
+# rate-limiting (HTTP 429 / connection drops) that silently dropped 14
+# of 37 seasons. So dropping the cap is not merely slow, it is lossy:
+# the same rate-limit that makes it slow also corrupts the result. The
+# cap value 10 = 11 upstream requests for a show page, which completes
+# in ~8-10s (single page ~0.95s, and the CMS serialises concurrent
+# requests — 6 parallel fetches took 4.69s wall, only ~1.2x faster than
+# sequential) and stays under the rate-limit burst threshold. We return
+# the newest 10 seasons (the hot path); the price is that older seasons
+# (11-37 for The Simpsons) vanish from the show's browsable rail and are
+# only reachable directly via their own season slug (e.g. `content("s5")`)
+# or season external id.
 _MAX_SHOW_SEASONS = 10
 
 # Browse surfaces the latest home-page updates and the paginated catalogue.
