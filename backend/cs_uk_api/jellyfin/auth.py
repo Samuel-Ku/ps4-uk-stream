@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import re
 
-from fastapi import Header, HTTPException, status
+from fastapi import Header, HTTPException, Query, status
 
 from ..config import SETTINGS
 
@@ -63,23 +63,36 @@ def _media_browser_token(authorization: str | None) -> str | None:
 def resolve_token(
     x_emby_token: str | None = None,
     authorization: str | None = None,
+    api_key: str | None = None,
 ) -> str | None:
-    """The client-presented token from either supported header, else None."""
+    """The client-presented token from any supported channel, else None."""
     if x_emby_token:
         return x_emby_token.strip()
+    if api_key:
+        return api_key.strip()
     return _media_browser_token(authorization)
 
 
 async def require_token(
     x_emby_token: str | None = Header(default=None, alias="X-Emby-Token"),
     authorization: str | None = Header(default=None),
+    api_key: str | None = Query(default=None, alias="api_key"),
 ) -> str:
     """FastAPI dependency enforcing the fixed facade token (D4).
 
-    Logs a warning on rejection so a misconfigured client is debuggable
-    without exposing the token value.
+    Accepts the token via ``X-Emby-Token`` header, ``Authorization:
+    MediaBrowser Token=...`` header, or ``?api_key=...`` query parameter
+    (the form media-player requests like ``/Videos/{id}/stream`` use,
+    since the player URL is built from PlaybackInfo's ``Path`` field and
+    the client appends ``api_key`` rather than a header). Logs a warning
+    on rejection so a misconfigured client is debuggable without exposing
+    the token value.
     """
-    presented = resolve_token(x_emby_token=x_emby_token, authorization=authorization)
+    presented = resolve_token(
+        x_emby_token=x_emby_token,
+        authorization=authorization,
+        api_key=api_key,
+    )
     if presented is None:
         log.warning("jellyfin facade rejecting request: missing token header")
         raise HTTPException(status_code=_UNAUTHORIZED, detail="missing token")

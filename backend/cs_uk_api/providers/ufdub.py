@@ -98,7 +98,10 @@ def _parse_card(card: Tag | BeautifulSoup, provider_id: str) -> SearchResult | N
         return None
     href = str(a["href"])
     title = a.get_text(" ", strip=True)
-    img = card.select_one(".img-box img")
+    # Poster lives in a sibling ``.img-box`` div, not inside ``.short-text``;
+    # walk up to the card container (``div.short``) to find it.
+    container = card.parent
+    img = container.select_one(".img-box img") if container is not None else None
     poster = urljoin(BASE_URL, str(img["src"])) if img and img.get("src") else None
     try:
         external_id = _external_id_from_url(href)

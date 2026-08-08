@@ -226,6 +226,44 @@ async def test_content_for_show_follows_to_seasons_and_episodes():
 
 
 @pytest.mark.asyncio
+async def test_content_episode_slug_falls_back_to_html_variant():
+    """A bare episode slug (e.g. from the updates carousel) does not
+    resolve at ``BASE/<slug>/``; the ``.html`` variant 301s to the
+    canonical page under the season directory. content() must repair
+    the slug instead of surfacing 404."""
+    episode_html = _fixture("content_episode.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://simpsonsua.tv/4467-prezydent-kertis-1-sezon-2-seriya/"
+        ).respond(404)
+        router.get(
+            "https://simpsonsua.tv/4467-prezydent-kertis-1-sezon-2-seriya.html"
+        ).respond(
+            301,
+            headers={
+                "Location": (
+                    "https://simpsonsua.tv/prezydent-kertis-sezon-1/"
+                    "4467-prezydent-kertis-1-sezon-2-seriya.html"
+                )
+            },
+        )
+        router.get(
+            "https://simpsonsua.tv/prezydent-kertis-sezon-1/"
+            "4467-prezydent-kertis-1-sezon-2-seriya.html"
+        ).respond(200, text=episode_html)
+        async with httpx.AsyncClient() as http:
+            c = await SimpsonsUATvProvider().content(
+                "4467-prezydent-kertis-1-sezon-2-seriya", http
+            )
+    assert c.seasons is not None
+    assert len(c.seasons) == 1
+    assert len(c.seasons[0].episodes) == 1
+    ep_id = c.seasons[0].episodes[0].id
+    assert ep_id.startswith("https://simpsonsua.tv/")
+    assert "seriya" in ep_id
+
+
+@pytest.mark.asyncio
 async def test_content_for_season_returns_episodes():
     """For a season external_id, content() must fetch the season page
     directly and return one Season with the episode cards."""
@@ -263,6 +301,7 @@ async def test_content_non_200_raises_not_found():
 
     with respx.mock(assert_all_called=True) as router:
         router.get("https://simpsonsua.tv/simpsony/").respond(404, text="")
+        router.get("https://simpsonsua.tv/simpsony.html").respond(404, text="")
         async with httpx.AsyncClient() as http:
             with pytest.raises(ProviderError) as exc:
                 await SimpsonsUATvProvider().content("simpsony", http)

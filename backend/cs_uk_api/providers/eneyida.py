@@ -10,10 +10,12 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from ..country import extract_country
+from ..http_client import safe_get
 from ..models import ContentResponse, Episode, MediaType, SearchResult, Season, Section, StreamResponse, Translation
 from .base import BaseProvider, ProviderError
 
 BASE_URL = "https://eneyida.tv"
+_ALLOWED_HOSTS: frozenset[str] = frozenset({"eneyida.tv", "hdvbua.pro"})
 ENEYIDA_SECTIONS = (Section(id="films", title="Фільми", type="movie"), Section(id="series", title="Серіали", type="series"))
 _PATH_TYPE: tuple[tuple[tuple[str, ...], str], ...] = (
     (("serials", "series"), "series"),
@@ -63,8 +65,9 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
 
 
 def _file_url(html: str) -> str | None:
-    m = re.search(r"file\s*:\s*'([^']+)'", html)
-    return m.group(1) if m else None
+    m = re.search(r"file\s*:\s*(?:\"([^\"]+)\"|'([^']+)')", html)
+    url = m.group(1) or m.group(2) if m else None
+    return url
 
 
 class EneyidaProvider(BaseProvider):
@@ -93,7 +96,7 @@ class EneyidaProvider(BaseProvider):
         kind, _, slug = external_id.partition("/")
         if not kind or not slug: raise ProviderError("parse_failed", "invalid external_id")
         if not _SLUG_RE.fullmatch(slug): raise ProviderError("not_found", "bad external_id")
-        try: r = await http.get(f"{BASE_URL}/{kind}/{slug}.html")
+        try: r = await safe_get(http, f"{BASE_URL}/{kind}/{slug}.html", allowed_hosts=set(_ALLOWED_HOSTS))
         except httpx.HTTPError as e: raise ProviderError("unreachable", str(e)) from e
         if r.status_code != 200: raise ProviderError("not_found", f"status {r.status_code}")
         soup = BeautifulSoup(r.text, "lxml"); h1 = soup.select_one("h1")
@@ -119,11 +122,11 @@ class EneyidaProvider(BaseProvider):
         ext, _, suffix = content_id.partition(":"); kind, _, slug = ext.partition("/")
         if not kind or not slug: raise ProviderError("parse_failed", "invalid content_id")
         if not _SLUG_RE.fullmatch(slug): raise ProviderError("not_found", "bad external_id")
-        try: r = await http.get(f"{BASE_URL}/{kind}/{slug}.html")
+        try: r = await safe_get(http, f"{BASE_URL}/{kind}/{slug}.html", allowed_hosts=set(_ALLOWED_HOSTS))
         except httpx.HTTPError as e: raise ProviderError("unreachable", str(e)) from e
         iframe = BeautifulSoup(r.text, "lxml").select_one("iframe")
         if not iframe: raise ProviderError("parse_failed", "player missing")
-        try: p = await http.get(str(iframe.get("src")))
+        try: p = await safe_get(http, str(iframe.get("src")), allowed_hosts=set(_ALLOWED_HOSTS))
         except httpx.HTTPError as e: raise ProviderError("unreachable", str(e)) from e
         raw = _file_url(p.text) if p.status_code == 200 else None
         if not raw: raise ProviderError("parse_failed", "media missing")

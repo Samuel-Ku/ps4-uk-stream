@@ -316,6 +316,11 @@ class AnimeONProvider(BaseProvider):
         poster = _poster_url(image.get("preview"))
         description = str(info.get("description") or "")
 
+        if str(info.get("type") or "").strip().lower() == "movie":
+            return await self._movie_content(
+                anime_id, external_id, title, year_int, description, poster, http
+            )
+
         episodes_by_num = await self._collect_episode_map(anime_id, http)
         if not episodes_by_num:
             raise ProviderError("parse_failed", "no episodes resolved")
@@ -367,6 +372,40 @@ class AnimeONProvider(BaseProvider):
             ],
         )
 
+    async def _movie_content(
+        self,
+        anime_id: int,
+        external_id: str,
+        title: str,
+        year: int | None,
+        description: str,
+        poster: str | None,
+        http: httpx.AsyncClient,
+    ) -> ContentResponse:
+        """Movies have no episode list upstream (``/api/player/<id>/
+        episodes`` returns an empty array); the card must still resolve
+        to a viewable detail — poster, studio list, Movie form — so the
+        facade degrades to a season-less response instead of a 404."""
+        payload = await self._ask_translations(anime_id, http)
+        names: list[str] = []
+        for trans in (payload or {}).get("translations") or []:
+            name = str((trans.get("translation") or {}).get("name") or "").strip()
+            if name and name not in names:
+                names.append(name)
+        if not names:
+            names = ["Оригінал"]
+        return ContentResponse(
+            id=f"{self.id}:{external_id}",
+            type="movie",
+            title=title,
+            year=year,
+            description=description,
+            poster=poster,
+            translations=[Translation(id=name, label=name) for name in names],
+            seasons=None,
+            translations_level="content",
+        )
+
     async def _load_content_info(
         self, anime_id: int, external_id: str, http: httpx.AsyncClient
     ) -> tuple[dict[str, Any], int | None]:
@@ -394,6 +433,16 @@ class AnimeONProvider(BaseProvider):
                 year_int = None
         return info, year_int
 
+    async def _ask_translations(
+        self, anime_id: int, http: httpx.AsyncClient
+    ) -> dict[str, Any]:
+        """The raw ``/api/player/<id>/translations`` document, or ``{}``
+        when the upstream answers in an unexpected shape."""
+        doc = await self._get_json(
+            f"{BASE_URL}/api/player/{anime_id}/translations", http
+        )
+        return doc if isinstance(doc, dict) else {}
+
     async def _collect_episode_map(
         self, anime_id: int, http: httpx.AsyncClient
     ) -> dict[int, list[dict[str, Any]]]:
@@ -401,14 +450,11 @@ class AnimeONProvider(BaseProvider):
         ``/api/player/<id>/translations`` and aggregate per-episode
         source lists. Returns an empty dict when the API returns no
         translations — the caller surfaces ``parse_failed``."""
-        translations_doc = await self._get_json(
-            f"{BASE_URL}/api/player/{anime_id}/translations", http
-        )
+        translations_doc = await self._ask_translations(anime_id, http)
         translations: list[dict[str, Any]] = []
-        if isinstance(translations_doc, dict):
-            raw = translations_doc.get("translations")
-            if isinstance(raw, list):
-                translations = raw
+        raw = translations_doc.get("translations")
+        if isinstance(raw, list):
+            translations = raw
 
         episodes_by_num: dict[int, list[dict[str, Any]]] = {}
         for trans in translations:

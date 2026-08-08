@@ -35,6 +35,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Iterator
 from typing import Any, cast
+from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
@@ -257,7 +258,7 @@ def test_movie_post_playback_info_thin_envelope(client: TestClient) -> None:
     assert source["Container"] == "mp4"
     assert source["MediaStreams"] == [{"Type": "Video"}]
     assert source["IsDirectStream"] is True
-    assert source["Path"] == f"/videos/{gk}"
+    assert source["Path"] == f"/Videos/{gk}/stream"
     # Never linger on a leaked upstream URL: Path is fictitious.
     assert ".mp4" not in source["Path"]
     uuid.UUID(source["PlaySessionId"])  # must be a well-formed UUID
@@ -353,6 +354,21 @@ def test_episode_playback_info_uses_episode_wire_id(client: TestClient) -> None:
     uuid.UUID(source["PlaySessionId"])
 
 
+def test_episode_playback_info_wire_id_containing_slashes(client: TestClient) -> None:
+    """Provider episode wire ids can embed a full upstream page URL
+    (``p1:https://…/s/1/ep.html``); the client percent-encodes the id into
+    the path, and the path-converter route must still reach the handler."""
+    stub, _, _ = _seeded(client)
+    ep_url = "https://cdn.example.test/s/s1/e1.m3u8"
+    stub._streams[ep_url] = _episode_stream()
+    ep_id = f"p1:{ep_url}"
+
+    body = _post(client, f"/Items/{quote(ep_id, safe='')}/PlaybackInfo")
+
+    assert _source(body)["Container"] == "m3u8"
+    assert stub.stream_calls == [("https://cdn.example.test/s/s1/e1.m3u8", None)]
+
+
 def test_series_item_not_directly_playable_404(client: TestClient) -> None:
     """A Series/Season card is not itself playable: the client plays
     episodes (D3). PlaybackInfo on the show answers the same "item
@@ -410,11 +426,6 @@ def test_stream_failure_degrades_to_404(client: TestClient) -> None:
     assert r.status_code == 404
 
 
-def test_requires_token_all_spellings(client: TestClient) -> None:
-    assert client.post("/Items/g1:deadbeefdeadbeef/PlaybackInfo", json={}).status_code == 401
-    assert client.get("/Items/g1:deadbeefdeadbeef/PlaybackInfo").status_code == 401
-
-
 def test_gated_stream_degrades_to_404_without_health_impact(client: TestClient) -> None:
     """A `gated` verdict (BambooUA subscription-gate promo clip) is
     client-side semantics, not an upstream failure (ADR-0002 amendment):
@@ -448,3 +459,8 @@ def test_gated_stream_degrades_to_404_without_health_impact(client: TestClient) 
     assert r.status_code == 404
     # The gated verdict must not move the provider's health needle.
     assert TRACKER.status("p1") == "ok"
+
+
+def test_requires_token_all_spellings(client: TestClient) -> None:
+    assert client.post("/Items/g1:deadbeefdeadbeef/PlaybackInfo", json={}).status_code == 401
+    assert client.get("/Items/g1:deadbeefdeadbeef/PlaybackInfo").status_code == 401

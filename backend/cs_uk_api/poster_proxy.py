@@ -20,6 +20,11 @@ _cache = TtlCache(default_ttl_s=SETTINGS.cache_poster_s)
 
 _MAX_HOPS = 5
 
+#: Hosts that answer plain HTTP clients with Cloudflare's managed
+#: challenge (403) and are therefore fetched through the headless
+#: browser session instead (see ``_browser_fetch_bytes``).
+_BROWSER_FALLBACK_HOSTS = frozenset({"uakino.best"})
+
 _EXT_FOR_TYPE = {
     "image/jpeg": ".jpg",
     "image/jpg": ".jpg",
@@ -147,6 +152,37 @@ async def _fetch_one(u: str, http: httpx.AsyncClient, hops: int) -> httpx.Respon
     return resp
 
 
+async def _browser_fetch_bytes(u: str) -> tuple[bytes, str] | None:
+    """Fetch ``u`` through the headless-browser session (aikino.best).
+
+    uakino.best sits behind Cloudflare's managed challenge: every plain
+    HTTP client gets 403 for anything past the initial document, while a
+    same-origin ``fetch()`` executed inside a loaded page succeeds
+    (``uakino_browser``). The poster proxy therefore falls back to that
+    session for hosts that need it. Never raises.
+    """
+    host = urlparse(u).hostname
+    if host not in _BROWSER_FALLBACK_HOSTS:
+        return None
+    try:
+        from .uakino_browser import get_session
+    except ImportError:
+        return None
+    path = urlparse(u).path + (f"?{urlparse(u).query}" if urlparse(u).query else "")
+    try:
+        status, body, ctype = await get_session().fetch_binary(path)
+    except Exception:  # noqa: BLE001 — SessionError and any browser failure
+        log.warning("browser poster fetch failed: %s", host)
+        return None
+    if status != 200 or not body:
+        return None
+    if len(body) > SETTINGS.poster_size_cap_bytes:
+        return None
+    if not ctype.startswith("image/"):
+        ctype = "image/jpeg"
+    return body, ctype
+
+
 async def fetch(u: str, http: httpx.AsyncClient) -> tuple[bytes, str] | None:
     if not await _validated_url(u):
         return None
@@ -161,15 +197,18 @@ async def fetch(u: str, http: httpx.AsyncClient) -> tuple[bytes, str] | None:
     try:
         resp = await _fetch_one(u, http, hops=0)
     except httpx.HTTPError:
-        return None
+        resp = None
     if resp is None or resp.status_code != 200:
-        return None
-    if len(resp.content) > SETTINGS.poster_size_cap_bytes:
-        return None
-    body = resp.content
-    ctype = resp.headers.get("Content-Type", "image/jpeg")
-    if not ctype.startswith("image/"):
-        ctype = "image/jpeg"
+        body, ctype = await _browser_fetch_bytes(u) or (None, None)
+        if body is None:
+            return None
+    else:
+        if len(resp.content) > SETTINGS.poster_size_cap_bytes:
+            return None
+        body = resp.content
+        ctype = resp.headers.get("Content-Type", "image/jpeg")
+        if not ctype.startswith("image/"):
+            ctype = "image/jpeg"
     if SETTINGS.poster_cache_dir is not None:
         await asyncio.to_thread(_disk_put, SETTINGS.poster_cache_dir, u, body, ctype)
     _cache.set(u, (body, ctype))

@@ -75,7 +75,11 @@ def load_settings() -> Settings:
         port=int(os.environ.get("CS_UK_PORT", "8000")),
         upstream_timeout_s=float(os.environ.get("CS_UK_UPSTREAM_TIMEOUT", "8")),
         search_total_timeout_s=float(os.environ.get("CS_UK_SEARCH_TOTAL", "12")),
-        poster_size_cap_bytes=int(os.environ.get("CS_UK_POSTER_MAX", str(4 * 1024 * 1024))),
+        # Poster cap: 8 MiB. The 4 MiB default filtered real listing
+        # postere (observed: 4.6 MiB webp from bambooua → card 404),
+        # because upstream art is unbounded; 8 MiB covers the wild while
+        # still bounding memory pressure (ADR-0003 poster store).
+        poster_size_cap_bytes=int(os.environ.get("CS_UK_POSTER_MAX", str(8 * 1024 * 1024))),
         poster_allowed_hosts=hosts or DEFAULT_POSTER_ALLOWED_HOSTS,
         cache_search_s=int(os.environ.get("CS_UK_CACHE_SEARCH", "300")),
         cache_content_s=int(os.environ.get("CS_UK_CACHE_CONTENT", "1800")),

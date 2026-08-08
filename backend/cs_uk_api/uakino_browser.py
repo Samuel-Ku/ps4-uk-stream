@@ -42,6 +42,24 @@ async (args) => {
 }
 """
 
+# Binary variant: fetch the same same-origin URL and return the body
+# base64-encoded (blob responses are not JSON-serializable). The chunked
+# fromCharCode dance keeps btoa() happy on payloads > 64 KiB.
+_BINARY_JS = """
+async (args) => {
+    const {path} = args;
+    const opts = {method: "GET", headers: {"X-Requested-With": "XMLHttpRequest"}};
+    const r = await fetch(path, opts);
+    const buf = new Uint8Array(await r.arrayBuffer());
+    let bin = "";
+    const CHUNK = 0x8000;
+    for (let i = 0; i < buf.length; i += CHUNK) {
+        bin += String.fromCharCode.apply(null, buf.subarray(i, i + CHUNK));
+    }
+    return {status: r.status, ctype: r.headers.get("Content-Type") || "", b64: btoa(bin)};
+}
+"""
+
 
 class SessionError(RuntimeError):
     """Browser session could not load uakino.best."""
@@ -128,6 +146,30 @@ class UakinoSession:
                 raise SessionError(f"fetch {method} {path} failed (opaque response)")
             return status, str(result.get("text", ""))
         return 403, ""
+
+    async def fetch_binary(self, path: str) -> tuple[int, bytes, str]:
+        """Same-origin binary fetch (images); returns (status, body, ctype).
+
+        Mirrors ``fetch``'s 403-retry: the managed challenge may rotate
+        between requests, so one re-bootstrap is attempted before giving
+        up. Empty body on non-200 — the caller decides.
+        """
+        await self._ensure_started()
+        assert self._page is not None
+        for attempt in (1, 2):
+            result = await self._page.evaluate(_BINARY_JS, {"path": path})
+            status = int(result.get("status", 0))
+            if status == 403 and attempt == 1:
+                await self._bootstrap()
+                continue
+            if status == 0:
+                raise SessionError(f"fetch {path} failed (opaque response)")
+            import base64
+
+            body = base64.b64decode(str(result.get("b64", "")))
+            ctype = str(result.get("ctype", ""))
+            return status, body, ctype
+        return 403, b"", ""
 
     async def close(self) -> None:
         if self._browser is not None:

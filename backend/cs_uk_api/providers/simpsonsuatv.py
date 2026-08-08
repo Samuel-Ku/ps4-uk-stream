@@ -417,16 +417,38 @@ class SimpsonsUATvProvider(BaseProvider):
         )
         return results, has_next
 
+    async def _open_content_page(
+        self, url: str, external_id: str, http: httpx.AsyncClient
+    ) -> httpx.Response:
+        """Fetch one content page, trying the ``.html`` variant when the
+        directory spelling 404s.
+
+        Update-slider episodes carry a bare episode slug
+        (``4467-...-seriya``) that only resolves under the season's
+        directory (``/prezydent-kertis-sezon-1/…``). ``BASE/<slug>.html``
+        answers with a 301 to the canonical page, so the fallback repairs
+        the exact case; a genuinely missing page re-raises the original
+        ``not_found``."""
+        try:
+            return await self._get(url, http)
+        except ProviderError as first:
+            if "status 404" not in str(first):
+                raise
+            try:
+                return await self._get(f"{BASE_URL}/{external_id}.html", http)
+            except ProviderError:
+                raise first
+
     async def content(
         self, external_id: str, http: httpx.AsyncClient
     ) -> ContentResponse:
         if not _EXTERNAL_ID_RE.fullmatch(external_id):
             raise ProviderError("not_found", f"bad external_id: {external_id!r}")
         url = f"{BASE_URL}/{external_id}/"
-        response = await self._get(url, http)
+        response = await self._open_content_page(url, external_id, http)
         soup = BeautifulSoup(response.text, "lxml")
         title, description, poster = self._parse_meta(soup, external_id)
-        seasons = await self._build_seasons(soup, url, external_id, http)
+        seasons = await self._build_seasons(soup, str(response.url), external_id, http)
         return ContentResponse(
             id=f"{self.id}:{external_id}",
             type="cartoon",
@@ -539,12 +561,15 @@ class SimpsonsUATvProvider(BaseProvider):
         # calling us, so we get the bare URL.
         if not content_id.startswith(f"{BASE_URL}/"):
             raise ProviderError("not_found", f"bad content_id: {content_id!r}")
-        # Slug check: each path segment must match the slug regex so
-        # we don't pass arbitrary user input (e.g. `../admin`) to
-        # http.get(). Strip a trailing `.html` from the last segment
-        # before validation.
-        path = content_id[len(BASE_URL) :].lstrip("/").rstrip("/")
-        segments = path.split("?")[0].split("/")
+        # Host check + per-segment slug check so we don't pass arbitrary
+        # user input (e.g. `../admin`) to http.get(). The host is
+        # parsed structurally (`simpsonsua.tv` carries a dot and no
+        # segment regex would accept it); each path segment must match
+        # the slug regex, with a trailing `.html` stripped first.
+        parsed = urlparse(content_id)
+        if parsed.netloc not in (BASE_URL_HOST, f"www.{BASE_URL_HOST}"):
+            raise ProviderError("not_found", f"bad content_id: {content_id!r}")
+        segments = [s for s in parsed.path.split("/") if s]
         check_segments = [s[:-5] if s.endswith(".html") else s for s in segments]
         if not check_segments or not all(
             _EXTERNAL_ID_RE.fullmatch(s) for s in check_segments

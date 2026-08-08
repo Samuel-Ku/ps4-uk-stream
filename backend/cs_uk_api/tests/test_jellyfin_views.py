@@ -10,9 +10,9 @@ handshake tests use):
   - ``GET /Items?parentId=<view>`` returns that row's cards as
     ``Movie``/``Series`` items carrying ``g1:`` ids, the right Type, and
     ``ImageTags.Primary`` present *iff* the card has a poster.
-  - ``GET /Items/{id}/Images/Primary`` is a 302 to the existing poster
-    proxy (``/api/poster?u=…``), ignoring ``maxWidth``; unknown item or
-    poster-less item is a 404.
+  - ``GET /Items/{id}/Images/Primary`` serves the poster bytes inline
+    with 200 (matching the native ``/api/poster`` seam), ignoring
+    ``maxWidth``; unknown item or poster-less item is a 404.
   - All three routes sit behind the same ``require_token`` gate (D4).
 
 The fixture mirrors what a real client does: list views, pick a view by
@@ -23,16 +23,21 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from typing import Any, cast
-from urllib.parse import unquote, urlparse
 
 import pytest
 from fastapi.testclient import TestClient
+
+import importlib
 
 from cs_uk_api.config import SETTINGS
 from cs_uk_api.main import _home_cache, _home_sources_cache
 from cs_uk_api.models import SearchResult, Section
 from cs_uk_api.providers import PROVIDERS
 from cs_uk_api.providers.base import BaseProvider
+
+#: The router *module* (the ``cs_uk_api.jellyfin`` package re-exports
+#: ``router`` as the APIRouter, shadowing the submodule under that name).
+jf_router = importlib.import_module("cs_uk_api.jellyfin.router")
 
 TOKEN = SETTINGS.jellyfin_token
 USER = "fdc808859fc45eb8ac5aa6faddc12c72"
@@ -279,7 +284,7 @@ def test_items_listing_unknown_parent_is_empty(client: TestClient) -> None:
         headers={"X-Emby-Token": TOKEN},
     )
     assert r.status_code == 200
-    assert r.json() == {"Items": [], "TotalRecordCount": 0}
+    assert r.json() == {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
 
 
 def test_items_listing_requires_token(client: TestClient) -> None:
@@ -290,8 +295,27 @@ def test_items_listing_requires_token(client: TestClient) -> None:
 # Poster
 # ---------------------------------------------------------------------------
 
+#: Poster URLs carried by the seeded items. Inline serving fetches them
+#: through ``fetch_poster_bytes``; the tests stub that call so no
+#: upstream request leaves the test process.
+_POSTER_MOVIE = "https://cdn.example.test/posters/dune.jpg"
+_POSTER_SERIES = "https://cdn.example.test/posters/serial.jpg"
 
-def test_poster_primary_redirects_to_poster_proxy(client: TestClient) -> None:
+#: Body/type handed back by the ``fetch_poster_bytes`` stub.
+_POSTER_RESP = (b"\xff\xd8\xff\xe0jpegbytes", "image/jpeg")
+
+
+def _stub_poster_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point ``fetch_poster_bytes`` at a canned inline response."""
+
+    async def _fake(url: str, client: Any) -> tuple[bytes, str]:
+        return _POSTER_RESP
+
+    monkeypatch.setattr(jf_router, "fetch_poster_bytes", _fake)
+
+
+def test_poster_primary_serves_poster_inline(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_poster_fetch(monkeypatch)
     PROVIDERS["animeon"] = _seed()
     _auth(client)
     movie_view = _view_id("Фільми", _views(client))
@@ -302,13 +326,13 @@ def test_poster_primary_redirects_to_poster_proxy(client: TestClient) -> None:
         headers={"X-Emby-Token": TOKEN},
         follow_redirects=False,
     )
-    assert r.status_code == 302
-    location = urlparse(r.headers["location"])
-    assert location.path == "/api/poster"
-    assert unquote(location.query.split("u=", 1)[1]) == _POSTER_MOVIE
+    assert r.status_code == 200
+    assert r.content == _POSTER_RESP[0]
+    assert r.headers["content-type"] == _POSTER_RESP[1]
 
 
-def test_poster_primary_ignores_max_width(client: TestClient) -> None:
+def test_poster_primary_ignores_max_width(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_poster_fetch(monkeypatch)
     PROVIDERS["animeon"] = _seed()
     _auth(client)
     series_view = _view_id("Серіали", _views(client))
@@ -325,8 +349,43 @@ def test_poster_primary_ignores_max_width(client: TestClient) -> None:
         headers={"X-Emby-Token": TOKEN},
         follow_redirects=False,
     )
-    assert plain.status_code == sized.status_code == 302
-    assert plain.headers["location"] == sized.headers["location"]
+    assert plain.status_code == sized.status_code == 200
+    assert plain.content == sized.content == _POSTER_RESP[0]
+
+
+def test_poster_primary_transcodes_webp_when_requested(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Switchfin always asks ``format=Webp``; a non-WebP original must
+    come back as ``image/webp`` (a JPEG answer is undecodable on the
+    client, which retries the poster hundreds of times)."""
+    import io
+
+    from PIL import Image
+
+    jpeg_bytes: bytes
+    with io.BytesIO() as out:
+        Image.new("RGB", (64, 40), (200, 30, 30)).save(out, format="JPEG")
+        jpeg_bytes = out.getvalue()
+
+    async def _fake(url: str, client: Any) -> tuple[bytes, str]:
+        return jpeg_bytes, "image/jpeg"
+
+    monkeypatch.setattr(jf_router, "fetch_poster_bytes", _fake)
+    PROVIDERS["animeon"] = _seed()
+    _auth(client)
+    movie_view = _view_id("Фільми", _views(client))
+    dune_id = next(i["Id"] for i in _items(client, movie_view) if i["Name"] == "Дюна")
+
+    r = client.get(
+        f"/Items/{dune_id}/Images/Primary",
+        params={"format": "Webp", "maxWidth": 325},
+        headers={"X-Emby-Token": TOKEN},
+    )
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/webp"
+    assert r.content.startswith(b"RIFF")
+    assert r.content != jpeg_bytes
 
 
 def test_poster_primary_missing_poster_is_404(client: TestClient) -> None:
@@ -341,16 +400,23 @@ def test_poster_primary_unknown_item_is_404(client: TestClient) -> None:
     assert client.get("/Items/g1:unknown/Images/Primary", headers={"X-Emby-Token": TOKEN}).status_code == 404
 
 
-def test_poster_primary_query_is_single_encoded(client: TestClient) -> None:
-    """A poster URL that already carries ``%`` escapes must survive the
-    ``?u=`` round trip exactly once.
+def test_poster_primary_query_is_single_encoded(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A poster URL that already carries ``%`` escapes must reach
+    ``fetch_poster_bytes`` without a second decode.
 
-    /api/poster reads ``u`` as FastAPI already decodes it; a second
-    decode would turn ``%3D`` into ``=`` and change the upstream URL.
-    The 302 must therefore carry the poster URL percent-escaped exactly
-    once, so one ``unquote`` recovers it verbatim.
+    There is no ``?u=`` query hop anymore — the bytes are served inline
+    — so the percent-escaped poster must pass through verbatim, exactly
+    as it was stored on the item.
     """
     escaped = _POSTER_MOVIE.replace("dune", "d%C3%BCne")  # %-escaped path segment
+    captured: list[str | None] = []
+
+    async def _capture(url: str, client: Any) -> tuple[bytes, str]:
+        captured.append(url)
+        return _POSTER_RESP
+
+    monkeypatch.setattr(jf_router, "fetch_poster_bytes", _capture)
+
     provider = _ViewsStub(
         "animeon",
         newest_section="page",
@@ -374,10 +440,21 @@ def test_poster_primary_query_is_single_encoded(client: TestClient) -> None:
         headers={"X-Emby-Token": TOKEN},
         follow_redirects=False,
     )
-    assert r.status_code == 302
-    query = urlparse(r.headers["location"]).query.split("u=", 1)[1]
-    assert unquote(query) == escaped
+    assert r.status_code == 200
+    assert r.content == _POSTER_RESP[0]
+    assert captured == [escaped]
 
 
-def test_poster_primary_requires_token(client: TestClient) -> None:
-    assert client.get("/Items/g::deadbeef/Images/Primary").status_code == 401
+def test_poster_primary_is_public_without_token(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Image endpoints stay open: Jellyfin clients load images without
+    the ``X-Emby-Token`` header (media is addressable by URL), so the
+    route must serve art to an anonymous request."""
+    _stub_poster_fetch(monkeypatch)
+    PROVIDERS["animeon"] = _seed()
+    _auth(client)
+    movie_view = _view_id("Фільми", _views(client))
+    dune_id = next(i["Id"] for i in _items(client, movie_view) if i["Name"] == "Дюна")
+
+    r = client.get(f"/Items/{dune_id}/Images/Primary", follow_redirects=False)
+    assert r.status_code == 200
+    assert r.content == _POSTER_RESP[0]

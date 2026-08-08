@@ -36,6 +36,8 @@ returns canned detail.
 from __future__ import annotations
 
 from collections.abc import Iterator
+import hashlib
+import importlib
 from typing import Any, cast
 
 import pytest
@@ -284,11 +286,14 @@ def test_movie_detail_has_no_children(client: TestClient) -> None:
     assert body["TotalRecordCount"] == 0
 
 
-def test_detail_image_tag_agrees_with_poster_route(client: TestClient) -> None:
+def test_detail_image_tag_agrees_with_poster_route(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """D9 coherence: the detail's ``ImageTags.Primary`` and the poster
-    route draw from the same poster source. A card without art yields
-    BOTH no tag AND a 404 — never a dangling ``ImageTags`` that points
-    at an image the facade will refuse to serve."""
+    route draw from the same poster source. A card without art falls
+    back to ``content.poster`` — so the tag and the route agree: either
+    both serve the poster or both empty (a dangling ``ImageTags`` that
+    points at an image the facade refuses to serve never happens)."""
     card = _card("p1", "dune-1", "Дюна", "movie", poster=None)
     stub = _DetailStub(
         cards=[card],
@@ -297,14 +302,21 @@ def test_detail_image_tag_agrees_with_poster_route(client: TestClient) -> None:
     PROVIDERS["p1"] = stub
     _auth(client)
 
-    # The detail is fully resolvable, and the content DOES carry a
-    # poster — but the home card does not, so the tag and route agree
-    # on "no art" (the poster proxy only serves card art, D9).
+    jf_router = importlib.import_module("cs_uk_api.jellyfin.router")
+    async def _fake_poster(url: str, client: Any) -> tuple[bytes, str]:
+        return b"\x89PNG", "image/png"
+
+    monkeypatch.setattr(jf_router, "fetch_poster_bytes", _fake_poster)
+
+    # The home card carries no art, but the resolved content DOES carry
+    # a poster — so tag and route agree on serving the content poster.
     gk = _movie_gk(client)
     dto = _get(client, f"/Items/{gk}", userId=USER)
-    assert dto["ImageTags"] == {}
+    tag = dto["ImageTags"].get("Primary")
     r = client.get(f"/Items/{gk}/Images/Primary", headers={"X-Emby-Token": TOKEN})
-    assert r.status_code == 404
+    assert r.status_code == 200
+    assert tag  # tag present ⟺ route serves
+    assert tag == hashlib.sha256(_dune().poster.encode()).hexdigest()[:16]
 
 
 def test_series_season_listing(client: TestClient) -> None:
@@ -369,6 +381,41 @@ def test_episode_ids_reuse_provider_prefixed_id_without_doubling(
 
     episodes = _items_of(client, f"{gk}:S1")
     assert [e["Id"] for e in episodes] == ["p1:serial-1:s1e1", "p1:s1e2"]
+
+
+def test_shows_seasons_route(client: TestClient) -> None:
+    """Switchfin opens a series via ``/Shows/{id}/Seasons`` (not the
+    items-listing ``parentId`` spelling) — the route serves the same D3
+    season DTOs, so the series' episodes become reachable."""
+    PROVIDERS["p1"] = _seed()
+    _auth(client)
+    gk = _serial_gk(client)
+
+    r = client.get(
+        f"/Shows/{gk}/Seasons", params={"userId": USER}, headers={"X-Emby-Token": TOKEN}
+    )
+    assert r.status_code == 200
+    seasons = r.json()["Items"]
+    assert [s["Id"] for s in seasons] == [f"{gk}:S1", f"{gk}:S2"]
+    assert all(s["Type"] == "Season" for s in seasons)
+
+
+def test_shows_episodes_route(client: TestClient) -> None:
+    """The companion ``/Shows/{id}/Episodes?seasonId=`` spelling serves
+    the same episode DTOs the season parent lists."""
+    PROVIDERS["p1"] = _seed()
+    _auth(client)
+    gk = _serial_gk(client)
+
+    r = client.get(
+        f"/Shows/{gk}/Episodes",
+        params={"seasonId": f"{gk}:S1", "userId": USER},
+        headers={"X-Emby-Token": TOKEN},
+    )
+    assert r.status_code == 200
+    episodes = r.json()["Items"]
+    assert [e["Id"] for e in episodes] == ["p1:s1e1", "p1:s1e2"]
+    assert all(e["Type"] == "Episode" for e in episodes)
 
 
 def test_unknown_season_suffix_404(client: TestClient) -> None:

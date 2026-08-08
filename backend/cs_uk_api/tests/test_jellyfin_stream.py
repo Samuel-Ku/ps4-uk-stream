@@ -274,6 +274,26 @@ def test_stream_no_headers_redirects_to_cdn(client: TestClient) -> None:
     assert stub.stream_calls == [("dune-1", None)]  # one bare-id resolution
 
 
+def test_episode_wire_id_with_slashes_reaches_stream(client: TestClient) -> None:
+    """Episode wire ids can embed an upstream page URL containing ``/``
+    (``p1:https://…/s/1/ep.html``). The client percent-encodes the id into
+    the path; the path-converter route must still match and resolve."""
+    stub, _, _ = _seeded(client, headers=False)
+    ep_url = "https://cdn.example.test/s/s1/e1.m3u8"
+    stub._streams[ep_url] = _movie_stream(headers=False)
+    ep_id = f"p1:{ep_url}"
+
+    r = client.get(
+        f"/Videos/{quote(ep_id, safe='')}/stream",
+        headers={"X-Emby-Token": TOKEN},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 302
+    assert r.headers["location"] == f"{_CDN}/dune.mp4"
+    assert stub.stream_calls == [("https://cdn.example.test/s/s1/e1.m3u8", None)]
+
+
 # --- mp4 file byte proxy -----------------------------------------------------
 
 
@@ -480,6 +500,50 @@ def test_segment_variant_playlist_rewritten(client: TestClient) -> None:
     assert child_route.calls.last.request.headers["Referer"] == _COMPANY_HEADERS["Referer"]
 
 
+def test_segment_allows_sibling_cdn_subdomain(client: TestClient) -> None:
+    """A multi-level HLS tree may hand child playlists to a SIBLING
+    subdomain of the same registrable domain (api.example.test next to
+    cdn.example.test). The CDN check anchors on the registrable domain,
+    not the first hostname seen, so the variant fetch succeeds."""
+    _, _, ep = _seeded(client, headers=True)
+    child_url = "https://api.example.test/serial/s1e1/variant/sd.m3u8"
+    master = (
+        "#EXTM3U\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360\n"
+        f"{child_url}\n"
+        "#EXT-X-ENDLIST\n"
+    )
+    child = (
+        "#EXTM3U\n"
+        "#EXT-X-TARGETDURATION:6\n"
+        "#EXTINF:6.0,\n"
+        "seg003.ts\n"
+        "#EXT-X-ENDLIST\n"
+    )
+    with respx.mock() as mlock:
+        mlock.get(f"{_CDN}/serial/s1e1/master.m3u8").mock(
+            return_value=httpx.Response(200, content=master.encode())
+        )
+        mlock.get(child_url).mock(
+            return_value=httpx.Response(
+                200, content=child.encode(), headers={"Content-Type": "application/vnd.apple.mpegurl"}
+            )
+        )
+        with _fake_host():
+            r1 = client.get(f"/Videos/{ep}/stream", headers={"X-Emby-Token": TOKEN})
+            assert r1.status_code == 200
+            proxied_child = f"/Videos/{ep}/segment?url={_ENCODED(child_url, safe='')}"
+            assert proxied_child in r1.text
+            r2 = client.get(proxied_child, headers={"X-Emby-Token": TOKEN})
+
+    assert r2.status_code == 200
+    assert r2.headers["content-type"] == "application/vnd.apple.mpegurl"
+    assert (
+        f"/Videos/{ep}/segment?url={_ENCODED('https://api.example.test/serial/s1e1/variant/seg003.ts', safe='')}"
+        in r2.text
+    )
+
+
 def test_segment_rejects_foreign_host(client: TestClient) -> None:
     """SSRF posture: a segment URL outside the item's CDN (dot-boundary)
     fails closed to 404 before any upstream request is issued."""
@@ -498,9 +562,12 @@ def test_segment_rejects_foreign_host(client: TestClient) -> None:
     assert not evil_route.called
 
 
-def test_requires_token_all_routes(client: TestClient) -> None:
-    assert client.get("/Videos/g1:abcdefabcdefabcdef/stream").status_code == 401
+def test_stream_and_segment_are_public(client: TestClient) -> None:
+    """Stream and segment routes are public (no token required): the PS4
+    media player fetches the stream URL directly and does not carry auth
+    headers. This mirrors the public-image-route convention."""
+    assert client.get("/Videos/g1:abcdefabcdefabcdef/stream").status_code == 404
     assert (
         client.get("/Videos/g1:abcdefabcdefabcdef/segment", params={"url": f"{_CDN}/s.ts"}).status_code
-        == 401
+        == 404
     )

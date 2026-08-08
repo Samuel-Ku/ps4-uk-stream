@@ -4,23 +4,25 @@ import asyncio
 import logging
 import os
 import time
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import Awaitable, Callable, TypeVar, cast
-
+from typing import TypeVar, cast
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 
+import cs_uk_api.providers._registry  # noqa: F401
+
 from .cache import TtlCache
+from .catalog_state import _GATE_CHECK_TIMEOUT_S, resolve_group
 from .catalog_state import blocklist_cache as _catalog_blocklist_cache
 from .catalog_state import content_cache as _catalog_content_cache
+from .catalog_state import filter_gated_items as _filter_gated_items
+from .catalog_state import gated_cache as _catalog_gated_cache
 from .catalog_state import get_home as _catalog_get_home
 from .catalog_state import home_cache as _catalog_home_cache
 from .catalog_state import load_home as _catalog_load_home
-from .catalog_state import _GATE_CHECK_TIMEOUT_S, resolve_group
-from .catalog_state import filter_gated_items as _filter_gated_items
-from .catalog_state import gated_cache as _catalog_gated_cache
 from .catalog_state import sources_cache as _catalog_sources_cache
 from .config import SETTINGS
 from .country import is_blocked_country
@@ -28,6 +30,7 @@ from .health import TRACKER
 from .http_client import close_client, get_client
 from .jellyfin import router as jellyfin_router
 from .jellyfin.capture import capture_request
+from .jellyfin.router import normalize_jellyfin_path
 from .merge import group_key_from, item_group_key, merge_results
 from .models import (
     BrowseResponse,
@@ -45,10 +48,9 @@ from .models import (
     StreamResponse,
 )
 from .poster_proxy import fetch as fetch_poster
-from .providers import PROVIDERS  # noqa: F401  (import for side effects)
+from .providers import PROVIDERS
 from .providers.base import BaseProvider, ProviderError
 from .uakino_browser import DEFAULT_CHROMIUM, get_session
-import cs_uk_api.providers._registry  # noqa: F401
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("cs_uk_api")
@@ -69,7 +71,7 @@ _blocklist_cache = _catalog_blocklist_cache
 #: resolution map now live in ``cs_uk_api.catalog_state`` (ticket #101),
 #: shared by the native ``/api/*`` routes and the Jellyfin facade.
 #: Clearing them clears the shared state.
-_home_cache = _catalog_home_cache  # noqa: F821  (from .catalog_state)
+_home_cache = _catalog_home_cache
 _home_sources_cache = _catalog_sources_cache
 
 T = TypeVar("T")
@@ -120,7 +122,7 @@ async def _upstream_guard(
     """
     try:
         result = await coro
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         if exc_handler is not None:
             exc_handler(e)
         TRACKER.record(provider_id, ok=False)
@@ -174,6 +176,21 @@ app.include_router(jellyfin_router)
 
 
 @app.middleware("http")
+async def jellyfin_case_normalize(request: Request, call_next):
+    """Rewrite Jellyfin facade paths to canonical case.
+
+    Real Jellyfin routes case-insensitively; FastAPI does not. A client
+    like Switchfin sends ``/Users/authenticatebyname`` where the facade
+    declares ``POST /Users/AuthenticateByName`` — without this rewrite
+    that request 404s. Non-facade paths are untouched.
+    """
+    canonical = normalize_jellyfin_path(request.url.path)
+    if canonical is not None:
+        request.scope["path"] = canonical
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def log_requests(request: Request, call_next):
     started = time.monotonic()
     response: Response = await call_next(request)
@@ -186,7 +203,7 @@ async def log_requests(request: Request, call_next):
 
 
 @app.exception_handler(Exception)
-async def unhandled(_request: Request, exc: Exception) -> JSONResponse:  # noqa: ARG001
+async def unhandled(_request: Request, exc: Exception) -> JSONResponse:
     log.exception("unhandled error")
     return JSONResponse(
         status_code=500,

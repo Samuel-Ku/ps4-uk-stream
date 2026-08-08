@@ -293,6 +293,34 @@ async def test_content_parses_title_description_and_translations():
 
 
 @pytest.mark.asyncio
+async def test_content_movie_returns_movie_without_seasons():
+    """Movies (`type: "movie"` on the info JSON) carry no episode list
+    upstream; detail must render as a Movie card instead of 404ing.
+    Fixtures captured live 2026-08-08 (Плюпен III: Перший)."""
+    redirect_json = _fixture("movie_redirect.json")
+    movie_json = _fixture("movie.json")
+    translations_json = _fixture("movie_translations.json")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://animeon.club/api/anime/8100").respond(
+            200, text=redirect_json
+        )
+        router.get("https://animeon.club/api/anime/8100-lyupen-iii-pershyy").respond(
+            200, text=movie_json
+        )
+        router.get("https://animeon.club/api/player/8100/translations").respond(
+            200, text=translations_json
+        )
+        async with httpx.AsyncClient() as http:
+            c = await AnimeONProvider().content("8100", http)
+    assert c.type == "movie"
+    assert c.seasons is None
+    assert c.translations_level == "content"
+    assert c.title == "Люпен III: Перший"
+    assert [t.id for t in c.translations] == ["AlsikUA"]
+    assert c.poster.startswith("https://animeon.club/api/uploads/images/")
+
+
+@pytest.mark.asyncio
 async def test_content_bad_external_id_raises_not_found():
     """Defensive: anything that isn't a pure integer must surface as
     `not_found` before any HTTP request is made — same security

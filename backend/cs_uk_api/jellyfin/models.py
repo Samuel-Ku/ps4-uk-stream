@@ -20,11 +20,12 @@ class SystemInfoPublic(BaseModel):
     """
 
     LocalAddress: str
-    SystemName: str
+    ServerName: str
     Version: str
     ProductName: str
     StartupWizardCompleted: bool
     Id: str
+    SystemArchitecture: str = ""
 
 
 class UserDto(BaseModel):
@@ -32,14 +33,24 @@ class UserDto(BaseModel):
 
     Only ``Id`` and ``Name`` are consumed downstream (`/Users/{id}/Views`);
     everything else is filler that keeps non-Switchfin clients happy.
+
+    The filler must NOT be JSON-null: Switchfin parses this struct with
+    ``NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT`` and any ``null``
+    value where it expects a string/object raises nlohmann's
+    ``type_error.302`` ("type must be string, but is null"), which that
+    console shows as a bare "302". So ``PrimaryImageTag`` defaults to an
+    empty string and the two nested config blocks to empty objects.
     """
 
     Name: str
     ServerId: str
     Id: str
-    Configuration: str | None = None
-    Policy: str | None = None
-    PrimaryImageTag: str | None = None
+    HasPassword: bool = False
+    Configuration: dict[str, object] = Field(default_factory=dict)
+    Policy: dict[str, bool] = Field(
+        default_factory=lambda: {"IsAdministrator": False, "IsDisabled": False}
+    )
+    PrimaryImageTag: str = ""
 
 
 class AuthenticationResult(BaseModel):
@@ -53,7 +64,7 @@ class AuthenticationResult(BaseModel):
     User: UserDto
     AccessToken: str
     ServerId: str
-    SessionInfo: str | None = None
+    SessionInfo: object | None = None
 
 
 class BaseItemDto(BaseModel):
@@ -95,10 +106,32 @@ class BaseItemDtoQueryResult(BaseModel):
     ``TotalRecordCount`` is what Jellyfin clients use to render
     scrolling; the facade caps every listing at the home row size (20),
     so it always equals ``len(Items)`` (D5: no pagination in v1).
+
+    ``StartIndex`` must be present: Switchfin's ``Result<T>`` wrapper is
+    parsed via ``NLOHMANN_JSON_FROM`` (no default), so a missing key
+    raises ``out_of_range.403`` on the console. Always 0 — no
+    pagination.
     """
 
     Items: list[BaseItemDto] = Field(default_factory=list)
     TotalRecordCount: int = 0
+    StartIndex: int = 0
+
+
+class DisplayPreferencesDto(BaseModel):
+    """Response of ``GET /DisplayPreferences/usersettings``.
+
+    Switchfin parses via ``NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT``
+    (Id, CustomPrefs, SortBy, SortOrder) — every field tolerates absence,
+    but an explicit null would trip ``type_error.302``, so the defaults
+    are strings/dicts rather than None. ``Id`` echoes the request's
+    settings key (``usersettings``).
+    """
+
+    Id: str = "usersettings"
+    CustomPrefs: dict[str, object] = Field(default_factory=dict)
+    SortBy: str = "SortName"
+    SortOrder: str = "Ascending"
 
 
 class MediaStreamInfo(BaseModel):
@@ -126,6 +159,9 @@ class MediaSourceInfo(BaseModel):
     Container: str
     MediaStreams: list[MediaStreamInfo] = Field(default_factory=lambda: [MediaStreamInfo()])
     IsDirectStream: bool = True
+    SupportsDirectPlay: bool = True
+    SupportsDirectStream: bool = True
+    SupportsTranscoding: bool = False
     Path: str
     PlaySessionId: str
 

@@ -76,3 +76,31 @@ asserts the live router instead of masking the divergence.
    the current router status rather than the frozen fixture's.
 2. Update spec D9 line 95 from "→ 302 to /api/poster" to "→ 200 inline (302
    storms the Switchfin console)".
+
+# Run #3 (2026-08-08) — 404/403 origins resolved
+
+Source of truth: the Switchfin client source (`github.com/dragonflylee/switchfin`),
+enumerated against the facade. `HTTP::_get` throws on any status >= 400, so every
+4xx the facade answers is logged on the console; `Result<T>` is parsed with
+`NLOHMANN_JSON_FROM` (no defaults), so a missing `StartIndex` raises
+`out_of_range.403`.
+
+## Findings + fixes (all three reproduced red first via
+`tests/test_jellyfin_switchfin_surface.py`, a replay of Switchfin's real flow)
+
+| Console error | Emitting request (Switchfin side) | Root cause | Fix |
+|---|---|---|---|
+| **403** (`out_of_range.403`) | `GET /Items/{id}/Similar` (fired on EVERY movie/series detail page — `doSimilar` runs unconditionally) | Facade answered `{"Items": [], "TotalRecordCount": 0}` — no `StartIndex`. `Result<T>` from_json uses `.at()`, no default → `key 'StartIndex' not found` | Return a full `BaseItemDtoQueryResult` (adds `StartIndex: 0`) — router.py `item_similar` |
+| **404** ("http status 404") | `GET /Plugins` (probed on EVERY app start — `AppConfig::checkDanmuku` in `MainActivity`) | Route unimplemented | New `GET /Plugins` → `[]` (empty `PluginList`; danmaku stays disabled) — router.py `plugins` |
+| **404** ("http status 404") | `GET /Users/{id}/Images/Primary` (user avatar in the server list — `ServerUserDataSource` loads it per saved user) | Route answered 404 `no_user_image`; client's image loader logs any 4xx | Serve a transparent placeholder (PNG or WebP per `format=`, PS4 always asks `Webp` and decodes as WebP by URL) — router.py `user_primary_image` |
+
+## Verification
+- `pytest cs_uk_api/tests/test_jellyfin_switchfin_surface.py` — 4 passed (was 4
+  failed before the fixes: flow-4xx, StartIndex envelope, plugins 200, avatar 200).
+- Full jellyfin suite: `pytest cs_uk_api/tests/test_jellyfin*.py` — 103 passed.
+- The remaining 404s in the run-#1 table (`item_unavailable` on cold cache /
+  unknown ids, `poster_unavailable`) are deliberate D2 verdicts Switchfin
+  tolerates; the endpoints that would 404 in other tabs (`/Movies/Recommendations`,
+  `/Artists`, `/LiveTv/*`, `/Users/{id}/FavoriteItems/{id}`, `/Items/{id}/Download`)
+  are unreachable from the PS4 catalog flow (facade never emits Folder/BoxSet/
+  Playlist/Photo types; `SuggestMovie` is never constructed).

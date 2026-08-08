@@ -16,6 +16,7 @@ same ``require_token`` gate.
 from __future__ import annotations
 
 import hashlib
+import io
 import logging
 import re
 import time
@@ -33,6 +34,7 @@ from ..config import SETTINGS
 from ..health import TRACKER
 from ..http_client import get_client
 from ..models import ContentResponse, Episode, HomeItem, HomeRow, Season, StreamResponse
+from ..poster_proxy import fetch as fetch_poster_bytes
 from ..providers import PROVIDERS
 from ..providers.base import ProviderError
 from .auth import require_token
@@ -40,6 +42,7 @@ from .models import (
     AuthenticationResult,
     BaseItemDto,
     BaseItemDtoQueryResult,
+    DisplayPreferencesDto,
     MediaSourceInfo,
     PlaybackInfoResponse,
     SystemInfoPublic,
@@ -50,11 +53,75 @@ log = logging.getLogger("cs_uk_api.jellyfin")
 
 router = APIRouter(tags=["jellyfin"])
 
+
+def _compile_case_insensitive(path_format: str) -> re.Pattern[str]:
+    """Compile a Jellyfin path template to a case-insensitive regex.
+
+    Real Jellyfin routes case-insensitively (a client may send
+    ``/Users/authenticatebyname`` where the API spells
+    ``/Users/AuthenticateByName`` — Switchfin does exactly this).
+    FastAPI/Starlette routing is case-sensitive, so the facade matches
+    its own templates case-insensitively in a middleware and rewrites
+    the scope path to the canonical spelling before routing.
+    """
+    pattern = re.sub(r"\{(\w+)\}", r"(?P<\1>[^/]+)", path_format)
+    return re.compile("^" + pattern + "$", re.IGNORECASE)
+
+
+def normalize_jellyfin_path(path: str) -> str | None:
+    """Canonical spelling of a Jellyfin facade path, or None.
+
+    Matches ``path`` against every registered facade route template
+    case-insensitively (so ``/Users/authenticatebyname`` lands on
+    ``POST /Users/AuthenticateByName``) and returns the canonical form
+    with path params preserved verbatim. Non-facade paths (the native
+    ``/api/*`` surface) match nothing and yield None — the middleware
+    then leaves the scope path untouched.
+    """
+    best_route = None
+    best_match = None
+    best_specificity = 1 << 30
+    for route in router.routes:
+        compiled = getattr(route, "_jf_ci_regex", None)
+        if compiled is None:
+            compiled = _compile_case_insensitive(route.path_format)
+            route._jf_ci_regex = compiled
+        m = compiled.fullmatch(path)
+        if m is None:
+            continue
+        # Prefer the most specific template (fewest path params): the
+        # parameterized ``/Users/{user_id}`` will also match a literal
+        # ``/Users/AuthenticateByName`` — the fixed route must win, else
+        # the middleware rewrites login into a GET-booked 405.
+        specificity = len(m.groupdict())
+        if specificity >= best_specificity:
+            continue
+        best_specificity = specificity
+        best_route, best_match = route, m
+        if best_specificity == 0:
+            break
+    if best_route is None:
+        return None
+    canonical = best_route.path_format
+    for name, value in best_match.groupdict().items():
+        canonical = canonical.replace("{" + name + "}", value)
+    return canonical
+
 #: What the server tells the client it is. The real Jellyfin server name
 #: is configurable; we surface the project's own identity so the
 #: client's connection dialog shows something recognizable.
 _PRODUCT = "cs-uk-api"
 _VERSION = "0.1.0"
+
+
+def _user_name_for(user_id: str) -> str:
+    """The display name backed by a remembered ``/Users/{id}`` check.
+
+    The facade is stateless and cannot recall what the user typed at
+    login; a stable label ("User") keeps every client's "signed in as"
+    UI consistent without persisting anything (D8).
+    """
+    return "User"
 
 
 def _server_id() -> str:
@@ -204,6 +271,8 @@ def _content_dto(group_key: str, content: ContentResponse, server_id: str) -> Ba
     if parent is not None:
         dto.ParentId = parent
     poster = _poster_for(group_key)
+    if poster is None:
+        poster = content.poster
     if poster is not None:
         dto.ImageTags = {"Primary": _poster_tag(poster)}
     return dto
@@ -290,7 +359,7 @@ class AuthenticateByNameRequest(BaseModel):
     Pw: str = ""
 
 
-@router.get("/System/Info/Public", response_model=SystemInfoPublic)
+@router.get("/System/Info/Public", response_model=SystemInfoPublic, response_model_exclude_none=True)
 async def system_info_public() -> SystemInfoPublic:
     """Server discovery: what a client hits first when adding the server.
 
@@ -299,7 +368,7 @@ async def system_info_public() -> SystemInfoPublic:
     """
     return SystemInfoPublic(
         LocalAddress=f"{SETTINGS.host}:{SETTINGS.port}",
-        SystemName=_PRODUCT,
+        ServerName=_PRODUCT,
         Version=_VERSION,
         ProductName=_PRODUCT,
         StartupWizardCompleted=True,
@@ -307,20 +376,20 @@ async def system_info_public() -> SystemInfoPublic:
     )
 
 
-@router.get("/System/Info", response_model=SystemInfoPublic, dependencies=[Depends(require_token)])
+@router.get("/System/Info", response_model=SystemInfoPublic, response_model_exclude_none=True, dependencies=[Depends(require_token)])
 async def system_info(
     _token: str = Depends(require_token),
 ) -> SystemInfoPublic:
     """Full server info — authenticated in real Jellyfin.
 
     A client that has completed the handshake fetches this to confirm
-    the server identity; the web UI reads ``SystemName``/``Version`` off
+    the server identity; the web UI reads ``ServerName``/``Version`` off
     it when reconnecting to a cached server. The first private facade
     route: proves the ``require_token`` gate on a real endpoint.
     """
     return SystemInfoPublic(
         LocalAddress=f"{SETTINGS.host}:{SETTINGS.port}",
-        SystemName=_PRODUCT,
+        ServerName=_PRODUCT,
         Version=_VERSION,
         ProductName=_PRODUCT,
         StartupWizardCompleted=True,
@@ -328,7 +397,72 @@ async def system_info(
     )
 
 
-@router.post("/Users/AuthenticateByName", response_model=AuthenticationResult)
+@router.get("/QuickConnect/Enabled", response_model=bool)
+async def quickconnect_enabled() -> bool:
+    """Advertise that QuickConnect login is off.
+
+    Switchfin probes this before rendering the login screen and compares
+    the raw body to ``"true"`` before showing the Quick Connect button.
+    Real Jellyfin answers with a bare boolean, so the facade mirrors
+    that: ``false`` keeps the client on the password path.
+    """
+    return False
+
+
+@router.get("/Branding/Configuration", response_model=dict[str, object], response_model_exclude_none=True)
+async def branding_configuration() -> dict[str, object]:
+    """Empty branding block — the client falls back to defaults.
+
+    Probed alongside ``/QuickConnect/Enabled`` during login-screen
+    render. ``LoginDisclaimer`` must be a string, NOT null — Switchfin
+    parses it into ``std::string`` via
+    ``NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT`` and a null value
+    raises ``type_error.302`` on the console.
+    """
+    return {"LoginDisclaimer": ""}
+
+
+@router.get(
+    "/Plugins",
+    response_model=list[object], response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def plugins() -> list[object]:
+    """Plugin listing — always empty.
+
+    Switchfin probes this on EVERY app start (``AppConfig::checkDanmuku``)
+    to detect the Danmu plugin; an unimplemented route answered 404 and
+    the client's HTTP layer logged "http status 404" on the console. An
+    empty ``PluginList`` (bare JSON array) means "no plugins" and
+    disables danmaku cleanly.
+    """
+    return []
+
+
+@router.get(
+    "/Users/{user_id}",
+    response_model=UserDto, response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def user_info(user_id: str) -> UserDto:
+    """Persist a client's remembered session (Switchfin ``checkLogin``).
+
+    On every start Switchfin calls ``GET /Users/{id}`` with the stored
+    token to decide whether the previous login is still valid (config.cpp
+    ``checkLogin``): a 200+parseable User keeps it in the main screen,
+    anything else bounces it back to the login form. Since the facade is
+    stateless and accepts any valid token, the remembered user is
+    confirmed with a 200 echoing a stable UserDto — the client then skips
+    re-authentication entirely.
+    """
+    return UserDto(
+        Name=_user_name_for(user_id),
+        ServerId=_server_id(),
+        Id=user_id,
+    )
+
+
+@router.post("/Users/AuthenticateByName", response_model=AuthenticationResult, response_model_exclude_none=True)
 async def authenticate_by_name(
     body: AuthenticateByNameRequest,
 ) -> AuthenticationResult:
@@ -344,9 +478,6 @@ async def authenticate_by_name(
         Name=body.Username,
         ServerId=server_id,
         Id=uuid.uuid5(uuid.NAMESPACE_URL, f"cs-uk-api-user:{body.Username}").hex,
-        Configuration=None,
-        Policy=None,
-        PrimaryImageTag=None,
     )
     return AuthenticationResult(
         User=user,
@@ -358,7 +489,7 @@ async def authenticate_by_name(
 
 @router.get(
     "/UserViews",
-    response_model=BaseItemDtoQueryResult,
+    response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def user_views_sdk(
@@ -377,7 +508,7 @@ async def user_views_sdk(
 
 @router.get(
     "/Users/{user_id}/Views",
-    response_model=BaseItemDtoQueryResult,
+    response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def user_views_server(user_id: str) -> BaseItemDtoQueryResult:
@@ -387,7 +518,7 @@ async def user_views_server(user_id: str) -> BaseItemDtoQueryResult:
 
 @router.get(
     "/Items",
-    response_model=BaseItemDtoQueryResult,
+    response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def items_listing(
@@ -423,6 +554,159 @@ async def items_listing(
     # зараз» when no provider carries it) is an empty library, not an
     # error — same tolerant answer as an unknown parent.
     return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
+
+
+@router.get(
+    "/Users/{user_id}/Items/Resume",
+    response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def items_resume(user_id: str) -> BaseItemDtoQueryResult:
+    """Continue-watching rail — always empty.
+
+    The facade has no playback history (sessions are no-ops, D8), so
+    there is nothing to resume. Real Jellyfin answers an empty result,
+    not a 404; Switchfin renders the rail only when non-empty.
+    """
+    return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
+
+
+@router.get(
+    "/Shows/NextUp",
+    response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def shows_next_up() -> BaseItemDtoQueryResult:
+    """Next-up shelf ("Continue watching" for series) — always empty.
+
+    Same rationale as ``/Users/{user_id}/Items/Resume``: without
+    playback state there are no in-progress series to queue.
+    """
+    return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
+
+
+@router.get(
+    "/Shows/{series_id}/Seasons",
+    response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def shows_seasons(series_id: str) -> BaseItemDtoQueryResult:
+    """Season rail of a series (Switchfin ``apiShowSeasons``).
+
+    The client opens a series detail and issues this exact URL
+    (``/Shows/{group}/Seasons?userId=…``); before this route existed it
+    fell through to a 404 and the series' episodes were unreachable.
+    Same D3 hierarchy lookup as ``parentId=<group key>`` on the items
+    listing — the group key's season DTOs.
+    """
+    return await _hierarchy(series_id)
+
+
+@router.get(
+    "/Shows/{series_id}/Episodes",
+    response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def shows_episodes(
+    series_id: str, season_id: str | None = Query(default=None, alias="seasonId")
+) -> BaseItemDtoQueryResult:
+    """Episode rail of one season (Switchfin ``apiShowEpisodes``).
+
+    ``seasonId`` is the ``<group_key>:S<n>`` season id handed out by
+    ``shows_seasons``; the same _hierarchy lookup as the items
+    listing's season parent. ``series_id`` is not cross-checked (the
+    id carries its own group key), it exists to match the client's URL.
+    """
+    return await _hierarchy(season_id)
+
+
+@router.get(
+    "/Users/{user_id}/Items/Latest",
+    response_model=list[BaseItemDto], response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def items_latest(
+    user_id: str,
+    parent_id: str | None = Query(default=None, alias="parentId"),
+) -> list[BaseItemDto]:
+    """Latest-added shelf of a view — the view's home-row cards.
+
+    Switchfin fetches this per library on the home screen
+    (``…/Items/Latest?parentId=<view id>``) after listing the views,
+    and parses the reply as a BARE JSON ARRAY of ``Episode`` structs
+    (``getJSON<std::vector<jellyfin::Episode>>``), NOT the
+    ``Result<T>`` envelope every other listing uses. Wrapping the items
+    in ``{Items: […]}`` makes nlohmann fail the array read with
+    ``type_error.302`` ("type must be array, but is object") — shown
+    on the console as a "302" — so the wire shape here is a list, while
+    the content stays the same row lookup as ``/Items``.
+    """
+    result = await items_listing(parent_id=parent_id, user_id=user_id)
+    return result.Items
+
+
+@router.get(
+    "/Users/{user_id}/Items",
+    response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def user_items_listing(
+    user_id: str,
+    parent_id: str | None = Query(default=None, alias="parentId"),
+) -> BaseItemDtoQueryResult:
+    """Server-style spelling of the library listing (Switchfin).
+
+    Switchfin paths every library call under the user — ``/Users/{id}/
+    Items?parentId=…`` (``apiUserLibrary``) rather than the bare
+    ``/Items`` the SDK would use. Same wire dto, same row/hierarchy
+    lookup as ``items_listing``; registered after ``Resume``/``Latest``
+    so those literal segments win over this parameterized route.
+    """
+    return await items_listing(parent_id=parent_id, user_id=user_id)
+
+
+@router.get(
+    "/Users/{user_id}/Items/{item_id}",
+    response_model=BaseItemDto, response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def user_item_detail(user_id: str, item_id: str) -> BaseItemDto:
+    """Server-style item-detail spelling (Switchfin ``apiUserItem``).
+
+    Same Movie/Series/Season DTO as the bare ``/Items/{item_id}``;
+    Switchfin addresses detail pages as ``/Users/{id}/Items/{id}``.
+    """
+    return await item_detail(item_id)
+
+
+@router.get(
+    "/Genres",
+    response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def genres() -> BaseItemDtoQueryResult:
+    """Genre filter shelf (Switchfin ``apiGenres``).
+
+    The facade has no genre metadata — no provider exposes one — so the
+    shelf is deliberately empty. Switchfin parses the ``Genres`` wire via
+    ``NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT``; an empty
+    ``Result<T>`` renders an empty shelf rather than erroring.
+    """
+    return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
+
+
+@router.get(
+    "/DisplayPreferences/usersettings",
+    response_model=DisplayPreferencesDto, response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def display_preferences() -> DisplayPreferencesDto:
+    """Per-user sort/display prefs (Switchfin ``apiUserSetting``).
+
+    No persistence exists yet; a neutral object tells the client "sort by
+    name, ascending" — predictable and stable across navigations.
+    """
+    return DisplayPreferencesDto()
 
 
 def _split_season_suffix(parent_id: str) -> tuple[str, int | None]:
@@ -475,7 +759,7 @@ async def _hierarchy(parent_id: str | None) -> BaseItemDtoQueryResult:
 
 @router.get(
     "/Items/{item_id}",
-    response_model=BaseItemDto,
+    response_model=BaseItemDto, response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def item_detail(item_id: str) -> BaseItemDto:
@@ -510,22 +794,158 @@ async def item_detail(item_id: str) -> BaseItemDto:
 
 @router.get(
     "/Items/{item_id}/Images/Primary",
-    dependencies=[Depends(require_token)],
 )
-async def item_primary_image(item_id: str) -> RedirectResponse:
-    """Poster art (D9): 302 to the existing poster proxy.
+async def item_primary_image(
+    item_id: str, format: str | None = None, maxWidth: int | None = None
+) -> Response:
+    """Poster art (D9): the poster bytes, served directly with 200.
 
-    ``maxWidth``/``tag`` and friends are ignored — the original image
-    is served, no resizing in v1. Unknown item or poster-less item →
+    The client's own ``format=Webp`` / ``maxWidth`` query (Switchfin
+    always asks for ``Webp``) is honored: a non-WebP original is
+    transcoded once (Pillow, resized to ``maxWidth`` when the original
+    is larger) and cached per poster. Unknown item or poster-less item →
     404; Jellyfin clients render a placeholder instead of an image.
+
+    Public on purpose: Jellyfin serves images without a token (media
+    is addressable by URL), and client image loaders do not attach the
+    ``X-Emby-Token`` header — requiring one here produces a wall of
+    ``401 Unauthorized`` console errors.
+
+    The bytes are fetched via the same ``fetch_poster_bytes`` cache the
+    native ``/api/poster`` route uses, and returned inline — NOT as a
+    302 to it. Switchfin's image loader does not chase a redirect; a
+    redirect status is rendered as an error storm ("302") on the
+    console while the home screen retries each card's art dozens of
+    times (observed: ~72 attempts per poster).
     """
+    return await _serve_item_image(item_id, format=format, maxWidth=maxWidth)
+
+
+#: Transcode memo: ``(poster_url, max_width) → WebP bytes``. The client
+#: retries a bad poster dozens of times per second (observed 533), so
+#: the conversion must cost one Pillow pass per poster, not per request.
+_WEBP_MEMO: dict[tuple[str, int | None], bytes] = {}
+_WEBP_MEMO_MAX = 256
+
+
+def _as_webp(poster_url: str, body: bytes, max_width: int | None) -> bytes:
+    """``body`` as WebP bytes (Pillow), resized to ``max_width`` when
+    larger; the original back on any decode error (a transcode failure
+    must not turn a served poster into a 404)."""
+    key = (poster_url, max_width)
+    hit = _WEBP_MEMO.get(key)
+    if hit is not None:
+        return hit
+    try:
+        from PIL import Image, ImageOps
+
+        logo = Image.open(io.BytesIO(body))
+        if max_width and logo.width > max_width:
+            logo = ImageOps.contain(logo, (max_width, max_width))
+        out = io.BytesIO()
+        logo.convert("RGB").save(out, format="WEBP", quality=82)
+        hit = out.getvalue()
+    except Exception:  # noqa: BLE001
+        hit = body
+    if len(_WEBP_MEMO) >= _WEBP_MEMO_MAX:
+        _WEBP_MEMO.clear()
+    _WEBP_MEMO[key] = hit
+    return hit
+
+
+async def _serve_item_image(
+    item_id: str, *, format: str | None = None, maxWidth: int | None = None
+) -> Response:
+    """The poster for ``item_id`` as an inline image response, or 404."""
     poster_url = _poster_for(item_id)
+    if poster_url is None and item_id.startswith("g1:"):
+        # Item not in the home snapshot (surfaced via Latest/search);
+        # resolve from the content cache which holds the poster URL.
+        content = await resolve_group_content(item_id)
+        poster_url = content.poster if content else None
     if poster_url is None:
         raise HTTPException(status_code=404, detail="poster_unavailable")
-    return RedirectResponse(
-        url=f"/api/poster?u={quote(poster_url, safe='')}",
-        status_code=302,
-    )
+    fetched = await fetch_poster_bytes(poster_url, get_client())
+    if fetched is None:
+        raise HTTPException(status_code=404, detail="poster_unavailable")
+    body, ctype = fetched
+    wants_webp = format is not None and format.lower().lstrip("/") in ("webp", "webp,kwebp")
+    if wants_webp and not ctype.startswith("image/webp"):
+        body = _as_webp(poster_url, body, maxWidth)
+        ctype = "image/webp"
+    return Response(content=body, media_type=ctype)
+
+
+#: Placeholder avatar bytes per format — the facade has no user concept,
+#: but Switchfin's server list ALWAYS requests each saved user's avatar
+#: (``apiUserImage``) and its HTTP layer logs any 4xx as a console error
+#: ("http status 404"). A transparent placeholder answers 200 while still
+#: rendering as "no avatar": the client's own default glyph shows through
+#: the transparency.
+_AVATAR_MEMO: dict[str, bytes] = {}
+
+
+def _placeholder_avatar(format: str | None) -> tuple[bytes, str]:
+    """A transparent placeholder image in the requested format.
+
+    Switchfin's PS4 build requests ``format=Webp`` and decodes the body
+    as WebP whenever the URL contains ``Webp`` (``Image::doRequest``), so
+    the placeholder must be real WebP bytes — a PNG answer to a WebP URL
+    silently fails to decode and renders nothing.
+    """
+    wants_webp = format is not None and format.lower().lstrip("/") in ("webp", "webp,kwebp")
+    key = "webp" if wants_webp else "png"
+    hit = _AVATAR_MEMO.get(key)
+    if hit is not None:
+        return hit, "image/webp" if wants_webp else "image/png"
+    from PIL import Image
+
+    img = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
+    out = io.BytesIO()
+    img.save(out, format="WEBP" if wants_webp else "PNG")
+    hit = out.getvalue()
+    _AVATAR_MEMO[key] = hit
+    return hit, "image/webp" if wants_webp else "image/png"
+
+
+@router.get(
+    "/Users/{user_id}/Images/Primary",
+)
+async def user_primary_image(user_id: str, format: str | None = None) -> Response:
+    """User avatar — no user concept on the facade.
+
+    A transparent placeholder is served instead of a 404: Switchfin's
+    server list always requests the avatar and logs "http status 404"
+    on the console when it's missing. Public like every other image
+    endpoint (token-less image loading, see ``item_primary_image``).
+    """
+    body, ctype = _placeholder_avatar(format)
+    return Response(content=body, media_type=ctype)
+
+
+@router.get(
+    "/Items/{item_id}/Images/Thumb",
+)
+@router.get(
+    "/Items/{item_id}/Images/Logo",
+)
+@router.get(
+    "/Items/{item_id}/Images/Backdrop",
+)
+@router.get(
+    "/Items/{item_id}/Images/Backdrop/{index}",
+)
+async def item_auxiliary_image(item_id: str, index: int = 0) -> Response:
+    """Backdrop/Logo/Thumb art — same poster bytes as ``Primary``.
+
+    The catalog stores a single poster per item (no fanart, logos, or
+    backdrops), so each variant serves that same image inline with 200,
+    matching Switchfin's probe expectations (``apiThumbImage``/
+    ``apiLogoImage``/``apiBackdropImage``). Public like all image
+    endpoints; unknown/poster-less item → 404 (the client treats that
+    as "no such art").
+    """
+    return await _serve_item_image(item_id)
 
 
 async def _resolve_stream(item_id: str) -> StreamResponse | None:
@@ -614,13 +1034,13 @@ def _container_from_type(stream_type: str) -> str:
 
 
 @router.get(
-    "/Items/{item_id}/PlaybackInfo",
-    response_model=PlaybackInfoResponse,
+    "/Items/{item_id:path}/PlaybackInfo",
+    response_model=PlaybackInfoResponse, response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 @router.post(
-    "/Items/{item_id}/PlaybackInfo",
-    response_model=PlaybackInfoResponse,
+    "/Items/{item_id:path}/PlaybackInfo",
+    response_model=PlaybackInfoResponse, response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def playback_info(item_id: str) -> PlaybackInfoResponse:
@@ -641,10 +1061,38 @@ async def playback_info(item_id: str) -> PlaybackInfoResponse:
     source = MediaSourceInfo(
         Id=item_id,
         Container=_container_from_type(stream.type),
-        Path=f"/videos/{item_id}",
+        Path=f"/Videos/{item_id}/stream",
         PlaySessionId=play_session_id,
     )
     return PlaybackInfoResponse(MediaSources=[source], PlaySessionId=play_session_id)
+
+
+@router.get(
+    "/Items/{item_id:path}/Similar",
+    response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def item_similar(item_id: str) -> BaseItemDtoQueryResult:
+    """Similar-shelf — always empty.
+
+    The facade has no similarity metadata, so the shelf is deliberately
+    empty. The answer is a full ``BaseItemDtoQueryResult`` envelope:
+    Switchfin parses every list response as ``Result<T>`` with
+    ``NLOHMANN_JSON_FROM`` (no defaults), so a missing ``StartIndex``
+    raised ``out_of_range.403`` on the console — this endpoint fired on
+    every movie/series detail page before the envelope was completed.
+    """
+    return BaseItemDtoQueryResult()
+
+
+@router.get(
+    "/Users/{user_id}/Items/{item_id:path}/SpecialFeatures",
+    response_model=list[object],
+    response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def item_special_features(user_id: str, item_id: str) -> list[object]:
+    return []
 
 
 #: ``StreamResponse.type`` → the ``Content-Type`` the client expects (D7).
@@ -679,20 +1127,40 @@ def _cdn_host(url: str) -> str | None:
     return host.lower() if host else None
 
 
+def _registrable_domain(host: str) -> str:
+    """The last two labels of a hostname — the anchor the stream proxy's
+    CDN check compares against.
+
+    Live HLS trees routinely hand child playlists to a SIBLING subdomain
+    of the same domain (``api.unimay.media`` hands the tree to
+    ``cdn.unimay.media``), and a two-label anchor is exactly stable
+    across those siblings while still excluding foreign registrants:
+    ``evil.example`` can never equal ``cdn.example``. Co.UK-style
+    multi-label public suffixes are out of scope — no UA provider CDN
+    uses one.
+    """
+    labels = host.split(".")
+    if len(labels) <= 2:
+        return host
+    return ".".join(labels[-2:])
+
+
 def _stream_target_allowed(url: str, cdn_host: str) -> bool:
-    """Whether the byte proxy may reach ``url``: only the CDN host the
-    provider selected for the item, dot-boundary (subdomains allowed).
+    """Whether the byte proxy may reach ``url``: a host on the same
+    registrable domain as the CDN the provider selected for the item
+    (``cdn.example`` and its ``media.``/``api.`` siblings are one CDN).
 
     This is the stream proxy's standing posture: the facade fetches bytes
-    only from the CDN a provider picked, never from arbitrary hosts a
-    client would point it at (mirrors the poster proxy's allowlist, but
-    scoped to the ONE host a stream owns).
+    only from the CDN a provider picked — a sibling subdomain of the same
+    domain is still the picked CDN, a foreign registrable domain is not,
+    and a client pointing the segment route at an arbitrary host fails
+    closed (mirrors the poster proxy's allowlist).
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or parsed.hostname is None:
         return False
     host = parsed.hostname.lower()
-    return host == cdn_host or host.endswith("." + cdn_host)
+    return _registrable_domain(host) == _registrable_domain(cdn_host)
 
 
 def _is_hls_stream(stream: StreamResponse) -> bool:
@@ -821,6 +1289,7 @@ async def _fetch_manifest(
             http, urljoin(url, location), headers, cdn_host, hops + 1
         )
     if resp.status_code != 200:
+        log.warning("jellyfin manifest non-200 url=%s status=%s", url, resp.status_code)
         return None
     return resp
 
@@ -856,7 +1325,7 @@ def _streaming_response(
     return StreamingResponse(body(), status_code=resp.status_code, headers=out_headers)
 
 
-@router.get("/Videos/{item_id}/stream", dependencies=[Depends(require_token)])
+@router.get("/Videos/{item_id:path}/stream")
 async def video_stream(item_id: str, request: Request) -> Response:
     """Conditional stream handler (D7): redirect, or the byte proxy.
 
@@ -904,7 +1373,7 @@ async def video_stream(item_id: str, request: Request) -> Response:
     )
 
 
-@router.get("/Videos/{item_id}/segment", dependencies=[Depends(require_token)])
+@router.get("/Videos/{item_id:path}/segment")
 async def video_segment(item_id: str, url: str = Query(...)) -> Response:
     """Proxy one rewritten HLS reference (D7).
 
@@ -952,12 +1421,14 @@ async def sessions_playing() -> Response:
 
 
 @router.post("/Sessions/Progress", dependencies=[Depends(require_token)])
+@router.post("/Sessions/Playing/Progress", dependencies=[Depends(require_token)])
 async def sessions_progress() -> Response:
     """Playback-progress report (D8): accept, answer 204, store nothing."""
     return Response(status_code=204)
 
 
 @router.post("/Sessions/Stopped", dependencies=[Depends(require_token)])
+@router.post("/Sessions/Playing/Stopped", dependencies=[Depends(require_token)])
 async def sessions_stopped() -> Response:
     """Playback-stop report (D8): accept, answer 204, store nothing.
 

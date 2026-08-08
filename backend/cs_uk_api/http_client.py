@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -51,14 +51,18 @@ async def safe_get(
     if 300 <= response.status_code < 400:
         location = response.headers.get("Location")
         if location:
-            host = urlparse(location).netloc
+            # A Location may be relative (e.g. `/sezon-1/ep.html` on
+            # DLE sites); resolve it against the request URL BEFORE the
+            # host check so the netloc comparison sees an absolute URL.
+            resolved = urljoin(url, location)
+            host = urlparse(resolved).netloc
             if host not in allowed_hosts:
                 raise ProviderError(
                     "not_found", f"redirect to disallowed host: {host}"
                 )
             return await safe_get(
                 http,
-                location,
+                resolved,
                 allowed_hosts=allowed_hosts,
                 headers=headers,
                 params=None,
