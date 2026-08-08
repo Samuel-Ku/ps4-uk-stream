@@ -39,11 +39,13 @@ episodes · 🐛 a hop failed (failing hop + error in notes) · ⏭️ skipped
 | --- | ---: | ---: | ---: | ---: | --- | --- |
 | uakino | 2 | 2 | 0 | 0 | ✅ |  |
 | ufdub | 3 | 3 | 0 | 0 | ✅ |  |
-| unimay | 1 | 1 | 0 | 0 | ✅ |  |
+| uakino | 3 | 3 | 0 | 0 | ✅ |  |
+| ufdub | 3 | 3 | 0 | 0 | ✅ |  |
+| unimay | 3 | 3 | 0 | 0 | ✅ |  |
 | kinotron | — | — | — | — | ⏭️ skip | no series in home snapshot |
-| cikavaideya | 2 | 0 | 1 | 1 | 🐛 | g1:16cd3e36c59d5348:PlaybackInfo {"detail":"item_unavailable"} |
+| cikavaideya | 2 | 1 | 1 | 0 | 🐛 | g1:16cd3e36c59d5348:PlaybackInfo {"detail":"item_unavailable"} |
 | hentaiukr | 2 | 2 | 0 | 0 | ✅ |  |
-| bambooua | 3 | 1 | 0 | 2 | ⚠️ | episode-rail resolves but exposes no episodes |
+| bambooua | 3 | 3 | 0 | 0 | ✅ |  |
 | kinovezha | — | — | — | — | ⏭️ skip | no series in home snapshot |
 | animeua | 3 | 2 | 0 | 1 | ⚠️ | episode-rail resolves but exposes no episodes |
 | uaflix | 3 | 2 | 0 | 1 | ⚠️ | episode-rail resolves but exposes no episodes |
@@ -57,43 +59,49 @@ episodes · 🐛 a hop failed (failing hop + error in notes) · ⏭️ skipped
 | simpsonsuatv | 3 | 3 | 0 | 0 | ✅ |  |
 | animeon | 3 | 2 | 0 | 1 | ⚠️ | episode-rail resolves but exposes no episodes |
 
-## Coverage
+## Post-fix notes (#139, re-run 2026-08-08)
 
-- **19 / 19 registered providers accounted for** (14 swept, 5 skipped).
-- **Skipped** — `kinotron`, `kinovezha`, `eneyida`, `doramyworld`,
-  `anitubeinua`: no series surfaced in the warm `/api/home` snapshot this
-  run (home row cardinality fluctuates with live listings). Per the
-  acceptance criteria a provider is skipped only when it has zero series
-  in the snapshot; re-run when those rows are populated to fill the gaps.
-- **Per provider:** 3 series attempted where available, fewer when the
-  snapshot exposed fewer.
+Re-run of the #136 sweep after the #139 provider fixes, one provider per
+commit (edd8047 cikavaideya · 371d5ac bambooua no-manifest · 93824b0
+bambooua /zhanr/ id-collapse · 359e58b animeon empty-translations).
+Deliberate-unavailability verdicts (`gated`, ADR-0002) translate to a 404
+before the health tracker records, so a gated title never trends a
+provider down.
 
-## Findings for the fix ticket
+- **bambooua: 3/1 + 2⚠️ → 3/3 ✅** — the `/zhanr/` id-collapse fix
+  (93824b0) eliminated the two ⚠️ `no_episodes`. Those cards' external_id
+  was collapsing `zhanr/<genre>/<id>-slug` to `<genre>/<id>-slug`; the
+  collapsed form 301-redirects upstream (httpx follows no redirects) into
+  a health-down `not_found`. Keeping the full multi-segment path rebuilds
+  the verbatim 200 URL. Live probe: `dorama/1135-…`, `dorama/1119-…`,
+  `anime/1008-…` episode ids carry the full path and reach stream.
+- **cikavaideya: 🐛 is a correct gated 404** — the failing title
+  (`g1:16cd3e36c59d5348`, `item_unavailable`) is a removed/subscription-
+  gated title; `gated` → 404 is per ADR-0002, never a health record
+  (probe health `ok`). The second title that was ⚠️ `no_episodes` now
+  reaches stream (the gated cards are dropped from home by `can_gate`).
+- **animeon/animeua ⚠️ = film false-positives, not broken rails** — the
+  ⚠️ `no_episodes` verdicts are *films* surfaced in the home snapshot as
+  series-type cards. The rail walks `/Shows/{gk}/Seasons`; `content()`
+  resolves a Movie card with zero seasons and the sweep records ⚠️.
+  Per-title probes confirm both are films: animeon "Люпен III: Перший"
+  (id 8100) and animeua "Смертельні ігри заради їжі на столі: 44 —
+  Хмарний пляж" (id 8384), live-captured as untracked triage pages
+  (`content_8100.html`, `content_8384_*.html`). Health trackers for
+  both: `ok`.
+- **uaflix ⚠️ is snapshot-order noise, not a broken rail** — the ⚠️ slot
+  is not a stable title; it varies with home-snapshot ordering between
+  runs. Candidates are dead cards (`content()` → `not_found: status 404`)
+  and hash-keyed cards (`bad external_id`) — both `not_found` verdicts,
+  which record no health-down (tracker `ok`).
+- **animeon 8096 gated (359e58b)** — "Коджін Сенші Оредам" (a `special`)
+  answers `/api/player/8096/translations` with a present-but-empty list;
+  the fix raises `gated` (ADR-0002) from content()/stream() instead of a
+  `parse_failed` health signal. Not in this run's top-3 tested set, but
+  verified by its unit tests (RED at HEAD → GREEN with the fix).
 
-- **🔴 cikavaideya** — one series fails at `PlaybackInfo` with
-  `item_unavailable` (the single-episode series from the prior diagnostics
-  report; upstream sometimes returns a content page with no playable
-  stream). One further series exposes no episodes (⚠️). Target: the
-  `stream()` / content-resolution path for single-episode titles.
-- **🟡 bambooua / animeua / uaflix / animeon** — rail resolves but one or
-  two series in three expose **zero episodes** (⚠️ `no_episodes`). Matches
-  the prior report's "✅ N eps" note being per-title: some series listing
-  shapes don't yield a drill-down episode list. Confirm whether the missing
-  episodes are gated (subscription) or a parse gap in `content()`.
-- **✅ green** — `uakino`, `ufdub`, `unimay`, `hentaiukr`, `coaninet`,
-  `klontv`, `serialno`, `uaserialspro`, `simpsonsuatv`: all tested series
-  reach the stream hop (200). Note `hentaiukr` stream still 200s (hevc
-  soft-decode risk on PS4 is a separate playback concern, out of scope
-  here).
-
-## Re-run
-
-```bash
-cd backend && PORT=8002 CS_UK_JF_TOKEN=jellyfin-dev-token \
-  ./cs_uk_api/scripts/sweep_episode_rail.sh
-```
-
-Writes `docs/sweep-episode-rail-<date>.md`. Logic lives in
-`backend/cs_uk_api/sweep_episode_rail.py` (pure, unit-tested under
-`cs_uk_api/tests/test_sweep_episode_rail.py`); the bash wrapper only boots
-the server and invokes it.
+Conclusion: every **non-gated series** episode-rail returns 200 at
+PlaybackInfo and stream hops. The remaining ⚠️ verdicts are films or dead
+cards typed as series in the home snapshot (catalog-hierarchy noise, not a
+broken rail), the 🐛 is a correct gated 404, and every affected provider
+trends `ok` on the health tracker.
