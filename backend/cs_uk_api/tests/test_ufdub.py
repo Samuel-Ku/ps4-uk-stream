@@ -116,14 +116,128 @@ async def test_ufdub_content_movie_parses_title_poster():
 
 @pytest.mark.asyncio
 async def test_ufdub_content_anime_classifies_as_anime():
+    """Anime is a series-like type: content() now fetches the player
+    page too, so it must be mocked."""
     content_html = _fixture("content_anime.html")
+    player_html = _fixture("player_series.html")
     with respx.mock(assert_all_called=True) as router:
         router.get("https://ufdub.com/anime/23-rekomendaciji-dlja-chudovogo-zhittja-onlajn-net-juu-no-susume.html").respond(
             200, text=content_html
         )
+        router.get(
+            "https://video.ufdub.com/AT/VP.php?ID=285",
+            headers={"Referer": "https://ufdub.com/"},
+        ).respond(200, text=player_html)
         async with httpx.AsyncClient() as http:
             c = await UFDubProvider().content("anime-23-rekomendaciji-dlja-chudovogo-zhittja-onlajn-net-juu-no-susume", http)
     assert c.type == "anime"
+
+
+@pytest.mark.asyncio
+async def test_ufdub_content_series_parses_episodes_from_player():
+    """Series/anime content surfaces the player page's `var a` array
+    as a single season of episodes. Regression (issue #114): previously
+    an empty season list was returned, so series had no playable
+    episodes in the catalog."""
+    content_html = _fixture("content_anime.html")
+    player_html = _fixture("player_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ufdub.com/anime/23-rekomendaciji-dlja-chudovogo-zhittja-onlajn-net-juu-no-susume.html").respond(
+            200, text=content_html
+        )
+        router.get(
+            "https://video.ufdub.com/AT/VP.php?ID=285",
+            headers={"Referer": "https://ufdub.com/"},
+        ).respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            c = await UFDubProvider().content("anime-23-rekomendaciji-dlja-chudovogo-zhittja-onlajn-net-juu-no-susume", http)
+    assert c.seasons is not None and len(c.seasons) == 1
+    eps = c.seasons[0].episodes
+    assert len(eps) == 37
+    assert eps[0].number == 1
+    assert eps[0].id == (
+        "anime-23-rekomendaciji-dlja-chudovogo-zhittja-onlajn-net-juu-no-susume:s1e1"
+    )
+    assert "Ритм Емоцій" in eps[0].title
+    assert eps[-1].id.endswith(":s1e37")
+
+
+@pytest.mark.asyncio
+async def test_ufdub_stream_series_selects_requested_episode():
+    """`<external>:s1e<N>` must resolve to the N-th `var a` entry, not
+    always the first one (regression, issue #114). POS=5 is the live
+    position of episode 3 in the captured player fixture."""
+    content_html = _fixture("content_anime.html")
+    player_html = _fixture("player_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ufdub.com/anime/23-rekomendaciji-dlja-chudovogo-zhittja-onlajn-net-juu-no-susume.html").respond(
+            200, text=content_html
+        )
+        router.get(
+            "https://video.ufdub.com/AT/VP.php?ID=285",
+            headers={"Referer": "https://ufdub.com/"},
+        ).respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            s = await UFDubProvider().stream(
+                "anime-23-rekomendaciji-dlja-chudovogo-zhittja-onlajn-net-juu-no-susume:s1e3",
+                None,
+                http,
+            )
+    assert "POS=5" in s.url
+    assert s.type == "mp4"
+    assert s.headers["Referer"] == "https://ufdub.com/"
+
+
+@pytest.mark.asyncio
+async def test_ufdub_stream_series_episode_out_of_range_raises():
+    """Out-of-range episodes must raise not_found, not silently fall
+    back to the first episode."""
+    from cs_uk_api.providers.base import ProviderError
+
+    content_html = _fixture("content_anime.html")
+    player_html = _fixture("player_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ufdub.com/anime/23-rekomendaciji-dlja-chudovogo-zhittja-onlajn-net-juu-no-susume.html").respond(
+            200, text=content_html
+        )
+        router.get(
+            "https://video.ufdub.com/AT/VP.php?ID=285",
+            headers={"Referer": "https://ufdub.com/"},
+        ).respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await UFDubProvider().stream(
+                    "anime-23-rekomendaciji-dlja-chudovogo-zhittja-onlajn-net-juu-no-susume:s1e99",
+                    None,
+                    http,
+                )
+    assert exc_info.value.code == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_ufdub_stream_series_unknown_season_raises():
+    """UFDub players are single-season pages: `s2e1` must raise
+    not_found."""
+    from cs_uk_api.providers.base import ProviderError
+
+    content_html = _fixture("content_anime.html")
+    player_html = _fixture("player_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ufdub.com/anime/23-rekomendaciji-dlja-chudovogo-zhittja-onlajn-net-juu-no-susume.html").respond(
+            200, text=content_html
+        )
+        router.get(
+            "https://video.ufdub.com/AT/VP.php?ID=285",
+            headers={"Referer": "https://ufdub.com/"},
+        ).respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await UFDubProvider().stream(
+                    "anime-23-rekomendaciji-dlja-chudovogo-zhittja-onlajn-net-juu-no-susume:s2e1",
+                    None,
+                    http,
+                )
+    assert exc_info.value.code == "not_found"
 
 
 @pytest.mark.asyncio
@@ -146,6 +260,30 @@ async def test_ufdub_stream_resolves_to_player_url():
     assert s.url.startswith("https://ufdub.com/video/VIDEOS.php?")
     assert s.type == "mp4"
     assert s.headers["Referer"] == "https://ufdub.com/"
+
+
+@pytest.mark.asyncio
+async def test_ufdub_stream_rejects_player_redirect_to_disallowed_host():
+    """The player URL comes from upstream HTML, so it must go through
+    the SSRF redirect allowlist (issue #121): a player page that
+    redirects to an attacker-controlled host fails closed with
+    `not_found` instead of being followed."""
+    from cs_uk_api.providers.base import ProviderError
+
+    content_html = _fixture("content_movie.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ufdub.com/film/48-fokus-pokus-hocus-pocus.html").respond(
+            200, text=content_html
+        )
+        router.get(
+            "https://video.ufdub.com/AT/VP.php?ID=2780",
+            headers={"Referer": "https://ufdub.com/"},
+        ).respond(302, headers={"Location": "https://evil.example.com/pivot"})
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await UFDubProvider().stream("film-48-fokus-pokus-hocus-pocus", None, http)
+    assert exc_info.value.code == "not_found"
+    assert "disallowed host" in exc_info.value.message
 
 
 @pytest.mark.asyncio

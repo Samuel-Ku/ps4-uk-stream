@@ -201,6 +201,8 @@ async def test_content_for_show_follows_to_seasons_and_episodes():
     follow the season subitems, and return at least one Season with
     episodes. Each episode's `id` is the full URL of the episode
     page (so stream() can fetch it directly)."""
+    from cs_uk_api.providers.simpsonsuatv import _MAX_SHOW_SEASONS
+
     show_html = _fixture("content_show.html")
     season_html = _fixture("content_season.html")
     with respx.mock(assert_all_called=True) as router:
@@ -216,6 +218,11 @@ async def test_content_for_show_follows_to_seasons_and_episodes():
     assert c.type in ("cartoon", "series")
     assert c.seasons is not None
     assert len(c.seasons) >= 1
+    # Regression (issue #119): long archives are bounded to the newest
+    # _MAX_SHOW_SEASONS so content() doesn't fetch 38 season pages.
+    assert len(c.seasons) == _MAX_SHOW_SEASONS
+    nums = [s.number for s in c.seasons]
+    assert nums == sorted(nums)
     # At least one season must have at least one episode.
     assert any(len(s.episodes) >= 1 for s in c.seasons)
     # Episode ids must be the full URL of the episode page.

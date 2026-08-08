@@ -287,6 +287,17 @@ async def test_cikavaideya_stream_invalid_episode_suffix_raises():
 
 
 @pytest.mark.asyncio
+async def test_cikavaideya_select_player_url_rejects_garbage_suffix():
+    """Regression (issue #122): `s1e2garbage` must not be treated as
+    `s1e2` — the suffix regex must fullmatch."""
+    player1 = {"1": {"1": "https://ashdi.vip/vod/1", "2": "https://ashdi.vip/vod/2"}}
+    assert (
+        CikavaIdeyaProvider._select_player_url(player1, "s1e2garbage") is None
+    )
+    assert CikavaIdeyaProvider._select_player_url(player1, "s1e2") is not None
+
+
+@pytest.mark.asyncio
 async def test_cikavaideya_search_non_200_raises_upstream_unreachable():
     """Regression: a 5xx or 4xx upstream response to the search POST
     must surface as `upstream_unreachable`, not `not_found`."""

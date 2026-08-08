@@ -9,8 +9,10 @@ import httpx
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 
+from ..http_client import safe_get
 from ..models import (
     ContentResponse,
+    Episode,
     SearchResult,
     Season,
     Section,
@@ -20,6 +22,10 @@ from ..models import (
 from .base import BaseProvider, ProviderError
 
 BASE_URL = "https://ufdub.com"
+# Hosts the upstream may legally redirect to. The content page lives on
+# ufdub.com and the player on video.ufdub.com; a hostile CMS response
+# must not be able to pivot either hop to an attacker-controlled host.
+_ALLOWED_HOSTS: frozenset[str] = frozenset({"ufdub.com", "video.ufdub.com"})
 
 UFDUB_SECTIONS: tuple[Section, ...] = (
     Section(id="filmy", title="Фільми", type="movie"),
@@ -62,6 +68,15 @@ def _external_id_from_url(href: str) -> str:
 
 
 _SLUG_RE = re.compile(r"\d+-[a-z0-9-]+")
+
+# One row of the player page's `var a = [['Title','codec',url], ...]`
+# array. Titles may contain spaces/hyphens but no quotes; codec is a
+# short label (mp4/720p/HD/source/web).
+_EPISODE_ROW_RE = re.compile(r"\[\s*'([^']*)'\s*,\s*'[^']*'\s*,\s*'([^']*)'\s*\]")
+
+# Sentinel episode-id suffix used by other providers for movies; kept
+# here so stream() treats a bare id and an explicit movie suffix alike.
+MOVIE_SUFFIX = ":__movie__"
 
 
 def _type_from_url(href: str) -> str:
@@ -211,7 +226,7 @@ class UFDubProvider(BaseProvider):
         media_type = _type_from_url(url)
         seasons: list[Season] | None = None
         if media_type == "series" or media_type == "anime":
-            seasons = self._parse_seasons(soup, player_url)
+            seasons = await self._parse_seasons(player_url, external_id, http)
         return ContentResponse(
             id=f"ufdub:{external_id}",
             type=media_type,  # type: ignore[arg-type]
@@ -237,16 +252,33 @@ class UFDubProvider(BaseProvider):
                 return m.group(1)
         return None
 
-    @staticmethod
-    def _parse_seasons(soup: BeautifulSoup, player_url: str | None) -> list[Season] | None:
-        # Upstream fetches the player page and extracts per-episode URLs
-        # from a regex on the inline script. We defer that round-trip
-        # for now and surface an empty season list (single season,
-        # no episodes) when player_url is present. The live gate will
-        # fill in episodes via /api/stream lookups.
+    async def _parse_seasons(
+        self, player_url: str | None, external_id: str, http: httpx.AsyncClient
+    ) -> list[Season] | None:
+        """Fetch the player page and surface its `var a` array as a
+        single season of episodes. UFDub gives every content page its
+        own player (one season per page), so episode ids encode only
+        the position within that page: `<external>:s1e<N>`."""
         if player_url is None:
             return None
-        return [Season(number=1, episodes=[])]
+        try:
+            resp = await safe_get(
+                http,
+                player_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+                headers={"Referer": f"{BASE_URL}/"},
+            )
+        except httpx.HTTPError as e:
+            raise ProviderError("unreachable", str(e)) from e
+        if resp.status_code != 200:
+            raise ProviderError("not_found", f"status {resp.status_code}")
+        episodes = self._extract_episodes(resp.text)
+        if not episodes:
+            return None
+        return [Season(number=1, episodes=[
+            Episode(number=i, id=f"{external_id}:s1e{i}", title=title)
+            for i, (title, _url) in enumerate(episodes, start=1)
+        ])]
 
     async def stream(
         self, content_id: str, translation: str | None, http: httpx.AsyncClient
@@ -255,15 +287,27 @@ class UFDubProvider(BaseProvider):
         # content page references it via `input_player=...`, and the real
         # media URL lives in that page's `var a = [['Серія 1','mp4', url]]`
         # array. Follow both hops (HTML + regex only, spec ground rule #4).
-        kind, _, slug = content_id.partition("-")
+        # `content_id` is either the bare external id (`film-48-...` for
+        # movies) or `<external>:s1e<N>` for a series episode.
+        if MOVIE_SUFFIX in content_id:
+            ext_id = content_id.split(MOVIE_SUFFIX, 1)[0]
+            ep_suffix = ""
+        elif ":" in content_id:
+            ext_id, _, ep_suffix = content_id.rpartition(":")
+        else:
+            ext_id, ep_suffix = content_id, ""
+        kind, _, slug = ext_id.partition("-")
         if not kind or not slug:
             raise ProviderError("parse_failed", f"invalid content_id: {content_id!r}")
         if not _SLUG_RE.fullmatch(slug):
             raise ProviderError("not_found", f"bad external_id: {content_id!r}")
-        content_url = f"{BASE_URL}/{kind}/{content_id[len(kind) + 1:]}.html"
+        content_url = f"{BASE_URL}/{kind}/{ext_id[len(kind) + 1:]}.html"
         try:
-            resp = await http.get(
-                content_url, headers={"Referer": f"{BASE_URL}/"}, follow_redirects=True
+            resp = await safe_get(
+                http,
+                content_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+                headers={"Referer": f"{BASE_URL}/"},
             )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
@@ -276,18 +320,35 @@ class UFDubProvider(BaseProvider):
                 "parse_failed", "no player iframe found on content page"
             )
         try:
-            player_resp = await http.get(
-                player_url, headers={"Referer": f"{BASE_URL}/"}, follow_redirects=True
+            player_resp = await safe_get(
+                http,
+                player_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+                headers={"Referer": f"{BASE_URL}/"},
             )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if player_resp.status_code != 200:
             raise ProviderError("not_found", f"status {player_resp.status_code}")
-        media_url = self._extract_media_url(player_resp.text)
-        if media_url is None:
+        episodes = self._extract_episodes(player_resp.text)
+        if not episodes:
             raise ProviderError(
                 "parse_failed", "no media URL found in player page"
             )
+        if ep_suffix:
+            m = re.fullmatch(r"s(\d+)e(\d+)", ep_suffix)
+            if not m:
+                raise ProviderError(
+                    "not_found", f"bad episode suffix: {ep_suffix!r}"
+                )
+            season, episode = int(m.group(1)), int(m.group(2))
+            if season != 1 or episode < 1 or episode > len(episodes):
+                raise ProviderError(
+                    "not_found", f"episode out of range: {ep_suffix!r}"
+                )
+            _title, media_url = episodes[episode - 1]
+        else:
+            _title, media_url = episodes[0]
         return StreamResponse(
             url=media_url,
             type="mp4",
@@ -295,13 +356,20 @@ class UFDubProvider(BaseProvider):
         )
 
     @staticmethod
-    def _extract_media_url(player_html: str) -> str | None:
+    def _extract_episodes(player_html: str) -> list[tuple[str, str]]:
+        """Parse the player page's `var a = [['Title','codec',url], ...]`
+        array into (title, url) pairs, in order."""
         scripts = BeautifulSoup(player_html, "lxml").select("script")
-        text = next((item.get_text() for item in scripts if "var a=" in item.get_text()), "")
-        match = re.search(r"\[[^\]]*,\s*['\"][^'\"]+['\"]\s*,\s*['\"]([^'\"]+)['\"]", text)
-        if not match:
-            return None
-        return match.group(1)
+        text = next(
+            (item.get_text() for item in scripts if re.search(r"\ba\s*=\s*\[", item.get_text())),
+            "",
+        )
+        return [(m.group(1), m.group(2)) for m in _EPISODE_ROW_RE.finditer(text)]
+
+    @staticmethod
+    def _extract_media_url(player_html: str) -> str | None:
+        episodes = UFDubProvider._extract_episodes(player_html)
+        return episodes[0][1] if episodes else None
 
 
 __all__ = ["UFDubProvider"]

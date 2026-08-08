@@ -225,6 +225,56 @@ async def test_content_resolves_episode_level_translations():
 
 
 @pytest.mark.asyncio
+async def test_content_playlist_collapsed_layout_still_parses():
+    """Regression (issue #118): the live site briefly served only two
+    `.playlists-items` blocks. The parser must classify `<li>` rows by
+    their `data-id` depth, not by block position, so a collapsed layout
+    still yields episodes instead of silently returning none."""
+    from cs_uk_api.providers.anitubeinua import _parse_playlist
+
+    collapsed = """
+    <div class="playlists-items">
+      <li data-id="0_0">СУБТИТРИ</li>
+      <li data-id="0_1">ОЗВУЧЕННЯ</li>
+    </div>
+    <div class="playlists-items">
+      <li data-id="0_0_0_0" data-file="https://ashdi.vip/vod/1">1 серія</li>
+      <li data-id="0_0_0_0" data-file="https://ashdi.vip/vod/2">2 серія</li>
+      <li data-id="0_1_0_0" data-file="https://moonanime.art/iframe/xyz">1 серія</li>
+    </div>
+    """
+    playlist = _parse_playlist(collapsed)
+    assert set(playlist["categories"]) == {"0_0", "0_1"}
+    assert len(playlist["episodes"]) == 3
+    assert playlist["episodes"][0].file_url == "https://ashdi.vip/vod/1"
+    assert playlist["episodes"][0].title == "1 серія"
+
+
+@pytest.mark.asyncio
+async def test_content_playlist_unreachable_propagates():
+    """Regression (issue #118, D5): a network failure on the AJAX
+    playlist must propagate as `unreachable` so the health tracker sees
+    the provider as down — not be swallowed into an empty-season 200."""
+    from cs_uk_api.providers.base import ProviderError
+
+    content_html = _fixture("content.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://anitube.in.ua/5981-vyskova-storya-malenkoyi-dvchinki-2-sezon.html"
+        ).respond(200, text=content_html)
+        # AJAX endpoint unreachable (connection refused).
+        router.get(url=re.compile(r"https://anitube\.in\.ua/engine/ajax/.*")).mock(
+            side_effect=httpx.ConnectError("connection refused")
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await AnitubeinuaProvider().content(
+                    "5981-vyskova-storya-malenkoyi-dvchinki-2-sezon", http
+                )
+    assert exc.value.code == "unreachable"
+
+
+@pytest.mark.asyncio
 async def test_content_bad_slug_raises_not_found():
     """Defensive: slug regex must reject path traversal before any HTTP
     request is made."""
@@ -330,6 +380,21 @@ async def test_stream_unknown_translation_raises_parse_failed():
                     "5981-vyskova-storya-malenkoyi-dvchinki-2-sezon:s2e1",
                     "NonExistentStudio",
                     http,
+                )
+    assert exc.value.code == "parse_failed"
+
+
+@pytest.mark.asyncio
+async def test_stream_garbage_episode_suffix_raises_parse_failed():
+    """Regression (issue #122): `s1e2garbage` must be rejected, not
+    silently treated as `s1e2`. The suffix regex must fullmatch."""
+    from cs_uk_api.providers.base import ProviderError
+
+    with respx.mock(assert_all_called=False):
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await AnitubeinuaProvider().stream(
+                    "5820-koli-ya-pererodivsya-slizom-4-sezon:s1e2garbage", None, http
                 )
     assert exc.value.code == "parse_failed"
 

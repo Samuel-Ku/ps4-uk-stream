@@ -142,9 +142,7 @@ async def test_serialno_content_description_and_translation():
         async with httpx.AsyncClient() as http:
             c = await SerialnoProvider().content("2075-1670", http)
     assert "сатиричн" in c.description
-    assert c.translations == [{"id": "uk", "label": "Українська"}] or (
-        len(c.translations) == 1 and c.translations[0].id == "uk"
-    )
+    assert len(c.translations) == 1 and c.translations[0].id == "uk"
 
 
 @pytest.mark.asyncio
@@ -192,6 +190,50 @@ async def test_serialno_stream_series_season2_resolves():
     assert s1.url != s2.url
     assert "s01e01" in s1.url
     assert "s02e01" in s2.url
+
+
+@pytest.mark.asyncio
+async def test_serialno_content_flat_live_payload_parses_seasons():
+    """Live-gate regression (2026-08-08): the Tortuga player payload
+    no longer wraps seasons in a "dub" object — data IS the season
+    list. The adapter must surface episodes from the flat shape."""
+    content_html = _fixture("content_series_live.html")
+    player_html = _fixture("player_embed_flat.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://serialno.tv/1398-dyuna.html").respond(
+            200, text=content_html
+        )
+        router.get("https://tortuga.tw/embed/1400").respond(
+            200, text=player_html
+        )
+        async with httpx.AsyncClient() as http:
+            c = await SerialnoProvider().content("1398-dyuna", http)
+    assert c.seasons is not None
+    assert len(c.seasons) >= 1
+    assert len(c.seasons[0].episodes) >= 1
+    assert c.seasons[0].episodes[0].id == "1398-dyuna:s1e1"
+
+
+@pytest.mark.asyncio
+async def test_serialno_stream_flat_live_payload_strips_label_and_subtitle():
+    """Live-gate regression (2026-08-08): live episode `file` values
+    carry a `{КІНО}` label prefix and a `(subtitle:)` tail. The stream
+    URL must be a bare m3u8, or mpv would try to fetch a garbage URL."""
+    content_html = _fixture("content_series_live.html")
+    player_html = _fixture("player_embed_flat.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://serialno.tv/1398-dyuna.html").respond(
+            200, text=content_html
+        )
+        router.get("https://tortuga.tw/embed/1400").respond(
+            200, text=player_html
+        )
+        async with httpx.AsyncClient() as http:
+            s = await SerialnoProvider().stream("1398-dyuna:s1e1", None, http)
+    assert s.url.startswith("https://calypso.tortuga.tw/")
+    assert s.url.endswith(".m3u8")
+    assert "{" not in s.url
+    assert "(subtitle" not in s.url
 
 
 def test_serialno_sections_lists_one():

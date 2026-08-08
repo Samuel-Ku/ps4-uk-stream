@@ -6,6 +6,8 @@
 
 ---
 
+> **Shipped-vs-decided (2026-08-08 sync):** the sections below document the **decided target model** (Model B). The backend **still ships Model A** — a single `MediaType = Literal["movie", "series", "anime", "cartoon", "dorama"]` in `backend/cs_uk_api/models.py`, and `SearchResult.type` carries it. The Model B migration (form/styles axes on items, sections and search) is **not yet implemented**; it is the open obligation of ADR-0001, whose cache-key consequence (form/styles in the `/api/search` key) only activates once the filters ship. Until then, `MediaType` values `anime`/`cartoon`/`dorama` remain conflated with `movie`/`series` in practice.
+
 ## Catalog taxonomy (Model B — form + style)
 
 The catalog is shaped by **two independent axes**: the **form** of the content (movie vs series) and the **style** tags on it (anime, cartoon, dorama, none). This split was decided to replace Model A's single `MediaType` enum, which conflated the two and forced ambiguous content like "дитяче аніме" to be either one.
@@ -91,6 +93,8 @@ Section {
 **Why one styles field, not two:** real catalog sections are all single-axis (style ∈ {anime} or form ∈ {movie}) plus the occasional `∅` for "ordinary-only". Subset/all-of semantics would model "дитяче аніме мультики" but no current section needs it (YAGNI). Adding `styles_all` later is non-breaking.
 
 ---
+
+> **Shipped-vs-decided (2026-08-08 sync):** these filter axes are **decided, not shipped**. The route currently accepts only `q` (required) and `provider` (default `all`); `form`/`style` params do not exist yet, so the ADR-0001 cache-key obligation is dormant. `/api/browse` likewise takes no filter params beyond `provider`/`section`.
 
 ## Search filter axes (decided A)
 
@@ -296,6 +300,8 @@ A Section's identity is the **tuple `(provider, id)`**, not `id` alone.
 
 ### Wire shape (decision-rich fields)
 
+> **Shipped-vs-decided (2026-08-08 sync):** the wire shape below is **out of date**. Since issue #71, `SearchResponse` ships `groups: list[SearchGroup]` (merged cross-provider cards, each with `group_key`, canonical fields, and a `sources: list[SearchResult]` list) instead of a flat top-level `results`. `ProviderFailure` still ships as documented. The ADR-0002 *semantics* (Q21–Q26) are unchanged and still authoritative; only the shape of the results container moved.
+
 ```python
 class ProviderFailure(BaseModel):
     provider: str       # provider id, e.g. "uakino"
@@ -304,7 +310,7 @@ class ProviderFailure(BaseModel):
 
 class SearchResponse(BaseModel):
     query: str
-    results: list[SearchResult]
+    groups: list[SearchGroup]   # issue #71: merged cross-provider cards
     failures: list[ProviderFailure] = []   # omitted from JSON when empty
 ```
 

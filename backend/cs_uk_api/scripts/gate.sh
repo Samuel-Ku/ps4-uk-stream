@@ -135,15 +135,20 @@ gate_one() {
         echo "GATE FAIL $provider: search (network or upstream)"
         return 1
     fi
-    count=$(python3 -c "import json,sys; print(len(json.loads(sys.argv[1])['results']))" "$results")
+    # v3 (issue #71): /api/search returns merged ``groups``, each
+    # carrying the per-provider ``sources`` list. With the provider
+    # filter the group's first source is this provider's own id
+    # (`<provider>:<external>`), which both /api/content and
+    # /api/stream accept directly.
+    count=$(python3 -c "import json,sys; print(len(json.loads(sys.argv[1])['groups']))" "$results")
     if [ "$count" = "0" ]; then
-        echo "GATE FAIL $provider: search returned 0 results"
+        echo "GATE FAIL $provider: search returned 0 groups"
         return 1
     fi
 
     # --- try up to 3 search results (top hit may be a trailer/no-player page) ---
     while [ "$tries" -lt 3 ] && [ "$tries" -lt "$count" ]; do
-        cid=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['results'][$tries]['id'])" "$results")
+        cid=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['groups'][$tries]['sources'][0]['id'])" "$results")
 
         # --- content (failures advance the loop, like stream failures) — issue #39 ---
         if ! content=$(curl -fsS --max-time 30 "$BASE/api/content/$cid" 2>/dev/null); then

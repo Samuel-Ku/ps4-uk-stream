@@ -107,6 +107,52 @@ async def test_uakino_content_movie_parses_metadata_and_voices():
 
 
 @pytest.mark.asyncio
+async def test_uakino_content_movie_without_voice_uses_default_translation():
+    """Regression (issue #123, D2): a movie whose playlist rows carry no
+    `data-voice` used to produce an empty translations list, which the
+    ContentResponse model (min_length=1) rejected with a 500. It must
+    surface a playable default translation instead."""
+    session = FakeSession(
+        **{
+            "/filmy/12567-dyuna.html": (200, _fixture("content_movie.html")),
+            "/engine/ajax/playlists.php": (
+                200,
+                _fixture("playlists_movie_no_voice.json"),
+            ),
+        }
+    )
+    async with httpx.AsyncClient() as http:
+        c = await _provider(session).content("filmy:12567-dyuna", http)
+    assert c.type == "movie"
+    assert c.seasons is None
+    assert [(t.id, t.label) for t in c.translations] == [("uk", "Українська")]
+
+
+@pytest.mark.asyncio
+async def test_uakino_stream_movie_default_uk_falls_back_to_first_file():
+    """The synthetic "uk" translation (a movie without voice labels)
+    must not surface `translation_missing` when a client streams with
+    `?translation=uk` — it falls back to the first playable file."""
+    session = FakeSession(
+        **{
+            "/engine/ajax/playlists.php": (
+                200,
+                _fixture("playlists_movie_no_voice.json"),
+            )
+        }
+    )
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ashdi.vip/vod/89434").respond(
+            200, text=_fixture("stream_ashdi_movie.html")
+        )
+        async with httpx.AsyncClient() as http:
+            s = await _provider(session).stream(
+                "filmy:12567-dyuna", "uk", http
+            )
+    assert s.url == M3U8_MOVIE
+
+
+@pytest.mark.asyncio
 async def test_uakino_content_series_parses_episodes_and_voice_groups():
     session = FakeSession(
         **{

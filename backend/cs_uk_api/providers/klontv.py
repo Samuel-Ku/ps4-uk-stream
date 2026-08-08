@@ -1,5 +1,6 @@
-"""KlonTV provider (https://klon.fun) — Ukrainian-dubbed films and
-serials. Issue #17, Group 2.
+"""KlonTV provider (https://klonua.com) — Ukrainian-dubbed films and
+serials. Issue #17, Group 2. The site migrated from klon.fun to
+klonua.com (2026-08); klon.fun now answers 301 to klonua.com.
 
 The site is a DLE-style CMS (same shape as UFDub / CikavaIdeya). The
 player pages live on `ashdi.vip` (PlayerJS `file: '...m3u8'`), so the
@@ -16,11 +17,13 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, cast
-from urllib.parse import parse_qsl, quote, urlsplit, urlunsplit, urljoin
+from urllib.parse import parse_qsl, quote, urljoin, urlsplit, urlunsplit
 
 import httpx
 from bs4 import BeautifulSoup, Tag
 
+from ..country import extract_country
+from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -28,16 +31,20 @@ from ..models import (
     Season,
     Section,
     StreamResponse,
-     Translation,
+    Translation,
 )
-from ..country import extract_country
 from .base import BaseProvider, ProviderError
 
-BASE_URL = "https://klon.fun"
+BASE_URL = "https://klonua.com"
 # ashdi.vip hosts the HLS manifest for every title. The upstream
 # Kotlin sets the Referer to "https://tortuga.wtf/" so that the CDN
 # serves the manifest.
 ASHDI_REFERER = "https://tortuga.wtf/"
+
+# Hosts the upstream may legally redirect to: the CMS on klonua.com
+# and the player CDN on ashdi.vip. A hostile CMS response must not be
+# able to pivot either hop to an attacker-controlled host.
+_ALLOWED_HOSTS: frozenset[str] = frozenset({"klonua.com", "ashdi.vip"})
 
 # Sections exposed by KlonTV's main navigation. Per the upstream
 # `mainPage = mainPageOf(...)` in KlonTVProvider.kt, but the v2
@@ -347,8 +354,10 @@ class KlonTVProvider(BaseProvider):
         will then see no episodes and stop, instead of crashing.
         """
         try:
-            resp = await http.get(
+            resp = await safe_get(
+                http,
                 _strip_query_param(player_url, "multivoice"),
+                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"Referer": BASE_URL + "/"},
             )
         except httpx.HTTPError:
@@ -421,10 +430,13 @@ class KlonTVProvider(BaseProvider):
             raise ProviderError("parse_failed", "no player url on content page")
         # Fetch the player page (ashdi.vip/vod/<id> for movies,
         # ashdi.vip/serial/<id> for series) with the same Referer
-        # header the upstream Kotlin uses.
+        # header the upstream Kotlin uses. The URL came from upstream
+        # HTML, so it goes through the redirect allowlist (#117).
         try:
-            player_resp = await http.get(
+            player_resp = await safe_get(
+                http,
                 _strip_query_param(player_url, "multivoice"),
+                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"Referer": BASE_URL + "/"},
             )
         except httpx.HTTPError as e:
@@ -460,7 +472,7 @@ class KlonTVProvider(BaseProvider):
         silent "first available episode" fallback (that would mask a
         missing suffix in the caller, a known regression pattern).
         """
-        m = re.match(r"s(\d+)e(\d+)", ep_suffix)
+        m = re.fullmatch(r"s(\d+)e(\d+)", ep_suffix)
         if not m:
             return None
         s_idx, e_idx = int(m.group(1)), int(m.group(2))

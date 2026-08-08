@@ -226,3 +226,44 @@ def test_uaflix_external_id_round_trips_to_url():
     ext_id = _external_id_from_url(href)
     rebuilt = _episode_content_url(ext_id, "s1e1")
     assert rebuilt.rstrip("/") == href.rstrip("/"), (ext_id, rebuilt, href)
+
+
+def test_uaflix_episode_suffix_rejects_garbage():
+    """Regression (issue #122): `s1e2garbage` must not be treated as
+    `s1e2` — the suffix regex must fullmatch."""
+    from cs_uk_api.providers.base import ProviderError
+    from cs_uk_api.providers.uaflix import _episode_content_url
+
+    with pytest.raises(ProviderError) as exc_info:
+        _episode_content_url("serials-djuna-proroctvo", "s1e2garbage")
+    assert exc_info.value.code == "parse_failed"
+    # And the valid suffix still builds the canonical URL.
+    rebuilt = _episode_content_url("serials-djuna-proroctvo", "s1e2")
+    assert rebuilt.endswith("/season-01-episode-02/")
+
+
+@pytest.mark.asyncio
+async def test_uaflix_content_bad_external_id_raises_not_found():
+    """Regression (issue #122): a path-traversal external_id must
+    surface as `not_found` before any HTTP request."""
+    from cs_uk_api.providers.base import ProviderError
+
+    for bad in ("../admin", "serials-../admin", ""):
+        with respx.mock(assert_all_called=False):
+            async with httpx.AsyncClient() as http:
+                with pytest.raises(ProviderError) as exc_info:
+                    await UAFlixProvider().content(bad, http)
+        assert exc_info.value.code == "not_found", f"unexpected: {bad!r}"
+
+
+@pytest.mark.asyncio
+async def test_uaflix_stream_bad_external_id_raises_not_found():
+    """Same boundary as content(): a path-traversal content_id must
+    raise `not_found` before any HTTP request."""
+    from cs_uk_api.providers.base import ProviderError
+
+    with respx.mock(assert_all_called=False):
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await UAFlixProvider().stream("serials-../admin", None, http)
+    assert exc_info.value.code == "not_found"

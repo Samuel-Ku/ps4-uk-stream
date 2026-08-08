@@ -26,6 +26,10 @@ SECTIONS = (
 # upstream HTTP client.
 _SLUG_RE = re.compile(r"\d+-[a-z0-9][a-z0-9-]*")
 
+# Sentinel episode-id suffix for movies (whose player iframe is a single
+# URL rather than a season/episode map).
+MOVIE_SUFFIX = ":__movie__"
+
 
 def _external_id(href: str) -> str:
     match = re.search(r"/(\d+-[a-z0-9-]+?)(?:\.html)?/?$", href, re.I)
@@ -192,9 +196,19 @@ class KinoTronProvider(BaseProvider):
             poster=poster, translations=translations, seasons=seasons, translations_level=translations_level, country=country)
 
     async def stream(self, content_id: str, translation: str | None, http: httpx.AsyncClient) -> StreamResponse:
-        parts = content_id.split(":")
-        external_id = parts[-2] if len(parts) >= 3 else parts[-1]
-        episode_match = re.fullmatch(r"s(\d+)e(\d+)", parts[-1]) if len(parts) >= 3 else None
+        # `content_id` arrives from /api/stream with the `<provider>:`
+        # prefix already stripped: "<external_id>" (movie),
+        # "<external_id>:__movie__" (movie from the content listing), or
+        # "<external_id>:s<N>e<M>" (series episode).
+        if MOVIE_SUFFIX in content_id:
+            external_id = content_id.split(MOVIE_SUFFIX, 1)[0]
+            episode_match = None
+        elif ":" in content_id:
+            external_id, _, ep_suffix = content_id.rpartition(":")
+            episode_match = re.fullmatch(r"s(\d+)e(\d+)", ep_suffix)
+        else:
+            external_id = content_id
+            episode_match = None
         if not _SLUG_RE.fullmatch(external_id):
             raise ProviderError("not_found", "bad external_id")
         content = await self._get(f"{BASE_URL}/{external_id}.html", http)

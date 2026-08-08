@@ -43,6 +43,29 @@ from .base import BaseProvider, ProviderError
 
 BASE_URL = "https://serialno.tv"
 
+
+def _season_list(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize the decoded player payload to a season list.
+
+    Two shapes appear in the wild:
+      - flat (current live): ``data`` IS the season list — each
+        top-level item is a season whose ``folder`` holds episodes;
+      - dub-wrapped (older fixtures): ``data`` is a list of dubs
+        whose first dub's ``folder`` holds seasons.
+
+    Detect by whether the first folder's children look like episodes
+    (no nested ``folder`` key); return the season list either way.
+    """
+    if not data:
+        return []
+    first = data[0]
+    first_folder = first.get("folder") or []
+    is_flat = not first_folder or all(
+        isinstance(x, dict) and "folder" not in x for x in first_folder
+    )
+    season_list = data if is_flat else first_folder
+    return season_list if isinstance(season_list, list) else []
+
 # Sections exposed by Serialno. Per the upstream Kotlin ``mainPage``
 # and the spec note, the site is series-only — the homepage lists
 # series and there is no film/cartoon section in scope.
@@ -284,15 +307,11 @@ class SerialnoProvider(BaseProvider):
         except json.JSONDecodeError as e:
             raise ProviderError("parse_failed", f"player json: {e}") from e
         seasons: list[Season] = []
-        # The playlist groups seasons under a top-level "dub" object
-        # (e.g. ``[{"title": "ТакТребаПродакшн", "folder": [s1, s2]}]``).
-        # We pick the first dub (matching the upstream Kotlin's
-        # implicit "play the first available dub" behaviour) and
-        # expand its ``folder`` into one Season per element.
         if not data:
             return None
-        first_dub = data[0]
-        season_list = first_dub.get("folder") or []
+        season_list = _season_list(data)
+        if not season_list:
+            return None
         for s_idx, season in enumerate(season_list, start=1):
             if not isinstance(season, dict):
                 continue
@@ -383,9 +402,8 @@ class SerialnoProvider(BaseProvider):
             return None
         if not data:
             return None
-        first_dub = data[0]
-        season_list = first_dub.get("folder") or []
-        if not isinstance(season_list, list):
+        season_list = _season_list(data)
+        if not season_list:
             return None
         if s_idx < 1 or s_idx > len(season_list):
             return None
@@ -399,6 +417,13 @@ class SerialnoProvider(BaseProvider):
         if not isinstance(ep, dict):
             return None
         file_value = str(ep.get("file", ""))
+        # Live Tortuga series files carry an optional `{DUB_LABEL}`
+        # prefix and a trailing `(subtitle:...)` marker; strip both so
+        # the client receives a bare m3u8 URL.
+        if file_value.startswith("{"):
+            file_value = file_value.split("}", 1)[1]
+        if "(subtitle:" in file_value:
+            file_value = file_value.split("(subtitle:", 1)[0]
         return file_value or None
 
 

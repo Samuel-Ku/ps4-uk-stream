@@ -62,3 +62,15 @@ def test_gate_pipeline_steps_are_present():
         "playability_profile",
     ):
         assert step in text
+
+
+def test_gate_parses_merged_groups_contract_issue71():
+    """Regression: /api/search returns merged ``groups`` (issue #71),
+    not the pre-merge ``results`` array. gate.sh must parse
+    ``['groups'][N]['sources'][0]['id']`` — the first per-provider
+    source id of each group, which /api/content and /api/stream both
+    accept — or every provider gate dies on the first JSON parse."""
+    text = GATE.read_text(encoding="utf-8")
+    assert "['groups']" in text
+    assert "['groups'][$tries]['sources'][0]['id']" in text
+    assert "['results']" not in text

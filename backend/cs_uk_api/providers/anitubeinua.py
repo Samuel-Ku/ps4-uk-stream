@@ -229,12 +229,18 @@ def _parse_content_meta(soup: BeautifulSoup) -> tuple[str, str | None, str, int 
 def _parse_playlist(html: str) -> dict[str, Any]:
     """Parse the AJAX playlist response into a structured playlist.
 
-    The HTML fragment contains four `<div class="playlists-items">`
-    blocks: categories, studios, players, and episodes. Episodes also
-    carry `data-file="<player_url>"`. The block at index 0 holds
-    category labels; we use it to decide whether an episode is a dub
-    (ОЗВУЧЕННЯ) or sub (СУБТИТРИ). Studios at index 1 carry the studio
-    name for each studio id.
+    The HTML fragment normally contains four `<div class="playlists-items">`
+    blocks: categories, studios, players, and episodes. Instead of
+    relying on their position, we classify every `<li>` by its
+    `data-id` depth and whether it carries a `data-file`:
+
+      - 2 segments  -> category label (0_0 SUBTITLES / 0_1 DUB)
+      - 3 segments  -> studio label (0_0_0 / 0_1_0 / ...)
+      - 4 segments, no data-file -> player label (0_0_0_0 / ...)
+      - data-file   -> episode row (data-id + player URL + title)
+
+    This survives layout reflows — the live site briefly served only
+    two blocks in 2026-08 — without silently losing episodes.
 
     Returns a dict with keys `categories`, `studios`, `players`, and
     `episodes` (list of `_EpisodeRow`)."""
@@ -244,27 +250,25 @@ def _parse_playlist(html: str) -> dict[str, Any]:
     studios: dict[str, str] = {}
     players: dict[str, str] = {}
     episodes: list[_EpisodeRow] = []
-    if len(blocks) > 0:
-        for li in blocks[0].select("li"):
-            categories[_attr_value(li, "data-id")] = li.get_text(strip=True)
-    if len(blocks) > 1:
-        for li in blocks[1].select("li"):
-            studios[_attr_value(li, "data-id")] = li.get_text(strip=True)
-    if len(blocks) > 2:
-        for li in blocks[2].select("li"):
-            players[_attr_value(li, "data-id")] = li.get_text(strip=True)
-    if len(blocks) > 3:
-        for li in blocks[3].select("li"):
+    for block in blocks:
+        for li in block.select("li"):
+            data_id = _attr_value(li, "data-id")
             file_url = _attr_value(li, "data-file")
-            if not file_url:
-                continue
-            episodes.append(
-                _EpisodeRow(
-                    data_id=_attr_value(li, "data-id"),
-                    file_url=file_url,
-                    title=li.get_text(strip=True),
+            segments = data_id.split("_") if data_id else []
+            if file_url:
+                episodes.append(
+                    _EpisodeRow(
+                        data_id=data_id,
+                        file_url=file_url,
+                        title=li.get_text(strip=True),
+                    )
                 )
-            )
+            elif len(segments) == 2:
+                categories[data_id] = li.get_text(strip=True)
+            elif len(segments) == 3:
+                studios[data_id] = li.get_text(strip=True)
+            elif len(segments) >= 4:
+                players[data_id] = li.get_text(strip=True)
     return {
         "categories": categories,
         "studios": studios,
@@ -587,7 +591,12 @@ class AnitubeinuaProvider(BaseProvider):
             seasons = _build_seasons(playlist, external_id)
             if seasons:
                 translations_level = "episode"
-        except ProviderError:
+        except ProviderError as e:
+            # Network/server failures must propagate so the health
+            # tracker sees the provider as down; only unparseable
+            # upstream payloads degrade to an empty season list.
+            if e.code in {"unreachable", "upstream_unreachable"}:
+                raise
             seasons = None
         # Always have at least one translation so the model min_length
         # check passes.
@@ -616,7 +625,7 @@ class AnitubeinuaProvider(BaseProvider):
             ext_id, ep_part = content_id, ""
         if not _EXTERNAL_ID_RE.fullmatch(ext_id):
             raise ProviderError("not_found", f"bad external_id: {ext_id!r}")
-        m = _EPISODE_RE.match(ep_part)
+        m = _EPISODE_RE.fullmatch(ep_part)
         if not m:
             raise ProviderError(
                 "parse_failed", f"malformed episode suffix: {ep_part!r}"
@@ -730,7 +739,7 @@ class AnitubeinuaProvider(BaseProvider):
         ext_id, _, ep_part = content_id.rpartition(":")
         if not _EXTERNAL_ID_RE.fullmatch(ext_id):
             return None
-        m = _EPISODE_RE.match(ep_part)
+        m = _EPISODE_RE.fullmatch(ep_part)
         if not m:
             return None
         season_idx, _ = int(m.group(1)), int(m.group(2))

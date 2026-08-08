@@ -17,6 +17,7 @@ from bs4.element import Tag
 
 from ..extractors import RegexExtractor
 from ..country import extract_country
+from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -33,6 +34,16 @@ from .base import BaseProvider, ProviderError
 # against the captured URL keeps test fixtures in sync with
 # production behavior.
 BASE_URL = "https://uafix.net"
+# Hosts the upstream may legally redirect to: the content page on
+# uafix.net and the PlayerJS iframe on zetvideo.net. A hostile CMS
+# response must not be able to pivot either hop elsewhere.
+_ALLOWED_HOSTS: frozenset[str] = frozenset({"uafix.net", "zetvideo.net"})
+
+# External-id boundary: `<section>-<slug>` (e.g. `serials-djuna-proroctvo`)
+# where both halves are lowercase ASCII with hyphens. Anything else —
+# path traversal, scheme injection — must surface as `not_found` before
+# content()/stream() build a URL with it.
+_EXTERNAL_ID_RE = re.compile(r"[a-z][a-z0-9-]*")
 
 # Six sections per the upstream Kotlin `mainPage`. The captured site
 # does not host `/multserialy/` — mult-serials are served from the
@@ -128,7 +139,7 @@ def _episode_content_url(external_id: str, ep_suffix: str) -> str:
     (e.g. `s1e1` -> `season-01-episode-01`).
     """
     section, _, slug = external_id.partition("-")
-    m = re.match(r"s(\d+)e(\d+)", ep_suffix)
+    m = re.fullmatch(r"s(\d+)e(\d+)", ep_suffix)
     if not m:
         raise ProviderError("parse_failed", f"bad episode suffix: {ep_suffix!r}")
     season_num = int(m.group(1))
@@ -372,6 +383,8 @@ class UAFlixProvider(BaseProvider):
     async def content(
         self, external_id: str, http: httpx.AsyncClient
     ) -> ContentResponse:
+        if not _EXTERNAL_ID_RE.fullmatch(external_id):
+            raise ProviderError("not_found", f"bad external_id: {external_id!r}")
         url = _content_url(external_id)
         try:
             resp = await http.get(url)
@@ -416,14 +429,19 @@ class UAFlixProvider(BaseProvider):
         # -> m3u8 URL extracted from PlayerJS `file: "..."` config.
         # No JS execution needed (PlayerJS stores the URL inline).
         ext_id, ep_suffix = self._split_content_id(content_id)
+        if not _EXTERNAL_ID_RE.fullmatch(ext_id):
+            raise ProviderError("not_found", f"bad external_id: {ext_id!r}")
         content_url = (
             _episode_content_url(ext_id, ep_suffix)
             if ep_suffix
             else _content_url(ext_id)
         )
         try:
-            resp = await http.get(
-                content_url, headers={"Referer": f"{BASE_URL}/"}, follow_redirects=True
+            resp = await safe_get(
+                http,
+                content_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+                headers={"Referer": f"{BASE_URL}/"},
             )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
@@ -436,10 +454,11 @@ class UAFlixProvider(BaseProvider):
                 "parse_failed", "no player iframe found on content page"
             )
         try:
-            player_resp = await http.get(
+            player_resp = await safe_get(
+                http,
                 player_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"Referer": f"{BASE_URL}/"},
-                follow_redirects=True,
             )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e

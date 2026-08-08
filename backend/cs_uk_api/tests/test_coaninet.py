@@ -32,19 +32,22 @@ def _json(name: str) -> object:
 @pytest.mark.asyncio
 async def test_coaninet_search_parses_results():
     """A real search hit must yield one SearchResult per API item, with
-    the external_id taken from the season's numeric ``id`` (not the SEO
-    slug) and the poster URL taken from ``preview.preview_main``."""
+    the external_id taken from the season's SEO slug (the only stable
+    address the migrated API exposes) and the poster URL taken from
+    ``preview.preview_main``."""
     search_json = _fixture("search.json")
     with respx.mock(assert_all_called=True) as router:
-        router.get(url__regex=r"https://coani\.net/api/v1/search.*").respond(
-            200, text=search_json
-        )
+        router.get(
+            url__regex=r"https://api\.coani\.net/api/film/catalog\?search=.*"
+        ).respond(200, text=search_json)
         async with httpx.AsyncClient() as http:
             results = await CoaninetProvider().search("Лиходійка", http)
     # search.json contains exactly 1 result for the "Лиходійка" query.
     assert len(results) == 1
     r = results[0]
-    assert r.id == "coaninet:173"
+    assert r.id == (
+        "coaninet:the-villainess-is-adored-by-the-prince-of-the-neighbor-kingdom"
+    )
     assert r.provider == "coaninet"
     assert r.type == "series"
     assert "Лиходійка" in r.title
@@ -59,13 +62,14 @@ async def test_coaninet_search_parses_results():
 
 @pytest.mark.asyncio
 async def test_coaninet_browse_films_page1():
-    """The films section is ``/api/v1/films?page=N``. Page 1 of the
-    captured catalog fixture returns 10 results."""
+    """The films section is ``/api/film/catalog?page=N`` (the migrated
+    API serves both sections from one route). Page 1 of the captured
+    catalog fixture returns 10 results."""
     catalog_json = _fixture("catalog_page1.json")
     with respx.mock(assert_all_called=True) as router:
-        router.get(url__regex=r"https://coani\.net/api/v1/films.*").respond(
-            200, text=catalog_json
-        )
+        router.get(
+            url__regex=r"https://api\.coani\.net/api/film/catalog\?page=.*"
+        ).respond(200, text=catalog_json)
         async with httpx.AsyncClient() as http:
             results, has_next = await CoaninetProvider().browse("films", 1, http)
     assert len(results) == 10
@@ -76,13 +80,13 @@ async def test_coaninet_browse_films_page1():
 
 @pytest.mark.asyncio
 async def test_coaninet_browse_series_page1():
-    """The series section is ``/api/v1/series?page=N`` and returns the
-    same shape as films (the captured catalog is a serial catalog)."""
+    """The series section is ``/api/film/catalog?page=N`` too — the
+    migrated API no longer distinguishes films from serials."""
     catalog_json = _fixture("catalog_page1.json")
     with respx.mock(assert_all_called=True) as router:
-        router.get(url__regex=r"https://coani\.net/api/v1/series.*").respond(
-            200, text=catalog_json
-        )
+        router.get(
+            url__regex=r"https://api\.coani\.net/api/film/catalog\?page=.*"
+        ).respond(200, text=catalog_json)
         async with httpx.AsyncClient() as http:
             results, has_next = await CoaninetProvider().browse("series", 1, http)
     assert len(results) == 10
@@ -93,19 +97,21 @@ async def test_coaninet_browse_series_page1():
 @pytest.mark.asyncio
 async def test_coaninet_content_film_parses_title_poster():
     """content() must return the Cyrillic title and the preview_main
-    poster URL by hitting ``/api/v1/season/<id>``."""
+    poster URL by hitting ``/api/film/season?slug=<slug>`` (the season
+    slug external id) and the id-addressed series endpoint."""
     season_json = _fixture("season.json")
     series_json = _fixture("series.json")
+    slug = "the-villainess-is-adored-by-the-prince-of-the-neighbor-kingdom"
     with respx.mock(assert_all_called=True) as router:
-        router.get("https://coani.net/api/v1/season/173").respond(
-            200, text=season_json
-        )
-        router.get("https://coani.net/api/v1/season/173/series").respond(
+        router.get(
+            f"https://api.coani.net/api/film/season?slug={slug}"
+        ).respond(200, text=season_json)
+        router.get("https://api.coani.net/api/film/season/173/series").respond(
             200, text=series_json
         )
         async with httpx.AsyncClient() as http:
-            c = await CoaninetProvider().content("173", http)
-    assert c.id == "coaninet:173"
+            c = await CoaninetProvider().content(slug, http)
+    assert c.id == f"coaninet:{slug}"
     assert c.type == "series"
     assert "Лиходійка" in c.title
     assert c.year == 2026
@@ -119,19 +125,22 @@ async def test_coaninet_content_series_parses_seasons():
     list and return at least one season with at least one episode."""
     season_json = _fixture("season.json")
     series_json = _fixture("series.json")
+    slug = "the-villainess-is-adored-by-the-prince-of-the-neighbor-kingdom"
     with respx.mock(assert_all_called=True) as router:
-        router.get("https://coani.net/api/v1/season/173").respond(
-            200, text=season_json
-        )
-        router.get("https://coani.net/api/v1/season/173/series").respond(
+        router.get(
+            f"https://api.coani.net/api/film/season?slug={slug}"
+        ).respond(200, text=season_json)
+        router.get("https://api.coani.net/api/film/season/173/series").respond(
             200, text=series_json
         )
         async with httpx.AsyncClient() as http:
-            c = await CoaninetProvider().content("173", http)
+            c = await CoaninetProvider().content(slug, http)
     assert c.seasons is not None
     assert len(c.seasons) >= 1
     episodes = c.seasons[0].episodes
     assert len(episodes) >= 1
+    # Episode ids embed the season slug, not the numeric id.
+    assert episodes[0].id == f"coaninet:{slug}:1"
     # Coaninet exposes one entry per (episode, voice_type); multiple
     # voice_types per episode surface as per-episode translations.
     assert c.translations_level == "episode"
@@ -139,17 +148,22 @@ async def test_coaninet_content_series_parses_seasons():
 
 @pytest.mark.asyncio
 async def test_coaninet_stream_resolves_to_media_url():
-    """stream() must look up the episode in the series list and return
-    its ``video`` m3u8 URL. The voice_type filter selects between
-    POLYPHONIC and SUB variants of the same episode number."""
+    """stream() must resolve the season slug to its numeric id, look up
+    the episode in the series list, and return its ``video`` m3u8 URL.
+    The voice_type filter selects between POLYPHONIC and SUB variants
+    of the same episode number."""
     season_json = _fixture("season.json")
     series_json = _fixture("series.json")
+    slug = "the-villainess-is-adored-by-the-prince-of-the-neighbor-kingdom"
     with respx.mock(assert_all_called=True) as router:
-        router.get("https://coani.net/api/v1/season/173/series").respond(
+        router.get(
+            f"https://api.coani.net/api/film/season?slug={slug}"
+        ).respond(200, text=season_json)
+        router.get("https://api.coani.net/api/film/season/173/series").respond(
             200, text=series_json
         )
         async with httpx.AsyncClient() as http:
-            s = await CoaninetProvider().stream("173:1", "POLYPHONIC", http)
+            s = await CoaninetProvider().stream(f"{slug}:1", "POLYPHONIC", http)
     assert s.url.endswith(".m3u8")
     assert s.url.startswith("https://s")  # s3.coani.net / s1.coani.net
     assert s.type == "m3u8"

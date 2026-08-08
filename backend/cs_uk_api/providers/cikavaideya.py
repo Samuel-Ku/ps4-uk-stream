@@ -341,7 +341,7 @@ class CikavaIdeyaProvider(BaseProvider):
             return player1 if not ep_suffix else None
         if not ep_suffix:
             return None
-        m = re.match(r"s(\d+)e(\d+)", ep_suffix)
+        m = re.fullmatch(r"s(\d+)e(\d+)", ep_suffix)
         if not m:
             return None
         s_idx, e_idx = int(m.group(1)), int(m.group(2))

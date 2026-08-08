@@ -107,7 +107,9 @@ async def test_kinotron_stream_movie_player_with_direct_m3u8():
         router.get("https://kinotron.tv/9728-djuna.html").respond(200, text=_fixture("content_movie_vod.html"))
         router.get("https://ashdi.vip/vod/176240").respond(200, text=_fixture("player_movie.html"))
         async with httpx.AsyncClient() as http:
-            stream = await KinoTronProvider().stream("kinotron:9728-djuna", None, http)
+            # Production shape: /api/stream strips the `kinotron:`
+            # prefix before calling stream().
+            stream = await KinoTronProvider().stream("9728-djuna", None, http)
     assert stream.url.startswith("https://ashdi.vip/video01/")
     assert stream.url.endswith("index.m3u8")
     assert stream.type == "m3u8"
@@ -139,8 +141,13 @@ async def test_kinotron_stream_selects_requested_episode():
             200, text=_fixture("player_series.html")
         )
         async with httpx.AsyncClient() as http:
+            # Regression (diagnostics 2026-08-08): the route passes the
+            # provider-stripped id `slug:sNeM` (2 parts), NOT the
+            # provider-prefixed `kinotron:slug:sNeM` (3 parts). The old
+            # parser took parts[-1] as the external_id and answered 404
+            # for every series episode.
             stream = await KinoTronProvider().stream(
-                "kinotron:3663-pervorodn-pradavn-pershonarodzhenn:s1e2",
+                "3663-pervorodn-pradavn-pershonarodzhenn:s1e2",
                 "Bezro Studio",
                 http
             )

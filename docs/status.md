@@ -6,7 +6,18 @@ followed the plan at
 
 ## Delivered
 
-### Backend (FastAPI, Python) -- 362 tests passing
+### Backend (FastAPI, Python) -- 719 tests passing (2026-08-08)
+
+Diagnostics + fix pass (2026-08-08, see `docs/diagnostics-2026-08-08.md`
+and GitHub issues #112–#125): live-gate review of all 19 providers
+found and fixed four code bugs (kinotron series episodes 404,
+serialno Tortuga payload drift, ufdub series without episode lists,
+animeon movies unplayable) plus five upstream drifts (coaninet API
+moved to `api.coani.net`, klontv → `klonua.com`, anitubeinua playlist
+layout, simpsonsuatv season-fetch bound, gate.sh `groups` contract).
+Ufdub and uaflix now follow redirects via the `safe_get` allowlist;
+boundary validation is `fullmatch` everywhere; uakino movies without a
+`data-voice` fall back to a default translation instead of 500.
 
 - `backend/cs_uk_api/` -- complete package.
 - v1 endpoints: `GET /api/search`, `GET /api/content/{id}`, `GET /api/stream/{id}`,
@@ -39,9 +50,10 @@ followed the plan at
     PBKDF2-HMAC-SHA512 player-config decrypt, requires `pycryptodome` dep).
   - See [`docs/provider-triage.md`](provider-triage.md) for the full
     per-provider status table.
-- Live gate tooling (`backend/scripts/live_gate.py`) drives
-  search → content → stream → mpv playback against the real site for
-  smoke-testing.
+- Live gate tooling (`backend/cs_uk_api/scripts/gate.sh <provider>
+  [query]` / `gate.sh --all`) drives search → content → stream → mpv
+  playback against the real site for smoke-testing (issue #30, spec
+  §7.1); `backend/cs_uk_api/scripts/README.md` documents it.
 - Live smoke test confirmed `/api/providers` returns all registered
   providers and the validation/404 paths behave correctly.
 
@@ -200,8 +212,10 @@ skipped (Banderakino — site offline, and the only one not portable
 without a JS engine). The Uakino provider is the reference
 implementation — note: its live upstream moved to `uakino.best`
 (content/player pages are behind a Cloudflare Turnstile challenge, the
-site runs a new DLE theme), so the live gate cannot pass; fixture tests
-remain green. See
+site runs a new DLE theme), so the plain-HTTP live gate cannot pass;
+fixture tests remain green. The personal-use Chromium exception
+(issue #51) serves live uakino requests; `refresh_uakino.py` is its
+health probe. See
 [`docs/research/uakino-reachability-2026-08-02.md`](research/uakino-reachability-2026-08-02.md).
 To add a new provider:
 

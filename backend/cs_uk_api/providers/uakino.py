@@ -204,11 +204,23 @@ def _pick_voice(
 ) -> _PlaylistItem | None:
     """Pick a playlist item: the requested voice, or the first one when no
     voice was requested (specified-but-unmatched voices return None so the
-    caller can raise translation_missing)."""
+    caller can raise translation_missing).
+
+    The synthetic ``"uk"`` default (issue #123: a movie whose playlist
+    rows carry no ``data-voice`` surfaces ``Translation(id="uk")`` so
+    the model's min_length=1 holds) is a placeholder, not a real studio:
+    when a client streams with ``?translation=uk`` and no item carries
+    that voice, fall back to the first playable item instead of
+    surfacing translation_missing."""
     if translation is not None:
-        return next(
+        match = next(
             (it for it in candidates if it.get("voice") == translation), None
         )
+        if match is not None:
+            return match
+        if translation == "uk":
+            return candidates[0] if candidates else None
+        return None
     return candidates[0] if candidates else None
 
 
@@ -349,6 +361,11 @@ class UakinoProvider(BaseProvider):
             for it in items
             if it.get("voice")
         ]
+        # A movie whose playlist rows carry no voice label (single
+        # direct-file entry) must still surface a playable default —
+        # the model requires at least one translation (issue #123, D2).
+        if not translations:
+            translations = [Translation(id="uk", label="Українська")]
         return ContentResponse(
             id=f"uakino:{external_id}",
             type="anime" if "аніме" in " ".join(tags).lower() else "movie",

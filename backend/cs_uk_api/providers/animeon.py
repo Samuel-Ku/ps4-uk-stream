@@ -631,9 +631,21 @@ class AnimeONProvider(BaseProvider):
     async def stream(
         self, content_id: str, translation: str | None, http: httpx.AsyncClient
     ) -> StreamResponse:
-        parts = content_id.split(":", 2)
-        if len(parts) != 3 or not _EXTERNAL_ID_RE.fullmatch(parts[0]):
-            raise ProviderError("not_found", "bad content_id")
+        # Movies stream by their bare id (search-result id, or the
+        # explicit `:__movie__` suffix); series episodes carry the
+        # encoded `e<N>:<blob>` suffix.
+        if ":" in content_id:
+            parts = content_id.split(":", 2)
+            if len(parts) == 2 and parts[1] == "__movie__":
+                if not _EXTERNAL_ID_RE.fullmatch(parts[0]):
+                    raise ProviderError("not_found", "bad content_id")
+                return await self._movie_stream(int(parts[0]), translation, http)
+            if len(parts) != 3 or not _EXTERNAL_ID_RE.fullmatch(parts[0]):
+                raise ProviderError("not_found", "bad content_id")
+        else:
+            if not _EXTERNAL_ID_RE.fullmatch(content_id):
+                raise ProviderError("not_found", "bad content_id")
+            return await self._movie_stream(int(content_id), translation, http)
         anime_id = int(parts[0])
         if not re.fullmatch(r"e\d{1,5}", parts[1]):
             raise ProviderError("parse_failed", "bad episode suffix")
@@ -670,6 +682,87 @@ class AnimeONProvider(BaseProvider):
             type="m3u8",
             headers=_stream_headers(chosen),
         )
+
+    async def _movie_stream(
+        self, anime_id: int, translation: str | None, http: httpx.AsyncClient
+    ) -> StreamResponse:
+        """Resolve a movie's single stream. Movies have no episode rows
+        in `/api/player/<id>/episodes`, so we mirror the upstream
+        Kotlin `loadMovieLinks`: try the episode walk per player and
+        fall back to the direct endpoint
+        `/api/player/<playerId>/<translationId>`, whose `videoUrl`/
+        `fileUrl` lead straight to the film."""
+        doc = await self._ask_translations(anime_id, http)
+        translations = (doc or {}).get("translations") or []
+        for trans in translations:
+            t = trans.get("translation") or {}
+            name = str(t.get("name") or "").strip()
+            trans_id = t.get("id")
+            if trans_id is None or not name:
+                continue
+            if translation is not None and name != translation:
+                continue
+            for player in trans.get("player") or []:
+                player_id = player.get("id")
+                player_name = str(player.get("name") or "").strip()
+                if player_id is None:
+                    continue
+                source = await self._resolve_movie_player_source(
+                    anime_id, int(trans_id), name, player, player_name, http
+                )
+                if source is not None:
+                    url = await self._resolve_source_url(anime_id, 1, source, http)
+                    return StreamResponse(
+                        url=url, type="m3u8", headers=_stream_headers(source)
+                    )
+        if translation is not None:
+            raise ProviderError(
+                "translation_missing", f"translation {translation!r} not available"
+            )
+        raise ProviderError("parse_failed", "no movie source resolved")
+
+    async def _resolve_movie_player_source(
+        self,
+        anime_id: int,
+        translation_id: int,
+        translation_name: str,
+        player: dict[str, Any],
+        player_name: str,
+        http: httpx.AsyncClient,
+    ) -> dict[str, Any] | None:
+        """One (translation, player) pair's playable source for a movie:
+        the first episode-row entry if the walk yields any, otherwise
+        the direct player endpoint (the upstream `loadMovieLinks`
+        fallback). 4xx on the direct endpoint means "no direct source"
+        and is skipped; 5xx propagates as `upstream_unreachable`."""
+        entries = await self._collect_player_sources(
+            anime_id, translation_id, translation_name, player, http
+        )
+        if entries:
+            return entries[0]
+        try:
+            direct = await self._get_json(
+                f"{BASE_URL}/api/player/{player.get('id')}/{translation_id}", http
+            )
+        except ProviderError as e:
+            if e.code in {"unreachable", "upstream_unreachable"}:
+                raise
+            logger.debug("animeon movie direct source unavailable: %s", e)
+            return None
+        if not isinstance(direct, dict):
+            return None
+        video_url = str(direct.get("videoUrl") or "") or None
+        file_url = str(direct.get("fileUrl") or "") or None
+        if not video_url and not file_url:
+            return None
+        return {
+            "id": 0,
+            "episode": 1,
+            "video_url": video_url,
+            "file_url": file_url,
+            "translation_name": translation_name,
+            "player_name": player_name,
+        }
 
     async def _resolve_source_url(
         self,

@@ -20,6 +20,7 @@ refuse path traversal before any HTTP request is made.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from urllib.parse import urljoin, urlparse
 
@@ -48,6 +49,18 @@ ASHDI_REFERER = BASE_URL + "/"
 # set is treated as a not_found error so a hostile CMS response can't
 # pivot the request to an attacker-controlled host.
 _ALLOWED_HOSTS: frozenset[str] = frozenset({"simpsonsua.tv", "ashdi.vip"})
+
+# How many season subpages a show page may fetch at once. A show like
+# The Simpsons has 35+ seasons; sequential fetches pushed content() past
+# 30s (issue #119), so season enumeration runs with a bounded concurrency.
+_SEASON_FETCH_CONCURRENCY = 6
+
+# How many seasons a show page surfaces. The CMS answers each season
+# page in ~0.8s and serialises concurrent requests, so fetching all 37
+# Simpsons seasons blows the request budget. We return the newest N
+# seasons (the hot path); older seasons remain reachable by searching
+# for the season page itself (e.g. `s5`) or by its season external id.
+_MAX_SHOW_SEASONS = 10
 
 # Browse surfaces the latest home-page updates and the paginated catalogue.
 SIMPSONSUATV_SECTIONS: tuple[Section, ...] = (
@@ -533,23 +546,38 @@ class SimpsonsUATvProvider(BaseProvider):
             episodes = _parse_season_episodes(soup, content_url)
             season_num = _season_number(content_url) or 1
             return [Season(number=season_num, episodes=episodes)] if episodes else None
-        # Show page: follow season subitems.
+        # Show page: follow season subitems. Fetch the season pages
+        # concurrently (bounded by a semaphore) so a 35-season archive
+        # resolves in a few seconds instead of 30+ sequential hops
+        # (issue #119). A failed season is skipped, matching the old
+        # sequential behaviour.
         season_links = _parse_show_subitems(soup, content_url)
         if not season_links:
             return None
-        seasons: list[Season] = []
-        for season_num_str, season_url in sorted(
-            season_links, key=lambda kv: int(kv[0])
-        ):
-            try:
-                resp = await self._get(season_url, http)
-            except ProviderError:
-                continue
+        # Newest first, bounded by _MAX_SHOW_SEASONS so long archives
+        # (The Simpsons has 37 seasons) resolve within the request
+        # budget instead of timing out.
+        ordered = sorted(season_links, key=lambda kv: int(kv[0]))[-_MAX_SHOW_SEASONS:]
+        semaphore = asyncio.Semaphore(_SEASON_FETCH_CONCURRENCY)
+
+        async def fetch_season(
+            season_num_str: str, season_url: str
+        ) -> Season | None:
+            async with semaphore:
+                try:
+                    resp = await self._get(season_url, http)
+                except ProviderError:
+                    return None
             season_soup = BeautifulSoup(resp.text, "lxml")
             episodes = _parse_season_episodes(season_soup, season_url)
             if not episodes:
-                continue
-            seasons.append(Season(number=int(season_num_str), episodes=episodes))
+                return None
+            return Season(number=int(season_num_str), episodes=episodes)
+
+        fetched = await asyncio.gather(
+            *(fetch_season(num, url) for num, url in ordered)
+        )
+        seasons = [s for s in fetched if s is not None]
         return seasons or None
 
     async def stream(
