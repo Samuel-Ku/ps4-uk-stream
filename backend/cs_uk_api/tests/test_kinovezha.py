@@ -67,6 +67,28 @@ async def test_kinovezha_browse_films_parses_results():
 
 
 @pytest.mark.asyncio
+async def test_kinovezha_browse_films_follows_page_1_redirect():
+    """Issue #170: the upstream now 301-redirects the first page
+    (`/films/page/1/` -> `/films/`). `browse()` must follow the same-host
+    redirect (via the SSRF-safe `safe_get`) instead of failing with
+    `not_found` on the 301, which surfaced as a 502."""
+    listing_html = _fixture("films_listing.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://kinovezha.tv/films/page/1/").respond(
+            301, headers={"Location": "/films/"}
+        )
+        router.get("https://kinovezha.tv/films/").respond(
+            200, text=listing_html
+        )
+        async with httpx.AsyncClient() as http:
+            results, has_next = await KinoVezhaProvider().browse("films", 1, http)
+    # Same parsed result as the direct page-1 fetch.
+    assert len(results) == 18
+    assert all(r.type == "movie" for r in results)
+    assert has_next is True
+
+
+@pytest.mark.asyncio
 async def test_kinovezha_browse_series_parses_results():
     """The /series/ section is upstream's "Серіали". Each card carries
     the "Серіали" Жанр tag → all classify as `series`."""
@@ -179,6 +201,36 @@ async def test_kinovezha_content_series_parses_seasons():
     assert len(c.seasons[0].episodes) == 2
     first = c.seasons[0].episodes[0]
     assert first.id.endswith(":s1e1")
+
+
+@pytest.mark.asyncio
+async def test_kinovezha_content_series_shifted_genre_row_not_misclassified():
+    """Regression (upstream 2026-08-09): the «Списки:» row vanished
+    from content pages, so the Жанр row moved from li index 2 to index
+    1. Index-based lookup read «Країна: США» instead and classified a
+    Мультсеріал as a movie — playable content but a dead stream
+    (`no stream url for ''`). The Жанр row must be found by label, and
+    the singular «Мультсеріал» tag must classify as series."""
+    import re
+
+    content_html = _fixture("content_series.html")
+    # Drop the «Списки:» li so Жанр shifts to index 1 (live shape),
+    # and rename the Жанр tag to the singular «Мультсеріал».
+    content_html = re.sub(r"<li><span>Списки:</span>.*?</li>", "", content_html, flags=re.S)
+    content_html = content_html.replace(">Серіали</a>", ">Мультсеріал</a>", 1)
+    player_html = _fixture("player_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://kinovezha.tv/2831-enn-droyid.html").respond(
+            200, text=content_html
+        )
+        router.get("https://tortuga.tw/embed/2859").respond(
+            200, text=player_html
+        )
+        async with httpx.AsyncClient() as http:
+            c = await KinoVezhaProvider().content("2831-enn-droyid", http)
+    assert c.type == "series"
+    assert c.seasons is not None
+    assert len(c.seasons[0].episodes) == 2
 
 
 @pytest.mark.asyncio

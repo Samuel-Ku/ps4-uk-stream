@@ -79,10 +79,15 @@ _PATH_TYPE: tuple[tuple[str, str], ...] = (
 # Жанр tag -> MediaType. Used by `content()` to classify the page from
 # the tag list (the Kotlin conditional: contains "Мультсеріали" or
 # "Серіали" → TvSeries; else Movie).
-# Needles are pre-lowered to skip `.lower()` on every call.
+# Needles are pre-lowered to skip `.lower()` on every call. Both the
+# singular and plural forms are needed — upstream titles a Мультсеріал
+# page's Жанр row «Мультсеріал» (singular, observed live 2026-08-09).
+# Longest needles first so "Мультсеріали" beats "Серіали".
 _TAG_TYPE: tuple[tuple[str, str], ...] = (
     ("мультсеріали", "series"),
+    ("мультсеріал", "series"),
     ("серіали", "series"),
+    ("серіал", "series"),
     ("мультфільми", "movie"),
     ("фільми", "movie"),
 )
@@ -252,8 +257,16 @@ class KinoVezhaProvider(BaseProvider):
         self, section: str, page: int, http: httpx.AsyncClient
     ) -> tuple[list[SearchResult], bool]:
         url = _section_url(section, page)
+        # The upstream now 301-redirects the first page (`/films/page/1/`
+        # -> `/films/`), so fetch through the SSRF-safe `safe_get` helper
+        # (same host allowlist as stream()) which follows allowed same-host
+        # redirects. Pages > 1 still return 200 directly and are unaffected.
         try:
-            resp = await http.get(url)
+            resp = await safe_get(
+                http,
+                url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+            )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
@@ -302,10 +315,19 @@ class KinoVezhaProvider(BaseProvider):
         if img is not None:
             poster_src = str(img.get("src") or img.get("data-src") or "") or None
         poster = urljoin(BASE_URL, poster_src) if poster_src else None
-        # The Жанр row is `<li>` index 2 of `.inner-page__list`. We
-        # collect the visible text to drive type classification.
+        # The Жанр row is the `<li>` whose label is «Жанр» inside
+        # `.inner-page__list`. It used to sit at a fixed index (2), but
+        # upstream dropped the «Списки:» row so the position shifted
+        # (observed live 2026-08-09) — index-based lookup misread the
+        # row as «Країна: США» and classified a Мультсеріал as a movie,
+        # dead at stream() time. Match the label instead.
         flist = soup.select(".inner-page__list > li")
-        tags_text = flist[2].get_text(" ", strip=True) if len(flist) >= 3 else ""
+        tags_text = ""
+        for li in flist:
+            label = li.select_one("span")
+            if label is not None and "Жанр" in label.get_text(strip=True):
+                tags_text = li.get_text(" ", strip=True)
+                break
         media_type = _classify_from_tags(tags_text)
         country: str | None = extract_country(soup)
         desc_el = soup.select_one("div.inner-page__text")
