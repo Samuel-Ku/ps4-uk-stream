@@ -563,10 +563,35 @@ class AnimeONProvider(BaseProvider):
             for trans in translations
             for player in trans.get("player") or []
         ]
+        # Issue #192 follow-up: one (translation, player) pair that
+        # hiccups (throttle 502, read timeout) must NOT kill the whole
+        # series — a long archive has many pairs and a single transient
+        # failure would gate the entire card. Failures are logged and
+        # the surviving pairs still build the episode map; only when
+        # EVERY pair failed do we surface the first real error so the
+        # caller sees `upstream_unreachable` / `unreachable` instead of
+        # a misleading empty parse.
+        results = await asyncio.gather(*pairs, return_exceptions=True)
+        failures = [r for r in results if isinstance(r, BaseException)]
         episodes_by_num: dict[int, list[dict[str, Any]]] = {}
-        for sources in await asyncio.gather(*pairs):
+        for sources in results:
+            if isinstance(sources, BaseException):
+                continue
             for entry in sources:
                 episodes_by_num.setdefault(int(entry["episode"]), []).append(entry)
+        if failures:
+            first_error = next(
+                (f for f in failures if isinstance(f, ProviderError)), None
+            )
+            if not episodes_by_num and first_error is not None:
+                raise first_error
+            logger.warning(
+                "animeon %d/%d episode-walk pairs failed (continuing with %d): %s",
+                len(failures),
+                len(pairs),
+                len(episodes_by_num),
+                "; ".join(str(f) for f in failures[:3]),
+            )
         return episodes_by_num
 
     async def _collect_player_sources(

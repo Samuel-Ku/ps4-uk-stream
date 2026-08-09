@@ -614,12 +614,11 @@ async def test_content_bad_redirect_slug_raises_not_found():
 
 
 @pytest.mark.asyncio
-async def test_content_specials_5xx_propagates_upstream_unreachable():
-    """A 5xx on the optional ``skip=-1`` specials fetch must surface
-    as ``upstream_unreachable`` — not be silently swallowed and
-    misattributed to ``parse_failed`` further down the call stack."""
-    from cs_uk_api.providers.base import ProviderError
-
+async def test_content_one_pair_5xx_does_not_gate_the_series():
+    """A 5xx on ONE (translation, player) pair's specials fetch must
+    not gate the whole series (issue #187 follow-up): the surviving
+    pairs still build the episode map, so the card stays playable.
+    Only when EVERY pair fails does content() surface the error."""
     redirect_json = _fixture("content_redirect.json")
     content_json = _fixture("content.json")
     translations_json = _fixture("translations.json")
@@ -653,6 +652,40 @@ async def test_content_specials_5xx_propagates_upstream_unreachable():
                 r"https://animeon\.club/api/player/913/episodes\?.*playerId=1052.*"
             )
         ).respond(200, text=episodes_ashdi_json)
+        async with httpx.AsyncClient() as http:
+            c = await AnimeONProvider().content("913", http)
+    assert c.id == "animeon:913"
+    assert c.seasons is not None
+    assert len(c.seasons[0].episodes) >= 1
+
+
+@pytest.mark.asyncio
+async def test_content_all_pairs_fail_propagates_upstream_error():
+    """When EVERY (translation, player) pair 5xxes on the episode
+    walk, content() must surface the upstream error instead of an
+    empty series (issue #187 follow-up) — a dead upstream is a real
+    health signal, not a parse failure."""
+    from cs_uk_api.providers.base import ProviderError
+
+    redirect_json = _fixture("content_redirect.json")
+    content_json = _fixture("content.json")
+    translations_json = _fixture("translations.json")
+    with respx.mock(assert_all_called=False) as router:
+        router.get("https://animeon.club/api/anime/913").respond(
+            200, text=redirect_json
+        )
+        router.get("https://animeon.club/api/anime/913-naruto").respond(
+            200, text=content_json
+        )
+        router.get("https://animeon.club/api/player/913/translations").respond(
+            200, text=translations_json
+        )
+        router.get(
+            url=re.compile(r"https://animeon\.club/api/player/913/episodes\?.*skip=-1.*")
+        ).respond(503, text="")
+        router.get(
+            url=re.compile(r"https://animeon\.club/api/player/913/episodes\?.*skip=0.*")
+        ).respond(503, text="")
         async with httpx.AsyncClient() as http:
             with pytest.raises(ProviderError) as exc:
                 await AnimeONProvider().content("913", http)
