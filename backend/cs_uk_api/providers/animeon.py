@@ -47,6 +47,8 @@ import httpx
 from ..models import (
     ContentResponse,
     Episode,
+    MediaForm,
+    MediaStyle,
     SearchResult,
     Season,
     Section,
@@ -168,6 +170,21 @@ def _poster_url(preview: str | None) -> str | None:
     return f"{BASE_URL}/api/uploads/images/{preview}"
 
 
+def _form_from_type(raw_type: Any) -> MediaForm:
+    """Map an upstream listing item's ``type`` onto the Model B form axis.
+
+    Issue #140 — listing cards must agree with ``content()`` on the form
+    axis for the same id: ``type == "movie"`` is an anime film
+    (``form="movie"``); every other value (``tv`` / ``ova`` / ``ona`` /
+    ``special``) and a missing field (older captures such as the
+    /api/anime/seasons shape) are episodic (``form="series"``).
+    Styles stay ``{anime}`` — animeon is an anime-only catalogue — and
+    are supplied by ``model_b_axes("anime")`` callers; ``content()``
+    derives its form from the same ``type == "movie"`` check, so a
+    card and its detail never disagree."""
+    return "movie" if str(raw_type or "").strip().lower() == "movie" else "series"
+
+
 def _classify_translations(doc: dict[str, Any]) -> list[dict[str, Any]]:
     """Classify a raw ``/api/player/<id>/translations`` payload.
 
@@ -256,21 +273,30 @@ class AnimeONProvider(BaseProvider):
         encoded = quote_plus(query, safe="")
         data = await self._get_json(f"{BASE_URL}/api/anime?search={encoded}", http)
         results = (data or {}).get("results", []) if isinstance(data, dict) else []
-        mb_form, mb_styles = model_b_axes("anime")
-        return [
-            SearchResult(
+        out: list[SearchResult] = []
+        for item in results:
+            if "id" not in item:
+                continue
+            title = str(item.get("titleUa") or "").strip()
+            if not title:
+                continue
+            # Issue #140: derive the form axis per-item from the upstream
+            # `type` field so search cards agree with content() for the
+            # same id. Styles stay {anime} (animeon is anime-only).
+            mb_form, mb_styles = model_b_axes(
+                "anime", form=_form_from_type(item.get("type"))
+            )
+            out.append(SearchResult(
                 id=f"{self.id}:{item['id']}",
                 provider=self.id,
                 type="anime",
-                title=str(item.get("titleUa", "")).strip(),
+                title=title,
                 poster=_poster_url((item.get("image") or {}).get("preview")),
                 form=mb_form,
                 styles=mb_styles,
                 url=f"{BASE_URL}/anime/{item['id']}",
-            )
-            for item in results
-            if "id" in item and str(item.get("titleUa") or "").strip()
-        ]
+            ))
+        return out
 
     async def browse(
         self, section: str, page: int, http: httpx.AsyncClient
@@ -305,7 +331,10 @@ class AnimeONProvider(BaseProvider):
             if "id" not in item:
                 continue
             image = item.get("image") or {}
-            mb_form, mb_styles = model_b_axes("anime")
+            # Issue #140: default to "series" when `type` is absent (older
+            # LocalResult captures like seasons.json carry no `type` key);
+            # `movie` maps to form="movie", everything else stays "series".
+            mb_form, mb_styles = model_b_axes("anime", form=_form_from_type(item.get("type")))
             out.append(
                 SearchResult(
                     id=f"{ANIMEON_ID}:{item['id']}",
