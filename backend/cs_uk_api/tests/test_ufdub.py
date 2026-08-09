@@ -7,7 +7,7 @@ import httpx
 import pytest
 import respx
 
-from cs_uk_api.providers.ufdub import UFDubProvider
+from cs_uk_api.providers.ufdub import UFDubProvider, _split_external_id
 
 FIX = pathlib.Path(__file__).parent / "fixtures" / "ufdub"
 
@@ -97,6 +97,45 @@ async def test_ufdub_browse_film_page_last_has_next_false():
         async with httpx.AsyncClient() as http:
             _, has_next = await UFDubProvider().browse("filmy", 99, http)
     assert has_next is False
+
+
+def test_ufdub_split_external_id_multi_hyphen_kind():
+    """Issue #162: a kind with a hyphen (``cartoon-serial``) must split
+    at the digit boundary, not the first hyphen — otherwise
+    ``cartoon-serial-308-wondla`` becomes kind="cartoon", slug=
+    "serial-308-…" and _SLUG_RE rejects it."""
+    assert _split_external_id("cartoon-serial-308-wondla") == (
+        "cartoon-serial",
+        "308-wondla",
+    )
+    assert _split_external_id("film-48-fokus-pokus-hocus-pocus") == (
+        "film",
+        "48-fokus-pokus-hocus-pocus",
+    )
+    assert _split_external_id("anime-23-rekomendaciji") == ("anime", "23-rekomendaciji")
+    assert _split_external_id("no-slug") is None
+
+
+@pytest.mark.asyncio
+async def test_ufdub_content_cartoon_serial_kind_opens():
+    """Issue #162 regression: a ``cartoon-serial`` card (search/browse
+    id ``cartoon-serial-<slug>``) must open — content() used to reject
+    the id as ``bad external_id`` before ever fetching, so every
+    mult-serial was unopenable."""
+    content_html = _fixture("content_movie.html")
+    player_html = _fixture("player_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://ufdub.com/cartoon-serial/308-wondla.html"
+        ).respond(200, text=content_html)
+        router.get(
+            "https://video.ufdub.com/AT/VP.php?ID=2780",
+            headers={"Referer": "https://ufdub.com/"},
+        ).respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            c = await UFDubProvider().content("cartoon-serial-308-wondla", http)
+    assert c.title
+    assert c.type == "series"
 
 
 @pytest.mark.asyncio

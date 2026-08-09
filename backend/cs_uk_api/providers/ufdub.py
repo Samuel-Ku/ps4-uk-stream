@@ -69,6 +69,20 @@ def _external_id_from_url(href: str) -> str:
 
 _SLUG_RE = re.compile(r"\d+-[a-z0-9-]+")
 
+#: Full external-id shape: ``<kind>-<slug>`` where kind may itself
+#: contain hyphens (``cartoon-serial``) and the slug is the digit-
+#: prefixed tail (``308-wondla``). Issue #162: splitting on the FIRST
+#: hyphen mis-splits multi-word kinds (kind="cartoon", slug=
+#: "serial-308-…" → _SLUG_RE rejects the letter-prefixed slug), so
+#: every ``cartoon-serial`` title was unopenable.
+_EXTERNAL_ID_RE = re.compile(r"^([a-z][a-z-]*?)-(\d+-[a-z0-9-]+)$")
+
+
+def _split_external_id(external_id: str) -> tuple[str, str] | None:
+    """Split a ``kind-slug`` external id into (kind, slug)."""
+    m = _EXTERNAL_ID_RE.fullmatch(external_id)
+    return (m.group(1), m.group(2)) if m else None
+
 # One row of the player page's `var a = [['Title','codec',url], ...]`
 # array. Titles may contain spaces/hyphens but no quotes; codec is a
 # short label (mp4/720p/HD/source/web).
@@ -200,11 +214,16 @@ class UFDubProvider(BaseProvider):
     async def content(
         self, external_id: str, http: httpx.AsyncClient
     ) -> ContentResponse:
-        kind, _, slug = external_id.partition("-")
-        if not kind or not slug:
-            raise ProviderError("parse_failed", f"invalid external_id: {external_id!r}")
-        if not _SLUG_RE.fullmatch(slug):
+        split = _split_external_id(external_id)
+        if split is None:
+            # Preserve the original error split: structurally-invalid id
+            # (empty kind/slug) is parse_failed; a kind with a malformed
+            # (non-digit-prefixed) slug is not_found.
+            kind, _, slug = external_id.partition("-")
+            if not kind or not slug:
+                raise ProviderError("parse_failed", f"invalid external_id: {external_id!r}")
             raise ProviderError("not_found", f"bad external_id: {external_id!r}")
+        kind, slug = split
         url = f"{BASE_URL}/{kind}/{external_id[len(kind) + 1:]}.html"
         try:
             resp = await http.get(url)
@@ -302,11 +321,13 @@ class UFDubProvider(BaseProvider):
             ext_id, _, ep_suffix = content_id.rpartition(":")
         else:
             ext_id, ep_suffix = content_id, ""
-        kind, _, slug = ext_id.partition("-")
-        if not kind or not slug:
-            raise ProviderError("parse_failed", f"invalid content_id: {content_id!r}")
-        if not _SLUG_RE.fullmatch(slug):
+        split = _split_external_id(ext_id)
+        if split is None:
+            kind, _, slug = ext_id.partition("-")
+            if not kind or not slug:
+                raise ProviderError("parse_failed", f"invalid content_id: {content_id!r}")
             raise ProviderError("not_found", f"bad external_id: {content_id!r}")
+        kind, slug = split
         content_url = f"{BASE_URL}/{kind}/{ext_id[len(kind) + 1:]}.html"
         try:
             resp = await safe_get(
