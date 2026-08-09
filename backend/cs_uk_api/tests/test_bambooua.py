@@ -465,10 +465,16 @@ async def test_bambooua_stream_unknown_episode_raises_not_found():
 
 
 @pytest.mark.asyncio
-async def test_bambooua_sections_lists_nine():
-    """Per the upstream Kotlin `mainPageOf(...)` declaration."""
+async def test_bambooua_sections_exclude_dead_world_bl():
+    """The upstream Kotlin `mainPageOf(...)` declares nine sections, but
+    the `world-bl` («Світ ЛГБТ») listing is dead: `/world-bl/`
+    301-redirects to the site root and the homepage no longer links it
+    (verified live 2026-08-09). Following that redirect would serve home
+    content mislabeled as `world-bl` (wrong data), so the section is
+    retired from the exposed set — the eight live sections remain."""
     sections = BambooUAProvider().sections
     ids = [s.id for s in sections]
+    assert "world-bl" not in ids
     assert ids == [
         "cinema",
         "dorama",
@@ -477,7 +483,6 @@ async def test_bambooua_sections_lists_nine():
         "voice",
         "tv-show",
         "done",
-        "world-bl",
         "now",
     ]
 

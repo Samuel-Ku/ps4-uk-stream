@@ -1,5 +1,5 @@
 """BambooUA provider (https://bambooua.com) — Ukrainian-dubbed anime,
-doramas, lakorns, TV-shows, cinema and LGBTQ BL. Issue #17, Group 1.
+doramas, lakorns, TV-shows and cinema. Issue #17, Group 1.
 
 The upstream Kotlin parses a JSON-LD block (``JSONModel.kt``) for the
 content metadata and a ``const playlist = [...]`` inline script for
@@ -31,7 +31,9 @@ from .base import BaseProvider, ProviderError, model_b_axes
 
 BASE_URL = "https://bambooua.com"
 
-# The upstream `mainPage = mainPageOf(...)` declares nine sections.
+# The upstream `mainPage = mainPageOf(...)` declares nine sections, but
+# the dead `world-bl` listing (301 -> homepage, verified live 2026-08-09)
+# is retired from the exposed set.
 BAMBOUA_SECTIONS: tuple[Section, ...] = (
     Section(id="cinema", title="Фільми", type="movie"),
     Section(id="dorama", title="Дорами", type="series"),
@@ -40,17 +42,16 @@ BAMBOUA_SECTIONS: tuple[Section, ...] = (
     Section(id="voice", title="Озвучення", type="series"),
     Section(id="tv-show", title="ТВ-шоу", type="series"),
     Section(id="done", title="Завершені", type="series"),
-    Section(id="world-bl", title="Світ ЛГБТ", type="series"),
     Section(id="now", title="Поточні", type="series"),
 )
 
-# URL path segment -> MediaType. Longest prefixes first so `world-bl`
-# beats `world`, and `now` (single-segment) wins over any future
-# longer prefix. The upstream maps: dorama -> AsianDrama, anime -> Anime,
-# else -> Movie; but here we classify per-card so a `/cinema/` URL is
-# movie and a `/dorama/` URL is series/dorama.
+# URL path segment -> MediaType. Longest prefixes first so a longer
+# needle (`tv-show`) wins over any future bare prefix, and `now`
+# (single-segment) wins over any future longer prefix. The upstream
+# maps: dorama -> AsianDrama, anime -> Anime, else -> Movie; but here
+# we classify per-card so a `/cinema/` URL is movie and a `/dorama/`
+# URL is series/dorama.
 _PATH_TYPE: tuple[tuple[str, str], ...] = (
-    ("world-bl", "series"),
     ("tv-show", "series"),
     ("cinema", "movie"),
     ("dorama", "dorama"),

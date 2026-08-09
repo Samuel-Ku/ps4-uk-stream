@@ -22,7 +22,7 @@ status: [`docs/provider-triage.md`](../docs/provider-triage.md).
 | kinotron    | kinotron.tv                   | films, serials, cartoons, cartoon-series, anime | m3u8 |
 | cikavaideya | cikava-ideya.top              | filmy, serialy, cartoon, arthaus     | m3u8          |
 | hentaiukr   | hentaiukr.com                 | hentai                              | mp4           |
-| bambooua    | bambooua.com                  | cinema, dorama, anime, lakorn, voice, tv-show, done, world-bl, now | mp4 |
+| bambooua    | bambooua.com                  | cinema, dorama, anime, lakorn, voice, tv-show, done, now | mp4 |
 | kinovezha   | kinovezha.tv                 | films, series, cartoons, s-cartoons  | m3u8          |
 | uaflix      | uafix.net                     | filmy, serialy, doramy, cartoons, multserialy, anime | mp4 |
 | animeua     | animeua.club                  | page, film, anime, ona, ova          | m3u8          |
