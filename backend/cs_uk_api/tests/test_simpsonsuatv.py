@@ -223,6 +223,9 @@ async def test_content_for_show_follows_to_seasons_and_episodes():
     assert len(c.seasons) == _MAX_SHOW_SEASONS
     nums = [s.number for s in c.seasons]
     assert nums == sorted(nums)
+    # The cap keeps the newest 10 seasons; with the 37-season fixture
+    # that is seasons 28-37 (the oldest 27, 1-27, are dropped).
+    assert min(nums) == 28 and max(nums) == 37
     # At least one season must have at least one episode.
     assert any(len(s.episodes) >= 1 for s in c.seasons)
     # Episode ids must be the full URL of the episode page.

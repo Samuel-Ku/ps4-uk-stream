@@ -59,7 +59,7 @@ ASHDI_REFERER = BASE_URL + "/"
 _ALLOWED_HOSTS: frozenset[str] = frozenset({"simpsonsua.tv", "ashdi.vip"})
 
 # How many season subpages a show page may fetch at once. A show like
-# The Simpsons has 35+ seasons; sequential fetches pushed content() past
+# The Simpsons has 37 seasons; sequential fetches pushed content() past
 # 30s (issue #119), so season enumeration runs with a bounded concurrency.
 _SEASON_FETCH_CONCURRENCY = 6
 
@@ -76,7 +76,7 @@ _SEASON_FETCH_CONCURRENCY = 6
 # requests — 6 parallel fetches took 4.69s wall, only ~1.2x faster than
 # sequential) and stays under the rate-limit burst threshold. We return
 # the newest 10 seasons (the hot path); the price is that older seasons
-# (11-37 for The Simpsons) vanish from the show's browsable rail and are
+# (1-27 for The Simpsons) vanish from the show's browsable rail and are
 # only reachable directly via their own season slug (e.g. `content("s5")`)
 # or season external id.
 _MAX_SHOW_SEASONS = 10
@@ -572,7 +572,7 @@ class SimpsonsUATvProvider(BaseProvider):
             season_num = _season_number(content_url) or 1
             return [Season(number=season_num, episodes=episodes)] if episodes else None
         # Show page: follow season subitems. Fetch the season pages
-        # concurrently (bounded by a semaphore) so a 35-season archive
+        # concurrently (bounded by a semaphore) so a 37-season archive
         # resolves in a few seconds instead of 30+ sequential hops
         # (issue #119). A failed season is skipped, matching the old
         # sequential behaviour.
