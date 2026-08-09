@@ -125,6 +125,37 @@ async def test_eneyida_content_movie_gated_when_embed_unavailable() -> None:
 
 
 @pytest.mark.asyncio
+async def test_eneyida_content_movie_embed_without_token_resolves() -> None:
+    """Live-gate regression (2026-08-09): eneyida content pages now
+    serve the hdvbua embed iframe src WITHOUT the ``md`` marker token
+    (``https://hdvbua.pro/embed/<id>/<hash>``), but the embed endpoint
+    answers «Контент недоступний» unless ``?md`` is present — the
+    upstream app appends it itself. content() must append the token so
+    these titles don't get wrongly gated as upstream-removed."""
+    page = (
+        '<html><body><h1>Машина війни</h1>'
+        '<div class="video-box">'
+        '<iframe src="https://hdvbua.pro/embed/11965/b0c42c552"></iframe>'
+        '</div></body></html>'
+    )
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://eneyida.tv/films/10163-mashyna-viiny.html").respond(
+            200, text=page
+        )
+        router.get("https://hdvbua.pro/embed/11965/b0c42c552").respond(
+            200, text=PLAYER_MOVIE_HTML
+        )
+        async with httpx.AsyncClient() as http:
+            content = await EneyidaProvider().content(
+                "films/10163-mashyna-viiny", http
+            )
+    assert "Машина війни" in content.title
+    assert content.seasons and content.seasons[0].episodes[0].id == (
+        "eneyida:films/10163-mashyna-viiny:__movie__"
+    )
+
+
+@pytest.mark.asyncio
 async def test_eneyida_content_series_gated_when_embed_unavailable() -> None:
     """Issue #158 regression: the series path (embed fetch inside
     ``_seasons``) also gates a «Контент недоступний» embed."""

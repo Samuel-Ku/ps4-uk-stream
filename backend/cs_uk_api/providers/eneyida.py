@@ -111,6 +111,21 @@ _PLAYER_RE = re.compile(r"https://hdvbua\.pro/(?:embed|vid)/[^\"'\s]+")
 _IFRAME_TAG_RE = re.compile(r"<iframe[^>]*>", re.IGNORECASE)
 
 
+def _ensure_md_token(url: str) -> str:
+    """hdvbua embed endpoints now REQUIRE the ``md`` marker token
+    (live 2026-08-09: ``embed/<id>/<hash>`` without it answers the
+    «Контент недоступний» page, with ``?md`` it serves the real
+    player). The upstream Kotlin appends the token itself; the raw
+    iframe ``src`` on eneyida content pages omits it, so every embed
+    fetch must carry it. ``vid/`` endpoints work either way, and URLs
+    that already carry a query keep it."""
+    if not url.startswith("https://hdvbua.pro/embed/"):
+        return url
+    if "?" in url:
+        return url
+    return f"{url}?md"
+
+
 def _player_url(html: str) -> str | None:
     """First player URL from the content page's iframe block.
 
@@ -132,12 +147,12 @@ def _player_url(html: str) -> str | None:
     if iframe is not None:
         src = str(iframe.get("src") or "")
         if urlsplit(src).hostname in _ALLOWED_HOSTS:
-            return src
+            return _ensure_md_token(src)
     m = _PLAYER_RE.search(tag)
     if m:
         url = m.group(0)
         if urlsplit(url).hostname in _ALLOWED_HOSTS and "?tr" not in url:
-            return url
+            return _ensure_md_token(url)
     return None
 
 
