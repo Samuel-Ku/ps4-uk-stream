@@ -8,6 +8,7 @@ the captured domain to keep `respx` route matching deterministic.
 """
 from __future__ import annotations
 
+import json
 import re
 from urllib.parse import quote, urljoin
 
@@ -16,7 +17,7 @@ from bs4 import BeautifulSoup
 from bs4.element import Tag
 
 from ..country import extract_country
-from ..extractors import RegexExtractor
+from ..extractors import ExtractResult, RegexExtractor
 from ..http_client import safe_get
 from ..models import (
     ContentResponse,
@@ -35,9 +36,11 @@ from .base import BaseProvider, ProviderError, model_b_axes
 # production behavior.
 BASE_URL = "https://uafix.net"
 # Hosts the upstream may legally redirect to: the content page on
-# uafix.net and the PlayerJS iframe on zetvideo.net. A hostile CMS
-# response must not be able to pivot either hop elsewhere.
-_ALLOWED_HOSTS: frozenset[str] = frozenset({"uafix.net", "zetvideo.net"})
+# uafix.net and the PlayerJS iframes on zetvideo.net / ashdi.vip. A
+# hostile CMS response must not be able to pivot either hop elsewhere.
+_ALLOWED_HOSTS: frozenset[str] = frozenset(
+    {"uafix.net", "zetvideo.net", "ashdi.vip"}
+)
 
 # External-id boundary: `<section>-<slug>` (e.g. `serials-djuna-proroctvo`)
 # where both halves are lowercase ASCII with hyphens. Anything else —
@@ -248,6 +251,46 @@ def _extract_player_iframe(soup: BeautifulSoup) -> str | None:
         return None
     src = iframe.get("src")
     return str(src) if src else None
+
+
+def _file_value(html: str) -> str | None:
+    """Raw PlayerJS `file:` payload (either quoting style).
+
+    The generic `RegexExtractor` only matches a direct media URL, but
+    serial player pages instead store the episode URLs inside a nested
+    JSON-folder string (`file:'[{"folder":[{"folder":[{"file":"<url>"}]}]}]'`).
+    Pull the raw value first so the caller can decide which shape it is.
+    """
+    m = re.search(r"file\s*:\s*(?:\"([^\"]+)\"|'([^']+)')", html)
+    if not m:
+        return None
+    return m.group(1) or m.group(2)
+
+
+def _serial_media_url(html: str, ep_suffix: str) -> str | None:
+    """Resolve an episode m3u8 from a serial player's JSON-folder `file:`.
+
+    Serial pages nest episodes as
+    `file:'[{"folder":[{"folder":[{"file":"<url>",...}]}]}]'` — outer
+    list is the dubbing/track, then seasons, then episodes. `ep_suffix`
+    (`s<N>e<M>`, e.g. `s1e1`) indexes season N / episode M exactly like
+    the eneyida reference. Returns None when the page is not a
+    JSON-folder shape, the suffix does not match, or the episode is
+    missing.
+    """
+    raw = _file_value(html)
+    if raw is None:
+        return None
+    m = re.fullmatch(r"s(\d+)e(\d+)", ep_suffix)
+    if not m:
+        return None
+    season = int(m.group(1))
+    episode = int(m.group(2))
+    try:
+        data = json.loads(raw)
+        return data[0]["folder"][season - 1]["folder"][episode - 1]["file"]
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+        return None
 
 
 def _parse_poster(soup: BeautifulSoup) -> str | None:
@@ -486,9 +529,16 @@ class UAFlixProvider(BaseProvider):
             raise ProviderError("not_found", f"status {player_resp.status_code}")
         extracted = RegexExtractor().extract(player_resp.text)
         if extracted is None or not extracted.url:
-            raise ProviderError(
-                "parse_failed", "no media URL found in player page"
-            )
+            # VOD players expose a direct m3u8 (handled above); serial
+            # players expose a nested JSON-folder string the generic
+            # extractor cannot see, so resolve the episode from the
+            # `s<N>e<M>` suffix the same way the eneyida provider does.
+            serial_url = _serial_media_url(player_resp.text, ep_suffix)
+            if serial_url is None:
+                raise ProviderError(
+                    "parse_failed", "no media URL found in player page"
+                )
+            extracted = ExtractResult(url=serial_url, type="m3u8")
         return StreamResponse(
             url=extracted.url,
             type=extracted.type,

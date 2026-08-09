@@ -223,6 +223,87 @@ async def test_uaflix_stream_series_resolves_episode_m3u8():
     assert s.type == "m3u8"
 
 
+def test_uaflix_allowlist_includes_ashdi():
+    """Issue #183: ashdi.vip serial players must be fetchable through the
+    shared SSRF-safe `safe_get` — a series whose episode embeds an ashdi
+    serial page must not 502 with `disallowed host`."""
+    from cs_uk_api.providers.uaflix import _ALLOWED_HOSTS
+
+    assert "ashdi.vip" in _ALLOWED_HOSTS
+
+
+@pytest.mark.asyncio
+async def test_uaflix_stream_serial_ashdi_embed_allowed():
+    """Issue #183 + #184: an episode whose content page embeds an
+    ashdi.vip serial player (3-level JSON-folder `file:`) resolves its
+    m3u8 without a disallowed-host error."""
+    content_html = _fixture("content_serial_ashdi.html")
+    player_html = _fixture("player_serial_ashdi.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://uafix.net/serials/nevlovimij-samuraj/season-01-episode-01/"
+        ).respond(200, text=content_html)
+        router.get(
+            "https://ashdi.vip/serial/3863?season=1&episode=1"
+        ).respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            s = await UAFlixProvider().stream(
+                "serials-nevlovimij-samuraj:s1e1", None, http
+            )
+    assert s.url.startswith(
+        "https://ashdi.vip/video09/2/serials/kaizoku_nevlovimij_samuraj/"
+    )
+    assert s.url.endswith("index.m3u8")
+    assert s.type == "m3u8"
+
+
+@pytest.mark.asyncio
+async def test_uaflix_stream_serial_zetvideo_json_folder_extracts_m3u8():
+    """Issue #184: a zetvideo serial player whose `file:` is a JSON-folder
+    string (seasons -> episodes) must resolve the episode m3u8 from the
+    `s1e1` suffix instead of failing with `parse_failed`."""
+    content_html = _fixture("content_serial_zetvideo.html")
+    player_html = _fixture("player_serial_zetvideo.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://uafix.net/serials/vajld-pak/season-01-episode-01/"
+        ).respond(200, text=content_html)
+        router.get(
+            "https://zetvideo.net/serial/2258?season=1&episode=1"
+        ).respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            s = await UAFlixProvider().stream(
+                "serials-vajld-pak:s1e1", None, http
+            )
+    assert s.url == (
+        "https://zetvideo.net/vid/1/serials/"
+        "wylde.pak.s01e01.best.summer.ever.1080p.webdl_59942/hls/index.m3u8"
+    )
+    assert s.type == "m3u8"
+
+
+def test_uaflix_serial_json_folder_indexes_season_episode():
+    """Issue #184: the `s<N>e<M>` suffix must index season N / episode M
+    into the JSON-folder tree exactly like the eneyida reference."""
+    from cs_uk_api.providers.uaflix import _serial_media_url
+
+    player_html = _fixture("player_serial_zetvideo.html")
+    assert _serial_media_url(player_html, "s1e1") == (
+        "https://zetvideo.net/vid/1/serials/"
+        "wylde.pak.s01e01.best.summer.ever.1080p.webdl_59942/hls/index.m3u8"
+    )
+    assert _serial_media_url(player_html, "s1e2") == (
+        "https://zetvideo.net/vid/1/serials/"
+        "wylde.pak.s01e02.best.summer.ever.1080p.webdl_59942/hls/index.m3u8"
+    )
+    assert _serial_media_url(player_html, "s2e1") == (
+        "https://zetvideo.net/vid/1/serials/"
+        "wylde.pak.s02e01.best.summer.ever.1080p.webdl_59942/hls/index.m3u8"
+    )
+    assert _serial_media_url(player_html, "s3e1") is None
+    assert _serial_media_url(player_html, "") is None
+
+
 @pytest.mark.asyncio
 async def test_uaflix_sections_lists_six():
     sections = UAFlixProvider().sections
