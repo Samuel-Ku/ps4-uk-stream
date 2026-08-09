@@ -1,9 +1,26 @@
 from __future__ import annotations
 
+import asyncio
 import os
+from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 BASE_URL = "https://uakino.best"
+
+#: Bound on a single ``warm()`` attempt (issue #194). The observed warm
+#: cost (playwright launch + ``goto`` 200 + 4s settle) is 5-10s on the dev
+#: host; 15s leaves headroom for slower hosts. Distinct from the route-level
+#: ``WARM_WAIT_S`` (issue #193) that bounds how long a request waits for
+#: ``ready_event`` once the warm task has started.
+WARM_TIMEOUT_S: float = 15.0
+
+#: Heartbeat cadence (issue #194): one same-origin ``/filmy/`` probe per
+#: interval. Constructor-injectable so tests use a short interval.
+HEARTBEAT_INTERVAL_S: float = 300.0
+
+#: Bounded drain for a cooperative heartbeat-task cancel in ``close()`` so
+#: a mid-fetch tick cannot hang shutdown.
+_CLOSE_DRAIN_S: float = 1.0
 
 # uakino.best sits behind Cloudflare's managed challenge: plain HTTP
 # clients (httpx, curl, Playwright's APIRequestContext) receive 403
@@ -65,53 +82,100 @@ class SessionError(RuntimeError):
     """Browser session could not load uakino.best."""
 
 
+async def _default_playwright_factory() -> Any:
+    """Zero-arg factory returning a started playwright instance.
+
+    The playwright import stays here (not module scope) so a host that
+    never touches uakino never pays for the optional dependency.
+    """
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError as e:
+        raise SessionError(
+            "playwright is not installed; pip install playwright "
+            "(browser binary not needed, system chromium is used)"
+        ) from e
+    return await async_playwright().start()
+
+
 class UakinoSessionProtocol(Protocol):
     async def fetch(
         self, path: str, method: str = "GET", data: str | None = None
     ) -> tuple[int, str]: ...
-
     async def close(self) -> None: ...
+    async def warm(self) -> None: ...
+    @property
+    def ready_event(self) -> asyncio.Event: ...
+    async def heartbeat_loop(self, record: Callable[[bool], None]) -> None: ...
 
 
 class UakinoSession:
     """Headless Chromium session that serves same-origin fetches.
 
-    Lazily launches the browser on first fetch. `fetch` accepts a
-    *relative* path (the page must stay on uakino.best so the request
-    is same-origin). A 403 response triggers one re-bootstrap + retry
-    in case the silent challenge rotated.
+    `fetch` accepts a *relative* path (the page must stay on uakino.best
+    so the request is same-origin). A 403 response triggers one
+    re-bootstrap + retry in case the silent challenge rotated.
+
+    Lifecycle (issue #194): a single per-instance ``asyncio.Lock``
+    serializes ``_start``/``_bootstrap``/``fetch``/``fetch_binary``, so
+    concurrent requests and heartbeat ticks can never interleave
+    ``page.evaluate`` or double-bootstrap. ``ready_event`` is cleared when
+    a session (re)starts and set once a bootstrap succeeds; ``warm()``
+    performs that launch once under the lock with a bounded timeout, and
+    ``close()`` cancels the heartbeat loop (if any) and tears the browser
+    down, idempotently.
     """
 
-    def __init__(self, chromium: str = DEFAULT_CHROMIUM) -> None:
+    def __init__(
+        self,
+        chromium: str = DEFAULT_CHROMIUM,
+        *,
+        playwright_factory: Callable[[], Awaitable[Any]] | None = None,
+        heartbeat_interval_s: float = HEARTBEAT_INTERVAL_S,
+        warm_timeout_s: float = WARM_TIMEOUT_S,
+    ) -> None:
         self._chromium = chromium
+        self._playwright_factory = playwright_factory or _default_playwright_factory
+        self._heartbeat_interval_s = heartbeat_interval_s
+        self._warm_timeout_s = warm_timeout_s
         self._playwright: Any = None
         self._browser: Any = None
         self._context: Any = None
         self._page: Any = None
+        self._lock = asyncio.Lock()
+        self._ready = asyncio.Event()
+        self._heartbeat_task: asyncio.Task[Any] | None = None
+
+    @property
+    def ready_event(self) -> asyncio.Event:
+        """Set once the page has bootstrapped successfully."""
+        return self._ready
+
+    async def _close_resources(self) -> None:
+        if self._browser is not None:
+            await self._browser.close()
+        if self._playwright is not None:
+            await self._playwright.stop()
+        self._playwright = self._browser = self._context = self._page = None
 
     async def _start(self) -> None:
-        try:
-            from playwright.async_api import async_playwright
-        except ImportError as e:
-            raise SessionError(
-                "playwright is not installed; pip install playwright "
-                "(browser binary not needed, system chromium is used)"
-            ) from e
-
-        pw = await async_playwright().start()
+        self._ready.clear()
+        # Drop any partial session from a failed/aborted previous start so
+        # a retry (or a lazy fetch) launches from a clean slate. Instances
+        # are assigned incrementally so warm-timeout cleanup can reach them.
+        await self._close_resources()
+        pw = await self._playwright_factory()
+        self._playwright = pw
         browser = await pw.chromium.launch(
             executable_path=self._chromium,
             headless=True,
             args=["--no-sandbox", "--disable-gpu"],
         )
+        self._browser = browser
         context = await browser.new_context(user_agent=_UA, locale="uk-UA")
+        self._context = context
         page = await context.new_page()
-        self._playwright, self._browser, self._context, self._page = (
-            pw,
-            browser,
-            context,
-            page,
-        )
+        self._page = page
         await self._bootstrap()
 
     async def _bootstrap(self) -> None:
@@ -123,13 +187,60 @@ class UakinoSession:
         await self._page.wait_for_timeout(4000)
         if resp is None or resp.status != 200:
             raise SessionError(f"{BASE_URL} answered {getattr(resp, 'status', '?')}")
+        self._ready.set()
 
     async def _ensure_started(self) -> None:
         if self._page is None:
             await self._start()
 
+    async def warm(self) -> None:
+        """Launch + bootstrap once, bounded by the warm timeout.
+
+        On success ``ready_event`` is set. On failure the exception
+        propagates unchanged so the caller can classify it: a
+        launch/bootstrap error is a ``SessionError`` (caller records
+        ``warm_failed``); exceeding ``WARM_TIMEOUT_S`` is an
+        ``asyncio.TimeoutError`` (caller records ``warm_timeout``). No
+        retry — the caller decides.
+        """
+        async with self._lock:
+            try:
+                await asyncio.wait_for(self._start(), timeout=self._warm_timeout_s)
+            except TimeoutError:
+                # The warm was cut short mid-launch; release whatever
+                # browser resources `_start` had created, then re-raise so
+                # the caller still records `warm_timeout`.
+                await self._close_resources()
+                raise
+
+    async def heartbeat_loop(self, record: Callable[[bool], None]) -> None:
+        """Probe the live session every interval, calling ``record(ok)``.
+
+        Runs until cancelled (by ``close()``). The interval comes from the
+        constructor's ``heartbeat_interval_s`` (the #193 test seam). Each
+        tick issues one same-origin ``fetch("/filmy/")``; the existing
+        in-fetch 403 path retries once via re-bootstrap before the verdict
+        is recorded. A non-200 status (after that retry) or a
+        ``SessionError`` records ``ok=False``.
+        """
+        self._heartbeat_task = asyncio.current_task()
+        while True:
+            await asyncio.sleep(self._heartbeat_interval_s)
+            try:
+                status, _ = await self.fetch("/filmy/")
+                ok = status == 200
+            except SessionError:
+                ok = False
+            record(ok)
+
     async def fetch(
         self, path: str, method: str = "GET", data: str | None = None
+    ) -> tuple[int, str]:
+        async with self._lock:
+            return await self._fetch_unlocked(path, method, data)
+
+    async def _fetch_unlocked(
+        self, path: str, method: str, data: str | None
     ) -> tuple[int, str]:
         await self._ensure_started()
         assert self._page is not None
@@ -154,6 +265,10 @@ class UakinoSession:
         between requests, so one re-bootstrap is attempted before giving
         up. Empty body on non-200 — the caller decides.
         """
+        async with self._lock:
+            return await self._fetch_binary_unlocked(path)
+
+    async def _fetch_binary_unlocked(self, path: str) -> tuple[int, bytes, str]:
         await self._ensure_started()
         assert self._page is not None
         for attempt in (1, 2):
@@ -172,11 +287,24 @@ class UakinoSession:
         return 403, b"", ""
 
     async def close(self) -> None:
-        if self._browser is not None:
-            await self._browser.close()
-        if self._playwright is not None:
-            await self._playwright.stop()
-        self._playwright = self._browser = self._context = self._page = None
+        """Cancel the heartbeat task and tear down the browser session.
+
+        Idempotent, and safe to call from ``lifespan`` shutdown even when
+        ``warm`` was never started. The heartbeat cancel is cooperative and
+        bounded by a short drain so a mid-fetch tick cannot hang shutdown.
+        At shutdown an in-flight request fetch may be interrupted by the
+        browser teardown — acceptable, the process is exiting.
+        """
+        task = self._heartbeat_task
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=_CLOSE_DRAIN_S)
+            except (TimeoutError, asyncio.CancelledError):
+                pass
+        self._heartbeat_task = None
+        self._ready.clear()
+        await self._close_resources()
 
 
 _session: UakinoSession | None = None

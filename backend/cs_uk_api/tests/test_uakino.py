@@ -1,4 +1,6 @@
+import asyncio
 import pathlib
+from collections.abc import Callable
 
 import httpx
 import pytest
@@ -15,11 +17,26 @@ def _fixture(name: str) -> str:
 
 
 class FakeSession:
-    """Replaces the browser session: serves fixture bodies per path prefix."""
+    """Replaces the browser session: serves fixture bodies per path prefix.
+
+    Implements the extended ``UakinoSessionProtocol`` (issue #194) so the
+    adapter stays usable once the session gains warm/ready_event/heartbeat.
+    """
 
     def __init__(self, **routes: tuple[int, str]) -> None:
         self.routes = routes
         self.calls: list[tuple[str, str, str | None]] = []
+        self._ready = asyncio.Event()
+
+    @property
+    def ready_event(self) -> asyncio.Event:
+        return self._ready
+
+    async def warm(self) -> None:
+        self._ready.set()
+
+    async def heartbeat_loop(self, record: Callable[[bool], None]) -> None:
+        raise AssertionError("FakeSession has no heartbeat loop")
 
     async def fetch(
         self, path: str, method: str = "GET", data: str | None = None
