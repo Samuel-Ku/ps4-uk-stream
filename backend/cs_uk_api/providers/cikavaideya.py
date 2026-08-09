@@ -321,7 +321,7 @@ class CikavaIdeyaProvider(BaseProvider):
         country: str | None = extract_country(soup)
         # Removed / trailer-only / no-player titles raise `gated` here
         # (ADR-0002), before any season is built (#139).
-        seasons = self._build_seasons(_load_player1(soup), external_id)
+        seasons = self._build_seasons(_load_player1(soup), external_id, self.id)
         mb_form, mb_styles = model_b_axes(_classify_from_tags(tags_text))  # type: ignore[arg-type]
         return ContentResponse(
             id=f"cikavaideya:{external_id}",
@@ -337,7 +337,7 @@ class CikavaIdeyaProvider(BaseProvider):
         )
 
     @staticmethod
-    def _build_seasons(player1: str | dict[str, Any], external_id: str) -> list[Season]:
+    def _build_seasons(player1: str | dict[str, Any], external_id: str, provider_id: str) -> list[Season]:
         """Convert the upstream `Player1` value into our `Season[]`.
 
         Movies surface as season 1, episode 1 with id suffix `__movie__`
@@ -356,7 +356,7 @@ class CikavaIdeyaProvider(BaseProvider):
             episodes = [
                 Episode(
                     number=e_idx,
-                    id=f"{external_id}:s{s_idx}e{e_idx}",
+                    id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
                     title=k.strip(),
                 )
                 for e_idx, k in enumerate(ep_keys, start=1)

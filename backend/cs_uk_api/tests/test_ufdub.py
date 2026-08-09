@@ -225,7 +225,7 @@ async def test_ufdub_content_series_parses_episodes_from_player():
     assert len(eps) == 37
     assert eps[0].number == 1
     assert eps[0].id == (
-        "anime-23-rekomendaciji-dlja-chudovogo-zhittja-onlajn-net-juu-no-susume:s1e1"
+        "ufdub:anime-23-rekomendaciji-dlja-chudovogo-zhittja-onlajn-net-juu-no-susume:s1e1"
     )
     assert "Ритм Емоцій" in eps[0].title
     assert eps[-1].id.endswith(":s1e37")

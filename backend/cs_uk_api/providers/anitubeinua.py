@@ -292,7 +292,7 @@ def _category_id(ep_data_id: str) -> str:
     return "_".join(segments[:2]) if len(segments) >= 2 else ""
 
 
-def _build_seasons(playlist: dict[str, Any], external_id: str) -> list[Season]:
+def _build_seasons(playlist: dict[str, Any], external_id: str, provider_id: str) -> list[Season]:
     """Group the playlist into seasons.
 
     Each season corresponds to one category (SUB / DUB). Within a
@@ -350,7 +350,7 @@ def _build_seasons(playlist: dict[str, Any], external_id: str) -> list[Season]:
             episodes_out.append(
                 Episode(
                     number=e_idx,
-                    id=f"{external_id}:s{s_idx}e{e_idx}",
+                    id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
                     title=ep.title,
                     translations=translations,
                 )
@@ -591,7 +591,7 @@ class AnitubeinuaProvider(BaseProvider):
         translations_level: str = "content"
         try:
             playlist = await self._load_playlist(external_id, http)
-            seasons = _build_seasons(playlist, external_id)
+            seasons = _build_seasons(playlist, external_id, self.id)
             if seasons:
                 translations_level = "episode"
         except ProviderError as e:

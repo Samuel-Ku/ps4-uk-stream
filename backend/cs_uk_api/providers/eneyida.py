@@ -257,7 +257,7 @@ class EneyidaProvider(BaseProvider):
             Season(
                 number=i,
                 episodes=[
-                    Episode(number=j, id=f"{ext}:s{i}e{j}", title=str(e.get("title", "")).strip())
+                    Episode(number=j, id=f"{self.id}:{ext}:s{i}e{j}", title=str(e.get("title", "")).strip())
                     for j, e in enumerate(s.get("folder", []), 1)
                 ],
             )

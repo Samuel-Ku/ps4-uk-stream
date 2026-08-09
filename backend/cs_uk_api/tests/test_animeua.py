@@ -81,7 +81,7 @@ async def test_animeua_series_parses_seasons_and_episode_translations():
     assert len(content.seasons[0].episodes) == 12
     assert len(content.seasons[1].episodes) == 12
     first = content.seasons[0].episodes[0]
-    assert first.id == "7952-dandadan:s1e1"
+    assert first.id == "animeua:7952-dandadan:s1e1"
     assert first.title == "Серія 1"
     assert first.translations is not None
     assert len(first.translations) == 10
@@ -90,7 +90,7 @@ async def test_animeua_series_parses_seasons_and_episode_translations():
     assert "Студія Качур" in names
     assert "субтитри | AniKappa" in names
     s2_first = content.seasons[1].episodes[0]
-    assert s2_first.id == "7952-dandadan:s2e1"
+    assert s2_first.id == "animeua:7952-dandadan:s2e1"
     assert len(s2_first.translations or []) == 7
 
 

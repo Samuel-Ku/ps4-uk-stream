@@ -372,7 +372,7 @@ class UASerialsProProvider(BaseProvider):
             raise ProviderError("not_found", f"status {player_resp.status_code}")
         # Decode the `file:` field — Tortuga-encoded for movies, or a
         # JSON playlist for series.
-        seasons = self._build_seasons_from_player(player_resp.text, external_id)
+        seasons = self._build_seasons_from_player(player_resp.text, external_id, self.id)
         mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"uaserialspro:{external_id}",
@@ -390,7 +390,7 @@ class UASerialsProProvider(BaseProvider):
 
     @staticmethod
     def _build_seasons_from_player(
-        player_html: str, external_id: str
+        player_html: str, external_id: str, provider_id: str
     ) -> list[Season] | None:
         """Decode the Tortuga player `file:` field into our `Season[]`.
 
@@ -424,7 +424,7 @@ class UASerialsProProvider(BaseProvider):
                     episodes.append(
                         Episode(
                             number=e_idx,
-                            id=f"{external_id}:s{s_idx}e{e_idx}",
+                            id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
                             title=str(ep.get("title", "")).strip(),
                         )
                     )

@@ -200,7 +200,7 @@ async def test_kinovezha_content_series_parses_seasons():
     # Captured player JSON lists two episodes under season 1.
     assert len(c.seasons[0].episodes) == 2
     first = c.seasons[0].episodes[0]
-    assert first.id.endswith(":s1e1")
+    assert first.id == "kinovezha:2831-enn-droyid:s1e1"
 
 
 @pytest.mark.asyncio

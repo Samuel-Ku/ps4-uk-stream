@@ -318,7 +318,7 @@ class KlonTVProvider(BaseProvider):
             media_type = "series"
         seasons: list[Season] | None = None
         if media_type == "series":
-            seasons = await self._build_series_seasons(player_url, external_id, http)
+            seasons = await self._build_series_seasons(player_url, external_id, http, self.id)
         else:
             # Movie: single playable URL, surfaced as season 1 episode 1
             # with the `__movie__` suffix sentinel so stream() can pick
@@ -342,7 +342,7 @@ class KlonTVProvider(BaseProvider):
 
     @staticmethod
     async def _build_series_seasons(
-        player_url: str, external_id: str, http: httpx.AsyncClient
+        player_url: str, external_id: str, http: httpx.AsyncClient, provider_id: str
     ) -> list[Season] | None:
         """Fetch the player page and decode the PlayerJS playlist.
 
@@ -387,7 +387,7 @@ class KlonTVProvider(BaseProvider):
                 episodes = [
                     Episode(
                         number=e_idx,
-                        id=f"{external_id}:s{s_idx}e{e_idx}",
+                        id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
                         title=str(ep.get("title", "")).strip(),
                     )
                     for e_idx, ep in enumerate(episodes_raw, start=1)

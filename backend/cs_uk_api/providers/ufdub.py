@@ -263,7 +263,7 @@ class UFDubProvider(BaseProvider):
         seasons: list[Season] | None = None
         if media_type == "series" or media_type == "anime":
             seasons = [Season(number=1, episodes=[
-                Episode(number=i, id=f"{external_id}:s1e{i}", title=title)
+                Episode(number=i, id=f"{self.id}:{external_id}:s1e{i}", title=title)
                 for i, (title, _url) in enumerate(episodes, start=1)
             ])]
         mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]

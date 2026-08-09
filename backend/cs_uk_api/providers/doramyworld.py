@@ -344,7 +344,7 @@ class DoramyWorldProvider(BaseProvider):
             translations = [Translation(id="uk", label="Українська")]
         seasons: list[Season] | None = None
         if translations_models:
-            seasons = self._build_seasons(translations_models, external_id)
+            seasons = self._build_seasons(translations_models, external_id, self.id)
         mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"doramyworld:{external_id}",
@@ -362,7 +362,7 @@ class DoramyWorldProvider(BaseProvider):
 
     @staticmethod
     def _build_seasons(
-        translations: list[_PlayerTranslation], external_id: str
+        translations: list[_PlayerTranslation], external_id: str, provider_id: str
     ) -> list[Season]:
         """Flatten the data-player translations into one Season[].
 
@@ -380,7 +380,7 @@ class DoramyWorldProvider(BaseProvider):
             episodes = [
                 Episode(
                     number=e_idx,
-                    id=f"{external_id}:s{s_idx}e{e_idx}",
+                    id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
                     title=f"Серія {e_idx}",
                 )
                 for e_idx, _ in enumerate(season.episodes, start=1)

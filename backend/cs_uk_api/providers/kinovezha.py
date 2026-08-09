@@ -339,7 +339,7 @@ class KinoVezhaProvider(BaseProvider):
         player_url = self._extract_player_url(soup)
         seasons: list[Season] | None = None
         if media_type == "series" and player_url:
-            seasons = await self._load_series_seasons(player_url, external_id, http)
+            seasons = await self._load_series_seasons(player_url, external_id, http, self.id)
         elif player_url:
             seasons = [Season(number=1, episodes=[Episode(
                 number=1, id=f"{external_id}{MOVIE_SUFFIX}", title=title_el.get_text(strip=True),
@@ -373,7 +373,7 @@ class KinoVezhaProvider(BaseProvider):
 
     @staticmethod
     async def _load_series_seasons(
-        player_url: str, external_id: str, http: httpx.AsyncClient
+        player_url: str, external_id: str, http: httpx.AsyncClient, provider_id: str
     ) -> list[Season] | None:
         try:
             resp = await safe_get(
@@ -406,7 +406,7 @@ class KinoVezhaProvider(BaseProvider):
                 ep_title = str(ep.get("title", "")).strip() or f"Серія {e_idx}"
                 episodes.append(Episode(
                     number=e_idx,
-                    id=f"{external_id}:s{s_idx}e{e_idx}",
+                    id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
                     title=ep_title,
                 ))
             if episodes:

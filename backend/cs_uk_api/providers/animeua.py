@@ -186,7 +186,7 @@ def _resolve_episode(grouped: _DubsMap, ep_suffix: str, translation: str | None)
     return files[0][1]
 
 
-def _build_seasons(grouped: _DubsMap, external_id: str) -> list[Season]:
+def _build_seasons(grouped: _DubsMap, external_id: str, provider_id: str) -> list[Season]:
     seasons: list[Season] = []
     for s_idx, (_, episodes) in enumerate(grouped.items(), 1):
         seasons.append(Season(
@@ -194,7 +194,7 @@ def _build_seasons(grouped: _DubsMap, external_id: str) -> list[Season]:
             episodes=[
                 Episode(
                     number=e_idx,
-                    id=f"{external_id}:s{s_idx}e{e_idx}",
+                    id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
                     title=episode_title,
                     translations=[Translation(id=name, label=name) for name, _ in files],
                 )
@@ -310,7 +310,7 @@ class AnimeUAProvider(BaseProvider):
             dubs = _parse_dubs(_file_value(player.text))
             if dubs:
                 grouped = _group_episodes(dubs)
-                seasons = _build_seasons(grouped, external_id)
+                seasons = _build_seasons(grouped, external_id, self.id)
                 names = _dub_names(grouped)
                 if names:
                     translations = [Translation(id=name, label=name) for name in names]

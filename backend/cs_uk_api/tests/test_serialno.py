@@ -122,7 +122,7 @@ async def test_serialno_content_series_parses_title_poster_player():
     # First season, first episode from the captured playlist.
     first = c.seasons[0]
     assert first.number == 1
-    assert first.episodes[0].id == "2075-1670:s1e1"
+    assert first.episodes[0].id == "serialno:2075-1670:s1e1"
 
 
 @pytest.mark.asyncio
@@ -234,7 +234,7 @@ async def test_serialno_content_flat_live_payload_parses_seasons():
     assert c.seasons is not None
     assert len(c.seasons) >= 1
     assert len(c.seasons[0].episodes) >= 1
-    assert c.seasons[0].episodes[0].id == "1398-dyuna:s1e1"
+    assert c.seasons[0].episodes[0].id == "serialno:1398-dyuna:s1e1"
 
 
 @pytest.mark.asyncio

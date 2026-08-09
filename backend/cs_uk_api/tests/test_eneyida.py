@@ -202,7 +202,7 @@ async def test_eneyida_content_film_with_series_payload_classifies_as_series() -
     assert content.type == "series"
     assert content.seasons and content.seasons[0].episodes
     ep = content.seasons[0].episodes[0]
-    assert ep.id.endswith(":s1e1")
+    assert ep.id == "eneyida:films/10103-druga-svitova-viina-z-tomom-genksom:s1e1"
     assert not ep.id.endswith(":__movie__")
 
 

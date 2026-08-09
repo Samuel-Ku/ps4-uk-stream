@@ -430,7 +430,7 @@ class BambooUAProvider(BaseProvider):
         if _playlist_fully_gated(groups):
             raise ProviderError("gated", "subscription required")
         media_type = _type_from_url(url)
-        seasons = self._build_seasons(groups, external_id, media_type)
+        seasons = self._build_seasons(groups, external_id, media_type, self.id)
         mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"bambooua:{external_id}",
@@ -447,7 +447,7 @@ class BambooUAProvider(BaseProvider):
 
     @staticmethod
     def _build_seasons(
-        groups: list[_PlaylistGroup], external_id: str, media_type: str
+        groups: list[_PlaylistGroup], external_id: str, media_type: str, provider_id: str
     ) -> list[Season] | None:
         """Convert the upstream playlist into our `Season[]`.
 
@@ -474,7 +474,7 @@ class BambooUAProvider(BaseProvider):
             episodes = [
                 Episode(
                     number=e_idx,
-                    id=f"{external_id}:s{s_idx}e{e_idx}",
+                    id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
                     title=ep.title,
                 )
                 for e_idx, ep in enumerate(group.folder, start=1)

@@ -185,7 +185,7 @@ async def test_doramyworld_content_dorama_parses_seasons():
     # stream() resolver can pick the right ashdi URL.
     ep = c.seasons[0].episodes[0]
     assert ep.number == 1
-    assert ep.id == "dorama/koroleva-chorin:s1e1"
+    assert ep.id == "doramyworld:dorama/koroleva-chorin:s1e1"
     # Cyrillic "серія" is rendered with capital initial letter because
     # the implementation generates "Серія N" -- assert case-insensitively.
     assert "серія" in ep.title.lower()
@@ -207,7 +207,7 @@ async def test_doramyworld_content_film_parses_seasons():
     assert len(c.seasons) == 1
     assert len(c.seasons[0].episodes) == 1
     ep = c.seasons[0].episodes[0]
-    assert ep.id == "film/ekstremalna-robota:s1e1"
+    assert ep.id == "doramyworld:film/ekstremalna-robota:s1e1"
 
 
 @pytest.mark.asyncio

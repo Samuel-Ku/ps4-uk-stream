@@ -268,7 +268,7 @@ class SerialnoProvider(BaseProvider):
         if iframe is None or not iframe.get("src"):
             raise ProviderError("parse_failed", "no player iframe on content page")
         player_url = str(iframe["src"])
-        seasons = await self._load_series_seasons(player_url, external_id, http)
+        seasons = await self._load_series_seasons(player_url, external_id, http, self.id)
         mb_form, mb_styles = model_b_axes("series")
         return ContentResponse(
             id=f"serialno:{external_id}",
@@ -285,7 +285,7 @@ class SerialnoProvider(BaseProvider):
 
     @staticmethod
     async def _load_series_seasons(
-        player_url: str, external_id: str, http: httpx.AsyncClient
+        player_url: str, external_id: str, http: httpx.AsyncClient, provider_id: str
     ) -> list[Season] | None:
         """Fetch the tortuga.tw player page and decode the obfuscated
         season/episode JSON list.
@@ -339,7 +339,7 @@ class SerialnoProvider(BaseProvider):
                 ep_title = str(ep.get("title", "")).strip() or f"Серія {e_idx}"
                 episodes.append(Episode(
                     number=e_idx,
-                    id=f"{external_id}:s{s_idx}e{e_idx}",
+                    id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
                     title=ep_title,
                 ))
             if episodes:
