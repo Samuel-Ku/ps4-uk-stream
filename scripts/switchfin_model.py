@@ -125,6 +125,10 @@ class ReportMeta:
     backend_url: str
     phone: str
     resolution: str
+    #: True when an adb device was attached for the run. A headless run is
+    #: never a real-client verification; the report must say so explicitly
+    #: rather than look like a checked-off device pass (issue #152).
+    verified: bool = False
 
 
 @dataclass(frozen=True)

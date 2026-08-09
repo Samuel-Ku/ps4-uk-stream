@@ -344,6 +344,49 @@ def test_every_step_gets_verdict_in_report(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------
+# #152: the report states explicitly whether the run was verified on a
+# device — a headless run must not read like a checked-off device pass
+# --------------------------------------------------------------------------
+
+
+def test_report_marks_run_verified_on_device(tmp_path: Path) -> None:
+    runner, _, _ = make_harness(tmp_path)
+    results = runner.run()
+    meta = ReportMeta(
+        date="2026-08-08",
+        android="13",
+        build="n/a",
+        backend_url="http://0.0.0.0:8000",
+        phone="Pixel",
+        resolution="1080x2400",
+        verified=True,
+    )
+
+    report = render_report(results, meta)
+
+    assert "✅ verified on device" in report
+    assert "unverified" not in report
+
+
+def test_report_marks_headless_run_unverified(tmp_path: Path) -> None:
+    runner, _, _ = make_harness(tmp_path)
+    results = runner.run()
+    meta = ReportMeta(
+        date="2026-08-08",
+        android="n/a",
+        build="n/a",
+        backend_url="http://0.0.0.0:8000",
+        phone="n/a",
+        resolution="n/a",
+        verified=False,
+    )
+
+    report = render_report(results, meta)
+
+    assert "⚠️ unverified — no device available" in report
+
+
+# --------------------------------------------------------------------------
 # (b) one logcat-error match flips a step from ✅ to ❌
 # --------------------------------------------------------------------------
 

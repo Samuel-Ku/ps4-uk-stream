@@ -622,7 +622,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def build_meta(args: argparse.Namespace, adb: Adb) -> ReportMeta:
-    if adb.available():
+    verified = adb.available()
+    if verified:
         android = adb.shell("getprop ro.build.version.release")
         model = adb.shell("getprop ro.product.model")
         resolution = adb.shell("wm size")
@@ -635,6 +636,7 @@ def build_meta(args: argparse.Namespace, adb: Adb) -> ReportMeta:
         backend_url=f"http://{args.host}:{args.port}",
         phone=model,
         resolution=resolution,
+        verified=verified,
     )
 
 

@@ -95,6 +95,9 @@ def _mark(result: StepResult, skipped: str = "❌ skipped") -> str:
 
 
 def _render_header(results: list[StepResult], meta: ReportMeta) -> list[str]:
+    verification = (
+        "✅ verified on device" if meta.verified else "⚠️ unverified — no device available"
+    )
     lines = [
         "# Switchfin manual test report",
         "",
@@ -103,6 +106,7 @@ def _render_header(results: list[StepResult], meta: ReportMeta) -> list[str]:
         f"- Switchfin build: {meta.build}",
         f"- Backend URL: {meta.backend_url}",
         f"- Phone: {meta.phone} · {meta.resolution}",
+        f"- Verification: {verification}",
         "",
         "## Handshake",
         "",
