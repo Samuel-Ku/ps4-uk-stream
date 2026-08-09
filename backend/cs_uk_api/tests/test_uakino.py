@@ -156,6 +156,46 @@ async def test_uakino_stream_movie_default_uk_falls_back_to_first_file():
     assert s.url == M3U8_MOVIE
 
 
+ERR_NOT_DATA = '{"success":false,"message":"ERR_NOT_DATA"}'
+
+
+@pytest.mark.asyncio
+async def test_uakino_content_movie_direct_player_not_gated():
+    """Regression: uakino moved movie pages off playlists.php to a
+    direct player iframe (`ashdi.vip/vod/<id>`); playlists.php answers
+    ERR_NOT_DATA. Such a movie must surface as playable (default uk
+    translation), not be gated as a dead card."""
+    session = FakeSession(
+        **{
+            "/filmy/12567-dyuna.html": (200, _fixture("content_movie.html")),
+            "/engine/ajax/playlists.php": (200, ERR_NOT_DATA),
+        }
+    )
+    async with httpx.AsyncClient() as http:
+        c = await _provider(session).content("filmy:12567-dyuna", http)
+    assert c.type == "movie"
+    assert c.seasons is None
+    assert [(t.id, t.label) for t in c.translations] == [("uk", "Українська")]
+
+
+@pytest.mark.asyncio
+async def test_uakino_content_movie_empty_playlists_no_player_gated():
+    """Regression (ADR-0002): a movie whose playlists response is empty
+    AND whose page has no direct player iframe is a dead card —
+    content() gates it so the catalog sweep drops it."""
+    page = "<html><body><h1><span class='solototle'>Дюна</span></h1></body></html>"
+    session = FakeSession(
+        **{
+            "/filmy/12567-dyuna.html": (200, page),
+            "/engine/ajax/playlists.php": (200, ERR_NOT_DATA),
+        }
+    )
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(ProviderError) as exc:
+            await _provider(session).content("filmy:12567-dyuna", http)
+    assert exc.value.code == "gated"
+
+
 @pytest.mark.asyncio
 async def test_uakino_content_series_parses_episodes_and_voice_groups():
     session = FakeSession(
@@ -222,6 +262,26 @@ async def test_uakino_content_bad_external_id_raises_not_found():
 
 M3U8_MOVIE = "https://ashdi.vip/video02/1/films/dune._part_one_2021_uhdbdrip_1080p_h.265_2xukr_eng_hurtom_89434/hls/Da+Xjn6RkuZVhAb3/index.m3u8"
 M3U8_EP1 = "https://ashdi.vip/video02/3/new/a.shop.for.killers.s02e01_273102/hls/Da+Xjn6RkuZVhAb3/index.m3u8"
+
+
+@pytest.mark.asyncio
+async def test_uakino_stream_movie_direct_player_resolves_m3u8():
+    """Regression: a movie with no playlists data (upstream moved it to
+    a direct player iframe) must resolve its m3u8 from the content
+    page's player iframe instead of failing `no playable voices`."""
+    session = FakeSession(
+        **{
+            "/filmy/12567-dyuna.html": (200, _fixture("content_movie.html")),
+            "/engine/ajax/playlists.php": (200, ERR_NOT_DATA),
+        }
+    )
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ashdi.vip/vod/89434").respond(
+            200, text=_fixture("stream_ashdi_movie.html")
+        )
+        async with httpx.AsyncClient() as http:
+            s = await _provider(session).stream("filmy:12567-dyuna", None, http)
+    assert s.url == M3U8_MOVIE
 
 
 @pytest.mark.asyncio

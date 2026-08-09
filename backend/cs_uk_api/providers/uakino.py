@@ -173,6 +173,23 @@ def _normalize_cdn_url(raw: str) -> str:
     return raw
 
 
+def _direct_player_url(soup: BeautifulSoup) -> str | None:
+    """The movie's single playable player iframe URL, or None.
+
+    uakino migrated movie pages off playlists.php (which now answers
+    ERR_NOT_DATA for them) to a plain direct player iframe
+    (``<iframe src="https://ashdi.vip/vod/<id>">``). The page may also
+    embed a youtube trailer — never the player. Returns the bare vod
+    URL (query params like ``?geoblock=ua&`` stripped).
+    """
+    for iframe in soup.select("iframe"):
+        src = str(iframe.get("src") or "").strip()
+        if "ashdi.vip/vod/" not in src:
+            continue
+        return src.split("?", 1)[0]
+    return None
+
+
 def _parse_playlists(html: str) -> tuple[list[_PlaylistItem], bool]:
     """Parse the playlists.php response.
 
@@ -384,6 +401,14 @@ class UakinoProvider(BaseProvider):
         # the model requires at least one translation (issue #123, D2).
         if not translations:
             translations = [Translation(id="uk", label="Українська")]
+        # A movie whose playlist response is empty (upstream moved movie
+        # pages off playlists.php to a direct player iframe) is only
+        # playable when the page carries that iframe. A movie with
+        # neither playlists nor a direct player is a dead card — gate it
+        # (ADR-0002) so the catalog sweep drops it instead of failing at
+        # play time.
+        if not items and _direct_player_url(soup) is None:
+            raise ProviderError("gated", "no playable source on movie page")
         movie_type = "anime" if "аніме" in " ".join(tags).lower() else "movie"
         # A style-tagged movie (аніме-фільм) is form=movie, not series
         # (model_b_axes defaults style-tagged types to series).
@@ -419,18 +444,35 @@ class UakinoProvider(BaseProvider):
             candidates = [it for it in items if it.get("episode") == episode]
             if not candidates:
                 raise ProviderError("not_found", f"episode {episode} not found in playlists")
+            chosen = _pick_voice(candidates, translation)
+            if chosen is None:
+                raise ProviderError(
+                    "translation_missing",
+                    f"voice {translation!r} not found in playlists",
+                )
+            stream_page_url = str(chosen["file"])
         else:
             candidates = [it for it in items if it.get("episode") is None]
-            if not candidates:
-                raise ProviderError("parse_failed", "no playable voices in playlists")
-        chosen = _pick_voice(candidates, translation)
-        if chosen is None:
-            raise ProviderError(
-                "translation_missing",
-                f"voice {translation!r} not found in playlists",
-            )
-
-        stream_page_url = str(chosen["file"])
+            if candidates:
+                chosen = _pick_voice(candidates, translation)
+                if chosen is None:
+                    raise ProviderError(
+                        "translation_missing",
+                        f"voice {translation!r} not found in playlists",
+                    )
+                stream_page_url = str(chosen["file"])
+            else:
+                # Movie with no playlists data: upstream moved movie
+                # pages off playlists.php to a direct player iframe.
+                # Resolve the player URL from the content page.
+                section, item_id, slug = _parse_external_id(content_id)
+                html = await self._fetch(f"/{section}/{item_id}-{slug}.html")
+                direct_url = _direct_player_url(BeautifulSoup(html, "lxml"))
+                if direct_url is None:
+                    raise ProviderError(
+                        "parse_failed", "no playable voices in playlists"
+                    )
+                stream_page_url = direct_url
         try:
             resp = await safe_get(
                 http,
