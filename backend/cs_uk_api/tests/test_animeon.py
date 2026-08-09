@@ -371,6 +371,35 @@ async def test_content_missing_translations_key_raises_parse_failed():
 
 
 @pytest.mark.asyncio
+async def test_content_movie_withheld_translations_raises_gated():
+    """Issue #166: a movie whose translations list is present but empty
+    (deliberate upstream withholding, live 2026-08-09 on Ґінтама Фільм
+    1) must raise ``gated`` from content() — stream() already gates it,
+    so without this the dead card stays in the catalog and fails only
+    at play time."""
+    from cs_uk_api.providers.base import ProviderError
+
+    redirect_json = _fixture("movie_redirect.json")
+    movie_json = _fixture("movie.json")
+    withheld = '{"translations":[]}'
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://animeon.club/api/anime/8100").respond(
+            200, text=redirect_json
+        )
+        router.get("https://animeon.club/api/anime/8100-lyupen-iii-pershyy").respond(
+            200, text=movie_json
+        )
+        router.get("https://animeon.club/api/player/8100/translations").respond(
+            200, text=withheld
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await AnimeONProvider().content("8100", http)
+    assert exc.value.code == "gated"
+    assert "no translations" in exc.value.message
+
+
+@pytest.mark.asyncio
 async def test_content_movie_returns_movie_without_seasons():
     """Movies (`type: "movie"` on the info JSON) carry no episode list
     upstream; detail must render as a Movie card instead of 404ing.

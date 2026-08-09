@@ -65,14 +65,43 @@ async def test_kinotron_browse_last_page_has_no_next():
 async def test_kinotron_content_movie_parses_title_poster():
     """A playable movie page (real player iframe, not trailer-only) must
     parse into a movie ContentResponse (#163: the Месники page is
-    trailer-only, so this test uses the Дюна VOD fixture)."""
+    trailer-only, so this test uses the Дюна VOD fixture). The movie
+    path fetches the player page to gate dead players (#167), so it
+    must be mocked too."""
     with respx.mock(assert_all_called=True) as router:
         router.get("https://kinotron.tv/9728-djuna.html").respond(200, text=_fixture("content_movie_vod.html"))
+        router.get("https://ashdi.vip/vod/176240").respond(200, text=_fixture("player_movie.html"))
         async with httpx.AsyncClient() as http:
             content = await KinoTronProvider().content("9728-djuna", http)
     assert content.title.startswith("Дюна")
     assert content.type == "movie"
     assert content.poster and content.poster.startswith("https://kinotron.tv/")
+
+
+@pytest.mark.asyncio
+async def test_kinotron_content_movie_dead_player_raises_gated() -> None:
+    """Issue #167: a movie whose player page exposes no playable files
+    (upstream migrated the title to a dead zetvideo.net/vod page) must
+    raise ``gated`` from content() so the catalog sweep drops the dead
+    card instead of failing only at play time."""
+    page = (
+        '<html><body><div class="full"><h1>Різдвяне бажання</h1></div>'
+        '<div class="fsubtitle">Фільм</div>'
+        '<div class="video-box">'
+        '<iframe data-src="https://zetvideo.net/vod/38430"></iframe>'
+        '</div></body></html>'
+    )
+    dead_player = (
+        '<html><body><title>404 Not Found</title>'
+        '<h1>404 Not Found</h1></body></html>'
+    )
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://kinotron.tv/10381-rzdvjane-bazhannja.html").respond(200, text=page)
+        router.get("https://zetvideo.net/vod/38430").respond(200, text=dead_player)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await KinoTronProvider().content("10381-rzdvjane-bazhannja", http)
+    assert exc_info.value.code == "gated"
 
 
 @pytest.mark.asyncio

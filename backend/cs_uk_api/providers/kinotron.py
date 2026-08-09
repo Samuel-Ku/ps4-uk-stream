@@ -211,6 +211,16 @@ class KinoTronProvider(BaseProvider):
                 for season_number, episodes in enumerate(grouped.values(), 1)
             ]
             translations_level = "episode"
+        else:
+            # Issue #167: a movie whose player page exposes no playable
+            # files (upstream migrated several titles to a dead
+            # zetvideo.net/vod/<id> page — nginx 404 body, observed live
+            # 2026-08-09) must be gated at content() time so the
+            # catalog sweep drops the dead card instead of failing only
+            # at play time.
+            player = await self._get(player_url, http)
+            if not self._files(player.text):
+                raise ProviderError("gated", "no playable files on player page")
         description_el = soup.select_one(".full-text")
         mb_form, mb_styles = model_b_axes(kind)
         return ContentResponse(id=f"{self.id}:{external_id}", type=kind, title=title_el.get_text(" ", strip=True),

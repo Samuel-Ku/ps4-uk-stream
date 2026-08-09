@@ -448,8 +448,14 @@ class AnimeONProvider(BaseProvider):
         to a viewable detail — poster, studio list, Movie form — so the
         facade degrades to a season-less response instead of a 404."""
         payload = await self._ask_translations(anime_id, http)
+        # Same gating as stream(): a present-but-empty `translations`
+        # list is deliberate upstream withholding (`gated`, issue #160)
+        # — the card must not surface with a fake «Оригінал» track that
+        # can never play. A missing key (shape change) keeps the detail
+        # viewable with the default track, exactly like stream().
+        translations = _classify_translations(payload or {})
         names: list[str] = []
-        for trans in (payload or {}).get("translations") or []:
+        for trans in translations:
             name = str((trans.get("translation") or {}).get("name") or "").strip()
             if name and name not in names:
                 names.append(name)
