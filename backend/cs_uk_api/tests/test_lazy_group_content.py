@@ -301,6 +301,47 @@ def test_content_by_group_key_lazy_strips_provider_prefix_for_strict_content(
 
 
 @pytest.mark.unit
+def test_content_by_group_key_source_resolves_merged_member_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #161 regression: a merged row (yearful + yearless pair, issue
+    #89) lists BOTH providers as chips, but the yearless provider's per-
+    item group key differs from the canonical key — a per-item sources
+    index hid it from ``resolve_group``, so ``?source=`` 400'd. The map
+    must register the provider union under every member key."""
+    p1 = _both_pid(
+        "p1", _make_item("p1", "Дюна", year=None, n="p1-1"),
+        content=_dune_content("From p1"),
+    )
+    p2 = _both_pid(
+        "p2", _make_item("p2", "Дюна", year=2021, n="p2-1"),
+        content=_dune_content("From p2"),
+    )
+    _register(p1, monkeypatch)
+    _register(p2, monkeypatch)
+    client = TestClient(app)
+    client.get("/api/home")
+    home = client.get("/api/home").json()
+    item = home["rows"][0]["items"][0]
+    gk = item["group_key"]
+    # The merged row carries the union of providers + both member keys.
+    assert set(item["providers"]) == {"p1", "p2"}
+    assert len(item["member_keys"]) == 2
+    # ?source= resolves BOTH chips — including the yearless member whose
+    # per-item key differs from the canonical one.
+    r1 = client.get(f"/api/content/{gk}?source=p1")
+    r2 = client.get(f"/api/content/{gk}?source=p2")
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert r1.json()["title"] == "Дюна"
+    # A member-key lookup also resolves the full group.
+    member = next(k for k in item["member_keys"] if k != gk)
+    r3 = client.get(f"/api/content/{member}?source=p1")
+    assert r3.status_code == 200
+    assert r3.json()["title"] == "Дюна"
+
+
+@pytest.mark.unit
 def test_content_by_group_key_source_not_in_group_returns_400(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

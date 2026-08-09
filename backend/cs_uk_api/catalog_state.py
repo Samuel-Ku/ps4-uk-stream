@@ -27,7 +27,7 @@ from .country import is_blocked_country
 from .health import TRACKER
 from .home import build_home_rows
 from .http_client import get_client
-from .merge import group_key_from, item_group_key
+from .merge import group_key_from, item_group_key, merge_results
 from .models import ContentResponse, HomeResponse, SearchResult
 from .providers import PROVIDERS
 from .providers.base import ProviderError
@@ -90,16 +90,37 @@ def _build_sources_map(
     Iteration order matches ``build_home_rows``'s walk order
     (newest → popular → by_type), so the provider order seen here is
     the same first-seen order the home rows surface.
+
+    Issue #161: home rows MERGE items across member keys (issue #89,
+    yearful + yearless pairs) and surface the provider union under the
+    canonical key. A per-item index alone hid non-canonical members
+    from ``resolve_group``, so a chip the home row listed (e.g. klontv
+    on a klontv+uakino merged card) 400'd via ``?source=``. Run the
+    same merge and register the provider union under EVERY member key,
+    so any key the client holds resolves the full group.
     """
     out: dict[str, dict[str, SearchResult]] = {}
+    all_items: list[SearchResult] = []
     for source_map in (newest, popular):
         for items in source_map.values():
             for it in items:
+                all_items.append(it)
                 _add_listing_to_sources_map(out, it)
     for source_map in by_type.values():
         for items in source_map.values():
             for it in items:
+                all_items.append(it)
                 _add_listing_to_sources_map(out, it)
+    for mg in merge_results(all_items):
+        union: dict[str, SearchResult] = {}
+        for s in mg.sources:
+            union.setdefault(s.provider, s)
+        member_keys = list(dict.fromkeys(item_group_key(s) for s in mg.sources))
+        for key in member_keys:
+            # Replace (not setdefault): the union is built from the same
+            # first-seen walk order, so this keeps the exact provider
+            # order the home row surfaces.
+            out[key] = union
     return out
 
 
