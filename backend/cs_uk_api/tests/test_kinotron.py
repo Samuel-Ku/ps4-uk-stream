@@ -63,13 +63,36 @@ async def test_kinotron_browse_last_page_has_no_next():
 
 @pytest.mark.asyncio
 async def test_kinotron_content_movie_parses_title_poster():
+    """A playable movie page (real player iframe, not trailer-only) must
+    parse into a movie ContentResponse (#163: the Месники page is
+    trailer-only, so this test uses the Дюна VOD fixture)."""
     with respx.mock(assert_all_called=True) as router:
-        router.get("https://kinotron.tv/10496-mesniki-shodzhennja-doktora-duma.html").respond(200, text=_fixture("content_movie.html"))
+        router.get("https://kinotron.tv/9728-djuna.html").respond(200, text=_fixture("content_movie_vod.html"))
         async with httpx.AsyncClient() as http:
-            content = await KinoTronProvider().content("10496-mesniki-shodzhennja-doktora-duma", http)
-    assert content.title.startswith("Месники: Сходження Доктора Дума")
+            content = await KinoTronProvider().content("9728-djuna", http)
+    assert content.title.startswith("Дюна")
     assert content.type == "movie"
     assert content.poster and content.poster.startswith("https://kinotron.tv/")
+
+
+@pytest.mark.asyncio
+async def test_kinotron_content_trailer_only_page_raises_gated():
+    """Issue #163: a page whose video box carries only a youtube embed
+    is trailer-only (upstream has no playable player) — content() must
+    raise ``gated`` so the catalog sweep drops the dead card."""
+    page = (
+        '<html><body><div class="full"><h1>Месники</h1></div>'
+        '<div class="fsubtitle">Фільм</div>'
+        '<div class="video-box">'
+        '<iframe width="560" height="400" data-src="https://www.youtube.com/embed/IRycQ32qo88"></iframe>'
+        '</div></body></html>'
+    )
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://kinotron.tv/10496-trailer-only.html").respond(200, text=page)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await KinoTronProvider().content("10496-trailer-only", http)
+    assert exc_info.value.code == "gated"
 
 
 @pytest.mark.asyncio

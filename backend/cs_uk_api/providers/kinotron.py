@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import re
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
 from bs4 import BeautifulSoup
@@ -78,6 +78,9 @@ class KinoTronProvider(BaseProvider):
     name = "KinoTron"
     types = ("movie", "series", "cartoon", "anime")
     sections = SECTIONS
+    #: ``content()`` gates trailer-only (youtube-only) pages (#163) so
+    #: the catalog sweep drops dead cards from home/search.
+    can_gate = True
 
     @staticmethod
     def _type_from_subtitle(subtitle: str) -> MediaTypeStr:
@@ -92,10 +95,21 @@ class KinoTronProvider(BaseProvider):
 
     @staticmethod
     def _player_url(soup: BeautifulSoup) -> str | None:
-        iframe = soup.select_one("div.video-box iframe")
-        if iframe is None or not iframe.get("data-src"):
-            return None
-        return urljoin(BASE_URL, str(iframe["data-src"]))
+        """First REAL (non-youtube) player iframe in the video box.
+
+        Trailer-only titles (issue #163) carry only a youtube embed in
+        ``div.video-box`` — upstream has no playable player — so a
+        youtube-only box yields None and ``content()`` gates the card.
+        """
+        for iframe in soup.select("div.video-box iframe"):
+            src = str(iframe.get("data-src") or "")
+            if not src:
+                continue
+            host = urlsplit(urljoin(BASE_URL, src)).hostname or ""
+            if "youtube.com" in host or host == "youtu.be":
+                continue
+            return urljoin(BASE_URL, src)
+        return None
 
     @staticmethod
     def _files(player_html: str) -> list[dict[str, object]]:
@@ -160,6 +174,11 @@ class KinoTronProvider(BaseProvider):
         kind = self._type_from_subtitle(str(soup.select_one("div.fsubtitle") or ""))
         country: str | None = extract_country(soup)
         player_url = self._player_url(soup)
+        # Issue #163: a youtube-only video box is a trailer-only title —
+        # upstream has no playable player. Gate so the ADR-0002 sweep
+        # drops the dead card instead of failing only at play time.
+        if player_url is None:
+            raise ProviderError("gated", "trailer only — no playable player")
         seasons = None
         translations = [Translation(id="uk", label="Українська")]
         translations_level: TranslationLevel = "content"

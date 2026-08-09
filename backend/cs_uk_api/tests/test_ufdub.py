@@ -140,17 +140,47 @@ async def test_ufdub_content_cartoon_serial_kind_opens():
 
 @pytest.mark.asyncio
 async def test_ufdub_content_movie_parses_title_poster():
+    """content() fetches the player page for every type (issue #164
+    gating), so the movie player must be mocked too."""
     content_html = _fixture("content_movie.html")
+    player_html = _fixture("player.html")
     with respx.mock(assert_all_called=True) as router:
         router.get("https://ufdub.com/film/48-fokus-pokus-hocus-pocus.html").respond(
             200, text=content_html
         )
+        router.get(
+            "https://video.ufdub.com/AT/VP.php?ID=2780",
+            headers={"Referer": "https://ufdub.com/"},
+        ).respond(200, text=player_html)
         async with httpx.AsyncClient() as http:
             c = await UFDubProvider().content("film-48-fokus-pokus-hocus-pocus", http)
     assert "Фокус" in c.title
     assert c.type == "movie"
     assert c.poster is not None
     assert c.poster.startswith("https://ufdub.com")
+
+
+@pytest.mark.asyncio
+async def test_ufdub_content_dead_player_page_raises_gated():
+    """Issue #164: a content page whose player page exposes no
+    playable media (upstream emits an empty ``var a = []``) is a dead
+    card — content() must raise ``gated`` so the catalog sweep drops
+    it from home instead of failing only at play time."""
+    from cs_uk_api.providers.base import ProviderError
+
+    content_html = _fixture("content_movie.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ufdub.com/film/48-fokus-pokus-hocus-pocus.html").respond(
+            200, text=content_html
+        )
+        router.get(
+            "https://video.ufdub.com/AT/VP.php?ID=2780",
+            headers={"Referer": "https://ufdub.com/"},
+        ).respond(200, text="<html><script>var a = [];</script></html>")
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await UFDubProvider().content("film-48-fokus-pokus-hocus-pocus", http)
+    assert exc_info.value.code == "gated"
 
 
 @pytest.mark.asyncio

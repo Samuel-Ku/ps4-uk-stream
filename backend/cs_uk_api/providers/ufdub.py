@@ -154,6 +154,11 @@ class UFDubProvider(BaseProvider):
     name = "UFDub"
     types = ("movie", "series", "anime", "dorama")
     sections = UFDUB_SECTIONS
+    #: ``content()`` gates cards whose player page has no playable
+    #: media (issue #164: upstream emits an empty ``var a = []`` for
+    #: dead titles) so the ADR-0002 catalog sweep drops them instead
+    #: of failing only at play time.
+    can_gate = True
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         url = f"{BASE_URL}/index.php?do=search"
@@ -246,9 +251,21 @@ class UFDubProvider(BaseProvider):
         # Player URL is in an <input value="..."> or an inline JS var.
         player_url = self._extract_player_url(soup)
         media_type = _type_from_url(url)
+        # Issue #164: gate dead cards at content() time — a missing
+        # player page or a player page with no playable media (empty
+        # ``var a``) means the card can never play, so the catalog
+        # sweep must drop it from home/search.
+        episodes = await self._fetch_player_episodes(player_url, http)
+        if player_url is None or not episodes:
+            raise ProviderError(
+                "gated", "no playable media on player page"
+            )
         seasons: list[Season] | None = None
         if media_type == "series" or media_type == "anime":
-            seasons = await self._parse_seasons(player_url, external_id, http)
+            seasons = [Season(number=1, episodes=[
+                Episode(number=i, id=f"{external_id}:s1e{i}", title=title)
+                for i, (title, _url) in enumerate(episodes, start=1)
+            ])]
         mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"ufdub:{external_id}",
@@ -277,15 +294,14 @@ class UFDubProvider(BaseProvider):
                 return m.group(1)
         return None
 
-    async def _parse_seasons(
-        self, player_url: str | None, external_id: str, http: httpx.AsyncClient
-    ) -> list[Season] | None:
-        """Fetch the player page and surface its `var a` array as a
-        single season of episodes. UFDub gives every content page its
-        own player (one season per page), so episode ids encode only
-        the position within that page: `<external>:s1e<N>`."""
+    async def _fetch_player_episodes(
+        self, player_url: str | None, http: httpx.AsyncClient
+    ) -> list[tuple[str, str]]:
+        """Fetch the player page and parse its ``var a`` array into
+        (title, url) pairs. Returns [] when there is no player page or
+        the player exposes no playable media (dead embed, issue #164)."""
         if player_url is None:
-            return None
+            return []
         try:
             resp = await safe_get(
                 http,
@@ -297,13 +313,7 @@ class UFDubProvider(BaseProvider):
             raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
             raise ProviderError("not_found", f"status {resp.status_code}")
-        episodes = self._extract_episodes(resp.text)
-        if not episodes:
-            return None
-        return [Season(number=1, episodes=[
-            Episode(number=i, id=f"{external_id}:s1e{i}", title=title)
-            for i, (title, _url) in enumerate(episodes, start=1)
-        ])]
+        return self._extract_episodes(resp.text)
 
     async def stream(
         self, content_id: str, translation: str | None, http: httpx.AsyncClient
