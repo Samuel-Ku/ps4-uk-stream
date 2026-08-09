@@ -228,13 +228,16 @@ def _episode_number(url: str, fallback: int) -> int:
 
 
 def _is_season_href(href: str) -> bool:
-    """A season page URL ends with `/sN/` or `/sezon-N/`. We accept
-    any path with a `/sezon-N/` or `/sN/` segment at the end."""
-    cleaned = href.split("?", 1)[0].rstrip("/")
-    last = cleaned.rsplit("/", 1)[-1]
+    """A season page URL ends in `/sezon-N/` or `/sN/`. The season token
+    may be slug-prefixed (`/futurama-sezon-11/`), but it must be the
+    final token: news-id episode slugs like
+    `4467-...-1-sezon-2-seriya` embed a `sezon-N` token followed by
+    `-seriya`, so they are not seasons."""
+    last = _slug_from_href(href)
     if not last:
         return False
-    return bool(_SEASON_RE.fullmatch(last))
+    m = _SEASON_RE.search(last)
+    return bool(m) and m.end() == len(last)
 
 
 def _clean_title(text: str) -> str:
