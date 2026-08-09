@@ -9,7 +9,11 @@ this file adds the repo root so ``scripts.switchfin_test`` imports.
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -18,7 +22,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import yaml  # type: ignore[import-untyped]
-from scripts.switchfin_adb import Adb, LogTailer  # type: ignore[import-not-found]
+from scripts.switchfin_adb import (  # type: ignore[import-not-found]
+    Adb,
+    LogTailer,
+    read_getevent,
+)
 from scripts.switchfin_model import (  # type: ignore[import-not-found]
     CALIBRATION_ELEMENTS,
     ReportMeta,
@@ -117,7 +125,7 @@ steps:
     view: newest
     tap: first_card
     expect:
-      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ ]+) -> 200"
+      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ /]+) -> 200"
         status: 200
         capture: gk
       - request: "GET /Items/[^ ]+/Images/Primary -> 200"
@@ -165,7 +173,7 @@ steps:
     view: movie
     tap: first_card
     expect:
-      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ ]+) -> 200"
+      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ /]+) -> 200"
         status: 200
         capture: gk
       - request: "GET /Items/[^ ]+/Images/Primary -> 200"
@@ -243,6 +251,8 @@ def make_harness(
     tap_lines: dict[tuple[int, int], list[str]] | None = None,
     probe: str = "Movie",
     issue_ok: bool = True,
+    adb: FakeAdb | None = None,
+    probe_fn: Callable[[dict[str, str]], str | None] | None = None,
 ) -> tuple[Runner, FakeTailer, FakeAdb]:
     """Build a Runner whose taps/issues append scripted backend.log lines."""
     steps_path = tmp_path / "steps.yaml"
@@ -253,11 +263,16 @@ def make_harness(
     )
     timeout_s, steps = load_steps(steps_path)
     tap_coords = load_tap_coords(tmp_path / "tap-coords.yaml")
-    lines: list[str] = []
+    if adb is None:
+        lines: list[str] = []
+        adb = FakeAdb(
+            lines=lines, tap_lines=FULL_TAP_LINES if tap_lines is None else tap_lines
+        )
+    else:
+        # the injected adb's own line store is the one the tailer watches, so
+        # a successful tap's request lines are visible to step detection
+        lines = adb._lines
     tailer = FakeTailer(lines)
-    adb = FakeAdb(
-        lines=lines, tap_lines=FULL_TAP_LINES if tap_lines is None else tap_lines
-    )
 
     def issue(step: Step, ctx: dict[str, str]) -> None:
         if not issue_ok:
@@ -277,7 +292,7 @@ def make_harness(
         port=8000,
         timeout_s=timeout_s,
         issue_fn=issue,
-        probe_fn=lambda _ctx: probe,
+        probe_fn=probe_fn or (lambda _ctx: probe),
     )
     return runner, tailer, adb
 
@@ -465,3 +480,135 @@ def test_calibration_element_order_matches_definition() -> None:
         "first_season",
         "first_episode",
     )
+
+
+# --------------------------------------------------------------------------
+# review regression: poster line must not poison the gk capture (#143 review-2)
+# --------------------------------------------------------------------------
+
+
+def test_poster_line_first_does_not_poison_gk(tmp_path: Path) -> None:
+    """If the poster request lands before the detail request, the gk capture
+    regex must NOT swallow the ``/Images/Primary`` suffix into the group key
+    (the poisoned key 404s the play step's Type probe on a healthy backend)."""
+    tap_lines = {k: list(v) for k, v in FULL_TAP_LINES.items()}
+    tap_lines[(500, 300)] = [
+        "GET /Items/g1/Images/Primary -> 200 (0ms)",  # poster lands first
+        "GET /Users/u1/Items/g1 -> 200 (0ms)",  # then the detail fetch
+    ]
+    seen_gk: list[str] = []
+
+    def probe(ctx: dict[str, str]) -> str | None:
+        seen_gk.append(str(ctx.get("gk")))
+        return "Movie"
+
+    runner, _, _ = make_harness(tmp_path, tap_lines=tap_lines, probe_fn=probe)
+    results = runner.run()
+
+    assert all(r.ok for r in results), [r.note for r in results if not r.ok]
+    assert seen_gk, "the play step's Type probe never ran"
+    assert seen_gk[0] == "g1", f"gk captured as {seen_gk[0]!r} — poster suffix leaked in"
+
+
+# --------------------------------------------------------------------------
+# review regression: a dropped logcat marker must not shift windows (#143 review-4)
+# --------------------------------------------------------------------------
+
+
+def test_missing_marker_does_not_cascade_windows(tmp_path: Path) -> None:
+    """When a STEP_<n> marker is missing from the logcat dump, the step's
+    window must not be silently widened to another step's (or the whole dump's)
+    lines — that would attribute a neighbour's error and flip a false ❌."""
+    runner, _, _ = make_harness(tmp_path)
+    results = runner.run()
+    assert all(r.ok for r in results)
+
+    dump: list[str] = []
+    for index, result in enumerate(results, start=1):
+        if index == 3:  # open_view_newest's marker is evicted
+            continue
+        dump.append(f"08-08 10:00:00.000 I SWITCHFIN_TEST: STEP_{index}_{result.name}")
+        if index == 4:
+            dump.append("08-08 10:00:00.050 E SWITCHFIN_TEST: nlohmann json exception")
+
+    filtered = apply_logcat_filter(results, dump)
+    by_name = {r.name: r for r in filtered}
+    # step 3 has no marker -> verdict untouched, no whole-dump attribution
+    assert by_name["open_view_newest"].ok
+    assert not by_name["open_view_newest"].logcat_hits
+    # step 4's own window still catches its error
+    assert by_name["open_first_card_newest"].ok is False
+    assert by_name["open_first_card_newest"].logcat_hits
+
+
+# --------------------------------------------------------------------------
+# review regression: getevent sampling must be bounded (#143 review-1/7)
+# --------------------------------------------------------------------------
+
+
+def test_read_getevent_bounds_when_no_input(monkeypatch: object) -> None:
+    """read_getevent must return after the sample window even when the phone
+    emits no input events — a blocking readline would hang calibration forever."""
+    read_fd, write_fd = os.pipe()
+    fake_stdout = os.fdopen(read_fd, "r", encoding="utf-8")
+
+    class _FakeProc:
+        stdout = fake_stdout
+
+        def terminate(self) -> None:
+            os.close(write_fd)
+
+        def wait(self, timeout: float) -> None:
+            return None
+
+    import scripts.switchfin_adb as adb_mod
+
+    monkeypatch.setattr(adb_mod.subprocess, "Popen", lambda *a, **k: _FakeProc())
+    adb = Adb(binary="fake-adb")
+
+    start = time.monotonic()
+    x, y = read_getevent(adb, duration=0.2)
+    elapsed = time.monotonic() - start
+
+    assert (x, y) == (0, 0)
+    assert elapsed < 2.0, f"read_getevent blocked for {elapsed:.1f}s with no input"
+
+
+# --------------------------------------------------------------------------
+# review regression: a mid-run adb tap failure must not crash the run (#143 review-6)
+# --------------------------------------------------------------------------
+
+
+class _ExplodingAdb(FakeAdb):
+    """FakeAdb whose Nth tap raises (simulates the device vanishing mid-run)."""
+
+    def __init__(
+        self,
+        lines: list[str],
+        tap_lines: dict[tuple[int, int], list[str]],
+        fail_on: int,
+    ) -> None:
+        super().__init__(lines=lines, tap_lines=tap_lines)
+        self._fail_on = fail_on
+        self._taps_so_far = 0
+
+    def tap(self, x: int, y: int) -> None:
+        self._taps_so_far += 1
+        if self._taps_so_far == self._fail_on:
+            raise subprocess.CalledProcessError(1, ["adb", "shell", "input", "tap"])
+        super().tap(x, y)
+
+
+def test_tap_failure_records_fail_instead_of_crashing(tmp_path: Path) -> None:
+    exploding = _ExplodingAdb(lines=[], tap_lines=FULL_TAP_LINES, fail_on=1)
+    runner, _, _ = make_harness(tmp_path, adb=exploding)
+    results = runner.run()
+    by_name = {r.name: r for r in results}
+
+    assert by_name["open_view_newest"].ok is False
+    assert "adb tap failed" in by_name["open_view_newest"].note
+    # the rest of the failed view is skipped, other views still run
+    assert by_name["open_first_card_newest"].skipped
+    assert by_name["play_newest"].skipped
+    assert by_name["open_view_movie"].ok
+    assert run_exit_code(results) == 1

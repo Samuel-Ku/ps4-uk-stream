@@ -34,7 +34,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -338,7 +338,18 @@ class Runner:
                 note="adb device not available",
             )
         scan_from = len(self._tailer.all_lines())
-        self._adb.tap(*coords)
+        try:
+            self._adb.tap(*coords)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            # device vanished mid-run — record a ❌, don't crash and lose the
+            # whole run's results
+            return StepResult(
+                step.name,
+                step.phase,
+                step.view,
+                ok=False,
+                note=f"adb tap failed: {exc}",
+            )
         ok = self._wait_for_expects(step.expects, scan_from)
         return StepResult(
             step.name,
@@ -384,7 +395,11 @@ class Runner:
                 notes.append(f"{play_tap.tap}: adb device not available")
                 break
             scan_from = len(self._tailer.all_lines())
-            self._adb.tap(*coords)
+            try:
+                self._adb.tap(*coords)
+            except (OSError, subprocess.CalledProcessError) as exc:
+                notes.append(f"{play_tap.tap}: adb tap failed: {exc}")
+                break
             if not self._wait_for_expects(play_tap.expects, scan_from):
                 notes.append(f"{play_tap.tap}: timeout")
         ok = not notes
@@ -530,7 +545,7 @@ def build_meta(args: argparse.Namespace, adb: Adb) -> ReportMeta:
     else:
         android = model = resolution = "n/a"
     return ReportMeta(
-        date=datetime.now(timezone.utc).astimezone().date().isoformat(),
+        date=datetime.now(UTC).astimezone().date().isoformat(),
         android=android,
         build=args.app_version,
         backend_url=f"http://{args.host}:{args.port}",

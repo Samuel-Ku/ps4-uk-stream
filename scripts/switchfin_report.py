@@ -17,24 +17,42 @@ from scripts.switchfin_model import (
     StepResult,
 )
 
+_MARKER_RE = re.compile(r"SWITCHFIN_TEST: STEP_(\d+)_")
 
-def _marker_positions(dump: list[str]) -> list[int]:
-    marker_re = re.compile(r"SWITCHFIN_TEST: STEP_\d+_")
-    return [i for i, line in enumerate(dump) if marker_re.search(line)]
+
+def _marker_positions(dump: list[str]) -> dict[int, int]:
+    """Map 1-based step number -> logcat line index of its ``STEP_<n>`` marker.
+
+    A dict (not a positional list) so a marker dropped from the ring buffer
+    does not shift every later step's window onto its neighbour's lines.
+    """
+    positions: dict[int, int] = {}
+    for i, line in enumerate(dump):
+        m = _MARKER_RE.search(line)
+        if m:
+            positions[int(m.group(1))] = i
+    return positions
 
 
 def apply_logcat_filter(results: list[StepResult], dump: list[str]) -> list[StepResult]:
     """Flip a step to ❌ when an error pattern lands in its logcat window.
 
     Window = logcat lines between the step's ``STEP_<n>_<desc>`` marker and
-    the next marker. Skipped steps stay skipped.
+    the next marker. A step whose marker is missing gets no window (its
+    verdict is left untouched rather than attributed the whole dump's lines).
+    Skipped steps stay skipped.
     """
     positions = _marker_positions(dump)
     updated: list[StepResult] = []
     for index, result in enumerate(results):
-        start = positions[index] + 1 if index < len(positions) else 0
-        end = positions[index + 1] if index + 1 < len(positions) else len(dump)
-        window = tuple(dump[start:end])
+        marker = positions.get(index + 1)
+        if marker is None:
+            window = ()
+        else:
+            next_marker = min(
+                (p for p in positions.values() if p > marker), default=len(dump)
+            )
+            window = tuple(dump[marker + 1 : next_marker])
         hits = tuple(
             line
             for line in window

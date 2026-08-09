@@ -63,7 +63,7 @@ steps:
     view: newest
     tap: first_card
     expect:
-      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ ]+) -> 200"
+      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ /]+) -> 200"
         status: 200
         capture: gk
       - request: "GET /Items/[^ ]+/Images/Primary -> 200"
@@ -82,7 +82,7 @@ steps:
     view: popular
     tap: first_card
     expect:
-      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ ]+) -> 200"
+      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ /]+) -> 200"
         status: 200
         capture: gk
       - request: "GET /Items/[^ ]+/Images/Primary -> 200"
@@ -101,7 +101,7 @@ steps:
     view: movie
     tap: first_card
     expect:
-      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ ]+) -> 200"
+      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ /]+) -> 200"
         status: 200
         capture: gk
       - request: "GET /Items/[^ ]+/Images/Primary -> 200"
@@ -120,7 +120,7 @@ steps:
     view: series
     tap: first_card
     expect:
-      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ ]+) -> 200"
+      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ /]+) -> 200"
         status: 200
         capture: gk
       - request: "GET /Items/[^ ]+/Images/Primary -> 200"
@@ -139,7 +139,7 @@ steps:
     view: anime
     tap: first_card
     expect:
-      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ ]+) -> 200"
+      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ /]+) -> 200"
         status: 200
         capture: gk
       - request: "GET /Items/[^ ]+/Images/Primary -> 200"
@@ -158,7 +158,7 @@ steps:
     view: cartoon
     tap: first_card
     expect:
-      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ ]+) -> 200"
+      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ /]+) -> 200"
         status: 200
         capture: gk
       - request: "GET /Items/[^ ]+/Images/Primary -> 200"
@@ -177,7 +177,7 @@ steps:
     view: dorama
     tap: first_card
     expect:
-      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ ]+) -> 200"
+      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ /]+) -> 200"
         status: 200
         capture: gk
       - request: "GET /Items/[^ ]+/Images/Primary -> 200"

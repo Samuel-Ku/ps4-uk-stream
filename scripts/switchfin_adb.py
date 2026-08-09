@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import os
 import re
+import select
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 import yaml  # type: ignore[import-untyped]
-
 from scripts.switchfin_model import CALIBRATION_ELEMENTS
 
 #: Subprocess bounds for adb calls (devices list, shell, tap, logcat, getevent).
@@ -92,6 +92,9 @@ def read_getevent(adb: Adb, duration: float = GETEVENT_SAMPLE_S) -> tuple[int, i
     """Sample one tap from ``adb shell getevent -l`` for ``duration`` s.
 
     Returns the last ABS_MT_POSITION_X/Y seen (the latest finger position).
+    The loop is driven by ``select`` so the sample window is bounded even
+    when the phone emits no input events — a blocking ``readline`` would
+    hang the whole calibration walkthrough on a quiet device.
     """
     proc = subprocess.Popen(
         [adb.binary, "shell", "getevent", "-l"],
@@ -101,8 +104,14 @@ def read_getevent(adb: Adb, duration: float = GETEVENT_SAMPLE_S) -> tuple[int, i
     x = y = 0
     deadline = time.monotonic() + duration
     try:
-        while time.monotonic() < deadline:
-            line = proc.stdout.readline() if proc.stdout else ""
+        while proc.stdout is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            ready, _, _ = select.select([proc.stdout], [], [], remaining)
+            if not ready:
+                break  # no input within the remaining window
+            line = proc.stdout.readline()
             if not line:
                 break
             mx = re.search(r"ABS_MT_POSITION_X\s+([0-9a-fA-F]+)", line)
@@ -115,8 +124,13 @@ def read_getevent(adb: Adb, duration: float = GETEVENT_SAMPLE_S) -> tuple[int, i
         proc.terminate()
         if proc.stdout is not None:
             proc.stdout.close()
-        # reap so the subprocess doesn't linger as a zombie after the run
-        proc.wait(timeout=2)
+        # reap so the subprocess doesn't linger as a zombie after the run;
+        # escalate to kill if getevent ignores SIGTERM
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
     return x, y
 
 
