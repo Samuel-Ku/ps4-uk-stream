@@ -143,6 +143,43 @@ async def test_uaflix_content_series_parses_seasons():
 
 
 @pytest.mark.asyncio
+async def test_uaflix_content_series_drops_empty_season():
+    """Regression (observed live 2026-08-09): the upstream content page
+    renders only the LATEST seasons' episode tiles inline — older
+    seasons' links point at a separate `/sezon-N/` page and have no
+    episode ids on this page. An empty season in the response is
+    unplayable (a client picking seasons[0] lands on the main page,
+    finds no player iframe and 502s), so it must be dropped."""
+    content_html = (
+        "<html><body>"
+        "<h1 id='ftitle'>Тестовий серіал</h1>"
+        "<div class='fusers all-sez'><div class='sez-wr'>"
+        "<a href='/serials/test-serial/sezon-1/' class='sect-link'>Сезон 1</a>"
+        "<a href='/serials/test-serial/sezon-2/' class='sect-link'>Сезон 2</a>"
+        "</div></div>"
+        "<div class='frels2'><div class='sers-wr'>"
+        "<div class='video-item with-mask'><div class='vi-in'>"
+        "<a class='vi-img img-resp-h' href='https://uafix.net/serials/test-serial/season-02-episode-01/'>"
+        "<div class='vi-title'>Сезон 2 Серія 1</div>"
+        "</a></div></div>"
+        "</div></div>"
+        "</body></html>"
+    )
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://uafix.net/serials/test-serial/").respond(
+            200, text=content_html
+        )
+        async with httpx.AsyncClient() as http:
+            c = await UAFlixProvider().content("serials-test-serial", http)
+    assert c.type == "series"
+    assert c.seasons is not None
+    # Season 1 (no inline episodes) is dropped; only season 2 survives.
+    assert [s.number for s in c.seasons] == [2]
+    assert len(c.seasons[0].episodes) == 1
+    assert c.seasons[0].episodes[0].id == "serials-test-serial:s2e1"
+
+
+@pytest.mark.asyncio
 async def test_uaflix_stream_movie_resolves_to_media_url():
     """Two-hop: content page -> player iframe -> m3u8 on zetvideo.net."""
     content_html = _fixture("content_movie.html")

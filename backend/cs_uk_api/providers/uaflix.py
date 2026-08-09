@@ -15,8 +15,8 @@ import httpx
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 
-from ..extractors import RegexExtractor
 from ..country import extract_country
+from ..extractors import RegexExtractor
 from ..http_client import safe_get
 from ..models import (
     ContentResponse,
@@ -322,6 +322,15 @@ def _parse_seasons(soup: BeautifulSoup, external_id: str) -> list[Season]:
     seasons: list[Season] = []
     for s in sorted(season_hrefs):
         eps = episodes_by_season.get(s, [])
+        # Drop empty seasons. The upstream content page only renders
+        # the latest seasons' episode tiles inline (older seasons' links
+        # point at a separate `/sezon-N/` page), so an empty season has
+        # NO episode ids — a client picking it (e.g. a play sweep that
+        # starts at seasons[0]) lands on the main page, finds no player
+        # iframe, and fails with a dead stream. Advertising only
+        # seasons we can actually play keeps the card healthy.
+        if not eps:
+            continue
         seasons.append(Season(number=s, episodes=eps))
     return seasons
 
