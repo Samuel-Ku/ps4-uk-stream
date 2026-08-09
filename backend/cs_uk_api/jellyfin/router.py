@@ -25,7 +25,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from urllib.parse import quote, urljoin, urlparse
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
@@ -107,11 +107,13 @@ def normalize_jellyfin_path(path: str) -> str | None:
         canonical = canonical.replace("{" + name + "}", value)
     return canonical
 
-#: What the server tells the client it is. The real Jellyfin server name
-#: is configurable; we surface the project's own identity so the
-#: client's connection dialog shows something recognizable.
-_PRODUCT = "cs-uk-api"
-_VERSION = "0.1.0"
+#: What the server tells the client it is. The official Jellyfin apps
+#: validate the server's product/version on connect and refuse anything
+#: that doesn't look like a real Jellyfin ("unsupported version or
+#: product"). Surface a genuine Jellyfin identity so any client accepts
+#: the handshake; the facade itself is version-agnostic.
+_PRODUCT = "Jellyfin Server"
+_VERSION = "10.11.11"
 
 
 def _user_name_for(user_id: str) -> str:
@@ -1448,6 +1450,33 @@ async def sessions_logout() -> Response:
     none to drop.
     """
     return Response(status_code=204)
+
+
+@router.websocket("/socket")
+async def websocket_socket(websocket: WebSocket) -> None:
+    """Jellyfin WebSocket endpoint (``ws://host:port/socket``).
+
+    Official Jellyfin clients open a WebSocket to ``/socket`` during
+    connection validation — a strict handshake rejection surfaces as
+    ``Invalid HTTP request received`` in uvicorn and the client reports
+    "cannot connect". The token is enforced on the HTTP surface
+    (``require_token``); the real Jellyfin accepts the socket eagerly and
+    only pushes/ignores events, so the facade does the same: accept
+    unconditionally (D4 accept-any posture) and keep the socket open.
+    Incoming messages (presence/playback reports) are consumed and
+    ignored; no response is written. The connection is torn down only
+    when the client disconnects.
+    """
+    await websocket.accept()
+    try:
+        while True:
+            # Consume client messages (presence/playback reports) and
+            # ignore them — a real server would push session events here.
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    except Exception:  # noqa: BLE001
+        pass
 
 
 __all__ = ["require_token", "router"]
