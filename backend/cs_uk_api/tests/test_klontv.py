@@ -152,6 +152,55 @@ async def test_klontv_content_series_parses_seasons():
 
 
 @pytest.mark.asyncio
+async def test_klontv_content_follows_section_redirect():
+    """Regression (observed live 2026-08-09): a title moved between
+    sections answers 301 (`/filmy/...` -> `/serialy/...`). content()
+    must follow the same-host redirect (safe_get) and resolve the
+    title's player page instead of surfacing a dead not_found."""
+    content_html = _fixture("content_series.html")
+    player_html = _fixture("player_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://klonua.com/filmy/10905-serial.html").respond(
+            301, headers={"Location": "/serialy/10905-serial.html"}
+        )
+        router.get("https://klonua.com/serialy/10905-serial.html").respond(
+            200, text=content_html
+        )
+        router.get("https://ashdi.vip/serial/6212").respond(
+            200, text=player_html
+        )
+        async with httpx.AsyncClient() as http:
+            c = await KlonTVProvider().content("films/10905-serial", http)
+    assert "Дюна" in c.title
+    assert c.type == "series"
+    assert c.seasons is not None
+    assert len(c.seasons) >= 1
+
+
+@pytest.mark.asyncio
+async def test_klontv_stream_bare_series_id_refuses_json_blob():
+    """Regression (class #165): stream() for a bare series id (no
+    episode suffix — reachable when content() surfaced empty seasons)
+    must NOT hand the client the raw PlayerJS playlist JSON as a
+    stream URL; it raises parse_failed instead."""
+    content_html = _fixture("content_series.html")
+    player_html = _fixture("player_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://klonua.com/serialy/8431-duna.html").respond(
+            200, text=content_html
+        )
+        router.get("https://ashdi.vip/serial/6212").respond(
+            200, text=player_html
+        )
+        from cs_uk_api.providers.base import ProviderError
+
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await KlonTVProvider().stream("series/8431-duna", None, http)
+    assert exc.value.code == "parse_failed"
+
+
+@pytest.mark.asyncio
 async def test_klontv_stream_movie_resolves_to_media_url():
     """Two-hop stream for a movie: content page -> player page
     (`ashdi.vip/vod/<id>`) -> `file:'https://.../index.m3u8'`.

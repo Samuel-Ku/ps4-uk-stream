@@ -263,8 +263,18 @@ class KlonTVProvider(BaseProvider):
             raise ProviderError("not_found", f"bad external_id: {external_id!r}")
         path = "filmy" if kind == "films" else "serialy"
         url = f"{BASE_URL}/{path}/{slug}.html"
+        # Fetch through safe_get: the upstream 301-redirects a title
+        # moved between sections (e.g. `/filmy/...` -> `/serialy/...`,
+        # observed live 2026-08-09) and safe_get follows same-host
+        # redirects instead of surfacing a dead not_found for a card
+        # whose player page is alive.
         try:
-            resp = await http.get(url)
+            resp = await safe_get(
+                http,
+                url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+                headers={"Referer": BASE_URL + "/"},
+            )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
@@ -419,8 +429,16 @@ class KlonTVProvider(BaseProvider):
             raise ProviderError("not_found", f"bad external_id: {ext_id!r}")
         path = "filmy" if kind == "films" else "serialy"
         content_url = f"{BASE_URL}/{path}/{slug}.html"
+        # Same-host redirect following as content() — a title moved
+        # between sections (e.g. /filmy/ -> /serialy/) must still
+        # resolve its player page instead of surfacing not_found.
         try:
-            resp = await http.get(content_url)
+            resp = await safe_get(
+                http,
+                content_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+                headers={"Referer": BASE_URL + "/"},
+            )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
@@ -453,10 +471,16 @@ class KlonTVProvider(BaseProvider):
         if raw is None:
             raise ProviderError("parse_failed", "no file: in player page")
         # Movies: `raw` is the m3u8 URL. Series: `raw` is a JSON
-        # playlist — pick the right episode via the suffix.
+        # playlist — pick the right episode via the suffix. A bare
+        # series id (no episode suffix) must NOT hand the client the
+        # raw playlist JSON as a "stream" (regression class #165:
+        # content() with empty seasons lets a client stream the bare
+        # series id, and the JSON blob is not a playable URL).
         media_url: str | None
         if ep_suffix:
             media_url = self._select_episode_url(raw, ep_suffix)
+        elif raw.startswith("["):
+            media_url = None
         else:
             media_url = raw
         if media_url is None:
