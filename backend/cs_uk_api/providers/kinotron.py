@@ -120,13 +120,18 @@ class KinoTronProvider(BaseProvider):
     def _files(player_html: str) -> list[dict[str, object]]:
         scripts = BeautifulSoup(player_html, "lxml").select("script")
         text = next((item.get_text() for item in scripts if "file" in item.get_text()), "")
-        match = re.search(r"file\s*:\s*'([^']+)'", text)
+        # The player serves the payload in single *or* double quotes
+        # (`file:'[{...}]'` from ashdi serials vs `file:"https://..."`
+        # from zetvideo vod movies) — match either (live-gate: a movie
+        # was wrongly gated because only single quotes matched).
+        match = re.search(r"file\s*:\s*(?:\"([^\"]+)\"|'([^']+)')", text)
         if not match:
             return []
+        payload = match.group(1) or match.group(2)
         try:
-            raw = json.loads(match.group(1))
+            raw = json.loads(payload)
         except json.JSONDecodeError:
-            return [{"dub": "", "season": "", "title": "", "file": match.group(1)}]
+            return [{"dub": "", "season": "", "title": "", "file": payload}]
         files: list[dict[str, object]] = []
         for dub in raw if isinstance(raw, list) else []:
             for season in dub.get("folder", []) if isinstance(dub, dict) else []:

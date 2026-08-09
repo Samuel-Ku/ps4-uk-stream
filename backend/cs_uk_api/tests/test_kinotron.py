@@ -126,6 +126,35 @@ async def test_kinotron_content_movie_dead_player_raises_gated() -> None:
 
 
 @pytest.mark.asyncio
+async def test_kinotron_movie_with_double_quoted_player_file_is_not_gated():
+    """Live-gate regression (2026-08-09): zetvideo vod players serve
+    the file as `file:"https://..."` (double quotes) while ashdi serials
+    use `file:'[{...}]'` (single quotes). Only single quotes were matched
+    before, so a live playable movie was wrongly gated as dead."""
+    page = (
+        '<html><body><div class="full"><h1>Різдвяне бажання</h1></div>'
+        '<div class="fsubtitle">Фільм</div>'
+        '<div class="video-box">'
+        '<iframe data-src="https://zetvideo.net/vod/38430"></iframe>'
+        '</div></body></html>'
+    )
+    player = (
+        '<html><body><script>'
+        'file:"https://zetvideo.net/vid/1/films/a.season.for.family.2023.1080p/hls/index.m3u8"'
+        '</script></body></html>'
+    )
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://kinotron.tv/10381-rzdvjane-bazhannja.html").respond(200, text=page)
+        router.get("https://zetvideo.net/vod/38430").respond(200, text=player)
+        async with httpx.AsyncClient() as http:
+            content = await KinoTronProvider().content("10381-rzdvjane-bazhannja", http)
+            stream = await KinoTronProvider().stream("10381-rzdvjane-bazhannja", None, http)
+    assert content.type == "movie"
+    assert stream.url == "https://zetvideo.net/vid/1/films/a.season.for.family.2023.1080p/hls/index.m3u8"
+    assert stream.type == "m3u8"
+
+
+@pytest.mark.asyncio
 async def test_kinotron_content_trailer_only_page_raises_gated():
     """Issue #163: a page whose video box carries only a youtube embed
     is trailer-only (upstream has no playable player) — content() must
