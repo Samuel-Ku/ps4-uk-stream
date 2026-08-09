@@ -342,7 +342,7 @@ class KinoVezhaProvider(BaseProvider):
             seasons = await self._load_series_seasons(player_url, external_id, http, self.id)
         elif player_url:
             seasons = [Season(number=1, episodes=[Episode(
-                number=1, id=f"{external_id}{MOVIE_SUFFIX}", title=title_el.get_text(strip=True),
+                number=1, id=f"{self.id}:{external_id}{MOVIE_SUFFIX}", title=title_el.get_text(strip=True),
             )])]
         mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(

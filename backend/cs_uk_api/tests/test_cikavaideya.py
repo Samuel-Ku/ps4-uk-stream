@@ -144,7 +144,7 @@ async def test_cikavaideya_content_movie_parses_title_poster():
     assert c.seasons is not None
     assert len(c.seasons) == 1
     assert len(c.seasons[0].episodes) == 1
-    assert c.seasons[0].episodes[0].id.endswith(":__movie__")
+    assert c.seasons[0].episodes[0].id == "cikavaideya:281-duelianty:__movie__"
 
 
 @pytest.mark.asyncio

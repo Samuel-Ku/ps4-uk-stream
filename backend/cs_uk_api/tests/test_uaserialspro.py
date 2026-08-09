@@ -220,7 +220,7 @@ async def test_content_movie_parses_title_year_poster():
     assert c.seasons is not None
     assert len(c.seasons) == 1
     assert len(c.seasons[0].episodes) == 1
-    assert c.seasons[0].episodes[0].id.endswith(":__movie__")
+    assert c.seasons[0].episodes[0].id == "uaserialspro:12588-shopen-shopen:__movie__"
     assert len(c.translations) >= 1
 
 

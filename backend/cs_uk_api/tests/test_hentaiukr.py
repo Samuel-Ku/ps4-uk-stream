@@ -207,6 +207,10 @@ async def test_hentaiukr_content_loads_episodes_from_plur_cfg_json():
     assert len(c.seasons[0].episodes) == 3
     titles = [ep.title for ep in c.seasons[0].episodes]
     assert titles == ["Серія 1", "Серія 2", "Серія 3"]
+    # Episode ids are prefixed with the provider namespace (issue #175)
+    # so /api/stream can route on the first ':'. 1-based episode index.
+    assert c.seasons[0].episodes[0].id == "hentaiukr:159:1"
+    assert c.seasons[0].episodes[2].id == "hentaiukr:159:3"
 
 
 @pytest.mark.asyncio

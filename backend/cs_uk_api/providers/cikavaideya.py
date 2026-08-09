@@ -347,7 +347,7 @@ class CikavaIdeyaProvider(BaseProvider):
         """
         if isinstance(player1, str):
             return [Season(number=1, episodes=[Episode(
-                number=1, id=f"{external_id}{MOVIE_SUFFIX}", title="Фільм",
+                number=1, id=f"{provider_id}:{external_id}{MOVIE_SUFFIX}", title="Фільм",
             )])]
         seasons: list[Season] = []
         for s_idx, season_key in enumerate(_real_season_keys(player1), start=1):

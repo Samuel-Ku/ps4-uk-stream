@@ -439,7 +439,7 @@ class UASerialsProProvider(BaseProvider):
                 episodes=[
                     Episode(
                         number=1,
-                        id=f"{external_id}{MOVIE_SUFFIX}",
+                        id=f"{provider_id}:{external_id}{MOVIE_SUFFIX}",
                         title="Фільм",
                     )
                 ],

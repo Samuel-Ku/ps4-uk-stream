@@ -390,7 +390,7 @@ class AnimeONProvider(BaseProvider):
                 for entry in entries
             }
         )
-        season = self._build_season(anime_id, episodes_by_num, all_translations)
+        season = self._build_season(anime_id, episodes_by_num, all_translations, self.id)
         mb_form, mb_styles = model_b_axes("anime")
         return ContentResponse(
             id=f"{self.id}:{external_id}",
@@ -413,6 +413,7 @@ class AnimeONProvider(BaseProvider):
         anime_id: int,
         episodes_by_num: dict[int, list[dict[str, Any]]],
         all_translations: list[str],
+        provider_id: str,
     ) -> Season:
         return Season(
             number=1,
@@ -428,6 +429,7 @@ class AnimeONProvider(BaseProvider):
                         ),
                     ),
                     translations=all_translations,
+                    provider_id=provider_id,
                 )
                 for ep_num, entries in sorted(episodes_by_num.items())
             ],
@@ -666,6 +668,7 @@ class AnimeONProvider(BaseProvider):
         episode_num: int,
         entries: list[dict[str, Any]],
         translations: list[str],
+        provider_id: str,
     ) -> Episode:
         ep_translations = [
             Translation(id=name, label=name)
@@ -694,7 +697,7 @@ class AnimeONProvider(BaseProvider):
         encoded = base64.b64encode(blob.encode("utf-8")).decode("ascii")
         return Episode(
             number=episode_num,
-            id=f"{anime_id}:e{episode_num}:{encoded}",
+            id=f"{provider_id}:{anime_id}:e{episode_num}:{encoded}",
             title=f"Серія {episode_num}",
             translations=ep_translations,
         )

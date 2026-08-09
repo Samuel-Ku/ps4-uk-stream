@@ -463,7 +463,7 @@ class BambooUAProvider(BaseProvider):
                     episodes=[
                         Episode(
                             number=1,
-                            id=f"{external_id}{MOVIE_SUFFIX}",
+                            id=f"{provider_id}:{external_id}{MOVIE_SUFFIX}",
                             title=groups[0].folder[0].title,
                         )
                     ],

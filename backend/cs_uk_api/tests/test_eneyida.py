@@ -100,7 +100,9 @@ async def test_eneyida_content_movie_parses_title_poster_player():
             content = await EneyidaProvider().content("films/9366-duna-chastyna-druga", http)
     assert "Дюна" in content.title
     assert content.poster is not None and content.poster.startswith("https://")
-    assert content.seasons and content.seasons[0].episodes[0].id.endswith(":__movie__")
+    assert content.seasons and content.seasons[0].episodes[0].id == (
+        "eneyida:films/9366-duna-chastyna-druga:__movie__"
+    )
 
 
 @pytest.mark.asyncio

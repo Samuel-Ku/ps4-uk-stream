@@ -286,7 +286,7 @@ async def test_content_parses_title_description_and_translations():
     assert len(c.seasons) == 1
     first = c.seasons[0].episodes[0]
     assert first.number == 1
-    assert first.id.startswith("913:e1:")
+    assert first.id.startswith("animeon:913:e1:")
     # The translation list should include all three studios (labels
     # come straight from the JSON `translation.name` field).
     labels = [t.id for t in first.translations or []]

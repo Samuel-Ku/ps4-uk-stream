@@ -175,6 +175,7 @@ async def test_kinovezha_content_movie_parses_title_poster():
     assert c.seasons is not None
     assert len(c.seasons) == 1
     assert len(c.seasons[0].episodes) == 1
+    assert c.seasons[0].episodes[0].id == "kinovezha:2809-volodari-vsesvitu:__movie__"
 
 
 @pytest.mark.asyncio

@@ -224,7 +224,7 @@ class EneyidaProvider(BaseProvider):
             seasons = [
                 Season(
                     number=1,
-                    episodes=[Episode(number=1, id=external_id + MOVIE_SUFFIX, title="Фільм")],
+                    episodes=[Episode(number=1, id=f"{self.id}:{external_id}{MOVIE_SUFFIX}", title="Фільм")],
                 )
             ]
         mb_form, mb_styles = model_b_axes(typ)

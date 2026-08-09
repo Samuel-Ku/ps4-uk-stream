@@ -181,7 +181,7 @@ class HentaiUkrProvider(BaseProvider):
                     episodes.append(
                         Episode(
                             number=idx,
-                            id=f"{external_id}:{idx}",
+                            id=f"{self.id}:{external_id}:{idx}",
                             title=f"Серія {idx}",
                         )
                     )

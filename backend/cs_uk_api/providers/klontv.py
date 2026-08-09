@@ -324,7 +324,7 @@ class KlonTVProvider(BaseProvider):
             # with the `__movie__` suffix sentinel so stream() can pick
             # it up without per-episode routing.
             seasons = [Season(number=1, episodes=[Episode(
-                number=1, id=f"{external_id}{MOVIE_SUFFIX}", title="Фільм",
+                number=1, id=f"{self.id}:{external_id}{MOVIE_SUFFIX}", title="Фільм",
             )])]
         mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
