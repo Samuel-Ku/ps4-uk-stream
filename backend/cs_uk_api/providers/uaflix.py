@@ -267,6 +267,16 @@ def _file_value(html: str) -> str | None:
     return m.group(1) or m.group(2)
 
 
+def _is_youtube_player(url: str) -> bool:
+    """True when the player iframe is a YouTube embed (trailer-only)."""
+    return "youtube.com" in url or "youtu.be" in url
+
+
+def _is_serial_player(url: str) -> bool:
+    """True when the player iframe is a zetvideo serial player."""
+    return "/serial/" in url
+
+
 def _serial_media_url(html: str, ep_suffix: str) -> str | None:
     """Resolve an episode m3u8 from a serial player's JSON-folder `file:`.
 
@@ -385,6 +395,11 @@ class UAFlixProvider(BaseProvider):
     name = "UAFlix"
     types = ("movie", "series", "anime", "dorama", "cartoon")
     sections = UAFLIX_SECTIONS
+    #: Issue #189: trailer-only content pages (a YouTube embed with no
+    #: playable player) raise ``gated`` at content() time so the
+    #: catalog sweep (ADR-0002) drops the dead card from home/search
+    #: instead of failing only at play time.
+    can_gate = True
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         # DLE-style search: POST with `do`, `subaction`, `story` to the
@@ -469,8 +484,35 @@ class UAFlixProvider(BaseProvider):
         country: str | None = extract_country(soup)
         media_type = _type_from_url(url)
         seasons: list[Season] | None = None
-        if media_type in ("series", "anime", "dorama"):
+        if media_type in ("series", "anime", "dorama", "cartoon"):
             seasons = _parse_seasons(soup, external_id, self.id)
+            if not seasons:
+                # Issue #189: some serials (e.g. «Вайлд Пак») expose
+                # their episodes ONLY inside the serial player's
+                # JSON-folder payload — the content page has no
+                # season/episode links at all. Probe the player iframe
+                # for the structure so the card gets playable ids.
+                seasons = await self._serial_player_seasons(
+                    soup, external_id, http
+                )
+        if not seasons:
+            # Issue #189: a content page with no playable player at all
+            # (YouTube-only embed or nothing) is a dead card — gate it
+            # (ADR-0002) so the catalog sweep drops it from home/search
+            # instead of failing only at play time. A VOD player
+            # (zetvideo.net/vod, ashdi.vip/vod) is a movie-style single
+            # stream that stream() resolves with the bare id, so the
+            # card stays; a serial player whose JSON-folder probe came
+            # up empty is unplayable and gates too.
+            player_url = _extract_player_iframe(soup)
+            if (
+                player_url is None
+                or _is_youtube_player(player_url)
+                or _is_serial_player(player_url)
+            ):
+                raise ProviderError(
+                    "gated", "trailer only — no playable player"
+                )
         mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"uaflix:{external_id}",
@@ -484,6 +526,66 @@ class UAFlixProvider(BaseProvider):
             form=mb_form,
             styles=mb_styles,
         )
+
+    async def _serial_player_seasons(
+        self,
+        soup: BeautifulSoup,
+        external_id: str,
+        http: httpx.AsyncClient,
+    ) -> list[Season] | None:
+        """Probe the serial player iframe for the episode structure.
+
+        Some serials (e.g. «Вайлд Пак», observed live 2026-08-09) have
+        NO episode links on the content page — the episodes live only
+        inside the serial player's JSON-folder `file:` payload
+        (`[{"folder":[{"folder":[{"file":...}]}]}]`). stream() already
+        resolves `s<N>e<M>` suffixes against that payload
+        (`_serial_media_url`), so content() must surface the same
+        season/episode ids. Returns None when the player is not a
+        serial, the fetch fails, or the payload is not the expected
+        JSON-folder shape.
+        """
+        player_url = _extract_player_iframe(soup)
+        if player_url is None or not _is_serial_player(player_url):
+            return None
+        player_url = urljoin(_content_url(external_id), player_url)
+        try:
+            resp = await safe_get(
+                http,
+                player_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+                headers={"Referer": f"{BASE_URL}/"},
+            )
+        except httpx.HTTPError:
+            return None
+        if resp.status_code != 200:
+            return None
+        raw = _file_value(resp.text)
+        if raw is None:
+            return None
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(data, list) or not data:
+            return None
+        seasons: list[Season] = []
+        for s_idx, season in enumerate(data[0].get("folder") or [], start=1):
+            if not isinstance(season, dict):
+                continue
+            episodes = [
+                Episode(
+                    number=e_idx,
+                    id=f"{self.id}:{external_id}:s{s_idx}e{e_idx}",
+                    title=(
+                        str(ep.get("title") or "").strip() or f"Серія {e_idx}"
+                    ),
+                )
+                for e_idx, ep in enumerate(season.get("folder") or [], start=1)
+            ]
+            if episodes:
+                seasons.append(Season(number=s_idx, episodes=episodes))
+        return seasons or None
 
     async def stream(
         self, content_id: str, translation: str | None, http: httpx.AsyncClient
@@ -508,6 +610,22 @@ class UAFlixProvider(BaseProvider):
             )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
+        if resp.status_code != 200 and ep_suffix:
+            # Issue #189: serial-player-only titles (e.g. «Вайлд Пак»)
+            # have NO per-episode pages — every season/episode lives
+            # inside the show page's serial player JSON-folder. The
+            # episode URL 404s, so fall back to the show page, which
+            # still embeds the serial player we index by `s<N>e<M>`.
+            content_url = _content_url(ext_id)
+            try:
+                resp = await safe_get(
+                    http,
+                    content_url,
+                    allowed_hosts=set(_ALLOWED_HOSTS),
+                    headers={"Referer": f"{BASE_URL}/"},
+                )
+            except httpx.HTTPError as e:
+                raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
             raise ProviderError("not_found", f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")

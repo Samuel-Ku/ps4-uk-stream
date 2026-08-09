@@ -180,6 +180,54 @@ async def test_uaflix_content_series_drops_empty_season():
 
 
 @pytest.mark.asyncio
+async def test_uaflix_content_serial_without_links_probes_player():
+    """Issue #189: a serial whose content page has NO season/episode
+    links (observed live on «Вайлд Пак» — episodes live only inside
+    the zetvideo serial player's JSON-folder payload) must surface
+    playable season/episode ids by probing the player iframe, so the
+    card is not left with an empty seasons list."""
+    content_html = _fixture("content_serial_zetvideo.html")
+    player_html = _fixture("player_serial_zetvideo.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://uafix.net/serials/vajld-pak/").respond(
+            200, text=content_html
+        )
+        router.get("https://zetvideo.net/serial/2258").respond(
+            200, text=player_html
+        )
+        async with httpx.AsyncClient() as http:
+            c = await UAFlixProvider().content("serials-vajld-pak", http)
+    assert c.type == "series"
+    assert c.seasons is not None
+    assert len(c.seasons) >= 1
+    first = c.seasons[0].episodes[0]
+    # Episode ids match what stream()'s `_serial_media_url` indexes.
+    assert first.id == "uaflix:serials-vajld-pak:s1e1"
+
+
+@pytest.mark.asyncio
+async def test_uaflix_content_trailer_only_raises_gated():
+    """Issue #189: a content page whose only player is a YouTube
+    embed (observed live on «КоКомелон у кіно») has no playable
+    source — content() must raise `gated` (ADR-0002) so the catalog
+    sweep drops the dead card from home/search."""
+    from cs_uk_api.providers.base import ProviderError
+
+    content_html = _fixture("content_serial_zetvideo.html").replace(
+        'src="https://zetvideo.net/serial/2258',
+        'src="https://www.youtube.com/embed/cr_s2OZyUrc',
+    )
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://uafix.net/serials/vajld-pak/").respond(
+            200, text=content_html
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await UAFlixProvider().content("serials-vajld-pak", http)
+    assert exc.value.code == "gated"
+
+
+@pytest.mark.asyncio
 async def test_uaflix_stream_movie_resolves_to_media_url():
     """Two-hop: content page -> player iframe -> m3u8 on zetvideo.net."""
     content_html = _fixture("content_movie.html")
@@ -268,6 +316,35 @@ async def test_uaflix_stream_serial_zetvideo_json_folder_extracts_m3u8():
         router.get(
             "https://uafix.net/serials/vajld-pak/season-01-episode-01/"
         ).respond(200, text=content_html)
+        router.get(
+            "https://zetvideo.net/serial/2258?season=1&episode=1"
+        ).respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            s = await UAFlixProvider().stream(
+                "serials-vajld-pak:s1e1", None, http
+            )
+    assert s.url == (
+        "https://zetvideo.net/vid/1/serials/"
+        "wylde.pak.s01e01.best.summer.ever.1080p.webdl_59942/hls/index.m3u8"
+    )
+    assert s.type == "m3u8"
+
+
+@pytest.mark.asyncio
+async def test_uaflix_stream_serial_falls_back_to_show_page_on_episode_404():
+    """Issue #189: serial-player-only titles (e.g. «Вайлд Пак») have no
+    per-episode pages — the episode URL 404s but the show page embeds
+    the same serial player. stream() must fall back to the show page
+    and still resolve the `s<N>e<M>` m3u8 from the JSON-folder."""
+    content_html = _fixture("content_serial_zetvideo.html")
+    player_html = _fixture("player_serial_zetvideo.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://uafix.net/serials/vajld-pak/season-01-episode-01/"
+        ).respond(404, text="not found")
+        router.get("https://uafix.net/serials/vajld-pak/").respond(
+            200, text=content_html
+        )
         router.get(
             "https://zetvideo.net/serial/2258?season=1&episode=1"
         ).respond(200, text=player_html)
