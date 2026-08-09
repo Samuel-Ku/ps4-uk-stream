@@ -200,7 +200,8 @@ async def test_content_for_show_follows_to_seasons_and_episodes():
     """For a show external_id, content() must fetch the show page,
     follow the season subitems, and return at least one Season with
     episodes. Each episode's `id` is the full URL of the episode
-    page (so stream() can fetch it directly)."""
+    page prefixed with the provider id (issue #180) so the /api/stream
+    router can hand the bare URL to stream()."""
     from cs_uk_api.providers.simpsonsuatv import _MAX_SHOW_SEASONS
 
     show_html = _fixture("content_show.html")
@@ -228,10 +229,12 @@ async def test_content_for_show_follows_to_seasons_and_episodes():
     assert min(nums) == 28 and max(nums) == 37
     # At least one season must have at least one episode.
     assert any(len(s.episodes) >= 1 for s in c.seasons)
-    # Episode ids must be the full URL of the episode page.
+    # Episode ids must be the full URL of the episode page prefixed
+    # with the provider id so the router can split on the first ':'.
     all_ids = [e.id for s in c.seasons for e in s.episodes]
     assert all(
-        i.startswith("https://simpsonsua.tv/") and "-seriya" in i for i in all_ids
+        i.startswith("simpsonsuatv:https://simpsonsua.tv/") and "-seriya" in i
+        for i in all_ids
     )
 
 
@@ -269,7 +272,7 @@ async def test_content_episode_slug_falls_back_to_html_variant():
     assert len(c.seasons) == 1
     assert len(c.seasons[0].episodes) == 1
     ep_id = c.seasons[0].episodes[0].id
-    assert ep_id.startswith("https://simpsonsua.tv/")
+    assert ep_id.startswith("simpsonsuatv:https://simpsonsua.tv/")
     assert "seriya" in ep_id
 
 
@@ -287,8 +290,33 @@ async def test_content_for_season_returns_episodes():
     assert len(c.seasons[0].episodes) >= 1
     all_ids = [e.id for e in c.seasons[0].episodes]
     assert all(
-        i.startswith("https://simpsonsua.tv/") and "-seriya" in i for i in all_ids
+        i.startswith("simpsonsuatv:https://simpsonsua.tv/") and "-seriya" in i
+        for i in all_ids
     )
+
+
+@pytest.mark.asyncio
+async def test_content_episode_ids_route_on_first_colon():
+    """Regression (issue #180): the PS4 client passes episode ids
+    verbatim to /api/stream/{id}, and the router resolves the provider
+    by partitioning on the first ':'. simpsonsuatv episodes are raw
+    page URLs, so an unprefixed id makes the router treat `https` as
+    the provider -> 404 not_found. The emitted id must carry the
+    `simpsonsuatv:` prefix and leave the bare URL after the first ':'
+    (the form stream() validates)."""
+    season_html = _fixture("content_season.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://simpsonsua.tv/s35/").respond(200, text=season_html)
+        async with httpx.AsyncClient() as http:
+            c = await SimpsonsUATvProvider().content("s35", http)
+    assert c.seasons is not None
+    assert len(c.seasons) == 1
+    assert len(c.seasons[0].episodes) >= 1
+    for ep in c.seasons[0].episodes:
+        # Mirror `_split_content_id`: partition on the first ':'.
+        provider_id, _, rest = ep.id.partition(":")
+        assert provider_id == "simpsonsuatv"
+        assert rest.startswith("https://simpsonsua.tv/")
 
 
 @pytest.mark.asyncio

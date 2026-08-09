@@ -303,13 +303,17 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
     )
 
 
-def _parse_season_episodes(soup: BeautifulSoup, season_url: str) -> list[Episode]:
+def _parse_season_episodes(
+    soup: BeautifulSoup, season_url: str, provider_id: str
+) -> list[Episode]:
     """Parse the episode cards on a season page.
 
     Each card is a `div.movie_item.sezon` block containing an `<a
     href="...seriya.html">` and a `<div class="descr nazva">`
     title. Returns Episode objects whose `id` is the full URL of the
-    episode page (so `stream()` can fetch the player iframe directly)."""
+    episode page prefixed with the provider id (so the /api/stream
+    router can split on the first ':' and hand `stream()` the bare URL
+    to fetch the player iframe directly)."""
     episodes: list[Episode] = []
     for idx, card in enumerate(soup.select("div.movie_item"), start=1):
         a = card.select_one("a")
@@ -323,7 +327,11 @@ def _parse_season_episodes(soup: BeautifulSoup, season_url: str) -> list[Episode
         title = _clean_title(
             title_el.get_text(strip=True) if title_el else f"Серія {idx}"
         )
-        episodes.append(Episode(number=idx, id=url, title=title or f"Серія {idx}"))
+        episodes.append(
+            Episode(
+                number=idx, id=f"{provider_id}:{url}", title=title or f"Серія {idx}"
+            )
+        )
     return episodes
 
 
@@ -562,13 +570,17 @@ class SimpsonsUATvProvider(BaseProvider):
                 Season(
                     number=1,
                     episodes=[
-                        Episode(number=1, id=content_url, title=ep_title or "Серія")
+                        Episode(
+                            number=1,
+                            id=f"{self.id}:{content_url}",
+                            title=ep_title or "Серія",
+                        )
                     ],
                 )
             ]
         if _is_season_href(content_url):
             # Season page: parse episodes directly.
-            episodes = _parse_season_episodes(soup, content_url)
+            episodes = _parse_season_episodes(soup, content_url, self.id)
             season_num = _season_number(content_url) or 1
             return [Season(number=season_num, episodes=episodes)] if episodes else None
         # Show page: follow season subitems. Fetch the season pages
@@ -594,7 +606,7 @@ class SimpsonsUATvProvider(BaseProvider):
                 except ProviderError:
                     return None
             season_soup = BeautifulSoup(resp.text, "lxml")
-            episodes = _parse_season_episodes(season_soup, season_url)
+            episodes = _parse_season_episodes(season_soup, season_url, self.id)
             if not episodes:
                 return None
             return Season(number=int(season_num_str), episodes=episodes)
