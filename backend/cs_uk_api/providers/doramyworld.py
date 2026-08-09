@@ -186,8 +186,9 @@ def _section_url(section: str, page: int) -> str:
     if section not in paths:
         raise ProviderError("not_found", f"unknown section: {section}")
     # The upstream Kotlin always appends /page/N/, even for page 1.
-    # WordPress resolves both `/dorama/` and `/dorama/page/1/` to the
-    # same listing; mirroring the upstream keeps the test URLs exact.
+    # WordPress 301-redirects `/page/1/` to the canonical section URL
+    # (`/film/page/1/` -> `/film/`); browse() fetches through safe_get
+    # (#171) so the same-host redirect is followed. Pages > 1 return 200.
     return f"{BASE_URL}{paths[section]}page/{page}/"
 
 
@@ -283,7 +284,7 @@ class DoramyWorldProvider(BaseProvider):
     ) -> tuple[list[SearchResult], bool]:
         url = _section_url(section, page)
         try:
-            resp = await http.get(url)
+            resp = await safe_get(http, url, allowed_hosts=set(_ALLOWED_HOSTS))
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:

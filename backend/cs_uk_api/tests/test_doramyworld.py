@@ -116,6 +116,25 @@ async def test_doramyworld_browse_film_parses_results():
 
 
 @pytest.mark.asyncio
+async def test_doramyworld_browse_follows_page_one_canonical_redirect():
+    """REGRESSION (#171): the upstream 301s `/film/page/1/` to the
+    canonical `/film/`. browse() must follow the same-host redirect via
+    safe_get and parse the canonical page instead of raising not_found
+    on the 301 status."""
+    listing_html = _fixture("film_listing.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://doramy.world/film/page/1/").respond(
+            301, headers={"Location": "https://doramy.world/film/"}
+        )
+        router.get("https://doramy.world/film/").respond(200, text=listing_html)
+        async with httpx.AsyncClient() as http:
+            results, has_next = await DoramyWorldProvider().browse("film", 1, http)
+    assert len(results) == 12
+    assert all(r.type == "movie" for r in results)
+    assert has_next is True
+
+
+@pytest.mark.asyncio
 async def test_doramyworld_browse_last_page_has_next_false():
     """When the requested page is the last page, has_next is False."""
     listing_html = _fixture("dorama_listing.html")
