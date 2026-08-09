@@ -805,15 +805,13 @@ class AnimeONProvider(BaseProvider):
         http: httpx.AsyncClient,
     ) -> dict[str, Any] | None:
         """One (translation, player) pair's playable source for a movie:
-        the first episode-row entry if the walk yields any, otherwise
-        the direct player endpoint (the upstream `loadMovieLinks`
-        fallback). 4xx on the direct endpoint means "no direct source"
-        and is skipped; 5xx propagates as `upstream_unreachable`."""
-        entries = await self._collect_player_sources(
-            anime_id, translation_id, translation_name, player, http
-        )
-        if entries:
-            return entries[0]
+        the direct player endpoint first (the upstream `loadMovieLinks`
+        authoritative source for films — observed live 2026-08-09 the
+        episode walk returned a STALE Moon iframe for a movie whose
+        direct endpoint resolved fine), then the first episode-row
+        entry as a fallback. 4xx on the direct endpoint means "no
+        direct source" and is skipped; 5xx propagates as
+        `upstream_unreachable`."""
         try:
             direct = await self._get_json(
                 f"{BASE_URL}/api/player/{player.get('id')}/{translation_id}", http
@@ -822,21 +820,25 @@ class AnimeONProvider(BaseProvider):
             if e.code in {"unreachable", "upstream_unreachable"}:
                 raise
             logger.debug("animeon movie direct source unavailable: %s", e)
-            return None
-        if not isinstance(direct, dict):
-            return None
-        video_url = str(direct.get("videoUrl") or "") or None
-        file_url = str(direct.get("fileUrl") or "") or None
-        if not video_url and not file_url:
-            return None
-        return {
-            "id": 0,
-            "episode": 1,
-            "video_url": video_url,
-            "file_url": file_url,
-            "translation_name": translation_name,
-            "player_name": player_name,
-        }
+            direct = None
+        if isinstance(direct, dict):
+            video_url = str(direct.get("videoUrl") or "") or None
+            file_url = str(direct.get("fileUrl") or "") or None
+            if video_url or file_url:
+                return {
+                    "id": 0,
+                    "episode": 1,
+                    "video_url": video_url,
+                    "file_url": file_url,
+                    "translation_name": translation_name,
+                    "player_name": player_name,
+                }
+        entries = await self._collect_player_sources(
+            anime_id, translation_id, translation_name, player, http
+        )
+        if entries:
+            return entries[0]
+        return None
 
     async def _resolve_source_url(
         self,

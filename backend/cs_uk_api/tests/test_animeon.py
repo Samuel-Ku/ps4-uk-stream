@@ -435,21 +435,13 @@ async def test_stream_movie_resolves_direct_source():
     Ashdi iframe (upstream `loadMovieLinks`). Regression (issue #115):
     previously a bare id hit the 3-part episode-id check and raised
     `not_found bad content_id` on every movie."""
-    from cs_uk_api.providers.base import ProviderError
-
     translations_json = _fixture("movie_translations.json")
     direct_json = _fixture("movie_direct.json")
     ashdi_html = _fixture("player_ashdi_movie.html")
-    empty_eps = '{"episodes":[],"anotherPlayer":null}'
     with respx.mock(assert_all_called=True) as router:
         router.get("https://animeon.club/api/player/8100/translations").respond(
             200, text=translations_json
         )
-        router.get(
-            url=re.compile(
-                r"https://animeon\.club/api/player/8100/episodes\?.*playerId=8293.*"
-            )
-        ).respond(200, text=empty_eps)
         router.get("https://animeon.club/api/player/8293/1793").respond(
             200, text=direct_json
         )
@@ -469,22 +461,49 @@ async def test_stream_movie_resolves_direct_source():
 
 
 @pytest.mark.asyncio
+async def test_stream_movie_prefers_direct_over_stale_walk():
+    """Regression (observed live 2026-08-09, movie 8102 «Ґінтама»):
+    the episode walk returned a STALE Moon iframe entry whose page no
+    longer carries the atob blob, while the direct player endpoint
+    (`/api/player/<playerId>/<translationId>`) resolved fine. The
+    direct endpoint is the authoritative movie source (upstream
+    `loadMovieLinks`) and must win over a stale walk entry — otherwise
+    the card streams `parse_failed: moon atob blob missing`."""
+    translations_json = _fixture("movie_translations.json")
+    direct_json = _fixture("movie_direct.json")
+    ashdi_html = _fixture("player_ashdi_movie.html")
+    # The walk yields a moon iframe (stale — would 404 the atob blob),
+    # but the direct endpoint + ashdi iframe must be used instead.
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://animeon.club/api/player/8100/translations").respond(
+            200, text=translations_json
+        )
+        router.get("https://animeon.club/api/player/8293/1793").respond(
+            200, text=direct_json
+        )
+        router.get("https://ashdi.vip/vod/276624?player=animeon.club").respond(
+            200, text=ashdi_html
+        )
+        # No walk-episodes route is registered: if the provider consulted
+        # the episode walk instead of the direct endpoint, respx would
+        # raise "no route" and the test fails.
+        async with httpx.AsyncClient() as http:
+            s = await AnimeONProvider().stream("8100", None, http)
+    assert s.url.startswith("https://ashdi.vip/video08/3/new/gotovo_lyupen_iii_pershij_276624/")
+    assert s.url.endswith("/index.m3u8")
+
+
+@pytest.mark.asyncio
 async def test_stream_movie_explicit_movie_suffix():
     """The `:__movie__` suffix form must be accepted too — some clients
     hand over the explicit suffix rather than the bare search id."""
     translations_json = _fixture("movie_translations.json")
     direct_json = _fixture("movie_direct.json")
     ashdi_html = _fixture("player_ashdi_movie.html")
-    empty_eps = '{"episodes":[],"anotherPlayer":null}'
     with respx.mock(assert_all_called=True) as router:
         router.get("https://animeon.club/api/player/8100/translations").respond(
             200, text=translations_json
         )
-        router.get(
-            url=re.compile(
-                r"https://animeon\.club/api/player/8100/episodes\?.*playerId=8293.*"
-            )
-        ).respond(200, text=empty_eps)
         router.get("https://animeon.club/api/player/8293/1793").respond(
             200, text=direct_json
         )
