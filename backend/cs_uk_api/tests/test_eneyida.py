@@ -75,11 +75,51 @@ async def test_eneyida_browse_films_last_page():
 async def test_eneyida_content_movie_parses_title_poster_player():
     with respx.mock(assert_all_called=True) as router:
         router.get("https://eneyida.tv/films/9366-duna-chastyna-druga.html").respond(200, text=_fixture("content_movie.html"))
+        # content() now probes the main player embed to gate removed
+        # titles (#158); a live player page passes the check.
+        router.get("https://hdvbua.pro/vid/97148").respond(200, text=PLAYER_MOVIE_HTML)
         async with httpx.AsyncClient() as http:
             content = await EneyidaProvider().content("films/9366-duna-chastyna-druga", http)
     assert "Дюна" in content.title
     assert content.poster is not None and content.poster.startswith("https://")
     assert content.seasons and content.seasons[0].episodes[0].id.endswith(":__movie__")
+
+
+@pytest.mark.asyncio
+async def test_eneyida_content_movie_gated_when_embed_unavailable() -> None:
+    """Issue #158 regression: a movie whose hdvbua embed is the
+    «Контент недоступний» page must raise ``gated`` from ``content()``
+    (not just ``stream()``) so the catalog sweep drops the dead card."""
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://eneyida.tv/films/9366-duna-chastyna-druga.html").respond(
+            200, text=_fixture("content_movie.html")
+        )
+        router.get("https://hdvbua.pro/vid/97148").respond(
+            200, text=_fixture("embed_unavailable.html")
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await EneyidaProvider().content("films/9366-duna-chastyna-druga", http)
+    assert exc_info.value.code == "gated"
+    assert "upstream content removed" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_eneyida_content_series_gated_when_embed_unavailable() -> None:
+    """Issue #158 regression: the series path (embed fetch inside
+    ``_seasons``) also gates a «Контент недоступний» embed."""
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://eneyida.tv/series/9758-duna-proroctvo.html").respond(
+            200, text=_fixture("content_series.html")
+        )
+        router.get("https://hdvbua.pro/embed/9549").respond(
+            200, text=_fixture("embed_unavailable.html")
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await EneyidaProvider().content("series/9758-duna-proroctvo", http)
+    assert exc_info.value.code == "gated"
+    assert "upstream content removed" in exc_info.value.message
 
 
 @pytest.mark.asyncio
@@ -144,9 +184,8 @@ def test_eneyida_sections_lists_two():
 
 @pytest.mark.asyncio
 async def test_eneyida_browse_unknown_section_raises():
-    with respx.mock(assert_all_called=False):
-        with pytest.raises(ProviderError) as exc_info:
-            await EneyidaProvider().browse("unknown", 1, httpx.AsyncClient())
+    with respx.mock(assert_all_called=False), pytest.raises(ProviderError) as exc_info:
+        await EneyidaProvider().browse("unknown", 1, httpx.AsyncClient())
     assert exc_info.value.code == "not_found"
 
 

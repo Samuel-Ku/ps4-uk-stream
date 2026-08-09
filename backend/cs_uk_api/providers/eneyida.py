@@ -4,14 +4,23 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, cast
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 from bs4 import BeautifulSoup, Tag
 
 from ..country import extract_country
 from ..http_client import safe_get
-from ..models import ContentResponse, Episode, MediaType, SearchResult, Season, Section, StreamResponse, Translation
+from ..models import (
+    ContentResponse,
+    Episode,
+    MediaType,
+    SearchResult,
+    Season,
+    Section,
+    StreamResponse,
+    Translation,
+)
 from .base import BaseProvider, ProviderError, model_b_axes
 
 BASE_URL = "https://eneyida.tv"
@@ -87,6 +96,11 @@ class EneyidaProvider(BaseProvider):
     name = "Eneyida"
     types = ("movie", "series")
     sections = ENEYIDA_SECTIONS
+    #: ``content()`` gates upstream-removed titles (hdvbua embed =
+    #: «Контент недоступний», issue #137) so the ADR-0002 catalog sweep
+    #: (``filter_gated_items``) drops dead cards from home/search instead
+    #: of surfacing titles that fail only at play time (#158).
+    can_gate = True
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         try:
@@ -118,14 +132,37 @@ class EneyidaProvider(BaseProvider):
         iframe = soup.select_one("iframe")
         if not iframe: raise ProviderError("parse_failed", "player missing")
         typ: MediaType = "series" if kind == "series" else "movie"
-        seasons: list[Season] | None = [Season(number=1, episodes=[Episode(number=1, id=external_id+MOVIE_SUFFIX, title="Фільм")])]
-        if typ == "series": seasons = await self._seasons(str(iframe.get("src")), external_id, http)
+        if typ == "series":
+            seasons = await self._seasons(str(iframe.get("src")), external_id, http)
+        else:
+            # Gate upstream-removed movies at content() time (#158): the
+            # first iframe is the main player embed; a «Контент
+            # недоступний» embed means the site cannot play the title, so
+            # the catalog sweep must be able to drop the card.
+            await self._check_embed_gated(str(iframe.get("src")), http)
+            seasons = [Season(number=1, episodes=[Episode(number=1, id=external_id+MOVIE_SUFFIX, title="Фільм")])]
         mb_form, mb_styles = model_b_axes(typ)
         return ContentResponse(id=f"{self.id}:{external_id}", type=typ, title=h1.get_text(strip=True), poster=urljoin(BASE_URL, str(img.get("src"))) if img else None, translations=[Translation(id="uk", label="Українська")], seasons=seasons, country=country, form=mb_form, styles=mb_styles)
+
+    async def _check_embed_gated(self, iframe_src: str, http: httpx.AsyncClient) -> None:
+        """Gate an upstream-removed title whose player embed is the
+        «Контент недоступний» page (issue #137/#158). Only hdvbua embeds
+        are probed — a foreign/youtube first iframe is not a dead-player
+        signal and must not add a pointless fetch."""
+        if urlsplit(iframe_src).hostname not in _ALLOWED_HOSTS:
+            return
+        try:
+            p = await safe_get(http, iframe_src, allowed_hosts=set(_ALLOWED_HOSTS))
+        except httpx.HTTPError as e:
+            raise ProviderError("unreachable", str(e)) from e
+        if p.status_code == 200 and _content_unavailable(p.text):
+            raise ProviderError("gated", "upstream content removed")
 
     async def _seasons(self, player: str, ext: str, http: httpx.AsyncClient) -> list[Season] | None:
         try: r = await http.get(player)
         except httpx.HTTPError: return None
+        if r.status_code == 200 and _content_unavailable(r.text):
+            raise ProviderError("gated", "upstream content removed")
         raw = _file_url(r.text) if r.status_code == 200 else None
         try: data = cast(list[dict[str, Any]], json.loads(raw or "[]")); folders = data[0].get("folder", [])
         except (json.JSONDecodeError, IndexError, AttributeError): return None
