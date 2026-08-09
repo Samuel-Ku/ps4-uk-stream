@@ -210,10 +210,17 @@ async def load_home() -> HomeResponse:
     http = get_client()
 
     async def _sweep(mapping: dict[str, list[SearchResult]], pid: str) -> None:
-        mapping[pid] = await filter_gated_items(mapping[pid], http)
+        mapping[pid] = await filter_gated_items(mapping[pid], http, sem=sweep_sem)
 
     # Only can_gate providers need the sweep (the filter is a no-op for
     # everyone else) — and only when their listing is non-empty.
+    # Issue #168: the sweep spawns one task per (listing, provider) — up
+    # to a dozen — and each task's filter used to create its OWN
+    # concurrency semaphore, so total upstream concurrency was
+    # ~N×24 simultaneous requests. Upstreams throttle that into
+    # slowness, the sweep blew its budget, and gated cards leaked into
+    # home. ONE shared semaphore bounds the whole sweep instead.
+    sweep_sem = asyncio.Semaphore(_GATE_CHECK_CONCURRENCY)
     sweep: list[asyncio.Task[None]] = []
     for mapping in (newest_lists, popular_lists):
         for pid, items in list(mapping.items()):
@@ -226,13 +233,31 @@ async def load_home() -> HomeResponse:
             if items and provider is not None and provider.can_gate:
                 sweep.append(asyncio.create_task(_sweep(per_pid, pid)))
     if sweep:
-        try:
-            _done, pending = await asyncio.wait(sweep, timeout=_GATE_CHECK_TIMEOUT_S)
-        finally:
-            for t in pending:
-                t.cancel()
-            if pending:
-                await asyncio.wait(pending, timeout=1)
+        _done, pending = await asyncio.wait(sweep, timeout=_GATE_CHECK_TIMEOUT_S)
+        if pending:
+            # Issue #168: a cold sweep of every can_gate listing can
+            # outlive the budget (animeon's content() does several
+            # upstream hops per item). DON'T cancel the stragglers —
+            # let them finish in the background and re-cache the
+            # cleaned home, so the gated cards disappear seconds later
+            # instead of leaking into the 30-min snapshot. The first
+            # caller gets the fast (partially-swept) home.
+            async def _finish_sweep(tasks: set[asyncio.Task[None]]) -> None:
+                await asyncio.wait(tasks)
+                rows = build_home_rows(
+                    newest=newest_lists,
+                    popular=popular_lists,
+                    by_type=type_lists,
+                    newest_limit=_config.SETTINGS.home_row_limit,
+                )
+                resp = HomeResponse(rows=rows)
+                home_cache.set(_HOME_KEY, resp)
+                sources_cache.set(
+                    _SOURCES_KEY,
+                    _build_sources_map(newest_lists, popular_lists, type_lists),
+                )
+
+            asyncio.create_task(_finish_sweep(pending))
 
     rows = build_home_rows(
         newest=newest_lists,
@@ -255,9 +280,15 @@ def get_home() -> HomeResponse | None:
 #: the sweep's own time budget. The budget deliberately lives OUTSIDE
 #: the 12s search fan-out: a sweep timeout degrades to "keep the cards"
 #: (stream()/content() still refuse gated items, so the promo clip
-#: never plays) rather than failing the whole home build.
+#: never plays) rather than failing the whole home build. Issue #168:
+#: the inline budget is deliberately short — a cold sweep of every
+#: can_gate listing can take 20-60s (animeon's content() does several
+#: upstream hops per item), so tasks that outlive it are NOT cancelled:
+#: load_home returns the fast partially-swept home and a background
+#: task finishes the sweep and re-caches the cleaned home seconds
+#: later. The 30-min home cache absorbs the re-cache.
 _GATE_CHECK_CONCURRENCY = 24
-_GATE_CHECK_TIMEOUT_S = 25.0
+_GATE_CHECK_TIMEOUT_S = 12.0
 
 
 def _gate_cache_key(item: SearchResult) -> str:
@@ -267,7 +298,9 @@ def _gate_cache_key(item: SearchResult) -> str:
 
 
 async def filter_gated_items(
-    items: Sequence[SearchResult], http: httpx.AsyncClient
+    items: Sequence[SearchResult],
+    http: httpx.AsyncClient,
+    sem: asyncio.Semaphore | None = None,
 ) -> list[SearchResult]:
     """Drop subscription-gated sources from a listing (can_gate providers).
 
@@ -282,14 +315,15 @@ async def filter_gated_items(
     keeps the card (dead providers are health-tracked elsewhere, and
     ``stream()`` still refuses gated items on its own).
     """
-    todo = [
-        it
-        for it in items
-        if it.provider in PROVIDERS and PROVIDERS[it.provider].can_gate
-    ]
+    todo = [it for it in items if it.provider in PROVIDERS and PROVIDERS[it.provider].can_gate]
     if not todo:
         return list(items)
-    sem = asyncio.Semaphore(_GATE_CHECK_CONCURRENCY)
+    # Issue #168: callers may pass a shared semaphore so parallel sweep
+    # tasks (one per listing/provider) don't each open their own
+    # concurrency window — N tasks × 24 requests each throttled the
+    # upstreams and blew the sweep budget, leaking gated cards into home.
+    if sem is None:
+        sem = asyncio.Semaphore(_GATE_CHECK_CONCURRENCY)
 
     async def check(item: SearchResult) -> bool:
         """True iff ``item`` is KNOWN gated (cached or freshly resolved)."""
@@ -337,13 +371,12 @@ async def filter_gated_items(
 
     tasks = {asyncio.create_task(check(it)): it for it in todo}
     gated_ids: set[str] = set()
-    try:
-        done, _pending = await asyncio.wait(tasks.keys(), timeout=_GATE_CHECK_TIMEOUT_S)
-    finally:
-        for t in tasks:
-            if not t.done():
-                t.cancel()
-        await asyncio.wait(tasks.keys(), timeout=1)
+    # Issue #168: run to COMPLETION, never cancel pending checks. The
+    # load_home sweep bounds the whole pass with its own budget and
+    # finishes stragglers in the background — but if THIS function
+    # cancelled its checks on timeout it would return a partially-
+    # filtered list and gated cards would leak into the cached home.
+    done, _pending = await asyncio.wait(tasks.keys())
     for t in done:
         item = tasks[t]
         try:

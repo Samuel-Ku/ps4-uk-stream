@@ -12,8 +12,10 @@ The contract under test:
   - the native content/stream routes answer ``gated`` with 404 (never
     the promo clip, never a 502).
 """
+
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from pathlib import Path
 from typing import ClassVar
@@ -36,9 +38,7 @@ from cs_uk_api.providers.base import BaseProvider, ProviderError
 FIX = Path(__file__).parent / "fixtures" / "bambooua"
 
 
-def _item(
-    pid: str, n: str, title: str = "Айчаку", year: int = 2024
-) -> SearchResult:
+def _item(pid: str, n: str, title: str = "Айчаку", year: int = 2024) -> SearchResult:
     return SearchResult(
         id=f"{pid}:{n}",
         provider=pid,
@@ -136,6 +136,42 @@ def _isolate() -> Iterator[None]:
 
 
 @pytest.mark.asyncio
+async def test_sweep_share_one_semaphore_bounds_total_concurrency() -> None:
+    """Issue #168 regression: the home sweep spawns one task per
+    (listing, provider) — up to a dozen. Each task must share ONE
+    semaphore so total upstream concurrency is bounded; otherwise N
+    tasks × 24 each = hundreds of simultaneous requests, upstreams
+    throttle, the sweep blows its budget, and gated cards leak into
+    home."""
+    from cs_uk_api.catalog_state import _GATE_CHECK_CONCURRENCY, filter_gated_items
+
+    class _SlowGated(_GatedStub):
+        id = "slow-gated"
+        _inflight = 0
+        _max_inflight = 0
+
+        async def content(self, external_id, http):  # type: ignore[no-untyped-def]
+            self._inflight += 1
+            self._max_inflight = max(self._max_inflight, self._inflight)
+            await asyncio.sleep(0.01)
+            self._inflight -= 1
+            raise ProviderError("gated", "subscription required")
+
+    PROVIDERS["slow-gated"] = _SlowGated()
+    items = [_item("slow-gated", f"g{i}") for i in range(30)]
+    shared = asyncio.Semaphore(_GATE_CHECK_CONCURRENCY)
+
+    async def sweep_one(start: int, stop: int) -> None:
+        await filter_gated_items(items[start:stop], http, sem=shared)
+
+    async with httpx.AsyncClient() as http:
+        await asyncio.gather(sweep_one(0, 15), sweep_one(15, 30))
+    stub = PROVIDERS["slow-gated"]
+    assert stub._max_inflight <= _GATE_CHECK_CONCURRENCY
+    assert stub._max_inflight > 1  # the test actually ran concurrently
+
+
+@pytest.mark.asyncio
 async def test_filter_gated_items_drops_gated_and_caches_verdict() -> None:
     """Gated cards are dropped; the verdict is cached so the next sweep
     is a pure cache hit (no re-resolution)."""
@@ -197,9 +233,7 @@ async def test_resolve_group_content_gated_backstop_no_health_down() -> None:
     # Seed the group's sources map WITHOUT running the load_home sweep,
     # so `gated_cache` is cold when the detail call resolves.
     group_key = item_group_key(item)
-    catalog_state.sources_cache.set(
-        catalog_state._SOURCES_KEY, {group_key: {"gated-stub": item}}
-    )
+    catalog_state.sources_cache.set(catalog_state._SOURCES_KEY, {group_key: {"gated-stub": item}})
     assert catalog_state.gated_cache.get("content:gated-stub:g1") is None
 
     content = await resolve_group_content(group_key)
@@ -324,12 +358,10 @@ def test_stream_route_free_movie_returns_m3u8() -> None:
 
     free_html = (FIX / "content_movie_free.html").read_text(encoding="utf-8")
     with respx.mock:
-        respx.get(
-            "https://bambooua.com/cinema/1041-you-are-the-apple-of-my-eye.html"
-        ).respond(200, text=free_html)
-        r = TestClient(app).get(
-            "/api/stream/bambooua:cinema/1041-you-are-the-apple-of-my-eye"
+        respx.get("https://bambooua.com/cinema/1041-you-are-the-apple-of-my-eye.html").respond(
+            200, text=free_html
         )
+        r = TestClient(app).get("/api/stream/bambooua:cinema/1041-you-are-the-apple-of-my-eye")
     assert r.status_code == 200
     body = r.json()
     assert body["type"] == "m3u8"
