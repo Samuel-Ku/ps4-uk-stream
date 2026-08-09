@@ -259,6 +259,11 @@ class DoramyWorldProvider(BaseProvider):
     name = "DoramyWorld"
     types = ("movie", "series", "dorama")
     sections = DORAMYWORLD_SECTIONS
+    #: Issue #188: a content page without a player (no ``data-player``
+    #: at all) is an unplayable dead card — content() raises ``gated``
+    #: and the catalog sweep (``filter_gated_items``) drops it from
+    #: home/search instead of surfacing an unplayable movie.
+    can_gate = True
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         # WordPress search uses `?s=...` with spaces encoded as `+`. We
@@ -333,6 +338,14 @@ class DoramyWorldProvider(BaseProvider):
         country: str | None = extract_country(soup)
         media_type = _type_from_url(url)
         translations_models = _parse_player(resp.text)
+        if not translations_models:
+            # Issue #188: a page without a ``data-player`` has no
+            # playable source at all (observed live on «У шкірі моєї
+            # матері» — no data-player, no player iframe). Surface the
+            # dead card as ``gated`` (ADR-0002) so the catalog sweep
+            # drops it from home/search instead of showing an
+            # unplayable movie with a fake «Українська» track.
+            raise ProviderError("gated", "no player on content page")
         translations: list[Translation] = [
             Translation(
                 id=_translation_id(t.label),

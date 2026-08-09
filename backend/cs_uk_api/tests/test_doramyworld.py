@@ -211,6 +211,26 @@ async def test_doramyworld_content_film_parses_seasons():
 
 
 @pytest.mark.asyncio
+async def test_doramyworld_content_no_player_raises_gated():
+    """A content page without a ``data-player`` at all (observed live
+    on «У шкірі моєї матері») has no playable source — content() must
+    raise ``gated`` (ADR-0002) so the catalog sweep drops the dead
+    card from home/search instead of surfacing an unplayable movie
+    with a fake «Українська» track."""
+    content_html = _fixture("content_film.html").replace(
+        ' data-player="', ' data-player-missing="'
+    )
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://doramy.world/film/ekstremalna-robota/").respond(
+            200, text=content_html
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await DoramyWorldProvider().content("film/ekstremalna-robota", http)
+    assert exc.value.code == "gated"
+
+
+@pytest.mark.asyncio
 async def test_doramyworld_stream_resolves_to_m3u8():
     """REGRESSION: stream() must follow the iframe to ashdi.vip and
     pull the file: '...m3u8...' URL out of the inline JS."""
@@ -298,6 +318,9 @@ async def test_doramyworld_sections_lists_three():
     sections = DoramyWorldProvider().sections
     ids = [s.id for s in sections]
     assert ids == ["film", "dorama", "show"]
+    # Issue #188: no-player pages raise gated, so the catalog sweep
+    # must run for doramyworld to drop dead cards from home.
+    assert DoramyWorldProvider().can_gate is True
 
 
 @pytest.mark.asyncio
