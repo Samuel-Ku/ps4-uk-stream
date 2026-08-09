@@ -701,6 +701,157 @@ async def test_content_specials_4xx_is_swallowed_silently():
     assert len(c.seasons[0].episodes) >= 1
 
 
+@pytest.mark.asyncio
+async def test_content_long_archive_windowed_walk_resolves_every_episode():
+    """A 1170-episode archive (the One Piece shape, issue #187) must
+    resolve EVERY episode through the windowed page walk. The old
+    fully-sequential walk needed ~13 upstream round-trips per pair and
+    502'd whenever the upstream throttled; the windowed walk fetches
+    skip=0 first, then bounded-concurrency windows, and must still
+    stop at the short final page (1170 = 11 full pages + 70)."""
+
+    def page_json(offset: int, count: int) -> str:
+        return json.dumps(
+            {
+                "episodes": [
+                    {
+                        "id": offset + i,
+                        "episode": offset + i,
+                        "videoUrl": f"https://moonanime.art/video/{offset + i}",
+                    }
+                    for i in range(1, count + 1)
+                ]
+            }
+        )
+
+    translations_json = json.dumps(
+        {
+            "translations": [
+                {
+                    "translation": {
+                        "id": 1097,
+                        "name": "Togarashi",
+                        "synonyms": [],
+                        "isSub": False,
+                        "studios": [],
+                    },
+                    "player": [{"name": "Moon", "id": 3838, "episodesCount": 1170}],
+                }
+            ]
+        }
+    )
+    content_json = _fixture("content.json")
+    redirect_json = _fixture("content_redirect.json")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://animeon.club/api/anime/913").respond(
+            200, text=redirect_json
+        )
+        router.get("https://animeon.club/api/anime/913-naruto").respond(
+            200, text=content_json
+        )
+        router.get("https://animeon.club/api/player/913/translations").respond(
+            200, text=translations_json
+        )
+        # skip=-1 specials page (empty is fine), then 11 full pages at
+        # skip 0..1000, a short 70-episode page at skip=1100, and an
+        # empty confirmation at skip=1200 (max_skip rounding).
+        router.get(
+            url=re.compile(
+                r"https://animeon\.club/api/player/913/episodes\?.*skip=-1.*"
+            )
+        ).respond(200, text='{"episodes": []}')
+        for page in range(11):
+            router.get(
+                url=re.compile(
+                    rf"https://animeon\.club/api/player/913/episodes\?.*skip={page * 100}(?=&|$).*"
+                )
+            ).respond(200, text=page_json(page * 100, 100))
+        router.get(
+            url=re.compile(
+                r"https://animeon\.club/api/player/913/episodes\?.*skip=1100(?=&|$).*"
+            )
+        ).respond(200, text=page_json(1100, 70))
+        router.get(
+            url=re.compile(
+                r"https://animeon\.club/api/player/913/episodes\?.*skip=1200(?=&|$).*"
+            )
+        ).respond(200, text='{"episodes": []}')
+        async with httpx.AsyncClient() as http:
+            c = await AnimeONProvider().content("913", http)
+    assert c.seasons is not None
+    episodes = c.seasons[0].episodes
+    assert len(episodes) == 1170
+    assert episodes[0].number == 1
+    assert episodes[-1].number == 1170
+
+
+@pytest.mark.asyncio
+async def test_content_short_first_page_stops_walk_without_fanout():
+    """A series whose first page is already short (≤100 episodes) must
+    stop the walk after exactly ONE page fetch — the skip=0-first
+    design must not fan out into a window of empty pages. Registered
+    routes are assert-all-called, so an unexpected skip=100 fetch would
+    fail the test."""
+    translations_json = json.dumps(
+        {
+            "translations": [
+                {
+                    "translation": {
+                        "id": 1097,
+                        "name": "Togarashi",
+                        "synonyms": [],
+                        "isSub": False,
+                        "studios": [],
+                    },
+                    # episodesCount missing -> max_skip fallback is
+                    # large; the walk must still stop at page 1.
+                    "player": [{"name": "Moon", "id": 3838}],
+                }
+            ]
+        }
+    )
+    short_json = json.dumps(
+        {
+            "episodes": [
+                {
+                    "id": i,
+                    "episode": i,
+                    "videoUrl": f"https://moonanime.art/video/{i}",
+                }
+                for i in range(1, 12)
+            ]
+        }
+    )
+    content_json = _fixture("content.json")
+    redirect_json = _fixture("content_redirect.json")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://animeon.club/api/anime/913").respond(
+            200, text=redirect_json
+        )
+        router.get("https://animeon.club/api/anime/913-naruto").respond(
+            200, text=content_json
+        )
+        router.get("https://animeon.club/api/player/913/translations").respond(
+            200, text=translations_json
+        )
+        router.get(
+            url=re.compile(
+                r"https://animeon\.club/api/player/913/episodes\?.*skip=-1.*"
+            )
+        ).respond(404, text="")
+        # Only skip=0 is mocked — if the walk fetches skip=100+ for a
+        # short first page, respx raises AllMockedAssertionError.
+        router.get(
+            url=re.compile(
+                r"https://animeon\.club/api/player/913/episodes\?.*skip=0.*"
+            )
+        ).respond(200, text=short_json)
+        async with httpx.AsyncClient() as http:
+            c = await AnimeONProvider().content("913", http)
+    assert c.seasons is not None
+    assert len(c.seasons[0].episodes) == 11
+
+
 # ---------------------------------------------------------------------------
 # stream()
 # ---------------------------------------------------------------------------

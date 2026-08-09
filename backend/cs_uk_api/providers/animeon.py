@@ -33,6 +33,7 @@ simple XOR cycle against ``k``. Both ciphers are reimplemented in
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import json
@@ -77,6 +78,14 @@ ANIMEON_SECTIONS: tuple[Section, ...] = (
 # Bare integer ids only (matches the v1 Kotlin's
 # substringAfterLast("/").substringBefore("-").toIntOrNull()).
 _EXTERNAL_ID_RE = re.compile(r"\d{1,8}")
+
+#: Bounded concurrency for the episode-map walk (issue #187). A long
+#: archive like One Piece spans 11 (translation, player) pairs and
+#: ~55 upstream pages; the old fully-sequential walk took 10s+ and
+#: 502'd whenever the upstream throttled. Pages are fetched in
+#: bounded-concurrency windows through ONE shared semaphore (same
+#: pattern as simpsonsuatv's season fetch, issue #119).
+_EPISODE_FETCH_CONCURRENCY = 6
 
 # Slug shape returned by the bare-id redirect at /api/anime/<id>:
 # upstream joins the numeric id with the URL-safe title via ``-``.
@@ -529,19 +538,35 @@ class AnimeONProvider(BaseProvider):
         translations_doc = await self._ask_translations(anime_id, http)
         translations = _classify_translations(translations_doc)
 
-        episodes_by_num: dict[int, list[dict[str, Any]]] = {}
-        for trans in translations:
+        # Issue #187: the (translation, player) pairs are walked
+        # CONCURRENTLY through ONE shared semaphore instead of one-by-
+        # one — a long archive needs dozens of upstream pages and the
+        # old sequential walk 502'd under throttling. ``_build_season``
+        # sorts the aggregated entries by (translation_name,
+        # player_name), so completion order never affects the response.
+        sem = asyncio.Semaphore(_EPISODE_FETCH_CONCURRENCY)
+
+        async def collect_pair(
+            trans: dict[str, Any], player: dict[str, Any]
+        ) -> list[dict[str, Any]]:
             trans_obj = trans.get("translation") or {}
             trans_id = trans_obj.get("id")
             trans_name = str(trans_obj.get("name") or "").strip()
             if trans_id is None or not trans_name:
-                continue
-            for player in trans.get("player") or []:
-                sources = await self._collect_player_sources(
-                    anime_id, int(trans_id), trans_name, player, http
-                )
-                for entry in sources:
-                    episodes_by_num.setdefault(int(entry["episode"]), []).append(entry)
+                return []
+            return await self._collect_player_sources(
+                anime_id, int(trans_id), trans_name, player, http, sem=sem
+            )
+
+        pairs = [
+            collect_pair(trans, player)
+            for trans in translations
+            for player in trans.get("player") or []
+        ]
+        episodes_by_num: dict[int, list[dict[str, Any]]] = {}
+        for sources in await asyncio.gather(*pairs):
+            for entry in sources:
+                episodes_by_num.setdefault(int(entry["episode"]), []).append(entry)
         return episodes_by_num
 
     async def _collect_player_sources(
@@ -551,17 +576,24 @@ class AnimeONProvider(BaseProvider):
         translation_name: str,
         player: dict[str, Any],
         http: httpx.AsyncClient,
+        sem: asyncio.Semaphore | None = None,
     ) -> list[dict[str, Any]]:
         """Walk the paginated ``/api/player/<id>/episodes`` list for
         one (translation, player) pair, deduplicating by episode id.
         The response sometimes wraps specials at ``skip=-1`` (the
-        upstream Kotlin calls that out explicitly)."""
+        upstream Kotlin calls that out explicitly).
+
+        ``sem`` is the shared walk semaphore from ``_collect_episode_map``
+        (a fresh one is created when called standalone, e.g. the movie
+        source fallback) so every page fetch is bounded globally."""
         player_id = player.get("id")
         player_name = str(player.get("name") or "").strip()
         if player_id is None or not player_name:
             return []
         episodes_count = int(player.get("episodesCount") or 0)
         max_skip = ((episodes_count // 100) + 1) * 100 if episodes_count > 0 else 11000
+        if sem is None:
+            sem = asyncio.Semaphore(_EPISODE_FETCH_CONCURRENCY)
 
         collected: dict[int, dict[str, Any]] = {}
         base = (
@@ -573,14 +605,16 @@ class AnimeONProvider(BaseProvider):
         # empty state. A 5xx, on the other hand, means the upstream is
         # actually broken and we must let it bubble up so the caller
         # sees ``upstream_unreachable`` instead of a misleading
-        # ``parse_failed`` further down.
-        specials = await self._fetch_specials_page(base, http)
+        # ``parse_failed`` further down. Held under the semaphore so
+        # concurrent pairs don't burst past the bound.
+        async with sem:
+            specials = await self._fetch_specials_page(base, http)
         if specials is not None:
             self._absorb_collected(
                 collected, specials, translation_name, player_name, specials_only=True
             )
         await self._fetch_episode_pages(
-            base, max_skip, collected, translation_name, player_name, http
+            base, max_skip, collected, translation_name, player_name, http, sem=sem
         )
         return list(collected.values())
 
@@ -624,27 +658,63 @@ class AnimeONProvider(BaseProvider):
         translation_name: str,
         player_name: str,
         http: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
     ) -> None:
         """Walk ``/api/player/<id>/episodes?skip=N`` pages from skip=0
-        upward until the page is short or empty."""
-        skip = 0
+        upward until the page is short or empty.
+
+        skip=0 is fetched first (sequential) so a short first page
+        stops the walk after exactly one request — the common small-
+        series case must not fan out. Only once the first page proves
+        the archive is long do the remaining pages go out in bounded-
+        concurrency windows (each fetch still acquires ``sem``): a
+        1170-episode series needs ~12 pages per pair, and the old
+        fully-sequential walk took 10s+ and 502'd under upstream
+        throttling (issue #187). A short/empty page still ends the
+        walk; offsets beyond it hold nothing worth absorbing."""
+
+        async def fetch_page(skip: int) -> list[dict[str, Any]]:
+            async with sem:
+                try:
+                    doc = await self._get_json(f"{base}&skip={skip}", http)
+                except ProviderError as e:
+                    if e.code in {"unreachable", "upstream_unreachable"}:
+                        raise
+                    logger.debug("animeon episodes skip=%d unavailable: %s", skip, e)
+                    return []
+            return (doc or {}).get("episodes") or []
+
+        first = await fetch_page(0)
+        if not first:
+            return
+        self._absorb_collected(
+            collected, {"episodes": first}, translation_name, player_name, specials_only=False
+        )
+        if len(first) < 100:
+            return
+
+        skip = 100
         while skip <= max_skip:
-            try:
-                doc = await self._get_json(f"{base}&skip={skip}", http)
-            except ProviderError as e:
-                if e.code in {"unreachable", "upstream_unreachable"}:
-                    raise
-                logger.debug("animeon episodes skip=%d unavailable: %s", skip, e)
+            window = [
+                s
+                for s in range(skip, skip + _EPISODE_FETCH_CONCURRENCY * 100, 100)
+                if s <= max_skip
+            ]
+            if not window:
                 break
-            episodes = (doc or {}).get("episodes") or []
-            if not episodes:
-                break
-            self._absorb_collected(
-                collected, doc, translation_name, player_name, specials_only=False
-            )
-            if len(episodes) < 100:
-                break
-            skip += 100
+            pages = await asyncio.gather(*(fetch_page(s) for s in window))
+            for episodes in pages:
+                if episodes:
+                    self._absorb_collected(
+                        collected,
+                        {"episodes": episodes},
+                        translation_name,
+                        player_name,
+                        specials_only=False,
+                    )
+                if len(episodes) < 100:
+                    return
+            skip = window[-1] + 100
 
     @staticmethod
     def _build_entry(
