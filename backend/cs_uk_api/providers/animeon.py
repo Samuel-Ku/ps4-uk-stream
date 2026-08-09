@@ -968,7 +968,14 @@ class AnimeONProvider(BaseProvider):
         self, iframe_url: str, http: httpx.AsyncClient
     ) -> str:
         """Fetch the MoonAnime iframe page, decode the obfuscated
-        Playerjs config, and return the first ``.m3u8`` URL."""
+        Playerjs config, and return the first ``.m3u8`` URL.
+
+        The decrypted payload is either a direct manifest URL or a JSON
+        array of tracks (live 2026-08-09: movies — e.g. animeon 8102
+        "Ґінтама Фільм 1" — now answer ``[{...,"file":"<m3u8>"}]``;
+        the array previously meant the card was dead, today it is the
+        current upstream shape).
+        """
         clean = iframe_url.rstrip("?")
         if "player=" not in clean:
             separator = "&" if "?" in clean else "?"
@@ -1000,9 +1007,20 @@ class AnimeONProvider(BaseProvider):
         xor_key = key_match.group(1)
 
         for inner in _INNER_RE.findall(decoded_js):
-            decoded = _moon_decrypt(inner, xor_key)
-            if ".m3u8" in decoded:
-                return decoded.strip().rstrip(",")
+            decoded = _moon_decrypt(inner, xor_key).strip().rstrip(",")
+            if ".m3u8" not in decoded:
+                continue
+            if decoded.startswith("["):
+                try:
+                    tracks = json.loads(decoded)
+                except json.JSONDecodeError:
+                    continue
+                for track in tracks if isinstance(tracks, list) else []:
+                    url = str(track.get("file") or "").strip()
+                    if ".m3u8" in url:
+                        return url
+                continue
+            return decoded
         raise ProviderError("parse_failed", "no .m3u8 in moon payload")
 
 

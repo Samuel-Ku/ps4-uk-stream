@@ -936,6 +936,47 @@ async def test_stream_moon_decodes_iframe_to_m3u8():
 
 
 @pytest.mark.asyncio
+async def test_stream_moon_json_track_array_extracts_file():
+    """Live-gate regression (2026-08-09): Moon movie players now serve
+    the decrypted payload as a JSON track array
+    (``[{...,"file":"<m3u8>"}]``) instead of a bare manifest URL —
+    observed on animeon 8102 "Ґінтама Фільм 1". Before the fix the
+    whole array was returned as the stream URL, so nothing played.
+    The fixture is the live payload, re-encrypted with the provider's
+    own cipher so the decode path is exercised end to end."""
+    player_html = _fixture("player_moon_tracks.json.html")
+    ep_blob = json.dumps(
+        {
+            "id": 8102,
+            "episode": 1,
+            "sources": [
+                {
+                    "translation_name": "Одруківка",
+                    "player_name": "Moon",
+                    "video_url": "https://moonanime.art/title/2558",
+                    "file_url": "",
+                }
+            ],
+        },
+        separators=(",", ":"),
+    )
+    encoded_ep_id = (
+        f"8102:e1:{base64.b64encode(ep_blob.encode('utf-8')).decode('ascii')}"
+    )
+    with respx.mock(assert_all_called=True) as router:
+        router.get(url=re.compile(r"https://moonanime\.art/.*")).respond(
+            200, text=player_html
+        )
+        async with httpx.AsyncClient() as http:
+            s = await AnimeONProvider().stream(encoded_ep_id, "Одруківка", http)
+    assert s.type == "m3u8"
+    assert s.url.startswith("https://s.moonanime.art/content/stream/anime/47/")
+    assert "manifest.m3u8" in s.url
+    assert s.url.count("{") == 0  # not the raw JSON array
+    assert s.headers["Referer"] == "https://moonanime.art/"
+
+
+@pytest.mark.asyncio
 async def test_stream_unknown_translation_raises_translation_missing():
     """If the requested translation is not in the encoded source list,
     we surface ``translation_missing`` (per v2 spec → HTTP 404) rather
