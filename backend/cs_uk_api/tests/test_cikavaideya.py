@@ -127,10 +127,15 @@ async def test_cikavaideya_browse_filmy_last_page_has_next_false():
 @pytest.mark.asyncio
 async def test_cikavaideya_content_movie_parses_title_poster():
     content_html = _fixture("content_movie.html")
+    ashdi_html = _fixture("ashdi_movie.html")
     with respx.mock(assert_all_called=True) as router:
         router.get("https://cikava-ideya.top/281-duelianty.html").respond(
             200, text=content_html
         )
+        # content()-time ashdi probe (#185): the movie's single Player1
+        # URL is the representative player page, fetched for the
+        # dead-VOD marker check.
+        router.get("https://ashdi.vip/vod/228698").respond(200, text=ashdi_html)
         async with httpx.AsyncClient() as http:
             c = await CikavaIdeyaProvider().content("281-duelianty", http)
     assert "Дуелянти" in c.title
@@ -150,10 +155,14 @@ async def test_cikavaideya_content_movie_parses_title_poster():
 @pytest.mark.asyncio
 async def test_cikavaideya_content_series_parses_seasons():
     content_html = _fixture("content_series.html")
+    ashdi_html = _fixture("ashdi_movie.html")
     with respx.mock(assert_all_called=True) as router:
         router.get("https://cikava-ideya.top/226-jak-vlashtovanij-vsesvit.html").respond(
             200, text=content_html
         )
+        # content()-time ashdi probe (#185): s1e1's ashdi URL is the
+        # representative player page for the dead-VOD marker check.
+        router.get("https://ashdi.vip/vod/127413").respond(200, text=ashdi_html)
         async with httpx.AsyncClient() as http:
             c = await CikavaIdeyaProvider().content("226-jak-vlashtovanij-vsesvit", http)
     assert "Всесвіт" in c.title
@@ -463,6 +472,54 @@ async def test_cikavaideya_stream_dead_ashdi_raises_gated():
                     "226-jak-vlashtovanij-vsesvit:s1e1", None, http
                 )
     assert exc_info.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_cikavaideya_content_dead_ashdi_raises_gated():
+    """Regression (#185): ashdi.vip answers a removed VOD with
+    ``<center>Файл не знайдено</center>`` (ashdi_vod_127413.html).
+    Until now content() built seasons from Player1 WITHOUT probing the
+    ashdi page, so a dead title passed the ADR-0002 catalog sweep
+    (``filter_gated_items``) and only 404'd at play time. content() must
+    now probe the representative player URL and raise ``gated`` —
+    mirroring eneyida's content()-time gating (#139) — so the sweep drops
+    the dead card."""
+    from cs_uk_api.providers.base import ProviderError
+
+    content_html = _fixture("content_series.html")
+    ashdi_html = _fixture("ashdi_vod_127413.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://cikava-ideya.top/226-jak-vlashtovanij-vsesvit.html"
+        ).respond(200, text=content_html)
+        router.get("https://ashdi.vip/vod/127413").respond(200, text=ashdi_html)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await CikavaIdeyaProvider().content(
+                    "226-jak-vlashtovanij-vsesvit", http
+                )
+    assert exc_info.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_cikavaideya_content_live_ashdi_probe_returns_seasons():
+    """The content()-time ashdi probe (#185) must not disturb a LIVE
+    title: probing the representative player URL (s1e1 → vod/127413)
+    without the dead marker returns normally, and seasons are still
+    built from Player1. ``assert_all_called`` pins that the probe fired."""
+    content_html = _fixture("content_series.html")
+    ashdi_html = _fixture("ashdi_movie.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://cikava-ideya.top/226-jak-vlashtovanij-vsesvit.html"
+        ).respond(200, text=content_html)
+        router.get("https://ashdi.vip/vod/127413").respond(200, text=ashdi_html)
+        async with httpx.AsyncClient() as http:
+            c = await CikavaIdeyaProvider().content(
+                "226-jak-vlashtovanij-vsesvit", http
+            )
+    assert [s.number for s in c.seasons] == [1, 2, 3, 4, 5]
+    assert [len(s.episodes) for s in c.seasons] == [8, 8, 9, 8, 2]
 
 
 def test_cikavaideya_can_gate_true():

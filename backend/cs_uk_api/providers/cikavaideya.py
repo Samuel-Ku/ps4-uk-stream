@@ -233,6 +233,34 @@ def _load_player1(soup: BeautifulSoup) -> str | dict[str, Any]:
     return player1
 
 
+async def _probe_ashdi_gate(player_url: str, http: httpx.AsyncClient) -> None:
+    """Best-effort content()-time dead-VOD probe (#185).
+
+    Fetch the representative ashdi.vip player page and raise
+    ``ProviderError("gated", ...)`` when it answers with a 200 body
+    carrying the «Файл не знайдено» marker (captured live 2026-08-08,
+    ashdi_vod_127413.html) — upstream-removed content, not a
+    provider-health signal. Mirrors eneyida's content()-time gating
+    check (#139). The URL came from upstream HTML, so the fetch goes
+    through the redirect allowlist stream() uses (#126).
+
+    Transient failures are tolerated: a flaky ashdi must not drop a live
+    card during the catalog sweep (``filter_gated_items`` only drops
+    KNOWN-gated items), so ``stream()`` keeps the marker check as the
+    play-time backstop."""
+    try:
+        ashdi_resp = await safe_get(
+            http,
+            player_url,
+            allowed_hosts=set(_ALLOWED_HOSTS),
+            headers={"Referer": ASHDI_REFERER},
+        )
+    except (httpx.HTTPError, ProviderError):
+        return
+    if ashdi_resp.status_code == 200 and _ASHDI_NOT_FOUND in ashdi_resp.text:
+        raise ProviderError("gated", "upstream content removed")
+
+
 class CikavaIdeyaProvider(BaseProvider):
     id = "cikavaideya"
     name = "Цікава Ідея"
@@ -321,7 +349,25 @@ class CikavaIdeyaProvider(BaseProvider):
         country: str | None = extract_country(soup)
         # Removed / trailer-only / no-player titles raise `gated` here
         # (ADR-0002), before any season is built (#139).
-        seasons = self._build_seasons(_load_player1(soup), external_id, self.id)
+        player1 = _load_player1(soup)
+        # Issue #185: a title whose Player1 is playable can still be a
+        # dead VOD — ashdi.vip answers its player page with «Файл не
+        # знайдено» (captured live 2026-08-08, ashdi_vod_127413.html).
+        # Probe the representative player URL (a movie's single URL, or
+        # a series' first real season's first episode — the same
+        # resolution `_select_player_url` uses) and gate the dead VOD at
+        # content() time, mirroring eneyida (#139), so the ADR-0002
+        # catalog sweep drops the card instead of surfacing a title that
+        # only 404s at play time. stream() keeps the marker check as a
+        # backstop.
+        player_url = (
+            player1
+            if isinstance(player1, str)
+            else self._select_player_url(player1, "s1e1")
+        )
+        if player_url is not None:
+            await _probe_ashdi_gate(player_url, http)
+        seasons = self._build_seasons(player1, external_id, self.id)
         mb_form, mb_styles = model_b_axes(_classify_from_tags(tags_text))  # type: ignore[arg-type]
         return ContentResponse(
             id=f"cikavaideya:{external_id}",
