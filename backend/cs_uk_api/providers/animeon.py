@@ -220,6 +220,12 @@ class AnimeONProvider(BaseProvider):
     # v3 (issue #70): the ``page`` section is animeon's "Нове аніме"
     # listing — contributes to the «Новинки» row.
     newest_section = "page"
+    #: ``content()`` gates titles whose upstream translations are
+    #: withheld (``{"translations": []}`` → ``gated``, ADR-0002). The
+    #: catalog sweep must run for animeon so those dead cards are
+    #: dropped from home/search instead of failing only at play time
+    #: (#160, same pattern as eneyida #158).
+    can_gate = True
 
     async def _get_json(
         self,

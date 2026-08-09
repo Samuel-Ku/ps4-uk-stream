@@ -63,6 +63,9 @@ def test_animeon_provider_metadata():
     assert "seasons" in ids
     assert "popular" in ids
     assert "page" in ids
+    # Issue #160: content() gates withheld-translation titles, so the
+    # catalog sweep must run for animeon to drop dead cards from home.
+    assert p.can_gate is True
 
 
 # ---------------------------------------------------------------------------
