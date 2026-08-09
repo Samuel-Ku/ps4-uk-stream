@@ -61,8 +61,11 @@ boundary validation is `fullmatch` everywhere; uakino movies without a
   are self-issued headlessly; with a phone attached it drives the real
   Switchfin client via `adb shell input tap` through all 7 library
   views (open + first card + type-aware play), applies a per-step logcat
-  error filter, and writes `docs/switchfin-test-report.md`. Step
-  definitions are data in `docs/test-artifacts/switchfin/steps.yaml` +
+  error filter, and writes `docs/switchfin-test-report.md`. For each ❌
+  step it also dumps `logcat-<step>.txt` (spec-required) and
+  `backend-<step>.txt` (a deliberate extra channel, kept for triage —
+  #150; gitignored like the logcat snapshots). Step definitions are data
+  in `docs/test-artifacts/switchfin/steps.yaml` +
   `tap-coords.yaml` (populated by `--calibrate`). Run with
   `python scripts/switchfin_test.py`: it cold-starts the backend with
   `CS_UK_JF_CAPTURE_DIR` capture enabled, slices the run's real-client

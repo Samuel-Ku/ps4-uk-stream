@@ -176,11 +176,15 @@ def render_report(results: list[StepResult], meta: ReportMeta) -> str:
 
 
 def write_snapshots(results: list[StepResult], artifacts_dir: Path) -> None:
-    """Write logcat windows for ❌ steps to ``artifacts_dir``.
+    """Write per-step snapshots for ❌ steps to ``artifacts_dir``.
 
-    Every ❌ step writes a ``logcat-<step>.txt`` snapshot; a step whose
-    logcat window is empty writes a one-line note instead of producing no
-    file (#149), so a timed-out step is never invisible to offline triage.
+    Two channels, both deliberate: ``logcat-<step>.txt`` (spec-required)
+    and ``backend-<step>.txt`` (kept for triage, #150). Every ❌ step
+    writes a logcat snapshot; an empty window writes a one-line note
+    instead of producing no file (#149), so a timed-out step is never
+    invisible to offline triage. The backend window is written only when
+    it has lines (it is the runner's primary detection channel; in
+    headless runs it is often the only non-empty artifact).
     """
     for result in results:
         if result.ok or result.skipped:
