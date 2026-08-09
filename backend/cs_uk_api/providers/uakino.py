@@ -502,10 +502,16 @@ class UakinoProvider(BaseProvider):
         # can't redirect the PS4 into an internal address.
         if urlparse(m3u8_url).netloc not in _STREAM_ALLOWED_HOSTS:
             raise ProviderError("not_found", "m3u8 host not in allowlist")
+        # The stream CDN (ashdi.vip) is served over plain HTTP and needs
+        # the Referer to authorize the manifest/segment fetches — but a
+        # comma-bearing desktop UA breaks clients that split headers on
+        # commas (e.g. mpv's --http-header-fields): the CDN then sees a
+        # malformed User-Agent and 400s the stream. Use the plain client
+        # UA like every other ashdi-backed provider.
         return StreamResponse(
             url=m3u8_url,
             type="m3u8",
-            headers={"Referer": _CDN_REFERER, "User-Agent": _DESKTOP_UA},
+            headers={"Referer": _CDN_REFERER, "User-Agent": "cs-uk-api/0.1"},
         )
 
     async def browse(
