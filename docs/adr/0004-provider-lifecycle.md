@@ -21,7 +21,7 @@ Keep provider lifecycle as an explicit, deployment-time code workflow:
 - **Health tracking:** issue #53 and its v3 sliding-window health design remain the source of truth for runtime health. This ADR does not redefine thresholds, samples, status values, or `/api/providers` health fields; it owns only lifecycle decisions not covered by #53.
 - **Retirement:** comment out the provider's registration in `_registry.py` and retain the adapter/source for historical context or possible reactivation. This is the convention already used for Banderakino.
 - **Ordering / priority:** preserve registry order. `/api/search` returns the flattened provider results in `PROVIDERS.values()` order; no priority field or secondary sort is added.
-- **Startup discovery:** do not ping providers at startup. Reachability is learned lazily from the first applicable request and recorded through the existing health tracker. Deterministic local prerequisites may still produce an explicit startup marker, as with missing Uakino Chromium.
+- **Startup discovery:** do not ping providers at startup. Reachability is learned lazily from the first applicable request and recorded through the existing health tracker. Deterministic local prerequisites may still produce an explicit startup marker, as with missing Uakino Chromium. Uakino is the one bounded single-provider exception to "no startup probing" — a deterministic Chromium prerequisite plus a Cloudflare-bypassing browser session, warmed once per process rather than swept (2026-08-09 amendment below).
 - **Adding a provider:** follow the existing workflow: create the adapter under `providers/`, add live-captured fixtures and provider tests, implement and validate the `BaseProvider` boundary, register it in `_registry.py`, update provider triage, and run the live gate. The detailed eight-step checklist remains in `docs/status.md`.
 
 ## Considered Options
@@ -45,6 +45,29 @@ Keep provider lifecycle as an explicit, deployment-time code workflow:
 - Runtime health remains separate from lifecycle membership: an active provider can be `ok`, `degraded`, or `down` under issue #53, while retirement removes it from active registration.
 - Startup is not coupled to upstream availability. The first request may encounter an upstream error, which is recorded by the existing tracker.
 - Adding a provider requires fixtures and tests plus one explicit registry edit; no frontend contract change is required when the existing API shapes are respected.
+
+## Amendment: uakino background warm (2026-08-09)
+
+The "do not ping providers at startup" rule above targets multi-provider
+sweeps and transient probing: a startup sweep delays boot, thundering-herds
+upstreams, and makes a temporary outage a deployment gate. Uakino is a
+narrow, deliberate exception (issues #193/#195):
+
+- **Deterministic prerequisite, not a probe.** Uakino's session requires
+  a system Chromium binary at `UAKINO_CHROMIUM` — a deterministic local
+  fact the process checks once, not an upstream reachability probe. If
+  Chromium is absent the lifespan pins a `chromium_missing` startup
+  marker and never launches a session.
+- **Bounded, single-provider, once per process.** The lifespan warms the
+  session in the background at startup — the ``warm()`` call itself is
+  bounded by the session's ``WARM_TIMEOUT_S`` — and the session holds a
+  one-process ``asyncio.Lock`` so warm / heartbeat / fetch never
+  interleave. A heartbeat every 5 minutes keeps the session warm and
+  feeds the #53 sliding window, so a cold start recovers without user
+  action. Startup cost is one browser launch, not a sweep.
+- **No re-sweep.** Lazy discovery still governs every other provider;
+  this amendment does not re-open multi-provider startup sweeps, which
+  remain rejected.
 
 ## References
 

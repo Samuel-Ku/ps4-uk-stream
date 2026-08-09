@@ -12,7 +12,9 @@ once they pass the live gate (search → content → stream → plays in mpv).
 - **Player**: how the provider's stream URL is resolved (iframe chain, regex on inline JS, JSON from a CDN player, or packed/obfuscated JS that we cannot port without a JS engine).
 - **JS dep**: how much JS execution is needed to extract the stream URL.
   `none` = pure HTML scraping, `mild` = regex on inline JS, `heavy` = must
-  execute JS (not portable without a JS engine).
+  execute JS in a real browser engine. uakino's `heavy` is served by a
+  headless-Chromium session (Playwright) rather than a pure-Python port —
+  it is the sole `heavy` provider and lands as `ready` (ADR-0004 amendment).
 - **Verdict**:
   - `ready` — landed in `backend/cs_uk_api/providers/` and passing tests
   - `portable` — code is straightforward to port (HTML + regex/iframe), not yet started
@@ -23,7 +25,7 @@ once they pass the live gate (search → content → stream → plays in mpv).
 
 | Provider id | Upstream plugin | Kotlin sources | Search | Player | JS dep | Verdict |
 | ----------- | --------------- | -------------- | ------ | ------ | ------ | ------- |
-| uakino | [UakinoProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UakinoProvider) | `UakinoProvider.kt` (14.6 KB) | HTML | iframe → regex | mild | **not portable** (upstream moved to `uakino.best` — new DLE theme, all adapter selectors dead; content/player behind Cloudflare Turnstile 403; search via POST only; fixture tests remain green, live gate cannot pass — research `docs/research/uakino-reachability-2026-08-02.md`) |
+| uakino | [UakinoProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UakinoProvider) | `UakinoProvider.kt` (14.6 KB) | HTML | iframe → regex (browser session) | heavy (browser session) | **ready** — heavy (browser session; headless Chromium via Playwright); warm on startup, heartbeat every 5 min, status="warming" while cold; see ADR-0002 / ADR-0004 amendments |
 | uaflix | [UAFlixProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UAFlixProvider) | `UAFlixProvider.kt` (14.9 KB) | HTML, has mainPage | iframe → regex | mild | **ready** |
 | animeua | [AnimeUAProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/AnimeUAProvider) | `AnimeUAProvider.kt` (8.2 KB), `Tracker.kt` | HTML | iframe → JSON `file:` (dubs or m3u8) | mild | **ready** |
 | kinovezha | [KinoVezhaProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/KinoVezhaProvider) | `KinoVezhaProvider.kt` (10.3 KB) | HTML | iframe → regex (torDecrypt) | mild | **ready** |

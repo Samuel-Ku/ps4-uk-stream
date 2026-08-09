@@ -109,7 +109,8 @@ def test_providers_endpoint_exposes_health_fields() -> None:
     r = client.get("/api/providers")
     assert r.status_code == 200
     for p in r.json():
-        assert p["status"] in ("ok", "degraded", "down")
+        # ``warming`` is the transient pre-ready uakino state (issue #193).
+        assert p["status"] in ("ok", "degraded", "down", "warming")
         assert "last_error_at" in p
 
 

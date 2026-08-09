@@ -24,18 +24,20 @@ mpv plays 1 frame** and reports GATE PASS/FAIL per provider.
 
 ## `refresh_uakino.py [--close]`
 
-Uakino session warm/verify probe (issue #51). uakino.best's Cloudflare
-gate is a silent per-request JS check — no cookie exists to persist —
-so the "refresher" became a health check: it boots a headless Chromium
-session and probes a known content page and the playlists ajax
+Detached external probe (issue #51). uakino.best's Cloudflare gate is a
+silent per-request JS check — no cookie exists to persist — so the
+"refresher" is a host-level health check: it boots a fresh headless
+Chromium session and probes a known content page and the playlists ajax
 endpoint, printing `OK`/`FAIL` lines.
 
 - `--close` shuts the session down afterwards; without it the browser
   stays open (harmless — the probe process exits anyway).
 - Requires `playwright` and a system Chromium
   (`UAKINO_CHROMIUM` env var to override `/usr/bin/chromium`).
-- The API provider boots its own session lazily via `get_session()`;
-  this script does not share warm state with the API process.
+- Detached: this script does **not** share state with the API process.
+  The API's in-process warm + 5-minute heartbeat (issues #193/#195)
+  covers liveness while the server runs; this script answers a different
+  question — can a fresh session warm from zero on this host?
 
 See `docs/research/uakino-bypass-2026-08-02.md` for the investigation
 behind the browser-session architecture.

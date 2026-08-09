@@ -33,8 +33,10 @@ boundary validation is `fullmatch` everywhere; uakino movies without a
 - Shared extractors layer (`providers/extractors.py`) for the
   iframe / PlayerJson / regex pipeline used by v2 stream resolution.
 - **19 of 20 v2 providers landed** in `backend/cs_uk_api/providers/`
-  (issue #17). One skipped — `banderakino`, live site offline (HTTP 522)
-  and the only provider not portable without a JS engine. The registered 19:
+  (issue #17). One skipped — `banderakino`, live site offline (HTTP 522).
+  Uakino — the sole JS-engine provider — landed via its headless-Chromium
+  session (issues #193/#195): warmed in the background at startup,
+  `warming` while cold. The registered 19:
   - `uakino`, `ufdub`, `unimay`, `kinotron`, `cikavaideya`, `hentaiukr`,
     `bambooua`, `kinovezha`, `animeua`, `uaflix`, `coaninet`, `eneyida`,
     `klontv`, `serialno`, `doramyworld`, `uaserialspro`, `anitubeinua`,
@@ -234,14 +236,17 @@ These tasks require a PS4 console with GoldHEN.
 ## Adding more providers
 
 The v2 plan calls for 20 providers (issue #17). 19 are landed; 1 was
-skipped (Banderakino — site offline, and the only one not portable
-without a JS engine). The Uakino provider is the reference
-implementation — note: its live upstream moved to `uakino.best`
-(content/player pages are behind a Cloudflare Turnstile challenge, the
-site runs a new DLE theme), so the plain-HTTP live gate cannot pass;
-fixture tests remain green. The personal-use Chromium exception
-(issue #51) serves live uakino requests; `refresh_uakino.py` is its
-health probe. See
+skipped (Banderakino — site offline). The Uakino provider is the
+reference implementation and the sole JS-engine provider: its content
+and player pages sit behind a Cloudflare Turnstile challenge, so the
+plain-HTTP live gate cannot pass — the headless-Chromium session
+(issues #193/#195) serves live requests instead. The API warms that
+session in the background at startup (bounded by `WARM_WAIT_S`);
+`/api/providers` reports `warming` while it is cold, `ok` once ready,
+and the sliding-window health tracker recovers through the 5-minute
+heartbeat. `refresh_uakino.py` is a detached external probe only — it
+does not share state with the API process and answers whether a fresh
+session can warm from zero on this host. See
 [`docs/research/uakino-reachability-2026-08-02.md`](research/uakino-reachability-2026-08-02.md).
 To add a new provider:
 

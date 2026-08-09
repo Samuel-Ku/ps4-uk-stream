@@ -147,7 +147,7 @@ results from the latest full run (2026-08-08, after the fix pass #112–#125).
 | anitubeinua  | ◐    | series-only: same bare-id gate limitation. Verified live with `:s1e1` (2026-08-08) |
 | doramyworld  | ◐    | series-only: same bare-id gate limitation. Verified live with `:s1e1` (2026-08-08) |
 | simpsonsuatv | ◐    | series-only: episode ids are full content-page URLs, so the gate's bare-id stream cannot work. Verified live with a season episode URL (2026-08-08) |
-| uakino       | ⛔   | public stance: known-broken — Cloudflare's per-request JS check blocks plain HTTP (research: `docs/research/uakino-reachability-2026-08-02.md`). Personal-use exception implemented (#51): headless-Chromium session + new-theme extraction, verified live (search/content/stream → playable m3u8, 2026-08-02) |
+| uakino       | ✅   | requires system Chromium at `UAKINO_CHROMIUM` and `playwright`; Cloudflare Turnstile bypassed via in-page `fetch()`; lifecycle warm/heartbeat/warming per #193 |
 
 Gate queries: the default `Дюна` no longer matches upstream catalogs
 that rotated their listings (cikavaideya, hentaiukr, bambooua,

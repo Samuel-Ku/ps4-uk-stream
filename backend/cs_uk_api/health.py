@@ -45,6 +45,15 @@ class HealthTracker:
         """Deterministically pin a provider as down (logged once at startup)."""
         self._markers[provider_id] = reason
 
+    def startup_marker(self, provider_id: str) -> str | None:
+        """Return the startup-marker reason for a provider, or None.
+
+        Lets the API layer distinguish a deterministic startup failure
+        (e.g. uakino's ``chromium_missing`` / ``warm_failed`` /
+        ``warm_timeout``) from a transient sliding-window ``down``.
+        """
+        return self._markers.get(provider_id)
+
     def status(self, provider_id: str) -> HealthStatus:
         if provider_id in self._markers:
             return STATUS_DOWN

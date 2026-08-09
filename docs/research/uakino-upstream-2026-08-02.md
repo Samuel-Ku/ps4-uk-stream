@@ -56,18 +56,21 @@ current DLE theme?
    the challenge it would additionally depend on the same old-theme
    `file:` regex over `li[data-file]` player URLs.
 
-## Verdict
+## Verdict (superseded 2026-08-09 by #193/#195)
 
-- "Upstream works" is **not confirmed**; on the evidence it cannot
-  produce a movie stream today: the adapter's movie path resolves to a
-  YouTube embed that never contains its `file:` pattern, and its series
-  path is Turnstile-gated for plain HTTP.
-- The keep-as-known-broken verdict (#45) **stands** and is now
-  double-rooted: (a) our backend has no JS engine → Turnstile blocks
-  content; (b) even the JS-capable path has no working stream extraction
-  in the upstream adapter on the current theme.
-- No code changes to the repo; existing docs already describe the state
-  honestly.
+- "Upstream works" was **not confirmed** on the 2026-08-02 evidence: the
+  adapter's movie path resolved to a YouTube embed that never contains its
+  `file:` pattern, and its series path was Turnstile-gated for plain HTTP.
+- The #45 recommendation (keep with a plain-HTTP limitation) **stood** on
+  that evidence, double-rooted: (a) our backend had no JS engine →
+  Turnstile blocked content; (b) even the JS-capable path had no working
+  stream extraction in the upstream adapter on the current theme.
+- No code changes to the repo at the time; existing docs described the
+  state honestly.
+- **Superseded:** the headless-Chromium session (issue #193) shipped
+  2026-08-09 clears the Turnstile challenge via in-page `fetch()`; uakino
+  serves live requests and is marked `ready` in the triage table (see the
+  ADR-0004 amendment).
 
 ## Artifacts
 

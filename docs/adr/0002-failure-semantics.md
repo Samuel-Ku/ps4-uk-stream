@@ -23,8 +23,10 @@ shared `httpx.AsyncClient` carries an `httpx.Timeout(8)` so each upstream
 request self-cancels after 8s.
 
 The 19 providers span the long tail of the Ukrainian web: site outages,
-Cloudflare challenges, JS-only renderers (uakino, marked down at startup
-when Chromium is missing), and slow cold pages. In practice, a search over
+Cloudflare challenges, JS-only renderers (uakino — warmed in the
+background at startup through a headless-Chromium session, transiently
+`warming` while cold; see the 2026-08-09 amendment), and slow cold pages.
+In practice, a search over
 all providers routinely sees one or two failures per call. Today the route
 silently swallows them and returns `results: []` for the failed providers —
 the PS4 client cannot distinguish "no matches" from "3 providers timed
@@ -246,6 +248,48 @@ zero-season card during `load_home` instead of surfacing a series with
 no episodes (#139). A `const playlist` block that exists but fails to
 parse raises `parse_failed` instead — a genuine upstream shape change is
 a health signal and is never masked as `gated`.
+
+## Amendment: uakino warming lifecycle (2026-08-09)
+
+### Warming context
+
+The base ADR scoped this failure envelope to plain-HTTP providers; its
+Context section described uakino as a JS-only renderer carrying a static
+startup-down verdict when Chromium is missing. Issue #193 replaces that
+static state with a lifecycle: uakino's Cloudflare Turnstile challenge
+is cleared by a headless-Chromium session, and the lifespan (#195) warms
+that session in the background at startup (the ``warm()`` call itself is
+bounded by the session's ``WARM_TIMEOUT_S``) and heartbeats it every 5
+minutes, feeding the sliding-window health tracker.
+
+#### Warming decision
+
+- `/api/providers` reports a transient `warming` status for uakino while
+  its session is cold — from process start until the background warm
+  completes. A permanent startup marker (`chromium_missing`,
+  `warm_failed`) still beats `warming` and maps to `down`, exactly as
+  before.
+- Explicit `provider=uakino` routes (`/api/search`, `/api/content`,
+  `/api/stream`) short-circuit to **502 `upstream_unreachable`** when a
+  permanent startup marker is present (zero session work), and otherwise
+  wait up to `WARM_WAIT_S` for the session to become ready. A wait
+  timeout answers **503** with `ErrorResponse(error="warming", ...)` — a
+  new error token alongside `upstream_unreachable` / `search_timeout`.
+- `provider=all` fan-out skips cold or down uakino: no failures entry,
+  no session work, and the uakino-less response is cached under a
+  distinct key so warming the session later does not serve a stale
+  uakino-free reply.
+
+#### Warming consequences
+
+- Cold-start explicit uakino requests are 503 `warming` for at most
+  `WARM_WAIT_S`, then either real results or a marker verdict — never a
+  swallowed `[]` and never a 500.
+- `warming` is additive and client-compatible: an unknown 503 already
+  reads as "retry later", which is precisely the right policy for a
+  warming provider.
+- The fan-out skip keeps a cold uakino off the 12s search budget; the
+  session warms in the background once per process.
 
 ## References
 

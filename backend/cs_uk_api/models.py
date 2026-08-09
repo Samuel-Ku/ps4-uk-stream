@@ -193,8 +193,11 @@ class StreamResponse(BaseModel):
 STATUS_OK = "ok"
 STATUS_DEGRADED = "degraded"
 STATUS_DOWN = "down"
+#: Transient "session is warming up" state (issue #193) — reported on
+#: /api/providers while uakino's browser session has not become ready.
+STATUS_WARMING = "warming"
 
-HealthStatus = Literal[STATUS_OK, STATUS_DEGRADED, STATUS_DOWN]
+HealthStatus = Literal[STATUS_OK, STATUS_DEGRADED, STATUS_DOWN, STATUS_WARMING]
 
 
 class ProviderInfo(BaseModel):

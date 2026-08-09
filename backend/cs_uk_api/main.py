@@ -38,6 +38,7 @@ from .models import (
     ErrorResponse,
     GroupContentResponse,
     GroupSourceContentResponse,
+    HealthStatus,
     HomeResponse,
     MediaForm,
     MediaStyle,
@@ -48,6 +49,8 @@ from .models import (
     SearchResponse,
     SearchResult,
     Section,
+    STATUS_DOWN,
+    STATUS_WARMING,
     StreamResponse,
 )
 from .poster_proxy import fetch as fetch_poster
@@ -89,6 +92,43 @@ T = TypeVar("T")
 # Callers that want to degrade to None on upstream failure must pass
 # ``on_error=None`` explicitly; omitting the kwarg means "raise 502".
 _UNSET: object = object()
+
+#: Bound on how long an explicit uakino route waits for the browser
+#: session to become ready before answering 503 ``warming`` (issue #193).
+#: Distinct from ``UakinoSession.WARM_TIMEOUT_S`` (the bounded ``warm()``
+#: call itself).
+WARM_WAIT_S: float = 15.0
+
+#: Bounded drain for the background warm/heartbeat task in lifespan
+#: shutdown so a mid-warm Chromium launch cannot hang the teardown.
+_WARM_TASK_DRAIN_S: float = 1.0
+
+#: Handle of the background warm+heartbeat task started by ``lifespan``.
+_warm_task: asyncio.Task[None] | None = None
+
+
+async def _warm_and_heartbeat() -> None:
+    """Background uakino warm + heartbeat (issue #193/#195).
+
+    Scheduled once by ``lifespan``. ``warm()`` failures are pinned as
+    deterministic startup markers so explicit uakino routes short-circuit
+    502 instead of blocking on a session that can never serve; success
+    hands off to the heartbeat loop, which records ok/fail per tick into
+    TRACKER — the sliding-window state ``/api/providers`` and the fan-out
+    skip read. Cancelled by ``lifespan`` shutdown.
+    """
+    session = get_session()
+    try:
+        await session.warm()
+    except TimeoutError:
+        TRACKER.mark_startup("uakino", "warm_timeout")
+        log.warning("uakino warm timed out; marked down at startup")
+        return
+    except Exception as e:  # noqa: BLE001
+        TRACKER.mark_startup("uakino", "warm_failed")
+        log.warning("uakino warm failed; marked down at startup: %s", e)
+        return
+    await session.heartbeat_loop(record=lambda ok: TRACKER.record("uakino", ok))
 
 
 def _split_content_id(content_id: str) -> tuple[str, str]:
@@ -166,7 +206,23 @@ def _stream_provider_error(e: Exception) -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    global _warm_task
+    if os.path.exists(DEFAULT_CHROMIUM):
+        # Background warm+heartbeat (issue #193): uakino's browser session
+        # is brought up once at startup instead of lazily on first request,
+        # so its health is known before a client asks for it.
+        _warm_task = asyncio.create_task(_warm_and_heartbeat())
     yield
+    if _warm_task is not None:
+        _warm_task.cancel()
+        try:
+            await asyncio.wait_for(_warm_task, timeout=_WARM_TASK_DRAIN_S)
+        except (TimeoutError, asyncio.CancelledError):
+            # CancelledError is the expected result of the cancel above;
+            # a TimeoutError means the drain bound fired on a mid-warm
+            # browser launch. Neither is an error worth a stack trace.
+            log.debug("uakino warm task drained on shutdown")
+        _warm_task = None
     # The uakino browser session is lazily created on first request and
     # runs a headless Chromium; close it on shutdown so SIGTERM doesn't
     # orphan the browser process. `close()` is a no-op when the session
@@ -226,11 +282,26 @@ async def list_providers() -> list[ProviderInfo]:
             id=p.id,
             name=p.name,
             types=list(p.types),  # type: ignore[arg-type]
-            status=TRACKER.status(p.id),
+            status=_provider_status(p.id),
             last_error_at=TRACKER.last_error_at(p.id),
         )
         for p in PROVIDERS.values()
     ]
+
+
+def _provider_status(provider_id: str) -> HealthStatus:
+    """Per-provider status for /api/providers (issue #193).
+
+    A startup marker or a down sliding-window wins outright. Otherwise a
+    uakino session that has not finished warming reports the transient
+    ``warming`` status; once ready the sliding-window value takes over.
+    """
+    status = TRACKER.status(provider_id)
+    if status == STATUS_DOWN:
+        return status
+    if provider_id == "uakino" and not get_session().ready_event.is_set():
+        return STATUS_WARMING
+    return status
 
 
 @app.get("/api/sections")
@@ -362,6 +433,49 @@ def _matches_axes(
     )
 
 
+def _should_skip_uakino_in_fanout() -> bool:
+    """True when uakino must be dropped from a ``provider=all`` fan-out.
+
+    Dropped while down (startup marker or sliding-window) or while the
+    browser session has not yet become ready (issue #193).
+    """
+    if "uakino" not in PROVIDERS:
+        return False
+    if TRACKER.status("uakino") == STATUS_DOWN:
+        return True
+    return not get_session().ready_event.is_set()
+
+
+async def _await_uakino_ready() -> None:
+    """Gate an explicit uakino route on the browser session being ready.
+
+    A deterministic startup marker short-circuits with 502 — the session
+    is dead for the process lifetime, so waiting is pointless. Otherwise
+    wait for ``ready_event`` bounded by ``WARM_WAIT_S``; a cold session
+    still warming answers 503 ``warming`` so the client can back off and
+    retry (issue #193/#196).
+    """
+    marker = TRACKER.startup_marker("uakino")
+    if marker is not None:
+        raise HTTPException(
+            502,
+            detail=ErrorResponse(
+                error="upstream_unreachable", message=f"uakino {marker}"
+            ).model_dump(),
+        )
+    session = get_session()
+    try:
+        await asyncio.wait_for(session.ready_event.wait(), timeout=WARM_WAIT_S)
+    except TimeoutError:
+        raise HTTPException(
+            503,
+            detail=ErrorResponse(
+                error=STATUS_WARMING,
+                message="uakino session is still warming; retry shortly",
+            ).model_dump(),
+        ) from None
+
+
 @app.get("/api/search", response_model=SearchResponse, response_model_exclude_unset=True)
 async def search(
     q: str = Query(min_length=1, max_length=80),
@@ -398,11 +512,39 @@ async def search(
     if provider != "all" and provider not in PROVIDERS:
         raise HTTPException(400, detail=ErrorResponse(error="unknown_provider", message=provider).model_dump())
     style_filter = _parse_style_filter(style)
+    if provider == "uakino":
+        # Explicit uakino: 502 on a startup marker, bounded wait on
+        # ready_event, 503 ``warming`` on timeout (issue #196). Gated
+        # before any cache read so a marker or a still-warming session
+        # never serves a stale cached response.
+        await _await_uakino_ready()
+    # Fan-out skip (issue #193): while uakino's browser session is not
+    # ready (warming) or pinned down, drop it from the ``provider=all``
+    # fan-out instead of letting it burn the search budget on a session
+    # that cannot serve. No failures entry — a cold session is not an
+    # upstream error.
+    skip_uakino = provider == "all" and _should_skip_uakino_in_fanout()
     cache_key = f"search:{provider}:{q}:{form or ''}:{_style_key(style_filter)}"
+    if skip_uakino:
+        # Distinguish "cold uakino" from "uakino returned empty" so a
+        # warmed-up session never serves a stale uakino-less entry for the
+        # same query (issue #193 cache obligation).
+        cache_key += ":no-uakino"
     cached = _search_cache.get(cache_key)
     if cached is not None:
         return cached  # type: ignore[return-value]
-    selected = list(PROVIDERS.values() if provider == "all" else [PROVIDERS[provider]])
+    if skip_uakino:
+        selected = [p for p in PROVIDERS.values() if p.id != "uakino"]
+    else:
+        selected = list(PROVIDERS.values() if provider == "all" else [PROVIDERS[provider]])
+    if not selected:
+        # Every provider was dropped from the fan-out (e.g. uakino was the
+        # only provider and it is cold): nothing to run — an empty response
+        # is the honest answer, never a 502 (issue #193). Cached under the
+        # ``:no-uakino`` key so it never shadows a warmed uakino result.
+        resp = SearchResponse(query=q, groups=[])
+        _search_cache.set(cache_key, resp)
+        return resp
     http = get_client()
 
     async def run(p: BaseProvider) -> list[SearchResult] | ProviderFailure:
@@ -643,6 +785,8 @@ async def _content_by_id(content_id: str) -> ContentResponse:
     provider_id, external_id = _split_content_id(content_id)
     if provider_id not in PROVIDERS or not external_id:
         raise HTTPException(404, detail=ErrorResponse(error="not_found", message=content_id).model_dump())
+    if provider_id == "uakino":
+        await _await_uakino_ready()
     http = get_client()
     resp = await _upstream_guard(
         provider_id,
@@ -796,6 +940,8 @@ async def stream(content_id: str, translation: str | None = None) -> StreamRespo
     provider_id, rest = _split_content_id(content_id)
     if provider_id not in PROVIDERS or not rest:
         raise HTTPException(404, detail=ErrorResponse(error="not_found", message=content_id).model_dump())
+    if provider_id == "uakino":
+        await _await_uakino_ready()
     provider = PROVIDERS[provider_id]
     http = get_client()
     # Episode-level translation validation (issue #9): if the provider

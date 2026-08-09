@@ -27,6 +27,7 @@ from typing import Any, cast
 import pytest
 from fastapi.testclient import TestClient
 
+from cs_uk_api import main as main_mod
 from cs_uk_api.main import _search_cache, _home_cache, app
 from cs_uk_api.merge import item_group_key, merge_results
 from cs_uk_api.models import (
@@ -78,6 +79,47 @@ def isolate() -> Iterator[None]:
         PROVIDERS.update(saved_providers)
         _search_cache.clear()
         _home_cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def _ready_uakino_session() -> Iterator[None]:
+    """Treat uakino's browser session as already ready (issue #193).
+
+    These tests register uakino as a healthy working provider to exercise
+    merge behaviour. The fan-out skip (issue #193) drops uakino from
+    ``provider=all`` searches while its session has not finished warming —
+    and the explicit ``?provider=uakino`` route bounded-waits on
+    ``ready_event`` — so the module stubs the session main.py reads to a
+    ready one. uakino's startup marker is cleared too, so a host without
+    the browser binary cannot flake the merge assertions.
+
+    The session is restored manually (not via ``monkeypatch``): this module
+    is full of ``monkeypatch.setitem(PROVIDERS, ...)`` tests whose teardown
+    must run before ``isolate`` re-populates the registry — taking a
+    ``monkeypatch`` here reorders fixture finalization and lets
+    ``monkeypatch.undo()`` delete real providers that ``isolate`` just
+    restored (pytest-randomly exposed this as registry corruption).
+    """
+    import asyncio
+
+    class _ReadySession:
+        def __init__(self) -> None:
+            self.ready_event = asyncio.Event()
+            self.ready_event.set()
+
+        async def fetch(self, path, method="GET", data=None):  # type: ignore[no-untyped-def]
+            raise AssertionError("unused: uakino providers are stubbed in this module")
+
+        async def close(self) -> None:
+            pass
+
+    saved_get_session = main_mod.get_session
+    main_mod.get_session = lambda: _ReadySession()  # type: ignore[assignment]
+    main_mod.TRACKER.reset()
+    try:
+        yield
+    finally:
+        main_mod.get_session = saved_get_session
 
 
 class _StubBase(BaseProvider):

@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi.testclient import TestClient
 
 from cs_uk_api.main import app
@@ -132,8 +134,19 @@ def test_lifespan_closes_uakino_session():
     closes: list[None] = []
 
     class _StubSession:
+        """Minimal ``UakinoSessionProtocol``: the lifespan warm task calls
+        ``warm()`` + ``heartbeat_loop()`` and ``/api/providers`` reads
+        ``ready_event`` (issue #193/#195)."""
+
         def __init__(self) -> None:
-            self._browser = object()
+            self.ready_event = asyncio.Event()
+
+        async def warm(self) -> None:
+            pass
+
+        async def heartbeat_loop(self, record):  # type: ignore[no-untyped-def]
+            while True:
+                await asyncio.sleep(3600)
 
         async def close(self) -> None:
             closes.append(None)
