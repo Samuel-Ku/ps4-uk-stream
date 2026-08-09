@@ -298,6 +298,49 @@ async def test_bambooua_content_empty_playlist_array_raises_gated():
 
 
 @pytest.mark.asyncio
+async def test_bambooua_content_groups_without_files_raises_gated():
+    """#139 coverage gap: a playlist parsed into non-empty groups whose
+    every group carries NO file and NO folder (e.g. an upstream variant
+    `[{title:"Сезон 1",folder:[]},{title:"Сезон 2",folder:[]}]`) is
+    neither caught by ``_require_playlist`` (groups is non-empty) nor by
+    ``_playlist_fully_gated`` (returns False when ``not files``). Without
+    an explicit guard, ``_build_seasons`` returns ``None`` and content()
+    surfaces a zero-season ``ContentResponse`` — the exact #139 break
+    this gate is meant to prevent. content() must raise ``gated``."""
+    content_html = _fixture("content_empty_folders.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://bambooua.com/dorama/262-legenda-pro-nok-tu.html"
+        ).respond(200, text=content_html)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await BambooUAProvider().content(
+                    "dorama/262-legenda-pro-nok-tu", http
+                )
+    assert exc.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_bambooua_stream_groups_without_files_raises_gated():
+    """Same coverage gap as the content() variant: stream() on a title
+    whose playlist is non-empty groups with zero playable files must
+    raise ``gated`` (consistent with ``test_bambooua_stream_no_playlist``),
+    not ``not_found`` — so a stale card for a withheld title does not
+    pollute the health tracker."""
+    content_html = _fixture("content_empty_folders.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://bambooua.com/dorama/262-legenda-pro-nok-tu.html"
+        ).respond(200, text=content_html)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await BambooUAProvider().stream(
+                    "dorama/262-legenda-pro-nok-tu:s1e1", None, http
+                )
+    assert exc.value.code == "gated"
+
+
+@pytest.mark.asyncio
 async def test_bambooua_stream_no_playlist_raises_gated():
     """stream() on a title with no playable manifest must answer gated
     (never parse_failed → health-down) so a stale card for a removed or

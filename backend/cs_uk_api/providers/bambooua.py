@@ -77,17 +77,55 @@ def _is_sponsor_file(path: str) -> bool:
     return _SPONSOR_MARKER in path.lower()
 
 
+def _has_playable_files(groups: list[_PlaylistGroup]) -> bool:
+    """True when the playlist exposes at least one file (a group-level
+    ``file`` for movies, or an episode ``file`` inside a ``folder``).
+
+    A playlist with non-empty groups but empty folders/no group.file —
+    a third gated variant the audit #139 did not originally spec — is
+    still "nothing playable", so this returns False for it."""
+    if any(g.file for g in groups):
+        return True
+    return any(ep.file for g in groups for ep in g.folder)
+
+
+def _require_playable_files(groups: list[_PlaylistGroup]) -> None:
+    """Raise ``gated`` when a content page's playlist has no playable
+    files at all.
+
+    Sits between ``_require_playlist`` (catches the empty-groups shape:
+    no ``const playlist`` block, or ``[]``) and ``_playlist_fully_gated``
+    (catches the all-sponsor-placeholder shape). The third gated shape
+    — non-empty groups whose every ``folder`` is empty and no group
+    has a ``file`` — would otherwise fall through both guards:
+    ``_require_playlist`` sees non-empty ``groups``, and
+    ``_playlist_fully_gated`` returns ``False`` on the ``not files``
+    branch. ``_build_seasons`` then returns ``None`` and content()
+    surfaces a zero-season ``ContentResponse`` — the exact #139 break
+    the gate is meant to prevent. Without this guard, an upstream
+    variant like ``[{title:"Сезон 1",folder:[]}]`` would silently
+    re-introduce it. Same verdict as ``_require_playlist``: deliberate
+    upstream unavailability → ``gated`` (ADR-0002), so the can_gate
+    catalog sweep drops the card during ``load_home`` instead of
+    surfacing a zero-season series (#139)."""
+    if not _has_playable_files(groups):
+        raise ProviderError("gated", "playlist has no playable files")
+
+
 def _playlist_fully_gated(groups: list[_PlaylistGroup]) -> bool:
     """True when EVERY playable file in the playlist is the gate placeholder.
 
     A series with some real episodes is NOT gated as a whole — its
     free episodes stay playable; only the placeholder ones are refused
-    by ``stream()``."""
+    by ``stream()``. A playlist with no playable files at all is
+    vacuously fully-gated — ``_require_playable_files`` raises before
+    the caller reaches here, but the vacuous-True return keeps this
+    helper correct if it is ever called without that pre-check."""
     files: list[str] = [g.file for g in groups if g.file]
     for g in groups:
         files.extend(ep.file for ep in g.folder)
     if not files:
-        return False
+        return True
     return all(_is_sponsor_file(f) for f in files)
 
 # The upstream `playlistRegex` extracts the inline JSON manifest.
@@ -387,6 +425,7 @@ class BambooUAProvider(BaseProvider):
         country: str | None = extract_country(soup)
         groups = _extract_playlist(resp.text)
         _require_playlist(groups)
+        _require_playable_files(groups)
         if _playlist_fully_gated(groups):
             raise ProviderError("gated", "subscription required")
         media_type = _type_from_url(url)
@@ -468,6 +507,7 @@ class BambooUAProvider(BaseProvider):
             raise ProviderError("not_found", f"status {resp.status_code}")
         groups = _extract_playlist(resp.text)
         _require_playlist(groups)
+        _require_playable_files(groups)
         media_url = self._select_file(groups, ep_suffix)
         if media_url is None:
             raise ProviderError("not_found", f"no file for {ep_suffix!r}")
