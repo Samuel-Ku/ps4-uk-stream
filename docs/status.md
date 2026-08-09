@@ -55,7 +55,7 @@ boundary validation is `fullmatch` everywhere; uakino movies without a
   playback against the real site for smoke-testing (issue #30, spec
   §7.1); `backend/cs_uk_api/scripts/README.md` documents it.
 - Switchfin manual-test pipeline (`scripts/switchfin_test.py`, issues
-  #143–#147): cold-starts the uvicorn backend, tails its request-log
+  #143–#148): cold-starts the uvicorn backend, tails its request-log
   middleware line (`METHOD path -> status (ms)`) as the detection
   channel, and verifies the wire. The 2 handshake steps (login + views)
   are self-issued headlessly; with a phone attached it drives the real
@@ -69,6 +69,14 @@ boundary validation is `fullmatch` everywhere; uakino movies without a
   records into `backend/cs_uk_api/tests/fixtures/jellyfin/
   capture.real-client.jsonl` (never `capture.jsonl`), and its runner unit
   tests live in `backend/cs_uk_api/tests/test_switchfin_runner.py`.
+  Issue #148 resolved the series-play endpoints against the Switchfin
+  client source (branch dev): the real client emits
+  `/Shows/{series}/Seasons` + `/Shows/{series}/Episodes` (its
+  `apiShowSeasons`/`apiShowEpisodes` constants in
+  `app/include/api/jellyfin/media.hpp`, called from `app/src/tab/
+  media_series.cpp`) — the spec's `/Items?parentId={season}` is the
+  JS-SDK spelling. The shipped `/Shows/…` patterns are therefore left
+  unchanged; on-device confirmation is still pending (no device attached).
 - Live smoke test confirmed `/api/providers` returns all registered
   providers and the validation/404 paths behave correctly.
 

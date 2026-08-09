@@ -1,4 +1,4 @@
-# Switchfin manual-test step definitions (tickets #144-#146).
+# Switchfin manual-test step definitions (tickets #144-#148).
 #
 # Each step is verified against the uvicorn request-log middleware line
 # `METHOD path -> status (ms)`, which is logged with `request.url.path`
@@ -13,6 +13,17 @@
 #   open      — tap a home row -> library listing (`/Items`)
 #   detail    — tap the first card -> item + poster
 #   play      — type-aware: Movie = 1 tap, Series = 4 taps (#146)
+#
+# Series-play endpoints (issue #148): after tapping a season, the real
+# Switchfin client emits `/Shows/{series}/Episodes` — its `apiShowEpisodes`
+# constant (`app/include/api/jellyfin/media.hpp`) called from the series
+# view (`media_series.cpp`); the seasons rail is `/Shows/{series}/Seasons`
+# (`apiShowSeasons`). The spec draft expected `/Items?parentId={season}`,
+# but that is the JS-SDK spelling the facade ALSO serves (`/Items` with a
+# `parentId` query) — the middleware strips the query, so an SDK-style call
+# would log as a bare `GET /Items` and fail these `/Shows/…` expects. The
+# `/Shows/{series}/…` patterns are verified against the Switchfin client
+# source; on-device confirmation is still pending (no device attached).
 #
 # View ids are the router's `_VIEW_ID_BY_TYPE` uuid5 values
 # (`uuid.uuid5(NAMESPACE_URL, "cs-uk-api-view:{type}")`), kept as data

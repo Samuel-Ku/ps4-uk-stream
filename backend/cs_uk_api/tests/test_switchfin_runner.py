@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -740,3 +741,56 @@ def test_reset_capture_dir_creates_missing_dir(tmp_path: Path) -> None:
     reset_capture_dir(capture_dir)
 
     assert capture_dir.is_dir()
+
+
+# --------------------------------------------------------------------------
+# #148: the shipped series-play expects match the real Switchfin client
+# --------------------------------------------------------------------------
+
+
+def test_shipped_series_play_patterns_match_real_client_lines() -> None:
+    """#148: the ``seasons_tab``/``first_season`` expects must match the bare
+    access-log paths the real Switchfin client emits — ``/Shows/{series}/Seasons``
+    and ``/Shows/{series}/Episodes``, its ``apiShowSeasons``/``apiShowEpisodes``
+    constants in ``app/include/api/jellyfin/media.hpp`` (Switchfin source,
+    branch dev) — NOT the JS-SDK ``/Items?parentId=…`` spelling. The middleware
+    strips the query string, so an SDK-style call would log as a bare
+    ``GET /Items`` and the step would time out against a real device. The
+    reference lines below encode that source-derived shape; a future
+    "correction" back to the spec's SDK spelling must fail this pin."""
+    steps_path = REPO_ROOT / "docs" / "test-artifacts" / "switchfin" / "steps.yaml"
+    _, steps = load_steps(steps_path)
+    play_series = next(
+        (s for s in steps if s.name == "play_series"),
+        None,
+    )
+    assert play_series is not None, "steps.yaml is missing the play_series step"
+    series_branch = next(
+        (b for b in play_series.branches if b.key == "series"),
+        None,
+    )
+    assert series_branch is not None, "play_series is missing its series branch"
+
+    # Bare access-log lines in the shape the real client emits (source-derived
+    # above). Deliberately query-free: the middleware logs `request.url.path`.
+    real_client_lines = {
+        "seasons_tab": "GET /Shows/g1/Seasons -> 200 (5ms)",
+        "first_season": "GET /Shows/g1/Episodes -> 200 (5ms)",
+    }
+    # Assert both pinned taps exist so a steps.yaml rename fails loudly here,
+    # not silently (the loop below would otherwise skip and pass on nothing).
+    tap_names = {tap.tap for tap in series_branch.taps}
+    missing = set(real_client_lines) - tap_names
+    assert not missing, f"steps.yaml dropped pinned series taps: {missing!r}"
+    for tap in series_branch.taps:
+        real_line = real_client_lines.get(tap.tap)
+        if real_line is None:
+            # first_episode has no expects; play_button's playback trio is
+            # orthogonal to the endpoint question #148 resolved.
+            continue
+        patterns = [e.request for e in tap.expects]
+        assert patterns, f"{tap.tap} tap must expect the rail request"
+        assert any(re.search(p, real_line) for p in patterns), (
+            f"{tap.tap}: no expect matches the real client's {real_line!r} "
+            f"(patterns: {patterns!r})"
+        )
