@@ -91,6 +91,43 @@ def _file_url(html: str) -> str | None:
     return url
 
 
+#: hdvbua player URLs inside an iframe tag — recovery path for the
+#: upstream's doubled-quote template bug (the regex runs against the
+#: RAW tag HTML, where the URL is intact).
+_PLAYER_RE = re.compile(r"https://hdvbua\.pro/(?:embed|vid)/[^\"'\s]+")
+_IFRAME_TAG_RE = re.compile(r"<iframe[^>]*>", re.IGNORECASE)
+
+
+def _player_url(html: str) -> str | None:
+    """First player URL from the content page's iframe block.
+
+    The upstream template occasionally emits a doubled quote on the
+    first iframe — ``src="data-src="https://hdvbua.pro/embed/..."``
+    (live 2026-08-09, «Шуґар»). BeautifulSoup then parses ``src`` as
+    the garbage value ``data-src=``, so the PARSED attribute is
+    unusable and a regex over the RAW tag HTML must recover the real
+    URL. For a well-formed iframe the parsed ``src`` wins (it
+    HTML-decodes ``&amp;`` in query tokens — the embed token is
+    REQUIRED, e.g. ``?md&akpdef141``; a regex that stops at ``?``
+    would fetch the embed without the token and get a dead page).
+    """
+    tag_match = _IFRAME_TAG_RE.search(html)
+    if tag_match is None:
+        return None
+    tag = tag_match.group(0)
+    iframe = BeautifulSoup(tag, "lxml").select_one("iframe")
+    if iframe is not None:
+        src = str(iframe.get("src") or "")
+        if urlsplit(src).hostname in _ALLOWED_HOSTS:
+            return src
+    m = _PLAYER_RE.search(tag)
+    if m:
+        url = m.group(0)
+        if urlsplit(url).hostname in _ALLOWED_HOSTS and "?tr" not in url:
+            return url
+    return None
+
+
 class EneyidaProvider(BaseProvider):
     id = "eneyida"
     name = "Eneyida"
@@ -129,17 +166,17 @@ class EneyidaProvider(BaseProvider):
         if not h1: raise ProviderError("parse_failed", "title missing")
         country: str | None = extract_country(soup)
         img = soup.select_one(".full img") or soup.select_one("img[src*='/uploads/']")
-        iframe = soup.select_one("iframe")
-        if not iframe: raise ProviderError("parse_failed", "player missing")
+        player = _player_url(r.text)
+        if not player: raise ProviderError("parse_failed", "player missing")
         typ: MediaType = "series" if kind == "series" else "movie"
         if typ == "series":
-            seasons = await self._seasons(str(iframe.get("src")), external_id, http)
+            seasons = await self._seasons(player, external_id, http)
         else:
             # Gate upstream-removed movies at content() time (#158): the
             # first iframe is the main player embed; a «Контент
             # недоступний» embed means the site cannot play the title, so
             # the catalog sweep must be able to drop the card.
-            await self._check_embed_gated(str(iframe.get("src")), http)
+            await self._check_embed_gated(player, http)
             seasons = [Season(number=1, episodes=[Episode(number=1, id=external_id+MOVIE_SUFFIX, title="Фільм")])]
         mb_form, mb_styles = model_b_axes(typ)
         return ContentResponse(id=f"{self.id}:{external_id}", type=typ, title=h1.get_text(strip=True), poster=urljoin(BASE_URL, str(img.get("src"))) if img else None, translations=[Translation(id="uk", label="Українська")], seasons=seasons, country=country, form=mb_form, styles=mb_styles)
@@ -174,9 +211,9 @@ class EneyidaProvider(BaseProvider):
         if not _SLUG_RE.fullmatch(slug): raise ProviderError("not_found", "bad external_id")
         try: r = await safe_get(http, f"{BASE_URL}/{kind}/{slug}.html", allowed_hosts=set(_ALLOWED_HOSTS))
         except httpx.HTTPError as e: raise ProviderError("unreachable", str(e)) from e
-        iframe = BeautifulSoup(r.text, "lxml").select_one("iframe")
-        if not iframe: raise ProviderError("parse_failed", "player missing")
-        try: p = await safe_get(http, str(iframe.get("src")), allowed_hosts=set(_ALLOWED_HOSTS))
+        player = _player_url(r.text)
+        if not player: raise ProviderError("parse_failed", "player missing")
+        try: p = await safe_get(http, player, allowed_hosts=set(_ALLOWED_HOSTS))
         except httpx.HTTPError as e: raise ProviderError("unreachable", str(e)) from e
         if p.status_code == 200 and _content_unavailable(p.text):
             raise ProviderError("gated", "upstream content removed")

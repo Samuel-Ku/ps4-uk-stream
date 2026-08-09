@@ -29,6 +29,17 @@ PLAYER_MOVIE_HTML = (
 PLAYER_SERIES_HTML = (
     "<html><body><script>file: '[{\"folder\":[{\"folder\":[{\"file\":\"https://s30.hdvbua.pro/media/series/dune_prophecy/s01/e01/index.m3u8\"}]}]}]'</script></body></html>"
 )
+# Issue #159: upstream template bug — the first iframe's src attribute
+# has a doubled quote (`src="data-src="https://...`) which makes
+# BeautifulSoup parse the real URL as junk attributes.
+MALFORMED_IFRAME_PAGE = (
+    "<html><body><h1>Шуґар</h1>"
+    '<iframe width="100%" height="400" src="data-src="https://hdvbua.pro/vid/97148" '
+    'frameborder="0" allow="encrypted-media" allowfullscreen></iframe>'
+    '<iframe src="https://hdvbua.pro/vid/97149?tr=1" width="100%" height="400" '
+    'frameborder="0" allowfullscreen></iframe>'
+    "</body></html>"
+)
 
 
 @pytest.mark.asyncio
@@ -130,6 +141,27 @@ async def test_eneyida_content_series_parses_seasons():
         async with httpx.AsyncClient() as http:
             content = await EneyidaProvider().content("series/9758-duna-proroctvo", http)
     assert content.seasons and any(season.episodes for season in content.seasons)
+
+
+@pytest.mark.asyncio
+async def test_eneyida_stream_malformed_iframe_extracts_player_url() -> None:
+    """Issue #159 regression: the upstream doubled-quote iframe template
+    bug makes BeautifulSoup parse the real player URL as junk attributes;
+    ``stream()`` must recover it from the raw tag HTML instead of failing
+    with ``disallowed host``. The trailer iframe (``?tr=1``) must not be
+    mistaken for the player."""
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://eneyida.tv/films/10128-shugar.html").respond(
+            200, text=MALFORMED_IFRAME_PAGE
+        )
+        router.get("https://hdvbua.pro/vid/97148").respond(
+            200, text=PLAYER_MOVIE_HTML
+        )
+        async with httpx.AsyncClient() as http:
+            stream = await EneyidaProvider().stream(
+                "films/10128-shugar:__movie__", None, http
+            )
+    assert "https://s30.hdvbua.pro/" in stream.url
 
 
 @pytest.mark.asyncio
