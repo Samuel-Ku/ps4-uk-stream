@@ -9,10 +9,15 @@ import httpx
 from bs4 import BeautifulSoup
 
 from ..country import extract_country
+from ..http_client import safe_get
 from ..models import ContentResponse, Episode, SearchResult, Season, Section, StreamResponse, Translation, TranslationLevel
 from .base import BaseProvider, MediaTypeStr, ProviderError, model_b_axes
 
 BASE_URL = "https://kinotron.tv"
+# Hosts the upstream may legally redirect to: the DLE CMS and the ashdi
+# player. A hostile CMS response must not be able to pivot either hop
+# to an attacker-controlled host.
+_ALLOWED_HOSTS: frozenset[str] = frozenset({"kinotron.tv", "ashdi.vip"})
 SECTIONS = (
     Section(id="films", title="Фільми", type="movie"),
     Section(id="serials", title="Серіали", type="series"),
@@ -154,7 +159,17 @@ class KinoTronProvider(BaseProvider):
         if not self.has_section(section):
             raise ProviderError("not_found", f"unknown section: {section}")
         url = f"{BASE_URL}/{section}/page/{page}/"
-        response = await self._get(url, http)
+        # The upstream now 301-redirects the first page of most sections
+        # (`/serials/page/1/` -> `/serials/`), so fetch through the
+        # SSRF-safe `safe_get` helper (same host allowlist as the ashdi
+        # player) which follows allowed same-host redirects. Pages > 1
+        # still return 200 directly and are unaffected.
+        try:
+            response = await safe_get(http, url, allowed_hosts=set(_ALLOWED_HOSTS))
+        except httpx.HTTPError as error:
+            raise ProviderError("unreachable", str(error)) from error
+        if response.status_code != 200:
+            raise ProviderError("not_found", f"status {response.status_code}")
         soup = BeautifulSoup(response.text, "lxml")
         section_type = next(item.type for item in self.sections if item.id == section)
         results = _parse_cards(response.text, self.id, section_type)

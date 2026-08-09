@@ -62,6 +62,27 @@ async def test_kinotron_browse_last_page_has_no_next():
 
 
 @pytest.mark.asyncio
+async def test_kinotron_browse_serials_follows_page_1_redirect():
+    """Issue #172: the upstream now 301-redirects the first page of the
+    non-films sections (`/serials/page/1/` -> `/serials/`, and the same
+    for cartoons/cartoon-series/anime). `browse()` must follow the
+    same-host redirect (via the SSRF-safe `safe_get`) instead of failing
+    with `not_found` on the 301, which surfaced as a 502."""
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://kinotron.tv/serials/page/1/").respond(
+            301, headers={"Location": "/serials/"}
+        )
+        router.get("https://kinotron.tv/serials/").respond(
+            200, text=_fixture("serials_listing.html")
+        )
+        async with httpx.AsyncClient() as http:
+            results, has_next = await KinoTronProvider().browse("serials", 1, http)
+    assert len(results) == 18
+    assert all(result.type == "series" for result in results)
+    assert has_next is True
+
+
+@pytest.mark.asyncio
 async def test_kinotron_content_movie_parses_title_poster():
     """A playable movie page (real player iframe, not trailer-only) must
     parse into a movie ContentResponse (#163: the Месники page is
