@@ -34,11 +34,13 @@ from scripts.switchfin_model import (  # type: ignore[import-not-found]
     CaptureWindow,
     ReportMeta,
     Step,
+    StepResult,
 )
 from scripts.switchfin_report import (  # type: ignore[import-not-found]
     apply_logcat_filter,
     render_report,
     run_exit_code,
+    write_snapshots,
 )
 from scripts.switchfin_test import (  # type: ignore[import-not-found]
     Runner,
@@ -409,6 +411,72 @@ def test_handshake_failure_stops_the_run(tmp_path: Path) -> None:
     assert [r.name for r in results] == ["login"]
     assert results[0].ok is False
     assert run_exit_code(results) == 1
+
+
+# --------------------------------------------------------------------------
+# #149: every ❌ step writes a logcat snapshot, even with an empty window
+# --------------------------------------------------------------------------
+
+
+EMPTY_WINDOW_NOTE = "no logcat lines in this step window"
+
+
+def _failed_result(
+    name: str, logcat_window: tuple[str, ...] = ()
+) -> StepResult:
+    return StepResult(
+        name=name,
+        phase="play",
+        view="Фільми",
+        ok=False,
+        timed_out=True,
+        logcat_window=logcat_window,
+    )
+
+
+def test_failed_step_writes_logcat_snapshot(tmp_path: Path) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+
+    write_snapshots(
+        [_failed_result("play_movie", logcat_window=("line a", "line b"))],
+        artifacts,
+    )
+
+    written = (artifacts / "logcat-play_movie.txt").read_text(encoding="utf-8")
+    assert written.splitlines() == ["line a", "line b"]
+
+
+def test_failed_step_with_empty_window_still_writes_snapshot(
+    tmp_path: Path,
+) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+
+    write_snapshots([_failed_result("play_movie")], artifacts)
+
+    written = (artifacts / "logcat-play_movie.txt").read_text(encoding="utf-8")
+    assert EMPTY_WINDOW_NOTE in written
+
+
+def test_ok_and_skipped_steps_write_no_snapshots(tmp_path: Path) -> None:
+    artifacts = tmp_path / "artifacts"
+
+    write_snapshots(
+        [
+            StepResult(name="login", phase="handshake", view=None, ok=True),
+            StepResult(
+                name="play_movie",
+                phase="play",
+                view="Фільми",
+                ok=False,
+                skipped=True,
+            ),
+        ],
+        artifacts,
+    )
+
+    assert not artifacts.exists()
 
 
 # --------------------------------------------------------------------------
