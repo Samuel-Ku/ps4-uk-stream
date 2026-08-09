@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import cast
@@ -527,6 +528,22 @@ def test_shipped_steps_yaml_parses() -> None:
     for step in steps:
         if step.phase == "play":
             assert {branch.key for branch in step.branches} == {"movie", "series"}
+
+    # #151: each open_view step carries its uuid5 view id as a DATA field
+    # (the router's `_VIEW_ID_BY_TYPE`), not as a comment. Read the raw YAML
+    # because `load_steps` intentionally drops the unknown field.
+    raw = yaml.safe_load(steps_path.read_text(encoding="utf-8")) or {}
+    open_steps = [s for s in raw["steps"] if s["phase"] == "open"]
+    assert len(open_steps) == 7
+    for step in open_steps:
+        view_id = step.get("view_id")
+        assert isinstance(view_id, str) and len(view_id) == 32, (
+            f"{step['name']}: view_id must be a data field (32-hex uuid5), "
+            f"got {view_id!r}"
+        )
+        assert view_id == uuid.uuid5(
+            uuid.NAMESPACE_URL, f"cs-uk-api-view:{step['view']}"
+        ).hex, f"{step['name']}: view_id must match the router's derivation"
 
 
 def test_shipped_tap_coords_load() -> None:

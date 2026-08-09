@@ -25,18 +25,12 @@
 # `/Shows/{series}/…` patterns are verified against the Switchfin client
 # source; on-device confirmation is still pending (no device attached).
 #
-# View ids are the router's `_VIEW_ID_BY_TYPE` uuid5 values
-# (`uuid.uuid5(NAMESPACE_URL, "cs-uk-api-view:{type}")`), kept as data
-# documentation — the runner never matches on them, it matches wire lines
-# (the middleware logs `request.url.path`, and the view id only appears in
-# the stripped query string):
-#   newest=ac357d43a6e459568e061ae4368543d5
-#   popular=ddb2b5eddfe650b0accff62e2ee4bc20
-#   movie=94fd742a60855d2b8de4e4404f67e03a
-#   series=11004dd120c5517f8143c4d2c8d11050
-#   anime=a67dde2ef4695bceadb88d28d6a8a55b
-#   cartoon=6df359d3895d57238985daa902e73416
-#   dorama=fea6fe2911a85e5d87c0150ccf69aa90
+# Each `open_view` step carries the router's `_VIEW_ID_BY_TYPE` uuid5
+# value as a `view_id:` DATA field (issue #151), not as a comment:
+# `uuid.uuid5(NAMESPACE_URL, "cs-uk-api-view:{type}")`. The runner never
+# matches on it — it matches wire lines (the middleware logs
+# `request.url.path`, and the view id only appears in the stripped query
+# string) — so the field is data documentation only.
 timeout_s: 8
 
 steps:
@@ -64,6 +58,7 @@ steps:
   - name: open_view_newest
     phase: open
     view: newest
+    view_id: ac357d43a6e459568e061ae4368543d5
     tap: view_newest_x
     expect:
       - request: "GET (/Users/[^ ]+)?/Items -> 200"
@@ -83,6 +78,7 @@ steps:
   - name: open_view_popular
     phase: open
     view: popular
+    view_id: ddb2b5eddfe650b0accff62e2ee4bc20
     tap: view_popular_x
     expect:
       - request: "GET (/Users/[^ ]+)?/Items -> 200"
@@ -102,6 +98,7 @@ steps:
   - name: open_view_movie
     phase: open
     view: movie
+    view_id: 94fd742a60855d2b8de4e4404f67e03a
     tap: view_movie_x
     expect:
       - request: "GET (/Users/[^ ]+)?/Items -> 200"
@@ -121,6 +118,7 @@ steps:
   - name: open_view_series
     phase: open
     view: series
+    view_id: 11004dd120c5517f8143c4d2c8d11050
     tap: view_series_x
     expect:
       - request: "GET (/Users/[^ ]+)?/Items -> 200"
@@ -140,6 +138,7 @@ steps:
   - name: open_view_anime
     phase: open
     view: anime
+    view_id: a67dde2ef4695bceadb88d28d6a8a55b
     tap: view_anime_x
     expect:
       - request: "GET (/Users/[^ ]+)?/Items -> 200"
@@ -159,6 +158,7 @@ steps:
   - name: open_view_cartoon
     phase: open
     view: cartoon
+    view_id: 6df359d3895d57238985daa902e73416
     tap: view_cartoon_x
     expect:
       - request: "GET (/Users/[^ ]+)?/Items -> 200"
@@ -178,6 +178,7 @@ steps:
   - name: open_view_dorama
     phase: open
     view: dorama
+    view_id: fea6fe2911a85e5d87c0150ccf69aa90
     tap: view_dorama_x
     expect:
       - request: "GET (/Users/[^ ]+)?/Items -> 200"
