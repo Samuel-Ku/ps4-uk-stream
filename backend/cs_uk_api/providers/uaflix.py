@@ -516,6 +516,11 @@ class UAFlixProvider(BaseProvider):
             raise ProviderError(
                 "parse_failed", "no player iframe found on content page"
             )
+        # Upstream often emits a protocol-relative src (`//ashdi.vip/...`,
+        # observed live 2026-08-09). The host check below still passes
+        # (urlparse().netloc is populated) but httpx cannot fetch a
+        # scheme-less URL, so resolve it against the content page first.
+        player_url = urljoin(content_url, player_url)
         try:
             player_resp = await safe_get(
                 http,
