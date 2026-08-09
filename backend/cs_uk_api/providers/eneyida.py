@@ -1,4 +1,5 @@
 """Eneyida Ukrainian-dubbed film and series provider."""
+
 from __future__ import annotations
 
 import json
@@ -25,7 +26,10 @@ from .base import BaseProvider, ProviderError, model_b_axes
 
 BASE_URL = "https://eneyida.tv"
 _ALLOWED_HOSTS: frozenset[str] = frozenset({"eneyida.tv", "hdvbua.pro"})
-ENEYIDA_SECTIONS = (Section(id="films", title="Фільми", type="movie"), Section(id="series", title="Серіали", type="series"))
+ENEYIDA_SECTIONS = (
+    Section(id="films", title="Фільми", type="movie"),
+    Section(id="series", title="Серіали", type="series"),
+)
 _PATH_TYPE: tuple[tuple[tuple[str, ...], str], ...] = (
     (("serials", "series"), "series"),
     (("films",), "movie"),
@@ -82,7 +86,16 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
     img = card.select_one("img")
     poster_src = (img.get("data-src") or img.get("src")) if img else None
     mb_form, mb_styles = model_b_axes(_type_from_url(str(a["href"])))
-    return SearchResult(id=f"{provider_id}:{ext}", provider=provider_id, type=_type_from_url(str(a["href"])), title=title, poster=urljoin(BASE_URL, str(poster_src)) if poster_src else None, url=urljoin(BASE_URL, str(a["href"])), form=mb_form, styles=mb_styles)
+    return SearchResult(
+        id=f"{provider_id}:{ext}",
+        provider=provider_id,
+        type=_type_from_url(str(a["href"])),
+        title=title,
+        poster=urljoin(BASE_URL, str(poster_src)) if poster_src else None,
+        url=urljoin(BASE_URL, str(a["href"])),
+        form=mb_form,
+        styles=mb_styles,
+    )
 
 
 def _file_url(html: str) -> str | None:
@@ -141,89 +154,161 @@ class EneyidaProvider(BaseProvider):
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         try:
-            r = await http.post(f"{BASE_URL}/index.php?do=search", data={"do":"search", "subaction":"search", "story":query})
-        except httpx.HTTPError as e: raise ProviderError("unreachable", str(e)) from e
-        if r.status_code != 200: raise ProviderError("upstream_unreachable", f"status {r.status_code}")
-        return [x for c in BeautifulSoup(r.text, "lxml").select("article.short") if (x := _parse_card(c, self.id))]
+            r = await http.post(
+                f"{BASE_URL}/index.php?do=search",
+                data={"do": "search", "subaction": "search", "story": query},
+            )
+        except httpx.HTTPError as e:
+            raise ProviderError("unreachable", str(e)) from e
+        if r.status_code != 200:
+            raise ProviderError("upstream_unreachable", f"status {r.status_code}")
+        return [
+            x
+            for c in BeautifulSoup(r.text, "lxml").select("article.short")
+            if (x := _parse_card(c, self.id))
+        ]
 
-    async def browse(self, section: str, page: int, http: httpx.AsyncClient) -> tuple[list[SearchResult], bool]:
+    async def browse(
+        self, section: str, page: int, http: httpx.AsyncClient
+    ) -> tuple[list[SearchResult], bool]:
         url = _section_url(section, page)
-        try: r = await http.get(url)
-        except httpx.HTTPError as e: raise ProviderError("unreachable", str(e)) from e
-        if r.status_code != 200: raise ProviderError("not_found", f"status {r.status_code}")
+        try:
+            r = await http.get(url)
+        except httpx.HTTPError as e:
+            raise ProviderError("unreachable", str(e)) from e
+        if r.status_code != 200:
+            raise ProviderError("not_found", f"status {r.status_code}")
         soup = BeautifulSoup(r.text, "lxml")
         results = [x for c in soup.select("article.short") if (x := _parse_card(c, self.id))]
-        return results, any(_page_number(str(a.get("href"))) > page for a in soup.select(".navigation a[href]"))
+        return results, any(
+            _page_number(str(a.get("href"))) > page for a in soup.select(".navigation a[href]")
+        )
 
     async def content(self, external_id: str, http: httpx.AsyncClient) -> ContentResponse:
         kind, _, slug = external_id.partition("/")
-        if not kind or not slug: raise ProviderError("parse_failed", "invalid external_id")
-        if not _SLUG_RE.fullmatch(slug): raise ProviderError("not_found", "bad external_id")
-        try: r = await safe_get(http, f"{BASE_URL}/{kind}/{slug}.html", allowed_hosts=set(_ALLOWED_HOSTS))
-        except httpx.HTTPError as e: raise ProviderError("unreachable", str(e)) from e
-        if r.status_code != 200: raise ProviderError("not_found", f"status {r.status_code}")
-        soup = BeautifulSoup(r.text, "lxml"); h1 = soup.select_one("h1")
-        if not h1: raise ProviderError("parse_failed", "title missing")
+        if not kind or not slug:
+            raise ProviderError("parse_failed", "invalid external_id")
+        if not _SLUG_RE.fullmatch(slug):
+            raise ProviderError("not_found", "bad external_id")
+        try:
+            r = await safe_get(
+                http, f"{BASE_URL}/{kind}/{slug}.html", allowed_hosts=set(_ALLOWED_HOSTS)
+            )
+        except httpx.HTTPError as e:
+            raise ProviderError("unreachable", str(e)) from e
+        if r.status_code != 200:
+            raise ProviderError("not_found", f"status {r.status_code}")
+        soup = BeautifulSoup(r.text, "lxml")
+        h1 = soup.select_one("h1")
+        if not h1:
+            raise ProviderError("parse_failed", "title missing")
         country: str | None = extract_country(soup)
         img = soup.select_one(".full img") or soup.select_one("img[src*='/uploads/']")
         player = _player_url(r.text)
-        if not player: raise ProviderError("parse_failed", "player missing")
+        if not player:
+            raise ProviderError("parse_failed", "player missing")
         typ: MediaType = "series" if kind == "series" else "movie"
-        if typ == "series":
-            seasons = await self._seasons(player, external_id, http)
-        else:
-            # Gate upstream-removed movies at content() time (#158): the
-            # first iframe is the main player embed; a «Контент
-            # недоступний» embed means the site cannot play the title, so
-            # the catalog sweep must be able to drop the card.
-            await self._check_embed_gated(player, http)
-            seasons = [Season(number=1, episodes=[Episode(number=1, id=external_id+MOVIE_SUFFIX, title="Фільм")])]
+        seasons = await self._seasons(player, external_id, http)
+        if seasons:
+            # Issue #165: a /films/ page can carry a series-structured
+            # player payload (a folder array with seasons/episodes —
+            # observed live on «Друга світова війна з Томом Генксом»).
+            # Classify it as a series so the client gets playable
+            # episode rails instead of one unplayable movie blob.
+            typ = "series"
+        elif typ == "movie":
+            # Gate upstream-removed movies at content() time (#158):
+            # _seasons() already probes the embed and raises gated for
+            # a «Контент недоступний» page, so the catalog sweep can
+            # drop the dead card.
+            seasons = [
+                Season(
+                    number=1,
+                    episodes=[Episode(number=1, id=external_id + MOVIE_SUFFIX, title="Фільм")],
+                )
+            ]
         mb_form, mb_styles = model_b_axes(typ)
-        return ContentResponse(id=f"{self.id}:{external_id}", type=typ, title=h1.get_text(strip=True), poster=urljoin(BASE_URL, str(img.get("src"))) if img else None, translations=[Translation(id="uk", label="Українська")], seasons=seasons, country=country, form=mb_form, styles=mb_styles)
+        return ContentResponse(
+            id=f"{self.id}:{external_id}",
+            type=typ,
+            title=h1.get_text(strip=True),
+            poster=urljoin(BASE_URL, str(img.get("src"))) if img else None,
+            translations=[Translation(id="uk", label="Українська")],
+            seasons=seasons,
+            country=country,
+            form=mb_form,
+            styles=mb_styles,
+        )
 
-    async def _check_embed_gated(self, iframe_src: str, http: httpx.AsyncClient) -> None:
-        """Gate an upstream-removed title whose player embed is the
-        «Контент недоступний» page (issue #137/#158). Only hdvbua embeds
-        are probed — a foreign/youtube first iframe is not a dead-player
-        signal and must not add a pointless fetch."""
-        if urlsplit(iframe_src).hostname not in _ALLOWED_HOSTS:
-            return
+    async def _seasons(self, player: str, ext: str, http: httpx.AsyncClient) -> list[Season] | None:
         try:
-            p = await safe_get(http, iframe_src, allowed_hosts=set(_ALLOWED_HOSTS))
+            r = await http.get(player)
+        except httpx.HTTPError:
+            return None
+        if r.status_code == 200 and _content_unavailable(r.text):
+            raise ProviderError("gated", "upstream content removed")
+        raw = _file_url(r.text) if r.status_code == 200 else None
+        try:
+            data = cast(list[dict[str, Any]], json.loads(raw or "[]"))
+            folders = data[0].get("folder", [])
+        except (json.JSONDecodeError, IndexError, AttributeError):
+            return None
+        return [
+            Season(
+                number=i,
+                episodes=[
+                    Episode(number=j, id=f"{ext}:s{i}e{j}", title=str(e.get("title", "")).strip())
+                    for j, e in enumerate(s.get("folder", []), 1)
+                ],
+            )
+            for i, s in enumerate(folders, 1)
+        ]
+
+    async def stream(
+        self, content_id: str, translation: str | None, http: httpx.AsyncClient
+    ) -> StreamResponse:
+        ext, _, suffix = content_id.partition(":")
+        kind, _, slug = ext.partition("/")
+        if not kind or not slug:
+            raise ProviderError("parse_failed", "invalid content_id")
+        if not _SLUG_RE.fullmatch(slug):
+            raise ProviderError("not_found", "bad external_id")
+        try:
+            r = await safe_get(
+                http, f"{BASE_URL}/{kind}/{slug}.html", allowed_hosts=set(_ALLOWED_HOSTS)
+            )
+        except httpx.HTTPError as e:
+            raise ProviderError("unreachable", str(e)) from e
+        player = _player_url(r.text)
+        if not player:
+            raise ProviderError("parse_failed", "player missing")
+        try:
+            p = await safe_get(http, player, allowed_hosts=set(_ALLOWED_HOSTS))
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if p.status_code == 200 and _content_unavailable(p.text):
             raise ProviderError("gated", "upstream content removed")
-
-    async def _seasons(self, player: str, ext: str, http: httpx.AsyncClient) -> list[Season] | None:
-        try: r = await http.get(player)
-        except httpx.HTTPError: return None
-        if r.status_code == 200 and _content_unavailable(r.text):
-            raise ProviderError("gated", "upstream content removed")
-        raw = _file_url(r.text) if r.status_code == 200 else None
-        try: data = cast(list[dict[str, Any]], json.loads(raw or "[]")); folders = data[0].get("folder", [])
-        except (json.JSONDecodeError, IndexError, AttributeError): return None
-        return [Season(number=i, episodes=[Episode(number=j, id=f"{ext}:s{i}e{j}", title=str(e.get("title", "")).strip()) for j,e in enumerate(s.get("folder", []),1)]) for i,s in enumerate(folders,1)]
-
-    async def stream(self, content_id: str, translation: str | None, http: httpx.AsyncClient) -> StreamResponse:
-        ext, _, suffix = content_id.partition(":"); kind, _, slug = ext.partition("/")
-        if not kind or not slug: raise ProviderError("parse_failed", "invalid content_id")
-        if not _SLUG_RE.fullmatch(slug): raise ProviderError("not_found", "bad external_id")
-        try: r = await safe_get(http, f"{BASE_URL}/{kind}/{slug}.html", allowed_hosts=set(_ALLOWED_HOSTS))
-        except httpx.HTTPError as e: raise ProviderError("unreachable", str(e)) from e
-        player = _player_url(r.text)
-        if not player: raise ProviderError("parse_failed", "player missing")
-        try: p = await safe_get(http, player, allowed_hosts=set(_ALLOWED_HOSTS))
-        except httpx.HTTPError as e: raise ProviderError("unreachable", str(e)) from e
-        if p.status_code == 200 and _content_unavailable(p.text):
-            raise ProviderError("gated", "upstream content removed")
         raw = _file_url(p.text) if p.status_code == 200 else None
-        if not raw: raise ProviderError("parse_failed", "media missing")
+        if not raw:
+            raise ProviderError("parse_failed", "media missing")
         if suffix and suffix != "__movie__":
             m = re.fullmatch(r"s(\d+)e(\d+)", suffix)
-            if not m: raise ProviderError("parse_failed", "bad episode")
-            try: raw = json.loads(raw)[0]["folder"][int(m[1])-1]["folder"][int(m[2])-1]["file"]
-            except (KeyError, IndexError, TypeError, json.JSONDecodeError) as e: raise ProviderError("parse_failed", "episode missing") from e
+            if not m:
+                raise ProviderError("parse_failed", "bad episode")
+            try:
+                raw = json.loads(raw)[0]["folder"][int(m[1]) - 1]["folder"][int(m[2]) - 1]["file"]
+            except (KeyError, IndexError, TypeError, json.JSONDecodeError) as e:
+                raise ProviderError("parse_failed", "episode missing") from e
+        else:
+            # Issue #165: a movie whose player payload is a
+            # series-structured folder array (a /films/ page that is
+            # really a series) must resolve the first playable file,
+            # not return the raw JSON blob as the stream URL.
+            try:
+                raw = json.loads(raw)[0]["folder"][0]["folder"][0]["file"]
+            except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+                pass  # plain media URL
         return StreamResponse(url=str(raw), type="m3u8", headers={"Referer": "https://eneyida.tv/"})
+
 
 __all__ = ["EneyidaProvider"]
