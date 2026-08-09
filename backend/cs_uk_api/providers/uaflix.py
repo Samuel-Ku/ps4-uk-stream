@@ -272,7 +272,9 @@ def _parse_poster(soup: BeautifulSoup) -> str | None:
     return None
 
 
-def _parse_seasons(soup: BeautifulSoup, external_id: str) -> list[Season]:
+def _parse_seasons(
+    soup: BeautifulSoup, external_id: str, provider_id: str
+) -> list[Season]:
     """Extract `(season -> [Episode])` from the content page.
 
     The series content page lists episodes inside `.frels2 .video-item`
@@ -311,7 +313,7 @@ def _parse_seasons(soup: BeautifulSoup, external_id: str) -> list[Season]:
         episodes_by_season.setdefault(s, []).append(
             Episode(
                 number=len(episodes_by_season[s]) + 1,
-                id=f"{external_id}:s{s}e{e}",
+                id=f"{provider_id}:{external_id}:s{s}e{e}",
                 title=title,
             )
         )
@@ -425,7 +427,7 @@ class UAFlixProvider(BaseProvider):
         media_type = _type_from_url(url)
         seasons: list[Season] | None = None
         if media_type in ("series", "anime", "dorama"):
-            seasons = _parse_seasons(soup, external_id)
+            seasons = _parse_seasons(soup, external_id, self.id)
         mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"uaflix:{external_id}",

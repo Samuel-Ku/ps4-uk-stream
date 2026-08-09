@@ -139,7 +139,7 @@ async def test_uaflix_content_series_parses_seasons():
     # Episode id encodes the (season, episode) position.
     first = c.seasons[0].episodes[0]
     assert first.number == 1
-    assert first.id.startswith("serials-djuna-proroctvo:s1e")
+    assert first.id.startswith("uaflix:serials-djuna-proroctvo:s1e")
 
 
 @pytest.mark.asyncio
@@ -176,7 +176,7 @@ async def test_uaflix_content_series_drops_empty_season():
     # Season 1 (no inline episodes) is dropped; only season 2 survives.
     assert [s.number for s in c.seasons] == [2]
     assert len(c.seasons[0].episodes) == 1
-    assert c.seasons[0].episodes[0].id == "serials-test-serial:s2e1"
+    assert c.seasons[0].episodes[0].id == "uaflix:serials-test-serial:s2e1"
 
 
 @pytest.mark.asyncio
