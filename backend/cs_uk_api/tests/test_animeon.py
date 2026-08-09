@@ -1010,6 +1010,50 @@ async def test_stream_moon_json_track_array_extracts_file():
 
 
 @pytest.mark.asyncio
+async def test_stream_moon_empty_track_array_raises_gated():
+    """Live-gate regression (2026-08-09): a movie listed in the catalog
+    whose moon player payload decodes to a well-formed EMPTY track array
+    ``[]`` is deliberate upstream unavailability — moonanime hasn't
+    published the video yet (animeon 8104 «Літературне дівча Фільм»
+    serves a "Скоро доступно" placeholder iframe and an empty player
+    payload). Per ADR-0002's empty-manifest amendment this is `gated`
+    (client 404, never a health signal), NOT `parse_failed` (502, which
+    would pollute the health tracker for a healthy provider)."""
+    from cs_uk_api.providers.base import ProviderError
+
+    player_html = _fixture("player_moon_empty.json.html")
+    ep_blob = json.dumps(
+        {
+            "id": 8104,
+            "episode": 1,
+            "sources": [
+                {
+                    "translation_name": "Робота Субтитрами",
+                    "player_name": "Moon",
+                    "video_url": "https://moonanime.art/title/2560",
+                    "file_url": "",
+                }
+            ],
+        },
+        separators=(",", ":"),
+    )
+    encoded_ep_id = (
+        f"8104:e1:{base64.b64encode(ep_blob.encode('utf-8')).decode('ascii')}"
+    )
+    with respx.mock(assert_all_called=True) as router:
+        router.get(url=re.compile(r"https://moonanime\.art/.*")).respond(
+            200, text=player_html
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await AnimeONProvider().stream(
+                    encoded_ep_id, "Робота Субтитрами", http
+                )
+    assert exc.value.code == "gated"
+    assert "not yet published" in exc.value.message
+
+
+@pytest.mark.asyncio
 async def test_stream_unknown_translation_raises_translation_missing():
     """If the requested translation is not in the encoded source list,
     we surface ``translation_missing`` (per v2 spec → HTTP 404) rather

@@ -1033,17 +1033,31 @@ class AnimeONProvider(BaseProvider):
 
         for inner in _INNER_RE.findall(decoded_js):
             decoded = _moon_decrypt(inner, xor_key).strip().rstrip(",")
-            if ".m3u8" not in decoded:
-                continue
             if decoded.startswith("["):
                 try:
                     tracks = json.loads(decoded)
                 except json.JSONDecodeError:
                     continue
+                if isinstance(tracks, list) and not tracks:
+                    # A well-formed EMPTY track array is deliberate
+                    # upstream unavailability — the movie is listed in
+                    # the catalog but moonanime hasn't published the
+                    # video yet (live 2026-08-09: animeon 8104
+                    # «Літературне дівча Фільм» serves a "Скоро
+                    # доступно" placeholder iframe and an empty `[]`
+                    # player payload). Per ADR-0002's empty-manifest
+                    # amendment this is `gated` (client 404, never a
+                    # health signal), NOT `parse_failed` (502, pollutes
+                    # the health tracker for a healthy provider).
+                    raise ProviderError(
+                        "gated", "no playable tracks — video not yet published"
+                    )
                 for track in tracks if isinstance(tracks, list) else []:
                     url = str(track.get("file") or "").strip()
                     if ".m3u8" in url:
                         return url
+                continue
+            if ".m3u8" not in decoded:
                 continue
             return decoded
         raise ProviderError("parse_failed", "no .m3u8 in moon payload")
