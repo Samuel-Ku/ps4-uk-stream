@@ -727,7 +727,20 @@ async def _content_by_group_key_and_source(
             ).model_dump(),
         )
 
-    external_id = per_provider[source].id
+    # SearchResult.id carries the ``<provider>:`` wire prefix; the
+    # adapter's ``content()`` expects the bare external id (the same
+    # derivation ``_content_by_id`` does via ``_split_content_id``).
+    # Issue #157: the lazy branch used to pass the prefixed id straight
+    # through, which 502'd for every provider whose content() validates
+    # the external id shape.
+    _, external_id = _split_content_id(per_provider[source].id)
+    if not external_id:
+        raise HTTPException(
+            404,
+            detail=ErrorResponse(
+                error="not_found", message=per_provider[source].id
+            ).model_dump(),
+        )
     provider = PROVIDERS[source]
     http = get_client()
 

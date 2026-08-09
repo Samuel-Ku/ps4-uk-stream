@@ -246,7 +246,58 @@ def test_content_by_group_key_with_source_fetches_one_source(
     # Exactly ONE upstream fetch — p2's content() must not be called.
     assert len(p1.content_calls) == 1
     assert len(p2.content_calls) == 0
-    assert p1.content_calls[0] == "p1:p1-1"
+    # Issue #157: content() receives the BARE external id, not the
+    # wire-prefixed SearchResult.id.
+    assert p1.content_calls[0] == "p1-1"
+
+
+@pytest.mark.unit
+def test_content_by_group_key_lazy_strips_provider_prefix_for_strict_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #157 regression: the lazy ``?source=`` branch must pass the
+    bare external id to ``content()``. Real adapters (serialno,
+    cikavaideya, coaninet, …) validate the external-id shape and reject
+    a prefixed value with ``not_found: bad external_id``; the lazy route
+    used to hand them the wire-prefixed ``SearchResult.id`` and 502'd.
+    A strict stub mirrors that contract: prefixed ids raise, bare ids
+    resolve."""
+    from cs_uk_api.providers.base import ProviderError
+
+    class _Strict(BaseProvider):
+        id = "strict"
+        name = "Strict"
+        types = ("movie",)
+        newest_section = "page"
+        content_calls: list[str] = []
+
+        async def search(self, q, http):  # type: ignore[no-untyped-def]
+            return [_make_item("strict", "Дюна", year=2021, n="s-1")]
+
+        async def browse(self, section, page, http):  # type: ignore[no-untyped-def]
+            if section == "page":
+                return [_make_item("strict", "Дюна", year=2021, n="s-1")], False
+            return [], False
+
+        async def content(self, external_id, http):  # type: ignore[no-untyped-def]
+            self.content_calls.append(external_id)
+            if ":" in external_id:
+                raise ProviderError("not_found", f"bad external_id: {external_id!r}")
+            return _dune_content("strict")
+
+        async def stream(self, content_id, translation, http):  # type: ignore[no-untyped-def]
+            raise NotImplementedError
+
+    _register(_Strict(), monkeypatch)
+    client = TestClient(app)
+    client.get("/api/home")
+    home = client.get("/api/home").json()
+    gk = home["rows"][0]["items"][0]["group_key"]
+
+    r = client.get(f"/api/content/{gk}?source=strict")
+    assert r.status_code == 200
+    assert r.json()["title"] == "Дюна"
+    assert _Strict.content_calls == ["s-1"]
 
 
 @pytest.mark.unit
