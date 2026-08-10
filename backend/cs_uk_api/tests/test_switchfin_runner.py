@@ -876,6 +876,44 @@ def test_series_play_taps_two_in_order(tmp_path: Path) -> None:
     assert adb.taps[-2:] == expected
 
 
+class _DelayedSeriesAdb(FakeAdb):
+    """The first_season tap lands before the rows render; the second fires
+    the /Episodes request (#205/B13 — a cold-scraping detail swallows the
+    first tap, so the runner must re-tap instead of timing out)."""
+
+    def __init__(
+        self, lines: list[str], tap_lines: dict[tuple[int, int], list[str]]
+    ) -> None:
+        super().__init__(lines=lines, tap_lines=tap_lines)
+        self.season_taps = 0
+
+    def tap(self, x: int, y: int) -> None:
+        if (x, y) == TAPS["first_season"]:
+            self.season_taps += 1
+            if self.season_taps >= 2:
+                self._lines.append("GET /Shows/g1/Episodes -> 200 (0ms)")
+        super().tap(x, y)
+
+
+def test_series_play_retries_season_tap_when_detail_not_ready(
+    tmp_path: Path,
+) -> None:
+    """#205/B13: a series-branch tap that lands while the detail is still
+    cold-scraping fires nothing; the runner re-taps until the request
+    fires instead of timing out after a single attempt."""
+    tap_lines = {k: list(v) for k, v in FULL_TAP_LINES.items()}
+    tap_lines[TAPS["first_season"]] = []  # the fake controls the line
+    adb = _DelayedSeriesAdb(lines=[], tap_lines=tap_lines)
+    runner, _, adb = make_harness(
+        tmp_path, probe="Series", adb=adb, play_timeout_s=3.0
+    )
+    results = runner.run()
+
+    play = next(r for r in results if r.name == "play_newest")
+    assert play.ok, play.note
+    assert adb.season_taps >= 2  # retried after the silent first tap
+
+
 def test_movie_play_taps_once(tmp_path: Path) -> None:
     runner, _, adb = make_harness(tmp_path, probe="Movie")
     results = runner.run()

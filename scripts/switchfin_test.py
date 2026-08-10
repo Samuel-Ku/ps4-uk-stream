@@ -1024,14 +1024,15 @@ class Runner:
                 notes.append(f"{play_tap.tap}: no calibration")
                 continue
             scan_from = len(self._tailer.all_lines())
-            failure = self._safe_tap(coords, play_tap.tap)
-            if failure is not None:
-                notes.append(failure)
-                break
-            if not self._wait_for_expects(
-                play_tap.expects, scan_from, window_s=play_timeout
+            # #205/B13: the season/episode rows may not be rendered when
+            # the tap lands (the item's detail is still cold-scraping), so a
+            # single tap fires nothing and the step times out. Retry the tap
+            # until the step deadline like the movie pill does.
+            if self._tap_expect_with_retry(
+                play_tap, coords, scan_from, play_timeout
             ):
-                notes.append(f"{play_tap.tap}: timeout")
+                continue
+            notes.append(f"{play_tap.tap}: timeout (retried)")
         ok = not notes
         return StepResult(
             step.name,
@@ -1070,6 +1071,36 @@ class Runner:
                 return False
             if self._wait_for_expects(
                 play_tap.expects, scan_from, window_s=min(1.5, remaining)
+            ):
+                return True
+            time.sleep(0.4)
+
+    def _tap_expect_with_retry(
+        self,
+        play_tap: PlayTap,
+        coords: tuple[int, int],
+        scan_from: int,
+        timeout_s: float,
+    ) -> bool:
+        """Tap and re-tap a fixed coordinate until its expects match (#205).
+
+        The series branch's season/episode rows render only after the item's
+        detail finishes its cold scrape; a tap that lands early hits nothing
+        and the request never fires. Loop until the deadline: tap -> check
+        the expects in a short window -> repeat. Any attempt's matched line
+        counts (``scan_from`` is fixed). ``False`` on timeout or a device
+        that vanished mid-run.
+        """
+        deadline = time.monotonic() + timeout_s
+        while True:
+            failure = self._safe_tap(coords, play_tap.tap)
+            if failure is not None:
+                return False  # device vanished mid-run
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            if self._wait_for_expects(
+                play_tap.expects, scan_from, window_s=min(2.0, remaining)
             ):
                 return True
             time.sleep(0.4)
