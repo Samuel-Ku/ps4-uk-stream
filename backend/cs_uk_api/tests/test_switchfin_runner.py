@@ -171,7 +171,7 @@ steps:
           expect:
             - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
               status: 200
-            - request: "GET /Videos/[^ ]+/stream -> (200|302)"
+            - request: "GET /Videos/[^ ]+/stream -> (200|206|302)"
               status: [200, 302]
             - request: "POST /Sessions/Playing -> 204"
               status: 204
@@ -184,7 +184,7 @@ steps:
           expect:
             - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
               status: 200
-            - request: "GET /Videos/[^ ]+/stream -> (200|302)"
+            - request: "GET /Videos/[^ ]+/stream -> (200|206|302)"
               status: [200, 302]
             - request: "POST /Sessions/Playing -> 204"
               status: 204
@@ -215,7 +215,7 @@ steps:
           expect:
             - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
               status: 200
-            - request: "GET /Videos/[^ ]+/stream -> (200|302)"
+            - request: "GET /Videos/[^ ]+/stream -> (200|206|302)"
               status: [200, 302]
             - request: "POST /Sessions/Playing -> 204"
               status: 204
@@ -228,7 +228,7 @@ steps:
           expect:
             - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
               status: 200
-            - request: "GET /Videos/[^ ]+/stream -> (200|302)"
+            - request: "GET /Videos/[^ ]+/stream -> (200|206|302)"
               status: [200, 302]
             - request: "POST /Sessions/Playing -> 204"
               status: 204

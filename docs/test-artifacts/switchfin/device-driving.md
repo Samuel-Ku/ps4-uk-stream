@@ -271,15 +271,54 @@ behavior, but the runner must expect it after a backend cold-start — a
 `BACK`-to-dismiss step before the first open step keeps the suite honest
 when the app was already running before the backend came up.
 
+### B13. Cold per-item scrapes blow the step timeout (Seasons 22s, episodes, streams)
+
+Second full run: `play_series` fired PlaybackInfo but timed out, and
+`play_dorama` died at first_season — `GET /Shows/{id}/Seasons -> 200
+(22074ms)` is a COLD 22s scrape for a series the app never opened before.
+The warmup phase only primes VIEW listings (`/Items?parentId=view`), not
+per-item content (Seasons/Episodes/PlaybackInfo/stream). Any series the
+runner opens for the first time pays the cold price inside the 8s step
+window. Options: extend warmup to the play steps' per-item endpoints
+(content-churn makes this fragile), raise the step timeout, or have the
+backend warm per-item content during the view scrape.
+
+### B14. Content churn breaks the Type probe — the movie view's first card is a SERIES
+
+The movie library's first card changed between runs (DateCreated sort):
+`play_movie`'s window shows `GET /Shows/g2:702cb6…/Seasons` — the app
+opened a SERIES detail, but the runner's probe returned "Movie" and tapped
+play_button (no pill on a series detail) -> locate+retry timeout. The gk
+capture (first `/Items/{id}` line in the detail window) can race grid
+fetches, so the probed item may differ from the card the tap opened.
+
+### B15. Stream endpoint answers 206, the expect only allowed (200|302) — FIXED
+
+`GET /Videos/{id}/stream -> 206` (range/partial) is a legitimate stream
+response; the play expects only matched 200/302, so `play_series` timed out
+even though PlaybackInfo + stream + Sessions/Playing ALL fired. Fixed in
+steps.yaml: `(200|206|302)`. (The passing Новинки movie streamed 302.)
+
+### B16. open_view_anime re-scraped despite warmup
+
+The anime open's step window shows provider scrapes (hdvbua, eneyida)
+mid-flight — the app's anime `/Items` re-scraped ~70s after the warmup,
+despite `cache_home_s = 1800`. Unclear why the warm cache wasn't reused
+(possibly the app's `includeItemTypes=Series` variant hits a different
+cache key, or the view scrape is per-query). Needs a controlled check.
+
 ## Open questions (for the next session)
 
 - DONE (2026-08-10): `Adb.back()` + `phase: nav` steps wired into the runner;
-  `seasons_tab` removed from the series flow (B7 — the episode-row tap
-  auto-plays); warmup phase added (B1). See `git log` on this branch.
-- **Fix B10**: drop the `/Images/Primary` expect from `open_first_card_*`
-  (the real client never fires it on the detail screen) and give the play
-  step a dynamic play-button locate + retry instead of the fixed (825, 470).
-- **Verify B11** (library `/Items` re-fetch loop) with a controlled cold-open
-  reproduction; if real, ticket it as an app bug.
-- **Run the full 37-step suite again** after the B10 fixes and check the
-  verdict, snapshots, capture fixture, and logcat filters end-to-end.
+  `seasons_tab` removed from the series flow (B7); warmup phase (B1); detail
+  poster expect dropped (B10); dynamic play-pill locate + retry (B10/#202);
+  /Items startIndex/limit pagination honored (B11/#203); stream expect now
+  allows 206 (B15). See `git log` on this branch.
+- **B13**: cold per-item scrapes (Seasons/Episodes/streams) still blow the
+  8s step timeout — extend warmup or the step timeout / backend warm path.
+- **B14**: the Type probe races content churn — probe the item the app
+  actually opened, or make the branch decision tolerant (try the pill scan;
+  if absent, fall through to the series branch).
+- **B16**: why did the anime view open re-scrape after a 70s-old warmup.
+- **Run the full 37-step suite again** after B15 and check the verdict,
+  snapshots, capture fixture, and logcat filters end-to-end.
