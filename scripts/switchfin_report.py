@@ -47,7 +47,7 @@ def apply_logcat_filter(results: list[StepResult], dump: list[str]) -> list[Step
     for index, result in enumerate(results):
         marker = positions.get(index + 1)
         if marker is None:
-            window = ()
+            window: tuple[str, ...] = ()
         else:
             next_marker = min(
                 (p for p in positions.values() if p > marker), default=len(dump)
