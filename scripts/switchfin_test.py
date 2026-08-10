@@ -105,9 +105,14 @@ RESTART_READY_TIMEOUT_S = 120.0
 #: tap, so an 8s deadline races it — play_newest fired PlaybackInfo +
 #: stream + segments but its Sessions/Playing landed 1s past the deadline.
 PLAY_TIMEOUT_S = 25.0
-#: How long to wait for the Views-grid request after the sidebar folders
-#: tap in a nav step (device-driving B19/#209).
-NAV_GRID_TIMEOUT_S = 5.0
+#: Maximum BACK presses in a nav step before giving up on the Views grid
+#: (device-driving B19/#209). The empirical stack after a played view is
+#: player -> detail -> library grid -> Views grid, but the player's exit
+#: transition swallows an extra BACK (run-#10 probe), so a fixed count is
+#: unreliable — the runner drives BACK until a screenshot matches the grid.
+NAV_MAX_BACKS = 6
+#: Settle between a BACK press and the next verification screenshot.
+NAV_SETTLE_S = 1.5
 #: Extra settle after the relaunched app's first reconnect request.
 APP_SETTLE_S = 2.0
 
@@ -293,6 +298,94 @@ def find_play_pill(png: bytes) -> tuple[int, int] | None:
         return None
 
     return (mid_x, (y0 + y1) // 2)
+
+
+def find_views_grid(png: bytes) -> bool:
+    """Is the screenshot the Views grid (the ``view_*_x`` tap target)?
+
+    #209/B19: the nav step returns here after a played view, and the real
+    client opens the grid CLIENT-SIDE (cached Views list) — no HTTP fires,
+    so arrival must be verified visually. Returns False on any error
+    (missing PIL, unreadable frame) so the caller falls back to other
+    strategies instead of crashing.
+
+    The rule was calibrated on-device (OnePlus 8 Pro, 3168x1440, Switchfin
+    0.9.3, run-#10 probe): the grid is the only screen that is light
+    overall, has the sidebar's icon rail (Home/search/cloud icons — the
+    film icon at y~285 is teal-active), and lacks the library grid's X
+    close button at the top-right. The screen dims to ~4% after idle, so
+    the frame is normalized to the 99th-percentile luminance first.
+    """
+    try:
+        import io
+
+        from PIL import Image, ImageEnhance  # type: ignore[import-untyped]
+    except ImportError:
+        return False
+    try:
+        img = Image.open(io.BytesIO(png)).convert("RGB")
+    except (OSError, ValueError, TypeError):
+        return False
+    w, h = img.size
+    px: Any = img.load()
+
+    # Normalize against idle dimming (the phone drops to ~4% brightness,
+    # which would make every absolute threshold read as black).
+    lums = sorted(
+        sum(px[x, y][:3]) / 3.0 for y in range(0, h, 8) for x in range(0, w, 8)
+    )
+    p99 = lums[int(len(lums) * 0.99)]
+    if p99 >= 30 and abs(255.0 / p99 - 1.0) >= 0.03:
+        img = ImageEnhance.Brightness(img).enhance(255.0 / p99)
+        px = img.load()  # type: ignore[no-redef]  # still Any from above
+
+    def dark(x: int, y: int, th: int = 330) -> bool:
+        return sum(px[x, y][:3]) < th
+
+    # 1) The library grid's X close button: a COMPACT dark cluster on an
+    #    otherwise light top-right corner. Absent on the Views grid.
+    xs = [(x, y) for y in range(25, 95) for x in range(3020, 3160) if dark(x, y)]
+    if xs:
+        cx = sum(p[0] for p in xs) / len(xs)
+        cy = sum(p[1] for p in xs) / len(xs)
+        wspan = max(p[0] for p in xs) - min(p[0] for p in xs)
+        hspan = max(p[1] for p in xs) - min(p[1] for p in xs)
+        if (
+            len(xs) > 15
+            and wspan < 100
+            and hspan < 80
+            and 3040 < cx < 3160
+            and 25 < cy < 95
+        ):
+            return False
+
+    # 2) Whole-frame darkness separates the grid (very light) from the
+    #    player (mostly black) and Home (dark poster rails).
+    dark_px = sum(
+        1
+        for y in range(0, h, 20)
+        for x in range(0, w, 40)
+        if sum(px[x, y][:3]) < 150
+    )
+    if dark_px / ((h // 20) * (w // 40)) >= 0.08:
+        return False
+
+    # 3) Sidebar icon rail: dark-pixel density in boxes around the icon
+    #    centers (Home y~148, search y~424, cloud y~565) at x=141. On the
+    #    grid all three read high; the detail screen's poster leaves the
+    #    Home box empty. The film icon (y~285) is teal-active on the grid
+    #    and is NOT required — the outline icons are the stable signature.
+    def density(cy: int) -> float:
+        dark_n = total = 0
+        for y in range(cy - 26, cy + 27, 4):
+            for x in range(113, 170, 4):
+                total += 1
+                if dark(x, y):
+                    dark_n += 1
+        return dark_n / total if total else 0.0
+
+    d_home, d_search, d_cloud = density(148), density(424), density(565)
+    return d_home > 0.6 and d_search < 0.6 and d_cloud > 0.6
 
 
 def load_tap_coords(path: Path) -> dict[str, tuple[int, int]]:
@@ -713,17 +806,18 @@ class Runner:
             return
 
     def _run_nav(self, step: Step) -> StepResult:
-        """Return to the Views grid (device-driving B6, B19/#209).
+        """Return to the Views grid with VISUAL verification (B6, B19/#209).
 
         The real client's screen stack after a played view is deeper than a
-        fixed BACK count can reliably unwind: runs #6-#9 all showed the
-        open step after a played view tapping a DETAIL instead of the grid.
-        A nav step now (1) presses a couple of BACKs to exit the player and
-        any dialog, then (2) taps the sidebar folders icon — which
-        deterministically opens the Views grid (``GET /Users/{u}/Views``,
-        B21) — and waits for that request, retrying once with an extra BACK
-        if the tap landed before the player closed. Without the folders
-        calibration it falls back to the legacy fixed BACKs.
+        fixed BACK count can reliably unwind (runs #6-#9 all showed the
+        open step after a played view tapping a DETAIL instead of the
+        grid). The empirical stack is player -> detail -> library grid ->
+        Views grid, but the player's exit transition swallows an extra BACK
+        (run-#10 probe) — so a nav step drives BACK until a screenshot
+        matches the grid (``find_views_grid``; the grid opens client-side,
+        so no HTTP fires), then falls back to the sidebar folders tap, then
+        fails. Without PIL the visual check degrades to the folders tap /
+        legacy fixed BACKs instead of crashing.
         """
         if not self._adb_available:
             return StepResult(
@@ -735,22 +829,22 @@ class Runner:
                 note="adb device not available",
             )
         try:
-            for _ in range(min(step.nav, 2)):
-                self._adb.back()
+            png = self._adb.screenshot_png()
         except (OSError, subprocess.CalledProcessError) as exc:
             return StepResult(
                 step.name,
                 step.phase,
                 step.view,
                 ok=False,
-                note=f"adb back failed: {exc}",
+                note=f"adb screenshot failed: {exc}",
             )
-        folders = self._taps.get("sidebar_folders")
-        if folders is None:
-            # legacy fallback: the remaining fixed BACKs
+        if find_views_grid(png):
+            return StepResult(step.name, step.phase, step.view, ok=True)
+
+        backs = 0
+        while backs < NAV_MAX_BACKS:
             try:
-                for _ in range(max(0, step.nav - 2)):
-                    self._adb.back()
+                self._adb.back()
             except (OSError, subprocess.CalledProcessError) as exc:
                 return StepResult(
                     step.name,
@@ -759,35 +853,54 @@ class Runner:
                     ok=False,
                     note=f"adb back failed: {exc}",
                 )
-            return StepResult(step.name, step.phase, step.view, ok=True)
-        scan_from = len(self._tailer.all_lines())
-        views_re = re.compile(r"GET /UserViews|GET /Users/[^ ]+/Views")
-        for _attempt in range(2):
-            failure = self._safe_tap(folders, note_prefix="sidebar_folders")
-            if failure is not None:
-                return StepResult(
-                    step.name, step.phase, step.view, ok=False, note=failure
-                )
-            deadline = time.monotonic() + NAV_GRID_TIMEOUT_S
-            while time.monotonic() < deadline:
-                if any(
-                    views_re.search(line)
-                    for line in self._tailer.all_lines()[scan_from:]
-                ):
-                    return StepResult(step.name, step.phase, step.view, ok=True)
-                time.sleep(POLL_INTERVAL_S)
-            # the tap may have landed while the player still covered the
-            # UI — exit one more level and retry the folders tap
+            backs += 1
+            time.sleep(NAV_SETTLE_S)
             try:
-                self._adb.back()
-            except (OSError, subprocess.CalledProcessError):
-                pass
+                png = self._adb.screenshot_png()
+            except (OSError, subprocess.CalledProcessError) as exc:
+                return StepResult(
+                    step.name,
+                    step.phase,
+                    step.view,
+                    ok=False,
+                    note=f"adb screenshot failed: {exc}",
+                )
+            if find_views_grid(png):
+                return StepResult(
+                    step.name,
+                    step.phase,
+                    step.view,
+                    ok=True,
+                    note=f"reached Views grid after {backs} BACK(s)",
+                )
+
+        notes = [f"Views grid not visible after {backs} BACK(s)"]
+        # Fallback: the sidebar folders icon opens the grid from Home/detail
+        # (B21) even when BACKs cannot unwind the stack.
+        folders = self._taps.get("sidebar_folders")
+        if folders is not None:
+            failure = self._safe_tap(folders, note_prefix="sidebar_folders")
+            if failure is None:
+                time.sleep(NAV_SETTLE_S)
+                try:
+                    png = self._adb.screenshot_png()
+                except (OSError, subprocess.CalledProcessError):
+                    png = b""
+                if find_views_grid(png):
+                    return StepResult(
+                        step.name,
+                        step.phase,
+                        step.view,
+                        ok=True,
+                        note="reached Views grid via sidebar folders tap",
+                    )
+                notes.append("sidebar folders tap did not open the grid")
         return StepResult(
             step.name,
             step.phase,
             step.view,
             ok=False,
-            note="Views grid did not open after the sidebar folders tap",
+            note="; ".join(notes),
         )
 
     def _safe_tap(self, coords: tuple[int, int], note_prefix: str = "") -> str | None:

@@ -464,15 +464,59 @@ two classes, every run:
    opened. Backend-*.txt windows stay stale (empty windows aren't
    rewritten, #149); logcat-*.txt are empty too.
 
+## Run #10 (2026-08-10, after #209 visual nav) — nav fixed, probe phase
+
+Run #10's FIRST nav attempt used the folders tap + `/Views` HTTP wait — it
+failed: after the app has launched once, the Views list is cached
+CLIENT-SIDE, so tapping the folders icon opens the grid with NO request.
+The HTTP signal was wrong.
+
+A manual probe session then mapped the real screen stack (with the 350ms
+hold tap, `input touchscreen swipe X Y X Y 350`):
+
+| Screen | Signature |
+|---|---|
+| Player | ~0.96 dark (video) |
+| Detail | light, poster left, teal play pill, no X |
+| Library grid | light, top tabs (Home/Genres/Suggestions) + **X close at
+  top-right ≈(3100, 55)**, cards |
+| **Views grid** | light, sidebar rail (5 icons, film teal-active), 2×3
+  view cards, **no X** |
+
+Empirical BACK depth from the player: **4** — player → detail → library →
+(the player's exit transition SWALLOWS a BACK) → Views grid. A fixed
+count therefore drifts; the fix (#209, `363c48c`) is **visual
+verification**: the nav step presses BACK until `find_views_grid()` (a
+pixel classifier: no X cluster + light frame + sidebar icon rail at the
+calibrated positions, luminance-normalized against the phone's idle
+4%-brightness dimming) matches a screenshot, up to `NAV_MAX_BACKS` (6),
+then falls back to the sidebar folders tap, then fails honestly. The grid
+opens client-side, so arrival CANNOT be verified over HTTP.
+
+Device notes from the probe:
+
+- The phone dims to ~4% after idle (`mScreenBrightnessOverrideFromWindow-
+  Manager=0.04`) and the player sets its own dimming — screenshots during
+  long manual probes look black; normalize before thresholding, or
+  `settings put system screen_brightness 255` / `KEYCODE_BRIGHTNESS_UP`.
+- `input tap` (DOWN+UP in ~50ms) is DROPPED by the client; the 350ms hold
+  (`input touchscreen swipe X Y X Y 350`, B2) is the only working tap —
+  every manual tap in this probe used it.
+- `.scratch-phone-preview/shot.py` re-embeds the latest screenshot into
+  the preview HTML (the preview server serves only the registered HTML, so
+  relative image paths 404); `classify_test.py` re-validates the nav
+  classifier against labeled captures. Both are gitignored session tooling.
+
 ## Open questions (for the next session)
 
 - DONE (2026-08-10): `Adb.back()` + `phase: nav` steps wired into the runner;
   `seasons_tab` removed from the series flow (B7); warmup phase (B1); detail
   poster expect dropped (B10); dynamic play-pill locate + retry (B10/#202);
   /Items startIndex/limit pagination honored (B11/#203); stream expect now
-  allows 206 (B15); #201/#202 closed. See `git log` on this branch.
-- **B17/B18**: restart the app + wait for readiness at suite start (runner).
-- **B19**: verify screen state after playback nav instead of fixed BACKs.
+  allows 206 (B15); app restart + readiness (B17/B18/#208); B21 folders-tap
+  restart nav; **B19/#209 nav now verifies the Views grid VISUALLY (pixel
+  classifier, no HTTP — the grid opens client-side after the first launch)**;
+  #201/#202 closed. See `git log` on this branch.
 - **B13/B20**: cold per-item scrapes still blow the 8s step timeout — extend
   warmup to the first-card detail path or the step timeout / backend warm path.
 - **B14**: the Type probe races content churn — probe the item the app

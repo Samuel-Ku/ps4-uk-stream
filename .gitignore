@@ -26,6 +26,9 @@ venv/
 backend/tools/
 backend/tools/**
 
+# Phone-preview scratch (screenshot tooling, device-driving sessions)
+.scratch-phone-preview/
+
 # Capture driver deps (npm install in tests/jellyfin_capture)
 node_modules/
 

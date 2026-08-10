@@ -51,6 +51,7 @@ from scripts.switchfin_test import (  # type: ignore[import-not-found]
     Runner,
     capture_in_window,
     find_play_pill,
+    find_views_grid,
     issue_path,
     load_steps,
     load_tap_coords,
@@ -81,6 +82,12 @@ class FakeAdb:
         self,
         lines: list[str],
         tap_lines: dict[tuple[int, int], list[str]],
+        *,
+        #: default 0: the fake reports the Views grid immediately, so nav
+        #: steps pass instantly in tests about other phases; explicit tests
+        #: override with larger counts or None (grid never appears)
+        views_after_backs: int | None = 0,
+        views_after_folder_tap: bool = False,
     ) -> None:
         self._lines = lines
         self._tap_lines = tap_lines
@@ -89,6 +96,12 @@ class FakeAdb:
         self.markers: list[str] = []
         self.restarts: int = 0
         self._available = True
+        #: after this many BACKs, screenshot_png reports the Views grid
+        #: (#209 nav verification); None = never
+        self._views_after_backs = views_after_backs
+        #: a sidebar-folders tap makes the next screenshot the Views grid
+        self._views_after_folder_tap = views_after_folder_tap
+        self._folder_tapped = False
 
     def available(self) -> bool:
         return self._available
@@ -96,6 +109,8 @@ class FakeAdb:
     def tap(self, x: int, y: int) -> None:
         self.taps.append((x, y))
         self._lines.extend(self._tap_lines.get((x, y), []))
+        if self._views_after_folder_tap and (x, y) == TAPS.get("sidebar_folders"):
+            self._folder_tapped = True
 
     def back(self) -> None:
         self.backs += 1
@@ -115,6 +130,11 @@ class FakeAdb:
         return "n/a"
 
     def screenshot_png(self) -> bytes:
+        if (
+            self._views_after_backs is not None
+            and self.backs >= self._views_after_backs
+        ) or (self._views_after_folder_tap and self._folder_tapped):
+            return _views_grid_png((3168, 1440))
         # Not a real frame: find_play_pill(b"") raises -> the default locator
         # returns None -> the retry loop falls back to the calibrated tap.
         return b""
@@ -865,6 +885,26 @@ def test_movie_play_taps_once(tmp_path: Path) -> None:
     assert adb.taps[-1:] == [TAPS["play_button"]]
 
 
+def _views_grid_png(size: tuple[int, int]) -> bytes:
+    """A synthetic Views-grid frame for ``find_views_grid`` (#209).
+
+    Mirrors the on-device signature: light overall, no X close button at
+    the top-right, and the sidebar icon rail dark at the Home (y~148) and
+    cloud (y~565) icon rows but hollow at the search icon (y~424).
+    """
+    import io
+
+    from PIL import Image, ImageDraw  # type: ignore[import-untyped]
+
+    img = Image.new("RGB", size, (245, 246, 247))
+    d = ImageDraw.Draw(img)
+    for cy in (148, 565):
+        d.rectangle((113, cy - 26, 170, cy + 26), fill=(30, 30, 30))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def _teal_pill_png(size: tuple[int, int], pill: tuple[int, int, int, int]) -> bytes:
     """A plain gray frame with a teal rectangle (a synthetic detail screen)."""
     import io
@@ -889,6 +929,16 @@ def test_find_play_pill_locates_teal_pill() -> None:
 
 def test_find_play_pill_absent_on_plain_frame() -> None:
     assert find_play_pill(_teal_pill_png((1600, 900), (0, 0, 0, 0))) is None
+
+
+def test_find_views_grid_matches_grid_frame() -> None:
+    """#209: the visual classifier recognizes the Views grid screenshot."""
+    assert find_views_grid(_views_grid_png((3168, 1440)))
+
+
+def test_find_views_grid_rejects_plain_frame() -> None:
+    """#209: a light frame without the sidebar rail is not the grid."""
+    assert not find_views_grid(_teal_pill_png((3168, 1440), (0, 0, 0, 0)))
 
 
 def test_play_button_retries_until_located(tmp_path: Path) -> None:
@@ -941,73 +991,77 @@ def test_play_button_fails_cleanly_when_pill_never_found(tmp_path: Path) -> None
     assert movie_open.ok, movie_open.note  # the run continued
 
 
-def test_nav_step_returns_to_views_grid_via_folders_tap(tmp_path: Path) -> None:
-    """A ``phase: nav`` step exits the player with BACKs then taps the
-    sidebar folders icon and waits for the Views grid (device-driving
-    B19/#209 — the old fixed 4×BACK left the app on a detail after a
-    played view, so the next open tapped a poster)."""
-    runner, _, adb = make_harness(tmp_path, probe="Movie")
+def test_nav_step_drives_back_until_views_grid_visible(tmp_path: Path) -> None:
+    """A ``phase: nav`` step presses BACK until a screenshot shows the
+    Views grid (device-driving B19/#209 — the old fixed 4×BACK left the
+    app on a detail after a played view, so the next open tapped a
+    poster; the grid opens client-side, so arrival is verified visually
+    instead of waiting for an HTTP request)."""
+    adb = FakeAdb(lines=[], tap_lines=FULL_TAP_LINES, views_after_backs=2)
+    runner, _, adb = make_harness(tmp_path, adb=adb)
     results = runner.run()
 
     nav = next(r for r in results if r.name == "back_to_grid")
     assert nav.ok, nav.note
     assert nav.phase == "nav"
-    assert adb.backs == 2  # exit the player, no blind 4×BACK
-    assert TAPS["sidebar_folders"] in adb.taps  # folders icon opened the grid
+    assert adb.backs == 2
+    assert "2 BACK" in (nav.note or "")
 
     # the views after the nav step still run normally
     movie_open = next(r for r in results if r.name == "open_view_movie")
     assert movie_open.ok, movie_open.note
 
 
-class _TwoTapGridAdb(FakeAdb):
-    """The first sidebar-folders tap opens nothing (player still covers the
-    UI); the second one fires the Views grid request (B19/#209)."""
-
-    def __init__(
-        self, lines: list[str], tap_lines: dict[tuple[int, int], list[str]]
-    ) -> None:
-        super().__init__(lines=lines, tap_lines=tap_lines)
-        self.folder_taps = 0
-
-    def tap(self, x: int, y: int) -> None:
-        if (x, y) == TAPS["sidebar_folders"]:
-            self.folder_taps += 1
-            if self.folder_taps >= 2:
-                self._lines.append("GET /UserViews -> 200 (0ms)")
-        super().tap(x, y)
-
-
-def test_nav_step_retries_folders_tap_when_grid_does_not_open(
-    tmp_path: Path,
-) -> None:
-    """B19: if the folders tap lands before the player closed (no /Views),
-    the nav presses one more BACK and retries before failing."""
-    tap_lines = {k: list(v) for k, v in FULL_TAP_LINES.items()}
-    tap_lines[TAPS["sidebar_folders"]] = []  # the fake controls the grid line
-    adb = _TwoTapGridAdb(lines=[], tap_lines=tap_lines)
+def test_nav_step_skips_backs_when_already_on_grid(tmp_path: Path) -> None:
+    """#209: when the app is already on the Views grid the nav step needs
+    no BACKs (the first verification screenshot matches)."""
+    adb = FakeAdb(lines=[], tap_lines=FULL_TAP_LINES, views_after_backs=0)
     runner, _, adb = make_harness(tmp_path, adb=adb)
-
     results = runner.run()
 
     nav = next(r for r in results if r.name == "back_to_grid")
     assert nav.ok, nav.note
-    assert adb.folder_taps == 2  # missed once, retried
-    assert adb.backs == 3  # 2 to exit the player + 1 between retries
+    assert adb.backs == 0
 
 
-def test_nav_step_falls_back_to_fixed_backs_without_calibration(
+def test_nav_step_falls_back_to_folders_tap_when_backs_fail(
     tmp_path: Path,
 ) -> None:
-    """Without a sidebar_folders calibration the nav keeps the legacy
-    fixed-BACK behaviour (step.nav total)."""
-    taps = {k: v for k, v in TAPS.items() if k != "sidebar_folders"}
-    runner, _, adb = make_harness(tmp_path, taps=taps)
+    """#209: if NAV_MAX_BACKS presses never show the grid, the nav taps
+    the sidebar folders icon (B21) and verifies the grid visually."""
+    adb = FakeAdb(
+        lines=[],
+        tap_lines=FULL_TAP_LINES,
+        views_after_backs=None,
+        views_after_folder_tap=True,
+    )
+    runner, _, adb = make_harness(tmp_path, adb=adb)
     results = runner.run()
 
     nav = next(r for r in results if r.name == "back_to_grid")
     assert nav.ok, nav.note
-    assert adb.backs == 4  # the full legacy count
+    assert adb.backs == 6  # NAV_MAX_BACKS
+    assert TAPS["sidebar_folders"] in adb.taps
+    assert "folders tap" in (nav.note or "")
+
+
+def test_nav_step_fails_when_grid_unreachable(tmp_path: Path) -> None:
+    """#209: with no visual match and no calibration the nav fails with a
+    clear note instead of silently passing while the app sits elsewhere
+    (the B19 trap)."""
+    taps = {k: v for k, v in TAPS.items() if k != "sidebar_folders"}
+    adb = FakeAdb(
+        lines=[], tap_lines=FULL_TAP_LINES, views_after_backs=None
+    )
+    runner, _, adb = make_harness(tmp_path, taps=taps, adb=adb)
+    results = runner.run()
+
+    nav = next(r for r in results if r.name == "back_to_grid")
+    assert not nav.ok
+    assert nav.phase == "nav"
+    assert "not visible" in (nav.note or "")
+    # the run stopped cleanly at the nav step (no steps after it ran)
+    assert results[-1].name == "back_to_grid"
 
 
 # --------------------------------------------------------------------------
