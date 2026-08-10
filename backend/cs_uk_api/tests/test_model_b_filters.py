@@ -202,6 +202,27 @@ def test_search_invalid_style_token_returns_400() -> None:
     assert r.json()["detail"]["error"] == "invalid_style"
 
 
+def test_search_invalid_form_token_returns_400() -> None:
+    """Ticket #141: a form typo gets the same custom envelope as a style
+    typo — 400 ``invalid_form``, not FastAPI's default 422 for the old
+    ``Literal`` param. The client parses both axes identically."""
+    PROVIDERS["p1"] = _search_stub("p1", [])
+    r = TestClient(app).get("/api/search?q=x&form=mecha")
+    assert r.status_code == 400
+    assert r.json()["detail"]["error"] == "invalid_form"
+
+
+def test_search_empty_form_token_behaves_like_absent() -> None:
+    """Empty/blank ``?form=`` = absent = any (mirrors the style axis)."""
+    movie = _result("p1", "Дюна", form="movie", styles=set())
+    series = _result("p1", "Серіал", form="series", styles=set(), n="2")
+    PROVIDERS["p1"] = _search_stub("p1", [movie, series])
+
+    r = TestClient(app).get("/api/search?q=x&form=")
+    assert r.status_code == 200
+    assert len(r.json()["groups"]) == 2
+
+
 def test_search_style_no_ordinary_only_token() -> None:
     """There is no way to request ordinary-only via ?style= (CONTEXT.md):
     an empty value behaves like absent, and there is no magic token."""

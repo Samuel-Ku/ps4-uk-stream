@@ -28,6 +28,9 @@ from .models import ErrorResponse, MediaForm, MediaStyle, SearchResult, Section
 #: constant because ``MediaStyle.__args__`` is a typing special form
 #: that mypy rejects on attribute access.
 STYLE_TOKENS: frozenset[str] = frozenset({"anime", "cartoon", "dorama"})
+#: Valid ``?form=`` tokens. ``form`` is a single-token axis (exact-or-None
+#: filter), unlike the comma-list ``style`` axis.
+FORM_TOKENS: frozenset[str] = frozenset({"movie", "series"})
 
 
 def section_matches(item: SearchResult, section: Section) -> bool:
@@ -79,6 +82,29 @@ def parse_style_filter(raw: str | None) -> frozenset[MediaStyle] | None:
     return frozenset(cast(MediaStyle, p) for p in parts)
 
 
+def parse_form_filter(raw: str | None) -> MediaForm | None:
+    """Parse the ``?form=`` query param into a form filter value.
+
+    Mirrors ``parse_style_filter`` (ticket #141): a single token,
+    exact-or-None match (``None`` = any). A typo must surface as the
+    same custom 400 envelope as a bad style token — ``invalid_form`` —
+    instead of FastAPI's default 422 for the old ``Literal`` query
+    param, so the client parses both axes identically.
+    """
+    if raw is None or not raw.strip():
+        return None
+    token = raw.strip()
+    if token not in FORM_TOKENS:
+        raise HTTPException(
+            400,
+            detail=ErrorResponse(
+                error="invalid_form",
+                message=f"unknown form token: {token}",
+            ).model_dump(),
+        )
+    return cast(MediaForm, token)
+
+
 def style_key(style_filter: frozenset[MediaStyle] | None) -> str:
     """Stable cache-key fragment for a style filter."""
     if not style_filter:
@@ -105,8 +131,10 @@ def matches_axes(
 
 
 __all__ = [
+    "FORM_TOKENS",
     "STYLE_TOKENS",
     "matches_axes",
+    "parse_form_filter",
     "parse_style_filter",
     "section_matches",
     "style_key",

@@ -26,6 +26,7 @@ from .catalog_state import search_cache as _catalog_search_cache
 from .catalog_state import sources_cache as _catalog_sources_cache
 from .config import SETTINGS
 from .country import is_blocked_country
+from .filters import parse_form_filter as _parse_form_filter
 from .filters import parse_style_filter as _parse_style_filter
 from .filters import section_matches as _section_matches
 from .health import TRACKER
@@ -300,15 +301,10 @@ async def browse(
 async def search(
     q: str = Query(min_length=1, max_length=80),
     provider: str = Query("all"),
-    form: MediaForm | None = Query(default=None),  # noqa: B008
+    form: str | None = Query(default=None),
     style: str | None = Query(default=None),
 ) -> SearchResponse:
     """Multi-provider search with per-provider failure attribution (ADR-0002).
-
-    Note: ``form`` carries a ``# noqa: B008`` — ruff's B008 immutable-
-    annotation check doesn't resolve the ``MediaForm`` type alias, so it
-    false-positives on that line only (the identical ``str``-typed
-    ``source`` param below passes clean).
 
     Model B filter axes (ADR-0001, ticket #134):
       - ``form=movie|series`` — exact-or-None; absent = any.
@@ -336,9 +332,10 @@ async def search(
     """
     if provider != "all" and provider not in PROVIDERS:
         raise HTTPException(400, detail=ErrorResponse(error="unknown_provider", message=provider).model_dump())
+    form_filter = _parse_form_filter(form)
     style_filter = _parse_style_filter(style)
     return await _catalog_merged_search(
-        q, provider=provider, form=form, style_filter=style_filter
+        q, provider=provider, form=form_filter, style_filter=style_filter
     )
 
 
@@ -356,8 +353,9 @@ async def home() -> HomeResponse:
         returns at least one item (spec AC: present iff animeon
         provides it).
       - Five type rows (movie, series, anime, cartoon, dorama) — each
-        aggregates every provider section whose ``Section.type``
-        matches. Empty types are omitted.
+        aggregates every provider section whose Model B axes
+        (``form``/``styles``) map to that kind (``section_row_type``).
+        Empty types are omitted.
 
     Cached for ``SETTINGS.cache_home_s`` (30 minutes by default). On a
     cache hit the providers are not re-invoked.

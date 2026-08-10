@@ -19,6 +19,8 @@ What the contract says:
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi.testclient import TestClient
 
 from cs_uk_api.main import (
@@ -448,6 +450,41 @@ def test_search_cache_key_includes_provider_axis():
         client.get("/api/search?q=q&provider=b")  # cache hit
         assert len(a_calls) == 1
         assert len(b_calls) == 1
+    finally:
+        PROVIDERS.clear()
+        PROVIDERS.update(saved)
+        _search_cache.clear()
+
+
+def test_search_cache_key_includes_form_axis() -> None:
+    """Filtered and unfiltered searches for the same query never share a
+    cache entry (ADR-0001 obligation) — the parsed ``form`` value still
+    participates in the key after the #141 ``str``-param change."""
+    saved = dict(PROVIDERS)
+    try:
+        PROVIDERS.clear()
+        search_calls: list[int] = []
+
+        class _Stub(_StubBase):
+            id = "k"
+            name = "k"
+
+            async def search(self, q: str, http: Any) -> list[SearchResult]:
+                search_calls.append(1)
+                return []
+
+            async def content(self, external_id: str, http: Any) -> ContentResponse:
+                raise AssertionError("content not used in this test")
+
+        PROVIDERS["k"] = _Stub()
+
+        _search_cache.clear()
+        client.get("/api/search?q=alpha")
+        client.get("/api/search?q=alpha&form=movie")
+        client.get("/api/search?q=alpha&form=series")
+        client.get("/api/search?q=alpha")            # cache hit (unfiltered)
+        client.get("/api/search?q=alpha&form=movie")  # cache hit (movie)
+        assert len(search_calls) == 3
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved)
