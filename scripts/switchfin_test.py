@@ -220,13 +220,25 @@ def find_play_pill(png: bytes) -> tuple[int, int] | None:
     try:
         import io
 
-        from PIL import Image  # type: ignore[import-untyped]
+        from PIL import Image, ImageEnhance  # type: ignore[import-untyped]
     except ImportError:
         return None
 
     img = Image.open(io.BytesIO(png)).convert("RGB")
     w, h = img.size
-    px = img.load()
+    px: Any = img.load()
+
+    # The phone dims to ~4% after idle and the player requests its own
+    # brightness override on exit — a dimmed frame reads as black and the
+    # teal scan misses. Normalize to the 99th-percentile luminance first
+    # (same guard as find_views_grid, #209).
+    lums = sorted(
+        sum(px[x, y][:3]) / 3.0 for y in range(0, h, 8) for x in range(0, w, 8)
+    )
+    p99 = lums[int(len(lums) * 0.99)]
+    if p99 >= 30 and abs(255.0 / p99 - 1.0) >= 0.03:
+        img = ImageEnhance.Brightness(img).enhance(255.0 / p99)
+        px = img.load()
 
     def tealish(r: int, g: int, b: int) -> bool:
         # The client's accent family (sampled on-device): cyan-teal such as
@@ -1097,17 +1109,24 @@ class Runner:
         while time.monotonic() < deadline:
             for line in self._tailer.all_lines()[scan_from:]:
                 for index, exp in enumerate(expects):
-                    if index in matched:
-                        continue
                     m = re.search(exp.request, line)
                     if not m:
                         continue
                     status = status_of(line)
                     if status is None or status not in exp.status:
                         continue
-                    matched.add(index)
                     if exp.capture and exp.capture in (m.groupdict() or {}):
+                        # LAST match wins (#206/B14): the warm chain's slow
+                        # detail scrape can complete inside the detail step's
+                        # window and previously captured first, pinning the
+                        # play Type probe to the warm's first card while the
+                        # app actually opened a churned one. The app's own
+                        # request lands after the window opens, so it is the
+                        # last ``/Items/{gk}`` line.
                         self._ctx[exp.capture] = m.group(exp.capture)
+                    if index in matched:
+                        continue
+                    matched.add(index)
             if len(matched) == len(expects):
                 return True
             time.sleep(POLL_INTERVAL_S)

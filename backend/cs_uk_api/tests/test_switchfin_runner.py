@@ -1163,6 +1163,29 @@ def test_poster_line_first_does_not_poison_gk(tmp_path: Path) -> None:
     ), f"gk captured as {seen_gk[0]!r} — poster suffix leaked in"
 
 
+def test_gk_capture_prefers_last_line_in_window(tmp_path: Path) -> None:
+    """#206/B14: a warm-chain detail line that completes inside the detail
+    step's window must not win the gk capture — the app's own request (the
+    LAST ``/Items/{gk}`` line in the window) decides the play branch."""
+    tap_lines = {k: list(v) for k, v in FULL_TAP_LINES.items()}
+    tap_lines[TAPS["first_card"]] = [
+        "GET /Users/u1/Items/w1 -> 200 (0ms)",  # warm chain, slow completion
+        "GET /Users/u1/Items/g2 -> 200 (0ms)",  # the app actually opened g2
+    ]
+    seen: list[str] = []
+
+    def probe(ctx: dict[str, str]) -> str | None:
+        seen.append(str(ctx.get("gk")))
+        return "Movie"
+
+    runner, _, _ = make_harness(tmp_path, tap_lines=tap_lines, probe_fn=probe)
+    results = runner.run()
+
+    assert all(r.ok for r in results), [r.note for r in results if not r.ok]
+    assert seen, "the play step's Type probe never ran"
+    assert seen[0] == "g2", f"gk captured as {seen[0]!r} — the warm line won"
+
+
 # --------------------------------------------------------------------------
 # review regression: a dropped logcat marker must not shift windows (#143 review-4)
 # --------------------------------------------------------------------------
