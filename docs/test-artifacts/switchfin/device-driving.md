@@ -422,6 +422,28 @@ The empty-window backend-*.txt files are intentionally not rewritten
 run #7's real content. Needs an on-device look at the cartoon/dorama
 detail screens (layout/probe suspicion, #206).
 
+## Run #8 (2026-08-10, after B22) — 2/7 fully pass; B23 found
+
+Новинки + Серіали pass again. The #210 first-card warm now covers most
+views (fast detail/Seasons/Episodes/PlaybackInfo chains for stable first
+cards), but two failure classes remain:
+
+### B23 (NEW, backend): heavy series intermittently 404 on detail
+
+The warm's detail for the ~137-episode series g2:702cb6bcfd5dcce1
+returned `404 item_unavailable` after 12.9s at 22:02:01; the app's
+request for the SAME id returned `200 (25785ms)` at 22:02:53 and
+`/Shows/{id}/Seasons -> 200 (27934ms)`. A valid item transiently 404s
+after a long scrape, then succeeds. Besides showing the app an error, the
+404 broke the #210 warm chain (no Type in the 404 body -> the series play
+path was skipped), leaving popular/movie play cold. Ticket #211.
+
+### Churn still beats the warm for the movie first card
+
+The movie view's first card at warm time (22:02:01) was g2:0dd97776…; at
+play time (22:02:53) the app tapped g2:702cb6… (DateCreated sort shifted)
+— the same B14 race, now between warm and play (#206).
+
 ## Open questions (for the next session)
 
 - DONE (2026-08-10): `Adb.back()` + `phase: nav` steps wired into the runner;
