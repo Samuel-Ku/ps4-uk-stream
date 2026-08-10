@@ -6,11 +6,12 @@ client pointed at ``host:port`` finds a server without configuration.
 
 Ticket #102: the handshake. Ticket #104: the catalog surface — views,
 item listing, poster. Ticket #105: item detail + hierarchy. Ticket
-#106: PlaybackInfo. Ticket #107: the conditional stream handler
-(``GET /Videos/{id}/stream``) with byte proxying, Range support, and
-HLS segment rewriting. Ticket #108: sessions no-op endpoints
-(``/Sessions/Playing|Progress|Stopped|Logout`` → 204), all behind the
-same ``require_token`` gate.
+#106: search mapping (``/Items?searchTerm=`` + ``/Search/Hints``) feeding
+the shared merged search; PlaybackInfo. Ticket #107: the conditional
+stream handler (``GET /Videos/{id}/stream``) with byte proxying, Range
+support, and HLS segment rewriting. Ticket #108: sessions no-op
+endpoints (``/Sessions/Playing|Progress|Stopped|Logout`` → 204), all
+behind the same ``require_token`` gate.
 """
 
 from __future__ import annotations
@@ -25,15 +26,38 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from urllib.parse import quote, urljoin, urlparse
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
-from ..catalog_state import get_home, load_home, resolve_group, resolve_group_content
+from ..catalog_state import (
+    get_home,
+    load_home,
+    merged_search,
+    register_search_groups,
+    resolve_group,
+    resolve_group_content,
+)
 from ..config import SETTINGS
 from ..health import TRACKER
 from ..http_client import get_client
-from ..models import ContentResponse, Episode, HomeItem, HomeRow, Season, StreamResponse
+from ..models import (
+    ContentResponse,
+    Episode,
+    HomeItem,
+    HomeRow,
+    SearchGroup,
+    Season,
+    StreamResponse,
+)
 from ..poster_proxy import fetch as fetch_poster_bytes
 from ..providers import PROVIDERS
 from ..providers.base import ProviderError
@@ -45,6 +69,8 @@ from .models import (
     DisplayPreferencesDto,
     MediaSourceInfo,
     PlaybackInfoResponse,
+    SearchHint,
+    SearchHintResult,
     SystemInfoPublic,
     UserDto,
 )
@@ -354,6 +380,78 @@ async def _user_views() -> BaseItemDtoQueryResult:
     return BaseItemDtoQueryResult(Items=dtos, TotalRecordCount=len(dtos))
 
 
+def _search_group_dto(group: SearchGroup, server_id: str) -> BaseItemDto:
+    """One search-result card (ticket #106): the merged group in the same
+    listing shape as ``_item_dto`` (D5/D9) — ``g1:`` id, Movie/Series
+    Type from the group's canonical type, ``ImageTags.Primary`` present
+    *iff* the card has a poster.
+
+    No ``ParentId``: a searched card is not tied to a home row — search
+    covers the whole catalog, not a view.
+    """
+    dto = BaseItemDto(
+        Name=group.title,
+        ServerId=server_id,
+        Id=group.group_key,
+        Type=_JF_TYPE_BY_ROW.get(group.type, "Series"),
+        ProductionYear=group.year,
+    )
+    if group.poster is not None:
+        dto.ImageTags = {"Primary": _poster_tag(group.poster)}
+    return dto
+
+
+def _search_hint(group: SearchGroup) -> SearchHint:
+    """One search-box hint (ticket #106): the same merged card in the
+    ``SearchHint`` shape ``/Search/Hints`` serves."""
+    hint = SearchHint(
+        ItemId=group.group_key,
+        Id=group.group_key,
+        Name=group.title,
+        Type=_JF_TYPE_BY_ROW.get(group.type, "Series"),
+        ProductionYear=group.year,
+    )
+    if group.poster is not None:
+        hint.ImageTags = {"Primary": _poster_tag(group.poster)}
+    return hint
+
+
+async def _jf_search_groups(search_term: str) -> list[SearchGroup]:
+    """The merged search groups behind a facade search, or [] (ticket #106).
+
+    Feeds the shared ``merged_search`` (the exact fan-out the native
+    ``/api/search`` route runs — same per-provider failure attribution,
+    gated-item sweep, uakino skip, and 5-min cache), then registers the
+    groups into the shared group-key resolution map so a searched card
+    opens in the #105 detail surface (search covers the whole catalog;
+    most results are NOT in the 30-min home snapshot).
+
+    Degrades to an empty result on total failure (every provider timed
+    out — the native route's 502 ``search_timeout``) and on an empty
+    term: the Jellyfin-tolerant answer, the same a stale view parent
+    gets (D5).
+    """
+    term = search_term.strip()
+    if not term:
+        return []
+    try:
+        resp = await merged_search(term, provider="all", form=None, style_filter=None)
+    except HTTPException:
+        return []
+    register_search_groups(resp.groups)
+    return resp.groups
+
+
+async def _jf_search(search_term: str) -> BaseItemDtoQueryResult:
+    """Listing-shaped search result (ticket #106, D10): one card per
+    merged group, ``g1:`` ids, Movie/Series types matching the #105
+    detail surface."""
+    groups = await _jf_search_groups(search_term)
+    server_id = _server_id()
+    dtos = [_search_group_dto(g, server_id) for g in groups]
+    return BaseItemDtoQueryResult(Items=dtos, TotalRecordCount=len(dtos))
+
+
 class AuthenticateByNameRequest(BaseModel):
     """Login body. Any username/password completes the handshake (D4)."""
 
@@ -526,9 +624,13 @@ async def user_views_server(user_id: str) -> BaseItemDtoQueryResult:
 async def items_listing(
     parent_id: str | None = Query(default=None, alias="parentId"),
     user_id: str | None = Query(default=None, alias="userId"),
+    search_term: str | None = Query(default=None, alias="searchTerm"),
 ) -> BaseItemDtoQueryResult:
-    """Library listing for one view, OR children of a series/season
-    (ticket #105 hierarchy, D3).
+    """Library listing for one view, children of a series/season
+    (ticket #105 hierarchy, D3), OR a merged-catalog search
+    (ticket #106): when ``searchTerm`` is present, the listing is the
+    shared ``/api/search`` merged groups as cards (``g1:`` ids, same
+    Movie/Series shape as a view's cards).
 
     Two parent kinds are served by the same route:
 
@@ -543,6 +645,8 @@ async def items_listing(
     empty (a movie has no children, D3; episodes survive only under a
     resolved season).
     """
+    if search_term:
+        return await _jf_search(search_term)
     row_type = _VIEW_TYPE_BY_ID.get(parent_id or "")
     if row_type is None:
         return await _hierarchy(parent_id)
@@ -643,7 +747,7 @@ async def items_latest(
     on the console as a "302" — so the wire shape here is a list, while
     the content stays the same row lookup as ``/Items``.
     """
-    result = await items_listing(parent_id=parent_id, user_id=user_id)
+    result = await items_listing(parent_id=parent_id, user_id=user_id, search_term=None)
     return result.Items
 
 
@@ -655,16 +759,19 @@ async def items_latest(
 async def user_items_listing(
     user_id: str,
     parent_id: str | None = Query(default=None, alias="parentId"),
+    search_term: str | None = Query(default=None, alias="searchTerm"),
 ) -> BaseItemDtoQueryResult:
     """Server-style spelling of the library listing (Switchfin).
 
     Switchfin paths every library call under the user — ``/Users/{id}/
     Items?parentId=…`` (``apiUserLibrary``) rather than the bare
     ``/Items`` the SDK would use. Same wire dto, same row/hierarchy
-    lookup as ``items_listing``; registered after ``Resume``/``Latest``
-    so those literal segments win over this parameterized route.
+    lookup as ``items_listing`` — including the ``searchTerm`` search
+    surface (ticket #106: the SDK's ``getItems({searchTerm})`` spells
+    exactly this URL); registered after ``Resume``/``Latest`` so those
+    literal segments win over this parameterized route.
     """
-    return await items_listing(parent_id=parent_id, user_id=user_id)
+    return await items_listing(parent_id=parent_id, user_id=user_id, search_term=search_term)
 
 
 @router.get(
@@ -709,6 +816,27 @@ async def display_preferences() -> DisplayPreferencesDto:
     name, ascending" — predictable and stable across navigations.
     """
     return DisplayPreferencesDto()
+
+
+@router.get(
+    "/Search/Hints",
+    response_model=SearchHintResult, response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def search_hints(
+    search_term: str | None = Query(default=None, alias="searchTerm"),
+) -> SearchHintResult:
+    """Search-box hints (spec D10, ticket #106).
+
+    The alternate search surface clients hit for the global search box
+    (the web/desktop SDK's ``getSearchHints`` → ``/Search/Hints``) —
+    same merged groups as ``/Items?searchTerm=``, in hint shape with the
+    ``g1:`` ``ItemId`` the detail/image routes resolve. Missing or empty
+    term → empty hints, never an error.
+    """
+    groups = await _jf_search_groups(search_term or "")
+    hints = [_search_hint(g) for g in groups]
+    return SearchHintResult(SearchHints=hints, TotalRecordCount=len(hints))
 
 
 def _split_season_suffix(parent_id: str) -> tuple[str, int | None]:

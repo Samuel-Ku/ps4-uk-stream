@@ -30,8 +30,9 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-import cs_uk_api.uakino_browser as uakino_browser
+import cs_uk_api.catalog_state as catalog_state_mod
 from cs_uk_api import main as main_mod
+from cs_uk_api import uakino_browser
 from cs_uk_api.health import TRACKER
 from cs_uk_api.main import _content_cache, _search_cache, app
 from cs_uk_api.models import (
@@ -87,7 +88,7 @@ class _StubSession:
     async def warm(self) -> None:
         self.warm_calls += 1
 
-    async def heartbeat_loop(self, record: Any) -> None:  # noqa: ARG002
+    async def heartbeat_loop(self, record: Any) -> None:
         self.heartbeat_started = True
         while True:
             await asyncio.sleep(3600)
@@ -123,11 +124,11 @@ class _Provider(BaseProvider):
         self._stream = stream
         self.calls = calls if calls is not None else []
 
-    async def search(self, q: str, http: Any) -> list[SearchResult]:  # noqa: ARG002
+    async def search(self, q: str, http: Any) -> list[SearchResult]:
         self.calls.append(("search", q))
         return list(self._results)
 
-    async def content(self, external_id: str, http: Any) -> ContentResponse:  # noqa: ARG002
+    async def content(self, external_id: str, http: Any) -> ContentResponse:
         self.calls.append(("content", external_id))
         if self._content is None:
             raise NotImplementedError("content not stubbed")
@@ -135,7 +136,7 @@ class _Provider(BaseProvider):
 
     async def stream(
         self, content_id: str, translation: str | None, http: Any
-    ) -> StreamResponse:  # noqa: ARG002
+    ) -> StreamResponse:
         self.calls.append(("stream", content_id, translation))
         if self._stream is None:
             raise NotImplementedError("stream not stubbed")
@@ -339,7 +340,9 @@ def test_explicit_search_503_warming_when_not_ready(
     PROVIDERS["uakino"] = _Provider(
         "uakino", results=[_result("uakino", "Дюна", year=2021)], calls=uakino_calls
     )
-    monkeypatch.setattr(main_mod, "WARM_WAIT_S", 0.05)
+    # WARM_WAIT_S lives in catalog_state (ticket #106: the shared search
+    # owns the uakino wait), so the patch targets that module.
+    monkeypatch.setattr(catalog_state_mod, "WARM_WAIT_S", 0.05)
 
     r = client.get("/api/search?q=дюна&provider=uakino")
     assert r.status_code == 503
@@ -372,7 +375,7 @@ async def test_explicit_search_waits_for_ready_then_returns(
     the request returns the uakino results instead of timing out."""
     stub = _StubSession()  # ready_event unset
     uakino_browser._session = stub  # type: ignore[assignment]
-    monkeypatch.setattr(main_mod, "WARM_WAIT_S", 5.0)
+    monkeypatch.setattr(catalog_state_mod, "WARM_WAIT_S", 5.0)
     PROVIDERS["uakino"] = _Provider(
         "uakino", results=[_result("uakino", "Дюна", year=2021)]
     )
@@ -398,7 +401,7 @@ def test_content_503_warming_when_not_ready(monkeypatch: pytest.MonkeyPatch) -> 
     stub = _StubSession()  # ready never set
     uakino_browser._session = stub  # type: ignore[assignment]
     PROVIDERS["uakino"] = _Provider("uakino", content=_dune_content())
-    monkeypatch.setattr(main_mod, "WARM_WAIT_S", 0.05)
+    monkeypatch.setattr(catalog_state_mod, "WARM_WAIT_S", 0.05)
 
     r = client.get("/api/content/uakino:filmy:12567-dyuna")
     assert r.status_code == 503

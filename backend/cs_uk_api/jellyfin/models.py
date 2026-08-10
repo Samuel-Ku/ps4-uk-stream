@@ -176,3 +176,28 @@ class PlaybackInfoResponse(BaseModel):
 
     MediaSources: list[MediaSourceInfo]
     PlaySessionId: str
+
+
+class SearchHint(BaseModel):
+    """One entry of ``SearchHintResult.SearchHints`` (spec D10, ticket #106).
+
+    The search-box surface some clients hit (``GET /Search/Hints``) —
+    the same merged-group card as the ``/Items?searchTerm=`` listing, in
+    hint shape: ``ItemId`` is the ``g1:`` group key the detail/image
+    routes resolve, ``Type`` the Movie/Series verdict. ``ImageTags``
+    present *iff* the card has a poster (D9), mirroring ``BaseItemDto``.
+    """
+
+    ItemId: str | None = None
+    Id: str | None = None
+    Name: str | None = None
+    Type: str | None = None
+    ProductionYear: int | None = None
+    ImageTags: dict[str, str] = Field(default_factory=dict)
+
+
+class SearchHintResult(BaseModel):
+    """``GET /Search/Hints`` envelope (spec D10, ticket #106)."""
+
+    SearchHints: list[SearchHint] = Field(default_factory=list)
+    TotalRecordCount: int = 0

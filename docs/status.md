@@ -98,15 +98,23 @@ Run the tests:
 
 ```bash
 cd backend && . .venv/bin/activate && pytest cs_uk_api/tests -v
-```
-
-### PS4 client: Switchfin (2026-08-09)
+```### PS4 client: Switchfin (2026-08-09)
 
 The project is now **Switchfin** — a Jellyfin client on the PS4 — talking
-to the backend's Jellyfin facade (spec #100). The original C++ catalog
+ to the backend's Jellyfin facade (spec #100). The original C++ catalog
 client and its Docker PS4 build pipeline were removed along with the
 status sections that described them; the backend sections above remain
 the current implementation status.
+
+Search mapping (ticket #106): the facade serves the shared merged search
+under `GET /Items?searchTerm=…` (both bare and `Users/{id}/Items`
+spellings) and `GET /Search/Hints?searchTerm=…` — the same
+`catalog_state.merged_search` core the native `/api/search` route runs
+(one fan-out, one 5m cache, uakino skip/warming included). Search cards
+carry `g1:` ids and Movie/Series types; the facade registers the merged
+groups into the group-key resolution map so a searched card opens in the
+detail/hierarchy surface (#105) even when it is not in the 30-min home
+snapshot.
 
 ## Adding more providers
 

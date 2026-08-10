@@ -20,23 +20,52 @@ from collections.abc import Mapping, Sequence
 from typing import cast
 
 import httpx
+from fastapi import HTTPException
 
 from . import config as _config
 from .cache import TtlCache
 from .country import is_blocked_country
+from .filters import matches_axes, style_key
 from .health import TRACKER
 from .home import build_home_rows
 from .http_client import get_client
 from .merge import group_key_from, item_group_key, merge_results
-from .models import ContentResponse, HomeResponse, SearchResult
+from .models import (
+    STATUS_DOWN,
+    STATUS_WARMING,
+    ContentResponse,
+    ErrorResponse,
+    HomeResponse,
+    MediaForm,
+    MediaStyle,
+    ProviderFailure,
+    SearchGroup,
+    SearchResponse,
+    SearchResult,
+)
 from .providers import PROVIDERS
-from .providers.base import ProviderError
+from .providers.base import BaseProvider, ProviderError
+from .uakino_browser import get_session
 
 log = logging.getLogger("cs_uk_api.catalog_state")
 
 #: v3 (issue #70): the merged home view — «Новинки» + «Популярні зараз»
 #: + the five type rows — is a curated snapshot, refreshed every 30 min.
 home_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_home_s)
+
+#: Multi-provider merged search (ticket #106): the native ``/api/search``
+#: route and the Jellyfin facade share the SAME search cache (ADR-0003,
+#: same 5m TTL as browse), so a query searched from either surface never
+#: runs the provider fan-out twice. Key format and cache-key axes match
+#: the route's contract exactly (``search:{provider}:{q}:{form}:{style}``).
+search_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_search_s)
+
+#: Bound on how long an explicit uakino route waits for the browser
+#: session to become ready before answering 503 ``warming`` (issue #193).
+#: Distinct from ``UakinoSession.WARM_TIMEOUT_S`` (the bounded ``warm()``
+#: call itself). Lives here (not main.py) because ``await_uakino_ready``
+#: is shared by the native routes and the facade search (ticket #106).
+WARM_WAIT_S: float = 15.0
 
 #: Content-detail + blocked-country caches (ADR-0003). Moved here from
 #: ``main.py`` so the Jellyfin facade's ticket #105 detail resolver reads
@@ -466,7 +495,337 @@ async def resolve_group_content(group_key: str) -> ContentResponse | None:
     return resp
 
 
+def should_skip_uakino_in_fanout() -> bool:
+    """True when uakino must be dropped from a ``provider=all`` fan-out.
+
+    Dropped while down (startup marker or sliding-window) or while the
+    browser session has not yet become ready (issue #193). Shared by the
+    native ``/api/search`` route and the facade search (ticket #106).
+    """
+    if "uakino" not in PROVIDERS:
+        return False
+    if TRACKER.status("uakino") == STATUS_DOWN:
+        return True
+    return not get_session().ready_event.is_set()
+
+
+async def await_uakino_ready() -> None:
+    """Gate an explicit uakino route on the browser session being ready.
+
+    A deterministic startup marker short-circuits with 502 — the session
+    is dead for the process lifetime, so waiting is pointless. Otherwise
+    wait for ``ready_event`` bounded by ``WARM_WAIT_S``; a cold session
+    still warming answers 503 ``warming`` so the client can back off and
+    retry (issue #193/#196).
+    """
+    marker = TRACKER.startup_marker("uakino")
+    if marker is not None:
+        raise HTTPException(
+            502,
+            detail=ErrorResponse(
+                error="upstream_unreachable", message=f"uakino {marker}"
+            ).model_dump(),
+        )
+    session = get_session()
+    try:
+        await asyncio.wait_for(session.ready_event.wait(), timeout=WARM_WAIT_S)
+    except TimeoutError:
+        raise HTTPException(
+            503,
+            detail=ErrorResponse(
+                error=STATUS_WARMING,
+                message="uakino session is still warming; retry shortly",
+            ).model_dump(),
+        ) from None
+
+
+async def merged_search(
+    q: str,
+    *,
+    provider: str = "all",
+    form: MediaForm | None = None,
+    style_filter: frozenset[MediaStyle] | None = None,
+) -> SearchResponse:
+    """Multi-provider merged search with per-provider failure attribution
+    (ADR-0002) — the shared core of BOTH the native ``/api/search`` route
+    and the Jellyfin facade (ticket #106).
+
+    Moved out of the route module (main.py) the same way ``load_home``
+    was (ticket #101): one fan-out, one cache, one merge for every
+    caller. Model B filter axes (ADR-0001, ticket #134): ``form`` is an
+    exact-or-None match, ``style_filter`` a comma-list intersection
+    (``None`` = any); both participate in the cache key so filtered and
+    unfiltered searches never share an entry.
+
+    Behaviour (unchanged from the route's contract):
+      - 200 with ``failures`` populated whenever at least one provider's
+        contribution failed; the field is omitted when no provider failed.
+      - 502 ``search_timeout`` only when the overall budget expired for
+        ALL providers; partial results on timeout return 200 with
+        synthetic timeout rows.
+      - ``provider=all`` skips uakino while its session is ``warming`` /
+        pinned down (issue #193); explicit ``?provider=uakino`` bounded-
+        waits on ``ready_event`` (502 on a startup marker, 503 warming on
+        timeout — issue #196).
+    """
+    if not q.strip():
+        # Defensive: the native route enforces min_length=1 at the FastAPI
+        # boundary; the facade guards its own SearchTerm, so an empty query
+        # never reaches the fan-out.
+        return SearchResponse(query=q, groups=[])
+    # Fan-out skip (issue #193): while uakino's browser session is not
+    # ready (warming) or pinned down, drop it from the ``provider=all``
+    # fan-out instead of letting it burn the search budget on a session
+    # that cannot serve. No failures entry — a cold session is not an
+    # upstream error.
+    skip_uakino = provider == "all" and should_skip_uakino_in_fanout()
+    cache_key = f"search:{provider}:{q}:{form or ''}:{style_key(style_filter)}"
+    if skip_uakino:
+        # Distinguish "cold uakino" from "uakino returned empty" so a
+        # warmed-up session never serves a stale uakino-less entry for the
+        # same query (issue #193 cache obligation).
+        cache_key += ":no-uakino"
+    cached = search_cache.get(cache_key)
+    if cached is not None:
+        return cast(SearchResponse, cached)
+    if provider == "uakino":
+        # Explicit uakino: 502 on a startup marker, bounded wait on
+        # ready_event, 503 ``warming`` on timeout (issue #196).
+        await await_uakino_ready()
+    if skip_uakino:
+        selected = [p for p in PROVIDERS.values() if p.id != "uakino"]
+    else:
+        selected = list(PROVIDERS.values() if provider == "all" else [PROVIDERS[provider]])
+    if not selected:
+        # Every provider was dropped from the fan-out (e.g. uakino was the
+        # only provider and it is cold): nothing to run — an empty response
+        # is the honest answer, never a 502 (issue #193). Cached under the
+        # ``:no-uakino`` key so it never shadows a warmed uakino result.
+        resp = SearchResponse(query=q, groups=[])
+        search_cache.set(cache_key, resp)
+        return resp
+    http = get_client()
+
+    async def run(p: BaseProvider) -> list[SearchResult] | ProviderFailure:
+        """Per-provider search that converts any exception into a ProviderFailure.
+
+        Returns ``list[SearchResult]`` on success and ``ProviderFailure``
+        on failure. A provider that returns ``[]`` with no exception is
+        a legitimate "no match" answer and is NOT a failure (the empty
+        list is the success signal). Health recording lives in the
+        outer loop, not here, so partial-failure paths don't double-count.
+        """
+        try:
+            return await p.search(q, http)
+        except Exception as e:  # noqa: BLE001
+            log.warning("search failed provider=%s err=%s", p.id, e)
+            if isinstance(e, (httpx.TimeoutException, asyncio.TimeoutError)):
+                code = "timeout"
+            else:
+                code = "upstream_unreachable"
+            return ProviderFailure(provider=p.id, code=code, message=str(e))
+
+    # One task per provider, so the overall-timeout branch can observe
+    # partial completion (ADR-0002 contract: "if it fires, any in-flight
+    # providers that didn't complete get a synthetic timeout row").
+    # `asyncio.wait` returns (done, pending) within the budget; we then
+    # cancel pending and assemble the response — 502 only when no
+    # provider completed at all.
+    tasks: dict[asyncio.Task[list[SearchResult] | ProviderFailure], str] = {
+        asyncio.create_task(run(p)): p.id for p in selected
+    }
+    done: set[asyncio.Task[list[SearchResult] | ProviderFailure]]
+    pending: set[asyncio.Task[list[SearchResult] | ProviderFailure]]
+    done, pending = await asyncio.wait(
+        tasks.keys(),
+        timeout=_config.SETTINGS.search_total_timeout_s,
+    )
+
+    # Cancel + drain the still-flying tasks. CancelledError is not
+    # caught by `run()`'s `except Exception`, so a cancel leaves the
+    # task in cancelled state; we don't iterate cancelled tasks below.
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.wait(pending, timeout=0.5)
+
+    out_results: list[SearchResult] = []
+    failures: list[ProviderFailure] = []
+
+    # Drain done tasks into pid-keyed maps so we can iterate PROVIDERS in
+    # registration order below. ``asyncio.wait`` returns done as a set,
+    # which has nondeterministic iteration order — that propagates into
+    # the response and breaks stable test assertions + UI source-order.
+    # The PROVIDERS dict preserves insertion order (Python 3.7+), so we
+    # use it as the canonical traversal key for results/failures too.
+    results_by_pid: dict[str, list[SearchResult]] = {}
+    failures_by_pid: dict[str, ProviderFailure] = {}
+    for task in done:
+        if task.cancelled():
+            continue
+        pid = tasks[task]
+        try:
+            content = task.result()
+        except Exception as e:  # noqa: BLE001
+            # Defensive: ``run()`` catches Exception everywhere; an
+            # escapee is a programming error. Surface as an internal
+            # failure attributed to the provider so the client sees a
+            # structured signal rather than a partial response.
+            log.warning("search unexpected escapee provider=%s err=%r", pid, e)
+            TRACKER.record(pid, ok=False)
+            failures_by_pid[pid] = ProviderFailure(
+                provider=pid, code="internal", message=str(e)
+            )
+            continue
+        if isinstance(content, ProviderFailure):
+            TRACKER.record(pid, ok=False)
+            failures_by_pid[pid] = content
+        else:
+            TRACKER.record(pid, ok=True)
+            results_by_pid[pid] = content
+
+    # Pending tasks: the overall budget fired before they completed.
+    # Per ADR-0002, each one gets a synthetic ``timeout`` row.
+    for task in pending:
+        pid = tasks[task]
+        failures_by_pid[pid] = ProviderFailure(
+            provider=pid,
+            code="timeout",
+            message=f"overall budget {_config.SETTINGS.search_total_timeout_s}s exceeded",
+        )
+
+    # Subscription-gate sweep (can_gate providers): drop cards whose
+    # only stream is the sponsor promo clip. Bounded so a slow sweep
+    # degrades to keeping the cards instead of failing the search.
+    for prov in PROVIDERS.values():
+        if prov.can_gate and prov.id in results_by_pid:
+            try:
+                results_by_pid[prov.id] = await asyncio.wait_for(
+                    filter_gated_items(results_by_pid[prov.id], http),
+                    timeout=_GATE_CHECK_TIMEOUT_S,
+                )
+            except TimeoutError:
+                pass
+
+    # Emit results + failures in PROVIDERS registration order so the
+    # response is deterministic regardless of which asyncio task
+    # finishes first. The UI relies on stable source order for the
+    # source-switching chip strip.
+    for prov in PROVIDERS.values():
+        pid = prov.id
+        if pid in results_by_pid:
+            out_results.extend(results_by_pid[pid])
+        if pid in failures_by_pid:
+            failures.append(failures_by_pid[pid])
+
+    # Model B axis filter (ADR-0001, ticket #134): apply ``form`` /
+    # ``style`` BEFORE the merge so a filtered search never forms a
+    # group from a non-matching member (a merged group's canonical
+    # ``form``/``styles`` come from its first source row).
+    if form is not None or style_filter is not None:
+        out_results = [
+            r for r in out_results if matches_axes(r, form, style_filter)
+        ]
+
+    if not done and failures:
+        # Every provider timed out — total failure is a server-side
+        # problem, not a per-provider outcome. Surface as a clean error
+        # (never cached per ADR-0003).
+        log.warning(
+            "search total-timeout exceeded q=%r providers=%d", q, len(selected)
+        )
+        raise HTTPException(
+            502,
+            detail=ErrorResponse(
+                error="search_timeout",
+                message=f"search exceeded {_config.SETTINGS.search_total_timeout_s}s for all {len(selected)} providers",
+            ).model_dump(),
+        ) from None
+
+    # Build the response. Always cache 200 responses — including those
+    # with populated failures (a flapping provider should not become a
+    # permanent cache bypass per ADR-0003). The 502 path never reaches
+    # this code because it raises above.
+    #
+    # v3 (issue #71): cross-provider duplicates are merged server-side
+    # via ``merge_results`` (issue #52 / v3 spec §4). The result is a
+    # ``groups: list[SearchGroup]`` payload — one entry per group_key,
+    # each carrying the full per-provider ``sources`` list.
+    groups = [
+        SearchGroup(
+            group_key=mg.key,
+            title=mg.sources[0].title,
+            year=mg.sources[0].year,
+            type=mg.sources[0].type,
+            poster=mg.sources[0].poster,
+            # Model B (issue #129): first-seen-wins, like the other
+            # canonical fields.
+            form=mg.sources[0].form,
+            styles=mg.sources[0].styles,
+            sources=list(mg.sources),
+            # Issue #89: every per-item group key that contributed to
+            # this merged card. Deduped, first-seen order. The canonical
+            # ``group_key`` is the yearful-preferred-min; the client
+            # matches a resume entry against ANY member key, not only
+            # ``group_key``.
+            member_keys=list(dict.fromkeys(item_group_key(s) for s in mg.sources)),
+        )
+        for mg in merge_results(out_results)
+    ]
+    if failures:
+        resp = SearchResponse(query=q, groups=groups, failures=failures)
+    else:
+        resp = SearchResponse(query=q, groups=groups)
+    search_cache.set(cache_key, resp)
+    return resp
+
+
+def register_search_groups(groups: Sequence[SearchGroup]) -> None:
+    """Fold search-result groups into the shared group-key resolution map.
+
+    Ticket #106: the Jellyfin facade's search must open in the #105
+    detail surface, and ``resolve_group_content`` only knows keys the
+    resolution map (``sources_cache``) carries. A search covers the whole
+    catalog — most results are NOT in the 30-min home snapshot — so the
+    facade registers each merged group's provider union under EVERY
+    member key it holds, the same shape ``_build_sources_map`` stores for
+    home rows. First-seen provider order is preserved; providers the map
+    already knows are left untouched. The whole map keeps the home
+    cache's TTL (ADR-0003), so a registered key expires with the next
+    snapshot refresh.
+    """
+    if not groups:
+        return
+    existing: dict[str, dict[str, SearchResult]] = cast(
+        dict[str, dict[str, SearchResult]], sources_cache.get(_SOURCES_KEY) or {}
+    )
+    changed = False
+    for g in groups:
+        union: dict[str, SearchResult] = {}
+        for s in g.sources:
+            union.setdefault(s.provider, s)
+        keys = g.member_keys or [g.group_key]
+        for key in keys:
+            current = existing.get(key)
+            if current is None:
+                existing[key] = dict(union)
+                changed = True
+            else:
+                merged = dict(current)
+                for pid, item in union.items():
+                    merged.setdefault(pid, item)
+                if merged != current:
+                    existing[key] = merged
+                    changed = True
+    if changed:
+        # Re-set refreshes the TTL on the whole map (ADR-0003): a search
+        # extends the snapshot's life, never shortens it.
+        sources_cache.set(_SOURCES_KEY, existing)
+
+
 __all__ = [
+    "WARM_WAIT_S",
+    "await_uakino_ready",
     "blocklist_cache",
     "content_cache",
     "filter_gated_items",
@@ -474,7 +833,11 @@ __all__ = [
     "get_home",
     "home_cache",
     "load_home",
+    "merged_search",
+    "register_search_groups",
     "resolve_group",
     "resolve_group_content",
+    "search_cache",
+    "should_skip_uakino_in_fanout",
     "sources_cache",
 ]
