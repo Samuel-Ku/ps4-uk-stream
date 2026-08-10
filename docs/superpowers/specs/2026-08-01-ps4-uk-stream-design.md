@@ -4,9 +4,16 @@
 **Status:** Approved
 **Author:** Grilling session with the user
 
+> **Superseded (2026-08-09):** this spec designed the original in-house
+> PS4 catalog client ("the client" below). The project moved fully to
+> **Switchfin**, a Jellyfin client, against the backend's Jellyfin facade
+> (spec #100); the current architecture is in
+> [2026-08-05-jellyfin-adapter.md](2026-08-05-jellyfin-adapter.md). This
+> document is retained as the historical record of the original approach.
+
 ## 1. Purpose and Scope
 
-A PS4 homebrew application, built on a minimal fork of [pPlay v3.8](https://github.com/Cpasjuste/pplay), that streams Ukrainian-dubbed content (films, series, anime, cartoons, doramas) sourced from the providers of [cloudstream-extensions-uk](https://github.com/CakesTwix/cloudstream-extensions-uk). The Android/Kotlin layer is replaced with a Linux-side HTTP service that the PS4 client queries over the local network.
+A PS4 homebrew application, built on an in-house client that streams Ukrainian-dubbed content (films, series, anime, cartoons, doramas) sourced from the providers of [cloudstream-extensions-uk](https://github.com/CakesTwix/cloudstream-extensions-uk). The Android/Kotlin layer is replaced with a Linux-side HTTP service that the PS4 client queries over the local network.
 
 ### Target environment
 - **Console:** PS4 firmware 11.00 with GoldHEN.
@@ -21,12 +28,12 @@ A PS4 homebrew application, built on a minimal fork of [pPlay v3.8](https://gith
   - Title search via on-screen keyboard as the second entry point.
 - Detail view with poster, description, translation/voice-over selection, and season/episode lists for series.
 - **Per-episode translations** (anime sources attach dub/sub choices to individual episodes).
-- Direct playback through the existing MPV layer of pPlay.
+- Direct playback through the client's existing MPV layer.
 - **HentaiUkr is in scope, in the last implementation group, without any hiding/disabled-by-default flag** (user decision).
 
 ### Out of scope
 - Genre/year filters, accounts, watch-history sync (SyncPlugin), subtitles, bookmarks, recently-watched.
-- Other pPlay platforms (Switch, Vita, Linux desktop) in the context of this project.
+- Other client platforms (Switch, Vita, Linux desktop) in the context of this project.
 
 ### Feasibility threshold (JS-free)
 - Stream resolution must be reimplementable in Python without a full JavaScript engine.
@@ -52,8 +59,8 @@ Two cleanly separated components communicating over HTTP+JSON.
 - **Dependencies:** `httpx`, `beautifulsoup4`, `lxml`, `fastapi`, `uvicorn`, `pydantic`, `cachetools`.
 - **Run command:** `uvicorn cs_uk_api.main:app --host 0.0.0.0 --port 8000`; optional `systemd` unit for persistence.
 
-### 2.2 pPlay fork (C++)
-- New isolated module `pplay/src/catalog/`, no changes to the MPV core.
+### 2.2 In-house client (C++)
+- New isolated module `client/src/catalog/`, no changes to the MPV core.
   - `CatalogApi.{h,cpp}` — the only HTTP surface of the client. Owns one `Browser` instance (libcurl is already there) and **one dedicated worker thread with a request queue** — the `Browser` is synchronous and not thread-safe (single CURL handle, single response buffer), so all requests are serialized.
   - `Json.{h,cpp}` — minimal cJSON wrapper (vendored `external/cJSON`).
   - `OnscreenKeyboard.{h,cpp}` — reusable focus-grid widget with correct UTF-8 handling (Cyrillic letters are multi-byte; appending must decode the label codepoint, not take `label[0]`).
@@ -61,14 +68,14 @@ Two cleanly separated components communicating over HTTP+JSON.
   - `ScreenSearch.{h,cpp}` — query screen with the on-screen keyboard.
   - `ScreenResults.{h,cpp}` — result list with posters (lazy poster loading via `CatalogApi::loadPoster`).
   - `ScreenContent.{h,cpp}` — detail view, season/episode strip, translation chooser (content-level or per-episode).
-- `pplay/src/main.cpp` + `pplay/src/menus/menu_main.cpp` — add a "Каталог UA" item to the main menu (`Main::MenuType::Catalog`), following the existing `main->show(MenuType::...)` pattern.
-- `pplay/data/common/pplay.cfg` + `pplay_config.{h,cpp}` — new option `OPT_CATALOG_URL` (default `http://192.168.2.223:8000` — LAN IP of the host, verified).
+- `client/src/main.cpp` + `client/src/menus/menu_main.cpp` — add a "Каталог UA" item to the main menu (`Main::MenuType::Catalog`), following the existing `main->show(MenuType::...)` pattern.
+- `client/data/common/client.cfg` + `client_config.{h,cpp}` — new option `OPT_CATALOG_URL` (default `http://192.168.2.223:8000` — LAN IP of the host, verified).
 - Build: reuse the existing `ffmpeg.sh` pipeline; add `cJSON` as a submodule.
 
 ### 2.3 Data flow
 
 ```
-PS4 (pPlay fork)                                Linux host
+PS4 (in-house client)                           Linux host
 +----------------+    HTTP+JSON         +----------------------+
 | Sections screen| ---> /api/sections   | FastAPI              |
 | Browse screen  | ---> /api/browse     |  ├ 20 provider adapters
@@ -80,14 +87,14 @@ PS4 (pPlay fork)                                Linux host
 ```
 
 ### 2.4 Why this split
-pPlay stays a clean media player; the fragile scraping logic lives on the host and is updated without rebuilding the PKG. Each provider adapter is isolated, so a single broken site does not break the rest of the catalog. The extractor layer is shared so 20 adapters do not mean 20 bespoke stream resolvers.
+the client stays a clean media player; the fragile scraping logic lives on the host and is updated without rebuilding the PKG. Each provider adapter is isolated, so a single broken site does not break the rest of the catalog. The extractor layer is shared so 20 adapters do not mean 20 bespoke stream resolvers.
 
 ## 3. API Contract
 
 ### 3.1 General rules
 - UTF-8, `application/json` responses.
 - Errors as `{ "error": "<short_code>", "message": "<human phrase>" }` with the appropriate 4xx/5xx status.
-- All requests from PS4 add header `X-Client: pplay-ps4/1.0` (enables future rate limiting).
+- All requests from PS4 add header `X-Client: in-house-client/1.0` (enables future rate limiting).
 - Single upstream call timeout: 8 s. Total `/api/search` budget: 12 s, fanned out to all active providers in parallel. Same 12 s budget for `/api/browse`.
 
 ### 3.2 Types
@@ -256,8 +263,8 @@ Main Menu
 - `src/menus/menu_main.cpp` `MenuMain::onOptionSelection` — add `else if (item->name == "Каталог UA") { setVisibility(Hidden); main->show(Main::MenuType::Catalog); }`.
 - `src/main.h` — add `Catalog` to `enum class MenuType`.
 - `src/main.cpp` `Main::show(...)` — branch creating the catalog screens.
-- `src/pplay_config.h` — `#define OPT_CATALOG_URL "CATALOG_URL"` (string macros, verified).
-- `src/pplay_config.cpp` — `addOption({OPT_CATALOG_URL, "http://192.168.2.223:8000"});` after the `OPT_NETWORK` line (verified; host LAN IP from `enp1s0`).
+- `src/client_config.h` — `#define OPT_CATALOG_URL "CATALOG_URL"` (string macros, verified).
+- `src/client_config.cpp` — `addOption({OPT_CATALOG_URL, "http://192.168.2.223:8000"});` after the `OPT_NETWORK` line (verified; host LAN IP from `enp1s0`).
 - MPV layer (`Mpv`, `Player`) — untouched.
 
 ## 5. Error Handling
@@ -268,9 +275,9 @@ Main Menu
 - A global middleware logs `method`, `path`, `provider`, `latency_ms`, `status`.
 - `GET /api/stats` (LAN-only) exposes request counts, per-provider errors, average latency.
 
-### 5.2 Client (pPlay)
+### 5.2 Client (in-house)
 - `CatalogApi` distinguishes `error_network`, `error_http_<code>`, `error_parse` (same as before).
-- All actions appended to `pplay.log` via the existing `c2d::Utility::Debug`.
+- All actions appended to `client.log` via the existing `c2d::Utility::Debug`.
 
 ### 5.3 Explicitly NOT in scope (YAGNI)
 - Automatic client-side retries; offline mode; startup "backend unreachable" notification beyond a one-time toast.
@@ -315,35 +322,35 @@ The 20 content providers, provisionally classified by the structure of their ups
 - **Integration (opt-in, `--integration`):** real requests, rate-limited to 1 req/10 s.
 - **Live gate (per provider, required for `ready`):** `scripts/gate.sh <provider>` runs search → content → stream and pipes the resolved URL into `mpv --no-video` on Linux; PASS only if mpv reaches playback.
 
-### 7.2 pPlay fork (native build, without PS4)
+### 7.2 In-house client (native build, without PS4)
 - Unit tests for `Json`, `OnscreenKeyboard` (UTF-8), `CatalogApi` parsing (mocked HTTP).
 - `CatalogApi` HTTP layer tested on Linux against the real backend (integration).
 - PS4 PKG build via Docker + OpenOrbis; `readoelf` + PKG magic validation.
 
 ### 7.3 On the PS4 (Definition of Done)
 - Manual checklist: launch → "Каталог UA" → sections browse with posters → search → movie plays → series season/episode → anime episode-level translation → several episodes in a row.
-- Recorded in `docs/ps4-test-report.md` with date, firmware, GoldHEN version.
+- Recorded in `docs/switchfin-test-report.md` with date, firmware, GoldHEN version.
 
 ### 7.4 Tooling
 - Backend: `pytest`, `pytest-asyncio`, `respx`, `ruff`, `mypy`.
-- pPlay: Docker with OpenOrbis, `readoelf`/`PkgTool.Core`, `mpv` for the live gate.
+- The client: Docker with OpenOrbis, `readoelf`/`PkgTool.Core`, `mpv` for the live gate.
 
 ## 8. Implementation Phases
 
-- **Phase 0 — Setup (no code):** pin pPlay v3.8, OpenOrbis v0.5.2, cJSON 1.7.x. Monorepo `ps4-uk-stream/`.
+- **Phase 0 — Setup (no code):** pin the client base, OpenOrbis v0.5.2, cJSON 1.7.x. Monorepo `ps4-uk-stream/`.
 - **Phase 1 — Backend skeleton:** models (v2 contract), cache, client, `BaseProvider`, registry.
 - **Phase 2 — Extractor layer:** `base` / `iframe` / `playerjson` / `regex` extractors with tests.
 - **Phase 3 — Uakino reference adapter** against the real site (POST search, real selectors, capture-first fixtures).
 - **Phase 4 — FastAPI routes:** sections + browse added to the contract.
 - **Phase 5 — Triage:** classify all remaining 19 providers, produce `PROVIDERS.md`.
 - **Phase 6 — Provider groups:** Group 1 (simple-iframe) → Group 2 (playerjson) → Group 3 (custom) → Group 4 (HentaiUkr last). One task per provider, each with capture-first fixtures and the live gate.
-- **Phase 7 — pPlay fork core:** `Json`, `CatalogApi` (honest Browser/worker-thread integration), `OnscreenKeyboard` (UTF-8), screens, menu entry, config.
+- **Phase 7 — in-house client core:** `Json`, `CatalogApi` (honest Browser/worker-thread integration), `OnscreenKeyboard` (UTF-8), screens, menu entry, config.
 - **Phase 8 — PS4 PKG build:** Docker + OpenOrbis, artifact validation.
 - **Phase 9 — On-console test (FW 11.00 + GoldHEN):** manual checklist + report.
 
 ## 9. Configuration Defaults
 
-- `OPT_CATALOG_URL` in `pplay.cfg` defaults to `http://192.168.2.223:8000`; editable from the PS4 settings menu ("Адреса сервера") without rebuilding the PKG.
+- `OPT_CATALOG_URL` in `client.cfg` defaults to `http://192.168.2.223:8000`; editable from the PS4 settings menu ("Адреса сервера") without rebuilding the PKG.
 - `CS_UK_PROVIDERS` env var (comma-separated) controls active providers; empty means all.
 - HentaiUkr is enabled by default (user decision; no hiding flag).
 
@@ -358,10 +365,10 @@ The 20 content providers, provisionally classified by the structure of their ups
 ## 11. Definition of Done (project level)
 
 1. Backend runs on the Linux host; `/api/sections` lists providers; every provider marked `✅` in `PROVIDERS.md` passes the live gate (search → content → stream → plays in MPV).
-2. pPlay fork builds as a Linux binary; catalog screens work against the live backend.
+2. The client builds as a Linux binary; catalog screens work against the live backend.
 3. `PPLA00001.pkg` builds via Docker/OpenOrbis and installs on PS4 FW 11.00 + GoldHEN.
 4. Manual checklist passes on the console for: sections, search, posters, movie playback, series season/episode playback, anime episode-level translation playback.
-5. `docs/ps4-test-report.md` written with PASS verdict.
+5. `docs/switchfin-test-report.md` written with PASS verdict.
 
 ## 12. Resolved Decisions (from grilling)
 
@@ -374,4 +381,4 @@ The 20 content providers, provisionally classified by the structure of their ups
 7. SyncPlugin removed from the provider list (not a content source).
 8. Uakino adapter must be rewritten against the real site (POST `/ua/` search, `div.movie-item.short-item`, `file:` regex / ajax playlists); old fictional fixtures discarded.
 9. Media types extended: movie/series/anime/cartoon/dorama.
-10. pPlay side: Cyrillic keyboard bug fixed; poster loading actually implemented; `Browser` integration made honest (single worker thread, no invented statics).
+10. Client side: Cyrillic keyboard bug fixed; poster loading actually implemented; `Browser` integration made honest (single worker thread, no invented statics).

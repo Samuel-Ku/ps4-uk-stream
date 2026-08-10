@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a PS4 homebrew (fork of pPlay v3.8) that streams Ukrainian-dubbed content from **all 20 content providers** of cloudstream-extensions-uk via a Linux-side HTTP backend, with a Cloudstream-like catalog (section browsing + search), and the full manual test on a PS4 FW 11.00 + GoldHEN as the Definition of Done.
+**Goal:** Build a PS4 homebrew (an in-house client) that streams Ukrainian-dubbed content from **all 20 content providers** of cloudstream-extensions-uk via a Linux-side HTTP backend, with a Cloudstream-like catalog (section browsing + search), and the full manual test on a PS4 FW 11.00 + GoldHEN as the Definition of Done.
 
-**Architecture (v2, after grilling):** FastAPI scraper service on a Linux host exposes REST+JSON over the local network; a thin pPlay fork adds a new "Каталог UA" menu entry with sections/search/result/detail screens that call the backend and hand the resolved URL to the existing MPV player. A shared `extractors/` layer resolves streams (iframe chains, PlayerJson/CDN, regex), since most of the 20 providers do not hand out direct URLs.
+**Architecture (v2, after grilling):** FastAPI scraper service on a Linux host exposes REST+JSON over the local network; a thin in-house client adds a new "Каталог UA" menu entry with sections/search/result/detail screens that call the backend and hand the resolved URL to the existing MPV player. A shared `extractors/` layer resolves streams (iframe chains, PlayerJson/CDN, regex), since most of the 20 providers do not hand out direct URLs.
 
 **Tech Stack:**
 - Backend: Python 3.11+, FastAPI, uvicorn, httpx, beautifulsoup4, lxml, pydantic, cachetools; pytest + respx for tests; `mpv` CLI for the per-provider live gate.
-- pPlay fork: C++17, libcross2d, existing `Browser` (libcurl) — **owned instance + single worker thread** (Browser is synchronous and not thread-safe), cJSON (vendored as a submodule).
+- In-house client: C++17, libcross2d, existing `Browser` (libcurl) — **owned instance + single worker thread** (Browser is synchronous and not thread-safe), cJSON (vendored as a submodule).
 - Build: CMake, OpenOrbis-PS4-Toolchain v0.5.2 (clang/lld, `create-fself`, `PkgTool.Core`), Docker image for reproducible builds.
 - Target: PS4 firmware 11.00 with GoldHEN.
 
@@ -21,6 +21,13 @@
 6. A provider is `ready` only when the live gate passes: search → content → stream → **plays in mpv** on Linux.
 7. Fixtures are captured from live upstream HTML/JSON (capture-first); **no invented HTML**.
 8. HentaiUkr enabled by default.
+
+> **Superseded (2026-08-09):** this plan implemented the original in-house
+> PS4 catalog client ("the client" below). The project moved fully to
+> **Switchfin**, a Jellyfin client, against the backend's Jellyfin facade
+> (spec #100); the current architecture is in
+> [2026-08-05-jellyfin-adapter.md](../specs/2026-08-05-jellyfin-adapter.md).
+> The tasks below are the historical record of the abandoned approach.
 
 ## Status snapshot (live)
 
@@ -43,13 +50,13 @@ sections themselves are still the source of truth.
 | 11 | Group 3 — custom extractors / API clients | DONE — eneyida, uaserialspro, anitubeinua, simpsonsuatv, animeon |
 | 12 | Group 4 — HentaiUkr | DONE |
 | 13 | Live gate tooling + PROVIDERS.md finalization | DONE — `backend/scripts/live_gate.py` |
-| 14 | pPlay fork — vendored cJSON + Json wrapper | DONE |
-| 15 | pPlay fork — `CatalogApi` parsing skeleton (browser wire-up deferred) | DONE (browser wire-up landed in Task 18) |
-| 16 | pPlay fork — `OnscreenKeyboard` | DONE (issue #15 bug fixed) |
-| 17 | pPlay fork — config + main menu entry | DONE — «Пошук UA» menu entry (see status.md Task 18) |
-| 18 | pPlay fork — full catalog screens | DONE — wired through shared `CatalogContext` (see status.md Task 18) |
+| 14 | In-house client — vendored cJSON + Json wrapper | DONE |
+| 15 | In-house client — `CatalogApi` parsing skeleton (browser wire-up deferred) | DONE (browser wire-up landed in Task 18) |
+| 16 | In-house client — `OnscreenKeyboard` | DONE (issue #15 bug fixed) |
+| 17 | In-house client — config + main menu entry | DONE — «Пошук UA» menu entry (see status.md Task 18) |
+| 18 | In-house client — full catalog screens | DONE — wired through shared `CatalogContext` (see status.md Task 18) |
 | 19 | PS4 PKG build via OpenOrbis Docker | PARTIAL — scripts/Dockerfile verified (`bash -n`); final Docker build blocked on user hardware |
-| 20 | On-console test and report | PARTIAL — `docs/ps4-test-report.md` checklist updated; on-console run blocked on user hardware |
+| 20 | On-console test and report | PARTIAL — `docs/switchfin-test-report.md` checklist updated; on-console run blocked on user hardware |
 
 GitHub tracking is the live source of truth — see
 [`docs/superpowers/specs/2026-08-01-ps4-uk-stream-design.md` § Tracking]
@@ -66,7 +73,7 @@ ps4-uk-stream/
 ├── .gitignore
 ├── Dockerfile.ps4
 ├── docs/
-│   └── ps4-test-report.md
+│   └── switchfin-test-report.md
 ├── backend/
 │   ├── pyproject.toml
 │   ├── requirements.txt
@@ -113,7 +120,7 @@ ps4-uk-stream/
 │   │       └── test_<provider>.py       ← one per provider
 │   └── tools/
 │       └── capture.py                   ← capture real HTML/JSON into fixtures
-└── pplay-fork/
+└── client/
     ├── external/cJSON/
     ├── src/catalog/
     │   ├── CatalogApi.{h,cpp}
@@ -130,7 +137,7 @@ ps4-uk-stream/
     │   └── test_catalog_api.cpp         ← parsing + mocked Browser
     ├── scripts/build-ps4-docker.sh
     ├── scripts/ffmpeg-ps4.sh
-    └── (existing pPlay tree: src/, data/, libcross2d/, pscrap/, libsmb2/, …)
+    └── (existing client tree: src/, data/, libcross2d/, pscrap/, libsmb2/, …)
 ```
 
 ---
@@ -139,7 +146,7 @@ ps4-uk-stream/
 
 Same as before — create the directory tree, `README.md`, `.gitignore`, `git init`.
 
-- [ ] **Step 1:** `mkdir -p ps4-uk-stream/{backend,pplay-fork,docs}` (already done — verify).
+- [ ] **Step 1:** `mkdir -p ps4-uk-stream/{backend,client,docs}` (already done — verify).
 - [ ] **Step 2:** `README.md` — updated quick start (backend on Linux, `mpv` gate note, link to spec v2 + PROVIDERS.md).
 - [ ] **Step 3:** `.gitignore` (same as before).
 - [ ] **Step 4:** `git init` + commit `chore: initialize monorepo skeleton`.
@@ -764,15 +771,15 @@ timeout 30 mpv --no-video --frames=1 --no-config --msg-level=all=error "$URL" \
 
 ---
 
-## Task 14: pPlay fork — vendor cJSON + Json wrapper
+## Task 14: In-house client — vendor cJSON + Json wrapper
 
 Same as old plan Tasks 9–10 verbatim (`external/cJSON` submodule, `Json.{h,cpp}`, `tests/catalog/test_json.cpp`, CMake hook). No changes.
 
-- [ ] Commit `feat(pplay-fork): vendor cJSON, Json wrapper`.
+- [ ] Commit `feat(client): vendor cJSON, Json wrapper`.
 
 ---
 
-## Task 15: pPlay fork — CatalogApi with honest Browser integration
+## Task 15: In-house client — CatalogApi with honest Browser integration
 
 **Files:** `src/catalog/CatalogApi.{h,cpp}`, `tests/catalog/test_catalog_api.cpp`
 
@@ -880,11 +887,11 @@ void CatalogApi::searchAsync(const std::string &query, SearchCb cb) {
 - [ ] **Step 5:** Parsing — `parseSearch`/`parseContent`/`parseStream`/`parseSections`/`parseBrowse` via `Json.{h,cpp}`; `parseContent` must read `translations_level` and per-episode `translations`.
 - [ ] **Step 6:** Tests: `test_catalog_api.cpp` — parsing tests (frozen JSON, incl. episode-level translations) as before; **no network in unit tests**.
 - [ ] **Step 7:** Linux integration (manual, optional): run the backend, run a small CLI harness against the real API.
-- [ ] **Step 8:** commit `feat(pplay-fork): CatalogApi with worker-thread Browser integration`.
+- [ ] **Step 8:** commit `feat(client): CatalogApi with worker-thread Browser integration`.
 
 ---
 
-## Task 16: pPlay fork — OnscreenKeyboard (UTF-8 correct)
+## Task 16: In-house client — OnscreenKeyboard (UTF-8 correct)
 
 **Files:** `src/catalog/OnscreenKeyboard.{h,cpp}`, `tests/catalog/test_keyboard.cpp`
 
@@ -955,28 +962,28 @@ void OnscreenKeyboard::backspace() {
 
 - [ ] **Step 4:** Tests (`test_keyboard.cpp`): append "А" (2-byte), "Є" (2-byte), "Ґ" (2-byte), "Ж" — text matches; backspace removes exactly one codepoint; space/back/clear/done are actions; digits append.
 - [ ] **Step 5:** `ScreenSearch` uses `kb_.append(label)` (the label string), never `label[0]`.
-- [ ] **Step 6:** commit `feat(pplay-fork): UTF-8-correct OnscreenKeyboard`.
+- [ ] **Step 6:** commit `feat(client): UTF-8-correct OnscreenKeyboard`.
 
 ---
 
-## Task 17: pPlay fork — config, menu entry, screen scaffolding
+## Task 17: In-house client — config, menu entry, screen scaffolding
 
-**Files:** `src/pplay_config.{h,cpp}`, `src/menus/menu_main.cpp`, `src/main.{h,cpp}`, `data/common/pplay.cfg`, placeholder screens
+**Files:** `src/client_config.{h,cpp}`, `src/menus/menu_main.cpp`, `src/main.{h,cpp}`, `data/common/client.cfg`, placeholder screens
 
 Verified integration points (read from the actual tree):
-- `src/pplay_config.h` — add `#define OPT_CATALOG_URL "CATALOG_URL"` next to the other `OPT_*` string macros.
-- `src/pplay_config.cpp` — after `addOption({OPT_NETWORK, "http://samples.ffmpeg.org/"});` add `addOption({OPT_CATALOG_URL, "http://192.168.2.223:8000"});`.
+- `src/client_config.h` — add `#define OPT_CATALOG_URL "CATALOG_URL"` next to the other `OPT_*` string macros.
+- `src/client_config.cpp` — after `addOption({OPT_NETWORK, "http://samples.ffmpeg.org/"});` add `addOption({OPT_CATALOG_URL, "http://192.168.2.223:8000"});`.
 - `src/main.cpp` (items block, ~line 107): `items.emplace_back("Каталог UA", "catalog.png", MenuItem::Position::Top);` — also handle the missing icon (fall back to `network.png` if no catalog.png asset yet).
 - `src/main.h` — extend `enum class MenuType { ... }` with `Catalog`.
 - `src/menus/menu_main.cpp` `MenuMain::onOptionSelection` — add `else if (item->name == "Каталог UA") { setVisibility(Visibility::Hidden, true); main->show(Main::MenuType::Catalog); }`.
 - `src/main.cpp` `Main::show(...)` — branch: `case MenuType::Catalog: push(new ScreenSections(this, catalogApi)); break;` where `catalogApi` is created once in `Main` constructor from `OPT_CATALOG_URL`.
 - Placeholder `ScreenSections.h/cpp` (compiles, blank scene) so the build links.
 - Build Linux: `cmake -B build -DCMAKE_BUILD_TYPE=Debug -DPLATFORM_LINUX=ON && cmake --build build -- -j` → PASS.
-- Commit `feat(pplay-fork): config option, Каталог UA menu entry, catalogApi wiring`.
+- Commit `feat(client): config option, Каталог UA menu entry, catalogApi wiring`.
 
 ---
 
-## Task 18: pPlay fork — full catalog screens
+## Task 18: In-house client — full catalog screens
 
 **Files:** `ScreenSections.{h,cpp}`, `ScreenSearch.{h,cpp}` (full), `ScreenResults.{h,cpp}` (full), `ScreenContent.{h,cpp}` (full)
 
@@ -986,13 +993,13 @@ Verified integration points (read from the actual tree):
 - [ ] **Step 4:** `ScreenContent` — poster, description, translations; season strip + episode list; if `translations_level == "episode"`, translation chooser binds to the focused episode (episode's own `translations`); Fire1 → `streamAsync(id, translationId)` → hand `url`/`headers` to the existing `Player` (see old plan's handoff note: the exact call site in `main.cpp` is `Player::load` — keep the resolved URL log line as fallback until confirmed).
 - [ ] **Step 5:** Callbacks arrive on the CatalogApi worker thread — marshal UI updates via `c2d::Main::addAction`/the existing event mechanism; never touch c2d widgets off the UI thread.
 - [ ] **Step 6:** Build Linux → PASS; manual Linux run against live backend (optional).
-- [ ] **Step 7:** commit `feat(pplay-fork): Sections/Search/Results/Content screens with posters`.
+- [ ] **Step 7:** commit `feat(client): Sections/Search/Results/Content screens with posters`.
 
 ---
 
 ## Task 19: PS4 PKG build via OpenOrbis Docker
 
-Same as old plan Task 16 verbatim (`Dockerfile.ps4`, `scripts/build-ps4-docker.sh`, `scripts/ffmpeg-ps4.sh`, artifact validation: PKG magic `\x7FCNT` — `7f 43 4e 54`, per `docs/ps4-test-report.md`; `readoelf` NID table, `auth_id 0x3800000000000011`).
+Same as old plan Task 16 verbatim (`Dockerfile.ps4`, `scripts/build-ps4-docker.sh`, `scripts/ffmpeg-ps4.sh`, artifact validation: PKG magic `\x7FCNT` — `7f 43 4e 54`, per `docs/switchfin-test-report.md`; `readoelf` NID table, `auth_id 0x3800000000000011`).
 
 - [ ] Commit `build(ps4): OpenOrbis Docker pipeline and PS4 ffmpeg.sh`.
 
@@ -1011,7 +1018,7 @@ Same as old plan Task 17, checklist updated for the v2 scope:
 - [ ] A series: choose season, choose episode, play several in a row.
 - [ ] An anime: episode-level translation chooser works (choose dub/sub, plays).
 - [ ] At least 3 different providers verified on the console.
-- [ ] Write `docs/ps4-test-report.md` (PASS/FAIL required).
+- [ ] Write `docs/switchfin-test-report.md` (PASS/FAIL required).
 
 - [ ] Commit `docs: PS4 test report (FW 11.00 + GoldHEN)`.
 
@@ -1025,7 +1032,7 @@ Same as old plan Task 17, checklist updated for the v2 scope:
 - **Episode-level translations (spec §3.6):** Task 2 (models), Task 10 (anime providers), Task 15 (parse), Task 18 (UI chooser).
 - **Provider families/order (spec §6):** Tasks 8–12; live gate = Task 13; statuses in `PROVIDERS.md`.
 - **Capture-first fixtures:** `tools/capture.py` (Task 6 Step 1) used by every provider task.
-- **pPlay honest Browser integration (spec §4.7):** Task 15 (worker thread, no invented statics).
+- **In-house client honest Browser integration (spec §4.7):** Task 15 (worker thread, no invented statics).
 - **UTF-8 keyboard (spec §4.6):** Task 16.
 - **Poster loading (spec §4.4):** Task 15 (`loadPoster`) + Task 18 (lazy rows).
 - **PS4 build (spec §7.2):** Task 19; **console test:** Task 20.

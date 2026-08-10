@@ -224,7 +224,7 @@ Deployment assumption that drives most of it: **one host, one uvicorn process, L
 | `/api/content/{id}` (blocked-country 404) | memory | 30m | `CS_UK_CACHE_CONTENT` (shared) | The block follows from the item's `country` field, which is as stable as the item. Avoids re-fetching and re-parsing content that will be rejected again. |
 | `/api/poster` | memory | 1h | `CS_UK_CACHE_POSTER` | A memory-pressure bound, not a freshness bound — a poster is immutable for a given URL. |
 | `/api/poster` | backend disk | 7d | `CS_UK_POSTER_DISK_TTL` | Issue #54. Survives restarts; disk is cheap; content is immutable per URL. |
-| `/api/poster` | pplay-fork disk | 7d | — | Issue #54, mirrored so the console serves warm art without touching the LAN. |
+| `/Items/{id}/Images/*` (facade) | memory | per-poster | — | The facade serves the same backend-disk-cached bytes inline (public, token-less image routes); the WebP transcode memo bounds CPU, not freshness. |
 | `/api/providers` | **not cached** | — | — | Embeds live `TRACKER.status()`. A TTL would delay exactly the health signal the endpoint exists to deliver. |
 | `/api/sections` | **not cached** | — | — | A list comprehension over a static in-process registry. A cache in front of a dict lookup is pure overhead. |
 | `/api/stream/{id}` | **not cached** | — | — | See "What is not cached" below. |

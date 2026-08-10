@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Something is broken in the backend, the pPlay fork, or the build pipeline.
+about: Something is broken in the backend, the Switchfin client, or the Jellyfin facade.
 title: "[bug] "
 labels: bug
 assignees: ""
@@ -26,7 +26,7 @@ What actually happened. Include the full error message or log line.
 
 ## Environment
 
-- Component: `backend` / `pplay-fork` / `Docker build` / `on PS4`
+- Component: `backend` / `Jellyfin facade` / `Switchfin` / `on PS4`
 - Branch / commit: `git rev-parse HEAD`
 - OS (host): e.g. Ubuntu 22.04
 - Python version: `python3 --version`

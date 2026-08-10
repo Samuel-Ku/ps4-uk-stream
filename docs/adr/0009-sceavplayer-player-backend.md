@@ -1,6 +1,6 @@
 # ADR-0009: SceAvPlayer as a player backend (gated by env var)
 
-**Status:** proposed
+**Status:** superseded (2026-08-09) — the PS4 client moved to Switchfin, whose player lives in the client, not in this repo; the SceAvPlayer decision below is historical.
 **Date:** 2026-08-02
 **Refs:** #36, #65
 
@@ -8,8 +8,9 @@
 
 The PS4 has fixed-function hardware blocks for AVC (H.264) and HEVC
 (H.265). SceAvPlayer (Sony's libavplayer in the PS4 SDK) is the only
-public path to the hardware decoder. mpv in pPlay decodes in software
-on the Jaguar CPU and chews through it at 1080p.
+public path to the hardware decoder. The then in-house client's mpv
+path decodes in software on the Jaguar CPU and chews through it at
+1080p.
 
 The spike ticket #36 (closed by design-side research) showed Path A
 (SceAvPlayer as a player backend) is viable conditional on three
@@ -74,8 +75,8 @@ spike lands a verified build.
   are HLS and MP4 file playback; we keep the mpv path for any
   non-HLS source that surfaces later.
 - subtitle / OSD rework — the catalog layer's `PositionSaver` is
-  the only contract we depend on; the OSD is rendered by pPlay's
-  existing chromium-on-PS4 overlay, not by the player.
+  the only contract we depend on; the OSD is rendered by the client's
+  chromium-on-PS4 overlay, not by the player.
 
 ## Tests
 
@@ -88,5 +89,5 @@ spike lands a verified build.
 
 ## Migration
 
-No migration. The default stays `CS_UK_PLAYER=mpv`. Opt-in is
-documented in `docs/ps4-test-report.md` and tracked by #65.
+No migration. The default stays `CS_UK_PLAYER=mpv`. Opt-in was
+tracked by #65.

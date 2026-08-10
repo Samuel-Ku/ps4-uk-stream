@@ -100,138 +100,13 @@ Run the tests:
 cd backend && . .venv/bin/activate && pytest cs_uk_api/tests -v
 ```
 
-### pPlay fork catalog module -- 3/3 standalone tests passing
+### PS4 client: Switchfin (2026-08-09)
 
-- `pplay-fork/src/catalog/Json.{h,cpp}` -- cJSON wrapper exposing
-  `JsonDoc::parse`, `JsonValue::str`, `integer`, `arr`, `asArray`.
-- `pplay-fork/src/catalog/CatalogApi.{h,cpp}` -- DTOs (`SearchItem`,
-  `ContentItem`, `StreamInfo`) and pure parsing functions
-  (`parseSearch`, `parseContent`, `parseStream`); the network
-  methods call through an injected `HttpClient` interface (tests pass a
-  fake; the real `BrowserHttpClient` wire-up was deferred at plan time
-  and landed in Task 18).
-- `pplay-fork/src/catalog/OnscreenKeyboard.{h,cpp}` -- UTF-8 aware
-  on-screen keyboard widget with focus grid, `append(char32_t)`,
-  `backspace()`, `clear()`, and action keys (`space`, `back`, `clear`,
-  `done`).
-- `pplay-fork/external/cJSON/` -- cJSON v1.7.18 vendored.
-- `pplay-fork/tests/standalone-catalog/` -- sandbox-friendly CMake
-  harness that builds only the catalog module + tests (the full pPlay
-  build requires libcross2d/SDL2/ffmpeg/mpv which were not installed in
-  the build environment).
-- `pplay-fork/CMakeLists.txt` and `pplay-fork/tests/catalog/CMakeLists.txt`
-  edited per the plan, ready to be picked up by a full pPlay build
-  (cross2d is the missing dep on a non-PS4 Linux host).
-
-Build and test the standalone harness:
-
-```bash
-cd pplay-fork
-cmake -B build-standalone -S tests/standalone-catalog -DCMAKE_BUILD_TYPE=Debug
-cmake --build build-standalone -- -j
-ctest --test-dir build-standalone --output-on-failure
-```
-
-### PS4 build pipeline (Docker) -- end-to-end build verified
-
-- `Dockerfile.ps4` -- Ubuntu 22.04 + clang/lld/cmake + OpenOrbis v0.5.2
-  cloned to `/opt/oo` with the right env vars.
-- `pplay-fork/scripts/build-ps4-docker.sh` -- autodetects docker/podman,
-  builds the image, runs the FFmpeg + pPlay build, verifies artifacts.
-- `pplay-fork/scripts/ffmpeg-ps4.sh` -- cross-compiles FFmpeg n6.1 for
-  the OpenOrbis target.
-- `pplay-fork/scripts/ps4-toolchain/pplay-create-fself.sh` -- bash
-  wrapper around `create-fself` (Sony) that dodges cmake's
-  Unix-Makefiles dash-escape quirk (cmake wraps arg values in `\"...\"`
-  which dash treats as literal characters; the wrapper reads input /
-  output paths from positional args that cmake leaves unescaped).
-- `pplay-fork/scripts/README.md` -- build, install, and test instructions
-  for the user's own machine.
-
-End-to-end build (Task 19):
-
-- `bash pplay-fork/scripts/build-ps4-docker.sh` → OK, produces
-  `pplay-fork/build/IV0000-PPLA00001_00-PPLAY00000000000.pkg` (6.6 MB)
-  with the fake-signed SELF at `pplay-fork/build/eboot/eboot.bin`
-  (5.0 MB). Verified:
-  - PKG magic `\x7FCNT` (bytes `7f 43 4e 54`) ✓
-  - ELF magic `\x7FELF` (bytes `7f 45 4c 46`) ✓
-  - ELF type `0xFE10` "SCE Executable (ASLR)" ✓
-  - ELF OS/ABI: FREEBSD ✓; Machine: EM_X86_64 ✓
-- Stubs added to make pplay linkable on PS4 without libmpv / libcurl /
-  libpng / libz / libfreetype / libGLESv2 (none of which ship as
-  static libs in the OpenOrbisSDK):
-  - `libcross2d/source/platforms/ps4/gl_renderer_stub.cpp` -- no-op
-    `c2d::GLRenderer` / `c2d::GLTexture` / `c2d::GLTextureBuffer` plus
-    `glGenBuffers`/`glBindBuffer`/`glBufferData`/`glDeleteBuffers`
-    stubs that `source/skeleton/sfml/VertexArray.cpp` calls directly.
-  - `pplay-fork/src/p_movie.h` / `src/p_search.h` -- PS4 stubs for
-    `pscrap::Movie` / `pscrap::Search` (the upstream classes pull in
-    libcurl + json-c; we ship the catalog client only and run the
-    scrapper as an out-of-band Linux service).
-  - `pplay-fork/src/scrapper/scrapper_stub.cpp` -- no-op
-    `pplay::Scrapper` for PS4.
-  - `pplay-fork/src/player/ps4_stubs/mpv_stub.h` -- PS4 replacements
-    for `<mpv/client.h>` and `<mpv/render_gl.h>` so pplay's
-    `src/player/mpv.cpp` and `src/catalog/ScreenContent.cpp` compile
-    without libmpv. `mpv_ps4_vars.cpp` provides the `ps4_mpv_*`
-    globals that the upstream libmpv PS4 platform layer defines.
-  - `pplay-fork/src/filer/Browser/Browser.hpp` -- when `__PS4__` is
-    defined, the libcurl-backed `Browser` class is replaced with an
-    empty stub (no networking on PS4; the catalog client uses its own
-    libcurl-less path).
-- Link line additions for the Sce SDK stubs that vendored SDL2.a
-  references: `-lScePad -lSceAudioOut -lSceVideoOut -lSceUserService
-  -lSceSysmodule -lSceSystemService` (added to `ps4.cmake`'s
-  `CMAKE_EXE_LINKER_FLAGS`).
-- FreeBSD 12.0 libc++ workarounds in `ps4.cmake` (pre-include
-  `cstdlib` + `cmath-shim.h` so `using std::isnan;` / `std::isinf`
-  resolve — the FreeBSD libc++ only exposes them as `#define` macros
-  in this sysroot).
-- pkg.gp4 generator hooked into the `pplay_pkg` cmake target (the
-  upstream `add_pkg` macro wrote the generator script but never
-  executed it; without this PkgTool.Core aborts with "Could not find
-  file 'pkg.gp4'"). Generates the canonical OpenOrbis XML project
-  descriptor from `PS4_PKG_TITLE_ID` / `PS4_PKG_TITLE` so the .pkg
-  is named `IV0000-<TITLE_ID>_00-...pkg` (36-char content_id as
-  required by PkgTool.Core).
-
-## Deferred -- work reserved for the user
-
-These tasks require a PS4 console with GoldHEN.
-
-- **Task 20 -- On-console test.** Install the PKG (side-load via
-  GoldHEN payload or DNS redirect), fill in
-  [`docs/ps4-test-report.md`](ps4-test-report.md), and tick the
-  checklist.
-
-## Tasks 18-20 (this pass)
-
-- **Task 18 (done).** Full `ScreenSections`, `ScreenSearch`,
-  `ScreenResults`, `ScreenContent` implementations wired through a
-  shared `CatalogContext` (singleton-style accessor for one worker
-  thread + one `BrowserHttpClient`). Main owns the `CatalogApi`
-  lifecycle, adds a "Пошук UA" menu entry, and tears the api down
-  before other screens in `~Main`. mpv ABI fix: dropped the obsolete
-  third `mpv_opengl_init_params` initializer (libmpv 0.32+). Three
-  out-of-class definitions in `Browser/regex.hpp`, `links.hpp`,
-  `Browser.hpp` marked `inline` so two TUs can include them without
-  multiple-definition errors.
-
-  Linux build: `cmake --build build-linux --target pplay` → OK
-  (ELF 64-bit produced). Standalone ctest: 3/3 pass. Backend pytest:
-  362/362 pass.
-
-- **Task 19 (done).** End-to-end `bash pplay-fork/scripts/build-ps4-docker.sh`
-  produces a 6.6 MB `IV0000-PPLA00001_00-PPLAY00000000000.pkg` with
-  the expected PKG magic + ELF SELF type 0xFE10. See the
-  "End-to-end build" section above for the full list of new files /
-  changes. The release PKG is ready to install via GoldHEN.
-
-- **Task 20 (done).** [`docs/ps4-test-report.md`](ps4-test-report.md)
-  updated with the new "Пошук UA" menu entry, search → results →
-  content → play happy-path   checklist, and Provider/Translation
-  matrices for the 19 v2 providers.
+The project is now **Switchfin** — a Jellyfin client on the PS4 — talking
+to the backend's Jellyfin facade (spec #100). The original C++ catalog
+client and its Docker PS4 build pipeline were removed along with the
+status sections that described them; the backend sections above remain
+the current implementation status.
 
 ## Adding more providers
 
@@ -273,5 +148,6 @@ To add a new provider:
 8. Smoke-test with `python -m cs_uk_api.scripts.live_gate --provider <id>`
    to confirm the stream plays in mpv on the live site.
 
-No frontend changes are required for additional providers; the
-`CatalogApi` client only consumes the API contract.
+No client changes are required for additional providers; Switchfin
+consumes the Jellyfin facade, which serves whatever the registry
+contains.

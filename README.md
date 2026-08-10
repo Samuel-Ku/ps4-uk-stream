@@ -1,12 +1,14 @@
 # PS4 UK Stream
 
-Fork of pPlay v3.8 with a new "Каталог UA" screen and a Linux-side backend
-that serves Ukrainian-dubbed content scraped from the providers of
-cloudstream-extensions-uk.
+A Linux-side backend that serves Ukrainian-dubbed content scraped from the
+providers of cloudstream-extensions-uk, played on the PS4 through
+**Switchfin** — a Jellyfin client — via the backend's Jellyfin facade
+(spec #100). The backend's native `/api/*` routes and the facade serve the
+same catalog; a Jellyfin client pointed at the backend finds a server
+without configuration.
 
-See `docs/superpowers/specs/2026-08-01-ps4-uk-stream-design.md` for design,
-and `docs/superpowers/plans/2026-08-01-ps4-uk-stream-impl.md` for the
-implementation plan.
+See `docs/superpowers/specs/2026-08-05-jellyfin-adapter.md` for the facade
+design and `CONTEXT.md` for the domain model.
 
 ## Network addresses (home LAN)
 
@@ -23,6 +25,7 @@ implementation plan.
    (see `backend/cs_uk_api/scripts/README.md`).
 1. Run the backend on a Linux host in the same LAN as the PS4:
    `cd backend && uvicorn cs_uk_api.main:app --host 0.0.0.0 --port 8000`
-2. Build the PS4 PKG (see `pplay-fork/`).
-3. Install the PKG via GoldHEN on a PS4 running firmware 11.00.
-4. In pPlay settings, set "Адреса сервера" to `http://<host-ip>:8000`.
+2. On the PS4, open Switchfin and add a server at
+   `http://<host-ip>:<port>` (the backend's Jellyfin facade). Any
+   username/password completes the handshake — the facade is accept-any
+   and stateless (ADR-0002).

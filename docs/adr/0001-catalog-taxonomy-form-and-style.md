@@ -44,7 +44,7 @@ The full chain considered three Model-A alternatives before B was chosen, and sm
 ## Consequences
 
 - **API contract change.** `/api/sections`, `/api/browse`, `/api/search`, `/api/content/{id}` JSON shapes will diverge from the v2 spec (§3.2–3.6 of `docs/superpowers/specs/2026-08-01-ps4-uk-stream-design.md`). All 19 provider adapters need updates to emit the new shape (per-item `styles` set, per-section filter axes). On the wire, `MediaType` is replaced by `form` + `styles`.
-- **pplay-fork side.** `ScreenResults`, `ScreenContent`, `ScreenSections` consume the new contract — type rendering, icon logic, and section grouping need to be aware that the same item can carry `styles = frozenset({"anime", "cartoon"})`. Default to rendering a small icon for each distinct style.
+- **Client side.** The client is Switchfin consuming the catalog through the Jellyfin facade (spec #100); `form` + `styles` remain a backend contract, and any style-aware rendering lives in the client, outside this repo.
 - **Caching.** `/api/search` cache key gains `form` and `styles` axes. Sections are still pre-cached per provider.
 - **Future work surface.** Adding a new MediaStyle (e.g. `"documentary"`) is a Literal/Enum extension plus provider updates, not a schema overhaul. Adding `styles_all` (subset semantics) to Sections is a non-breaking optional field. Adding `is_adult` later remains possible if the spec gets revised; this ADR will be the first thing to argue against it.
 - **Spec reconciliation.** `docs/superpowers/specs/2026-08-01-ps4-uk-stream-design.md` still describes Model A. After this ADR is accepted, that spec section is **obsolete in spirit**; it remains the source of truth for the parts not affected by Model B (architecture, data flow, error envelopes).

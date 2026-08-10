@@ -5,6 +5,12 @@
 **Base:** [v2 spec](2026-08-01-ps4-uk-stream-design.md) + user's 10-foot UI input document
 **Author:** Grilling session with the user
 
+> **Superseded (2026-08-09):** the client-side design in §2+ targeted the
+> in-house PS4 catalog client, which was removed when the project moved
+> fully to **Switchfin** (a Jellyfin client) against the backend's
+> Jellyfin facade (spec #100). The backend/data-model sections remain
+> current.
+
 ## Amendment (2026-08-02): Russian-content blocking (issue #79)
 
 The backend already blocks Russian-origin content; this amendment documents
@@ -33,7 +39,7 @@ remains the contract for everything not modified here.
 
 | Gate | Content | Unblocks |
 |------|---------|----------|
-| **M0** — Console smoke | Install current PKG on FW 11.00 + GoldHEN, fill `docs/ps4-test-report.md` checklist (launch, menu render via SDL2, black-hole backend test) | M1 |
+| **M0** — Console smoke | Install current PKG on FW 11.00 + GoldHEN, fill `docs/switchfin-test-report.md` checklist (launch, menu render via SDL2, black-hole backend test) | M1 |
 | **M1** — PS4 playback path | Replace `mpv_stub` with a real playback path on the console (ffmpeg-based; the `ffmpeg-ps4.sh` toolchain exists) | M2 late, all player sections |
 | **M2** — 10-foot restyle | Typography scale, safe margins, focus highlight, Home screen skeleton, chips | M3 |
 | **M3** — Features | Merged groups in backend, resume state, source/dub memory, health dimming, Newest row | — |
@@ -43,13 +49,13 @@ document are **blocked-by-M1** and are not part of M2/M3 scope except as noted.
 
 ### Fact anchors (verified in code 2026-08-02)
 
-- On-console test was never run: `docs/ps4-test-report.md` is an unfilled template.
+- On-console test was never run: `docs/switchfin-test-report.md` is an unfilled template.
 - No PS4 playback path exists: `src/player/ps4_stubs/mpv_stub.h` documents libmpv replacement as a follow-up; `gl_renderer_stub.cpp` is a no-op (UI renders via vendored SDL2).
 - Current catalog typography: `kTitleSize 28 / kBodySize 18 / meta 16–18` (below the 24 px floor).
 - Input abstraction: `c2d::Input::Key{Up/Down/Left/Right/Fire1/2/3/Start}`; physical DualShock binding lives in the SDL2 input platform layer (single point of change).
 - Content identity: `provider:external_id`; no cross-provider entity resolution anywhere.
 - No resume/history: v2 explicitly excluded recently-watched; `Player::resume()` is just unpause.
-- Writable data path exists: `Io::getDataPath()` hosts `pplay.cfg` + `cache/` (`/user/data/pplay/` on PS4).
+- Writable data path exists: `Io::getDataPath()` hosts `client.cfg` + `cache/` (the client data dir on PS4).
 - Posters: backend memory TTL 1 h + client 50-entry in-memory LRU; `cache/<hash>-poster.jpg` disk pattern already exists from the old scrapper.
 - OSD already auto-hides: `OSD_HIDE_TIME 4.0f` in `player_osd.cpp`.
 - "Newest" signals in providers: default listing order of type sections is newest-first (DLE sites); explicit recency sections: simpsonsuatv `updates`, unimay `updates`, animeon `page`, animeua `page`, anitubeinua `page`. "Popular" exists in exactly ONE provider: animeon `popular`.
@@ -69,14 +75,14 @@ document are **blocked-by-M1** and are not part of M2/M3 scope except as noted.
 
 No other v2 endpoints change shape except as noted in §3.
 
-### 2.2 Client (pPlay fork) additions
+### 2.2 Client (in-house fork — superseded by Switchfin) additions
 
-- New `ScreenHome` — the single catalog entry point ("Каталог UA" in the pPlay
+- New `ScreenHome` — the single catalog entry point ("Каталог UA" in the client's
   main menu; the separate "Пошук UA" menu entry is removed; search lives as a
   loupe element at the top of Home).
 - `catalog_state.json` in `Io::getDataPath()` — resume + source/dub memory
   (JSON via vendored cJSON; atomic write tmp+rename). **No SQLite.**
-- Restyle constants for catalog screens only (§5). pPlay chrome (main menu,
+- Restyle constants for catalog screens only (§5). the client chrome (main menu,
   filer, settings) is NOT restyled in M2 — temporary visual mismatch accepted,
   upstream-drift minimized.
 
@@ -173,7 +179,7 @@ Consciously sacrificed: legit matches with conflicting years.
 - `kSmallSize = 24`, `kBodySize = 28`, `kTitleSize = 32` (px @1080p).
 - Layout origin `(96, 54)` on 1080p (5% action-safe). Note: the input
   document's 27/48 px figure is actually 2.5% — rejected.
-- Dark theme (pPlay default); pure white backgrounds forbidden in new screens.
+- Dark theme (the client's default); pure white backgrounds forbidden in new screens.
 - Focus highlight constant: border + scale 1.05; navigation order strictly
   top-down / left-right predictable (no illogical focus jumps).
 
@@ -183,7 +189,7 @@ Consciously sacrificed: legit matches with conflicting years.
 - Rows per §3.1; "Продовжити перегляд" prepended client-side when non-empty.
 - Backend unreachable on entry → error screen in place of Home:
   "Сервер недоступний" + hint ("Перевірте ПК і Налаштування → Адреса сервера")
-  + "Повторити" (X). No background retries. Other pPlay menus unaffected.
+  + "Повторити" (X). No background retries. Other client menus unaffected.
   (Covers the M0 black-hole checklist item.)
 
 ### 5.3 Details screen
@@ -225,7 +231,7 @@ happens inside details (does not add a level).
 ### 5.7 Back-stack
 
 Leaving the player returns to the details screen with cursor, focused source
-and scroll position intact (standard pPlay behavior, kept).
+and scroll position intact (standard client behavior, kept).
 
 ## 6. Error UX
 
@@ -274,7 +280,7 @@ and scroll position intact (standard pPlay behavior, kept).
 - Subtitles: **full defer**, including schema. (Linux mpv supports `sub-add`,
   but the PS4 player does not exist yet; extractors don't expose tracks today.)
 - Genre/year filters, accounts, watch-history sync — still out (v2).
-- pPlay chrome restyle (main menu, filer, settings, player OSD layout).
+- client chrome restyle (main menu, filer, settings, player OSD layout).
 - OSD auto-hide — already satisfied (4 s), no change.
 
 ## 10. Conscious deviations from the input document
@@ -315,7 +321,7 @@ and scroll position intact (standard pPlay behavior, kept).
 12. Subtitles: full defer, schema untouched.
 13. Western button scheme fixed as semantics; physical codes in M0/M1.
 14. Restyle limited to catalog screens: 24/28/32 px, origin (96, 54), dark
-    theme, no pure white; pPlay chrome untouched.
+    theme, no pure white; the client chrome untouched.
 15. Posters → 7-day disk cache on both sides; other TTLs unchanged.
 16. Home rows: resume → **Новинки** (merged round-robin, groupKey-deduped,
     ≤ 20) → **Популярні зараз** (conditional, native top-sections only) →
@@ -327,6 +333,6 @@ and scroll position intact (standard pPlay behavior, kept).
 19. Merge testing: parametrized normalize tables + live-captured multi-provider
     fixtures + INFO merge-audit log.
 20. Backend-down Home = error screen with "Повторити"; no background retries.
-21. pPlay main menu: single "Каталог UA" entry; search = loupe atop Home.
+21. client main menu: single "Каталог UA" entry; search = loupe atop Home.
 22. `groupKey` algorithm versioned by the `"g1:"` prefix; bump on rule
     changes, never migrate.
