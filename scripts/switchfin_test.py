@@ -392,6 +392,23 @@ class Runner:
             window_lines=tuple(self._tailer.all_lines()[scan_from:]),
         )
 
+    def _safe_tap(self, coords: tuple[int, int], note_prefix: str = "") -> str | None:
+        """Run one adb tap, converting a mid-run device failure into a note.
+
+        Returns None on success; on failure returns a note of the form
+        ``"{note_prefix}: adb tap failed: {exc}"`` (bare ``"adb tap failed:
+        {exc}"`` when the prefix is empty) so the caller records the failure
+        and the run continues instead of crashing and losing its results
+        (#153).
+        """
+        try:
+            self._adb.tap(*coords)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            if note_prefix:
+                return f"{note_prefix}: adb tap failed: {exc}"
+            return f"adb tap failed: {exc}"
+        return None
+
     def _run_view_step(self, step: Step) -> StepResult:
         if step.branches:
             return self._run_play(step)
@@ -422,9 +439,8 @@ class Runner:
                 note="adb device not available",
             )
         scan_from = len(self._tailer.all_lines())
-        try:
-            self._adb.tap(*coords)
-        except (OSError, subprocess.CalledProcessError) as exc:
+        failure = self._safe_tap(coords)
+        if failure is not None:
             # device vanished mid-run — record a ❌, don't crash and lose the
             # whole run's results
             return StepResult(
@@ -432,7 +448,7 @@ class Runner:
                 step.phase,
                 step.view,
                 ok=False,
-                note=f"adb tap failed: {exc}",
+                note=failure,
             )
         ok = self._wait_for_expects(step.expects, scan_from)
         return StepResult(
@@ -479,10 +495,9 @@ class Runner:
                 notes.append(f"{play_tap.tap}: adb device not available")
                 break
             scan_from = len(self._tailer.all_lines())
-            try:
-                self._adb.tap(*coords)
-            except (OSError, subprocess.CalledProcessError) as exc:
-                notes.append(f"{play_tap.tap}: adb tap failed: {exc}")
+            failure = self._safe_tap(coords, play_tap.tap)
+            if failure is not None:
+                notes.append(failure)
                 break
             if not self._wait_for_expects(play_tap.expects, scan_from):
                 notes.append(f"{play_tap.tap}: timeout")
