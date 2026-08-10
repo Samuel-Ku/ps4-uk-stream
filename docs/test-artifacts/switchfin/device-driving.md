@@ -444,6 +444,26 @@ The movie view's first card at warm time (22:02:01) was g2:0dd97776…; at
 play time (22:02:53) the app tapped g2:702cb6… (DateCreated sort shifted)
 — the same B14 race, now between warm and play (#206).
 
+## Run #9 (2026-08-10, after #211 retry) — 3/7 fully pass
+
+Новинки + Популярні + Серіали pass fully (Популярні's play passed for
+the first time — the #211 retry kept the heavy-series warm chain intact
+this run; no 702cb6-related failures). The remaining failures are exactly
+two classes, every run:
+
+1. **B19 (#209) — the open step after a played view fails.** Run #9:
+   play_popular streamed -> open_view_movie tapped a SERIES DETAIL
+   (g2:b9ae09f3, the same item as run #7) instead of the Views grid;
+   play_series streamed -> open_view_anime failed the same way. The 4×BACK
+   nav after playback does not return to the Views grid. This is now THE
+   suite blocker: it costs 2/7 views' open+detail+play every run.
+2. **Play taps with zero requests (#206, B14 probe race).** play_cartoon
+   (movie branch: locate+retry found no pill) and play_dorama (series
+   branch: first_season/first_episode) fired NOTHING — the Type probe's gk
+   can race grid fetches, so the branch may not match the card the tap
+   opened. Backend-*.txt windows stay stale (empty windows aren't
+   rewritten, #149); logcat-*.txt are empty too.
+
 ## Open questions (for the next session)
 
 - DONE (2026-08-10): `Adb.back()` + `phase: nav` steps wired into the runner;
