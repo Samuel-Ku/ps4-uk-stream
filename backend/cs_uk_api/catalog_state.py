@@ -322,6 +322,10 @@ def get_home() -> HomeResponse | None:
 _GATE_CHECK_CONCURRENCY = 24
 _GATE_CHECK_TIMEOUT_S = 12.0
 
+#: Delay before the one detail-scrape retry (B23): providers flake once
+#: under load (animeon ``unreachable``) and succeed on a second attempt.
+CONTENT_RETRY_DELAY_S = 1.0
+
 
 def _gate_cache_key(item: SearchResult) -> str:
     """The shared ``content:{provider}:{external}`` key for a card."""
@@ -470,25 +474,41 @@ async def resolve_group_content(group_key: str) -> ContentResponse | None:
         return None
     http = get_client()
     resp = None
-    try:
-        resp = await provider.content(external_id, http)
-        TRACKER.record(provider_id, ok=True)
-    except ProviderError as e:
-        if e.code == "gated":
-            # ADR-0002: a gated verdict never moves the health tracker.
-            # Cache it so every later group-key call short-circuits —
-            # the load_home sweep normally populates `gated_cache`
-            # first, but a cold-cache g2: detail call must not record a
-            # health-down here either (#139).
-            gated_cache.set(cache_key, True)
-            return None
-        log.warning("group content failed provider=%s key=%s err=%s", provider_id, group_key, e)
-        TRACKER.record(provider_id, ok=False)
-    except Exception as e:  # noqa: BLE001
-        log.warning("group content failed provider=%s key=%s err=%s", provider_id, group_key, e)
-        TRACKER.record(provider_id, ok=False)
+    last_err: Exception | None = None
+    for attempt in (1, 2):
+        try:
+            resp = await provider.content(external_id, http)
+            break
+        except ProviderError as e:
+            if e.code == "gated":
+                # ADR-0002: a gated verdict never moves the health tracker.
+                # Cache it so every later group-key call short-circuits —
+                # the load_home sweep normally populates `gated_cache`
+                # first, but a cold-cache g2: detail call must not record a
+                # health-down here either (#139).
+                gated_cache.set(cache_key, True)
+                return None
+            last_err = e
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+        if attempt == 1:
+            # B23: heavy titles flake once under load (animeon
+            # ``unreachable``) and then succeed — retry before declaring
+            # the item unavailable, so the runner warm / app detail don't
+            # 404 a valid item. The health tracker only sees the verdict.
+            log.warning(
+                "group content failed provider=%s key=%s attempt 1/2 err=%s — retrying",
+                provider_id, group_key, last_err,
+            )
+            await asyncio.sleep(CONTENT_RETRY_DELAY_S)
     if resp is None:
+        log.warning(
+            "group content failed provider=%s key=%s both attempts err=%s",
+            provider_id, group_key, last_err,
+        )
+        TRACKER.record(provider_id, ok=False)
         return None
+    TRACKER.record(provider_id, ok=True)
     if _config.SETTINGS.block_russian and is_blocked_country(resp.country):
         blocklist_cache.set(cache_key, True)
         log.info("blocked Russian content id=%s country=%s", cache_key, resp.country)

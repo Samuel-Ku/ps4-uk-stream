@@ -249,6 +249,114 @@ async def test_resolve_group_content_gated_backstop_no_health_down() -> None:
 
 
 @pytest.mark.asyncio
+async def test_resolve_group_content_retries_transient_failure() -> None:
+    """B23 (#211): a provider that fails once with a NON-gated error and
+    succeeds on retry must resolve — the item is valid, so the detail
+    path must not 404 it — and the health tracker sees only the final ok
+    verdict."""
+    from cs_uk_api import catalog_state
+    from cs_uk_api.catalog_state import resolve_group_content
+    from cs_uk_api.health import TRACKER
+    from cs_uk_api.merge import item_group_key
+
+    class _FlakyThenOk(BaseProvider):
+        id = "flaky-ok-stub"
+        name = "FlakyOkStub"
+        types = ("movie",)
+        sections = (Section(id="cinema", title="Фільми", form="movie"),)
+        _content_calls: ClassVar[list[str]] = []
+
+        async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
+            return []
+
+        async def browse(
+            self, section: str, page: int, http: httpx.AsyncClient
+        ) -> tuple[list[SearchResult], bool]:
+            return [], False
+
+        async def content(self, external_id: str, http: httpx.AsyncClient) -> ContentResponse:
+            self._content_calls.append(external_id)
+            if len(self._content_calls) == 1:
+                raise ProviderError("upstream_unreachable", "site down")
+            return ContentResponse(
+                id=f"flaky-ok-stub:{external_id}",
+                form="movie",
+                title="Айчаку",
+                year=2024,
+                translations=[Translation(id="uk", label="UK")],
+            )
+
+        async def stream(
+            self, content_id: str, translation: str | None, http: httpx.AsyncClient
+        ) -> StreamResponse:
+            raise AssertionError("unused")
+
+    PROVIDERS.clear()
+    PROVIDERS["flaky-ok-stub"] = _FlakyThenOk()
+    item = _item("flaky-ok-stub", "f1")
+    group_key = item_group_key(item)
+    catalog_state.sources_cache.set(
+        catalog_state._SOURCES_KEY, {group_key: {"flaky-ok-stub": item}}
+    )
+
+    content = await resolve_group_content(group_key)
+
+    assert content is not None
+    assert content.id == "flaky-ok-stub:f1"
+    assert len(PROVIDERS["flaky-ok-stub"]._content_calls) == 2  # type: ignore[attr-defined]
+    assert TRACKER.last_error_at("flaky-ok-stub") is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_group_content_404_after_both_attempts_fail() -> None:
+    """B23 (#211): when the retry ALSO fails, the item stays unavailable
+    and the health tracker records the down verdict (only after the final
+    attempt)."""
+    from cs_uk_api import catalog_state
+    from cs_uk_api.catalog_state import resolve_group_content
+    from cs_uk_api.health import TRACKER
+    from cs_uk_api.merge import item_group_key
+
+    class _AlwaysDown(BaseProvider):
+        id = "always-down-stub"
+        name = "AlwaysDownStub"
+        types = ("movie",)
+        sections = (Section(id="cinema", title="Фільми", form="movie"),)
+        _content_calls: ClassVar[list[str]] = []
+
+        async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
+            return []
+
+        async def browse(
+            self, section: str, page: int, http: httpx.AsyncClient
+        ) -> tuple[list[SearchResult], bool]:
+            return [], False
+
+        async def content(self, external_id: str, http: httpx.AsyncClient) -> ContentResponse:
+            self._content_calls.append(external_id)
+            raise ProviderError("upstream_unreachable", "site down")
+
+        async def stream(
+            self, content_id: str, translation: str | None, http: httpx.AsyncClient
+        ) -> StreamResponse:
+            raise AssertionError("unused")
+
+    PROVIDERS.clear()
+    PROVIDERS["always-down-stub"] = _AlwaysDown()
+    item = _item("always-down-stub", "f1")
+    group_key = item_group_key(item)
+    catalog_state.sources_cache.set(
+        catalog_state._SOURCES_KEY, {group_key: {"always-down-stub": item}}
+    )
+
+    content = await resolve_group_content(group_key)
+
+    assert content is None
+    assert len(PROVIDERS["always-down-stub"]._content_calls) == 2  # type: ignore[attr-defined]
+    assert TRACKER.last_error_at("always-down-stub") is not None
+
+
+@pytest.mark.asyncio
 async def test_load_home_drops_gated_only_title() -> None:
     """A title available ONLY through a gated source disappears from the
     home rows (the sweep drops it before the rows are built)."""
