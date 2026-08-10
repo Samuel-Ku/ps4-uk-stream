@@ -507,6 +507,29 @@ Device notes from the probe:
   relative image paths 404); `classify_test.py` re-validates the nav
   classifier against labeled captures. Both are gitignored session tooling.
 
+## Run #11 (2026-08-10, after #209 visual nav) — B19 gone, 4/7 plays
+
+**The suite blocker is dead.** All 7 opens + 7 details + 7 nav steps pass;
+4/7 plays pass (Новинки, Популярні, Серіали, **Аніме — first time ever**).
+Every `back_to_grid_after_*` step succeeded via the visual classifier
+(note: "reached Views grid after 3/4/5 BACK(s)" — the swallowed-BACK
+depth varies per run, confirming that a fixed count could never work).
+
+Remaining failures are ALL play-step class (B13/B14, #205/#206/#210):
+
+- **play_movie/cartoon** — `play_button: timeout (locate+retry)`: the app
+  opened the detail (movie g2:019beb1c fired Items+Similar, no Seasons),
+  but no PlaybackInfo ever fired — the teal pill locate + calibrated tap
+  missed. Screenshot dimming after the previous view's player exit is one
+  suspect (find_play_pill does not luminance-normalize; find_views_grid
+  does).
+- **play_dorama** — `first_season/first_episode: timeout`: the series
+  branch taps landed but the stream never started (probe race, B14).
+
+The regenerated capture fixture now shows clean one-page pagination (each
+view: startIndex 0→18 once — the B11 fix in the contract) and 24 play
+lines (4 plays × PlaybackInfo+stream).
+
 ## Open questions (for the next session)
 
 - DONE (2026-08-10): `Adb.back()` + `phase: nav` steps wired into the runner;
