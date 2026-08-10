@@ -27,7 +27,7 @@ from .cache import TtlCache
 from .country import is_blocked_country
 from .filters import matches_axes, style_key
 from .health import TRACKER
-from .home import build_home_rows
+from .home import build_home_rows, section_row_type
 from .http_client import get_client
 from .merge import group_key_from, item_group_key, merge_results
 from .models import (
@@ -87,7 +87,7 @@ gated_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_gated_s)
 #: the same restart.
 #
 #: v3 (ticket #101): this is ALSO the Jellyfin facade's resolution map —
-#: ``/Items/{g1:...}`` resolves provider+external from it. ``g1:`` ids
+#: ``/Items/{g2:...}`` resolves provider+external from it. ``g2:`` ids
 #: are deliberately NOT self-resolving; a cold cache yields 404
 #: ("item unavailable"), which Jellyfin clients tolerate.
 sources_cache: TtlCache = TtlCache(default_ttl_s=_config.SETTINGS.cache_home_s)
@@ -212,8 +212,11 @@ async def load_home() -> HomeResponse:
         if pid == "animeon" and provider.has_section("popular"):
             tasks.append(asyncio.create_task(_popular(pid, "popular")))
         for section in provider.sections:
-            if section.type in {"movie", "series", "anime", "cartoon", "dorama"}:
-                tasks.append(asyncio.create_task(_type_section(pid, section.id, section.type)))
+            # Contract step #135: sections carry Model B axes, not the
+            # legacy ``type`` — the home-row kind is derived from them.
+            row_type = section_row_type(section)
+            if row_type is not None:
+                tasks.append(asyncio.create_task(_type_section(pid, section.id, row_type)))
 
     if tasks:
         # Bound the fan-out so a single hung provider can't drag the
@@ -389,7 +392,7 @@ async def filter_gated_items(
             if _config.SETTINGS.block_russian and is_blocked_country(resp.country):
                 blocklist_cache.set(key, True)
                 return False
-            resp.group_key = group_key_from(resp.title, resp.type, resp.year, resp.id)
+            resp.group_key = group_key_from(resp.title, resp.form, resp.year, resp.id)
             content_cache.set(key, resp)
             # A known-good verdict follows the CONTENT TTL (not the long
             # gated TTL): an un-gated title is re-checked when its
@@ -417,7 +420,7 @@ async def filter_gated_items(
 
 
 def resolve_group(group_key: str) -> dict[str, SearchResult] | None:
-    """Resolution for a ``g1:`` group key (ticket #101).
+    """Resolution for a ``g2:`` group key (ticket #101).
 
     Returns the ``provider -> SearchResult`` map for the group, or
     ``None`` when the key is absent (cold cache → the caller yields a
@@ -430,9 +433,9 @@ def resolve_group(group_key: str) -> dict[str, SearchResult] | None:
 
 
 async def resolve_group_content(group_key: str) -> ContentResponse | None:
-    """Resolve a ``g1:`` group key to ONE provider's content detail.
+    """Resolve a ``g2:`` group key to ONE provider's content detail.
 
-    The facade's ticket #105 detail path: a ``g1:`` key maps to the same
+    The facade's ticket #105 detail path: a ``g2:`` key maps to the same
     ``{provider: SearchResult}`` map the native ``/api/home`` populates;
     the first-seen provider (same order the home row's chip strip shows)
     is asked for its ContentResponse. The response comes from the SAME
@@ -475,7 +478,7 @@ async def resolve_group_content(group_key: str) -> ContentResponse | None:
             # ADR-0002: a gated verdict never moves the health tracker.
             # Cache it so every later group-key call short-circuits —
             # the load_home sweep normally populates `gated_cache`
-            # first, but a cold-cache g1: detail call must not record a
+            # first, but a cold-cache g2: detail call must not record a
             # health-down here either (#139).
             gated_cache.set(cache_key, True)
             return None
@@ -756,9 +759,8 @@ async def merged_search(
             group_key=mg.key,
             title=mg.sources[0].title,
             year=mg.sources[0].year,
-            type=mg.sources[0].type,
             poster=mg.sources[0].poster,
-            # Model B (issue #129): first-seen-wins, like the other
+            # Model B (contract #135): first-seen-wins, like the other
             # canonical fields.
             form=mg.sources[0].form,
             styles=mg.sources[0].styles,

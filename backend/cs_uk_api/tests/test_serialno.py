@@ -43,7 +43,7 @@ async def test_serialno_search_parses_results():
     assert len(results) == 6
     assert all(r.provider == "serialno" for r in results)
     assert all(r.id.startswith("serialno:") for r in results)
-    assert all(r.type == "series" for r in results)
+    assert all(r.form == "series" for r in results)
     # All posters must be absolute URLs (card data-src is relative).
     assert all(r.poster is not None and r.poster.startswith("https://") for r in results)
     # All URLs must be absolute.
@@ -61,7 +61,7 @@ async def test_serialno_browse_series_page1():
         async with httpx.AsyncClient() as http:
             results, has_next = await SerialnoProvider().browse("series", 1, http)
     assert len(results) == 20
-    assert all(r.type == "series" for r in results)
+    assert all(r.form == "series" for r in results)
     assert all(r.id.startswith("serialno:") for r in results)
     # IDs are bare slugs (no section prefix on serialno).
     assert all("serialno:" in r.id and "/" not in r.id.split(":", 1)[1] for r in results)
@@ -78,7 +78,7 @@ async def test_serialno_browse_series_page2():
         async with httpx.AsyncClient() as http:
             results, has_next = await SerialnoProvider().browse("series", 2, http)
     assert len(results) >= 1
-    assert all(r.type == "series" for r in results)
+    assert all(r.form == "series" for r in results)
     # The last page is 103; page 2 has higher pages, so has_next is True.
     assert has_next is True
 
@@ -113,7 +113,7 @@ async def test_serialno_content_series_parses_title_poster_player():
         async with httpx.AsyncClient() as http:
             c = await SerialnoProvider().content("2075-1670", http)
     assert c.title == "1670"
-    assert c.type == "series"
+    assert c.form == "series"
     assert c.poster is not None
     assert c.poster.startswith("https://serialno.tv/")
     assert c.seasons is not None
@@ -264,7 +264,7 @@ def test_serialno_sections_lists_one():
     sections = SerialnoProvider().sections
     ids = [s.id for s in sections]
     assert ids == ["series"]
-    assert all(s.type == "series" for s in sections)
+    assert all(s.form == "series" for s in sections)
 
 
 @pytest.mark.asyncio

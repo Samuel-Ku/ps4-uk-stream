@@ -268,7 +268,7 @@ async def test_content_for_show_follows_to_seasons_and_episodes():
         async with httpx.AsyncClient() as http:
             c = await SimpsonsUATvProvider().content("simpsony", http)
     assert "Сімпсони" in c.title or "simpsony" in c.id
-    assert c.type in ("cartoon", "series")
+    assert "cartoon" in c.styles and c.form == "series"
     assert c.seasons is not None
     assert len(c.seasons) >= 1
     # Regression (issue #119): long archives are bounded to the newest

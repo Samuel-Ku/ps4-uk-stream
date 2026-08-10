@@ -48,7 +48,7 @@ async def test_doramyworld_search_parses_results():
     assert any("Пандора" in t for t in titles)
     # Search cards on doramy.world are dorama or film; never generic
     # post type=post.
-    assert all(r.type in {"dorama", "movie", "series"} for r in results)
+    assert all(r.form in {"movie", "series"} for r in results)
 
 
 @pytest.mark.asyncio
@@ -60,9 +60,9 @@ async def test_doramyworld_search_classifies_by_url_path():
         router.get("https://doramy.world/").respond(200, text=search_html)
         async with httpx.AsyncClient() as http:
             results = await DoramyWorldProvider().search("pan", http)
-    types_by_kind = {r.url.split("/")[3]: r.type for r in results}
+    types_by_kind = {r.url.split("/")[3]: r for r in results}
     # The /?s=pan capture only surfaces dorama cards.
-    assert types_by_kind.get("dorama") == "dorama"
+    assert "dorama" in types_by_kind["dorama"].styles
 
 
 @pytest.mark.asyncio
@@ -93,7 +93,7 @@ async def test_doramyworld_browse_dorama_parses_results():
                 "dorama", 1, http
             )
     assert len(results) == 12
-    assert all(r.type == "dorama" for r in results)
+    assert all("dorama" in r.styles for r in results)
     # The site has 19 pages of dorama.
     assert has_next is True
 
@@ -111,7 +111,7 @@ async def test_doramyworld_browse_film_parses_results():
                 "film", 1, http
             )
     assert len(results) == 12
-    assert all(r.type == "movie" for r in results)
+    assert all(r.form == "movie" for r in results)
     assert has_next is True
 
 
@@ -130,7 +130,7 @@ async def test_doramyworld_browse_follows_page_one_canonical_redirect():
         async with httpx.AsyncClient() as http:
             results, has_next = await DoramyWorldProvider().browse("film", 1, http)
     assert len(results) == 12
-    assert all(r.type == "movie" for r in results)
+    assert all(r.form == "movie" for r in results)
     assert has_next is True
 
 
@@ -157,7 +157,7 @@ async def test_doramyworld_content_dorama_parses_title_poster():
         async with httpx.AsyncClient() as http:
             c = await DoramyWorldProvider().content("dorama/koroleva-chorin", http)
     assert "Пан королева" in c.title
-    assert c.type == "dorama"
+    assert "dorama" in c.styles
     assert c.poster is not None
     assert c.poster.startswith("https://doramy.world")
     # K'Di is the single translation surfaced in the data-player JSON.
@@ -201,7 +201,7 @@ async def test_doramyworld_content_film_parses_seasons():
         )
         async with httpx.AsyncClient() as http:
             c = await DoramyWorldProvider().content("film/ekstremalna-robota", http)
-    assert c.type == "movie"
+    assert c.form == "movie"
     assert "Екстремальна робота" in c.title
     assert c.seasons is not None
     assert len(c.seasons) == 1

@@ -83,8 +83,8 @@ _MAX_SHOW_SEASONS = 10
 
 # Browse surfaces the latest home-page updates and the paginated catalogue.
 SIMPSONSUATV_SECTIONS: tuple[Section, ...] = (
-    Section(id="updates", title="Останні оновлення", type="cartoon"),
-    Section(id="page", title="Усі мультсеріали", type="cartoon"),
+    Section(id="updates", title="Останні оновлення", styles=frozenset({"cartoon"})),
+    Section(id="page", title="Усі мультсеріали", styles=frozenset({"cartoon"})),
 )
 
 # External-id regex. Accepts a slug, a season (e.g. `s35`, `sezon-1`),
@@ -297,7 +297,6 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
     return SearchResult(
         id=f"{provider_id}:{slug}",
         provider=provider_id,
-        type="cartoon",
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
@@ -498,7 +497,6 @@ class SimpsonsUATvProvider(BaseProvider):
         mb_form, mb_styles = model_b_axes("cartoon")
         return ContentResponse(
             id=f"{self.id}:{external_id}",
-            type="cartoon",
             title=title,
             description=description,
             poster=poster,

@@ -42,7 +42,7 @@ def _item(pid: str, n: str, title: str = "Айчаку", year: int = 2024) -> Se
     return SearchResult(
         id=f"{pid}:{n}",
         provider=pid,
-        type="movie",
+        form="movie",
         title=title,
         year=year,
         url=f"https://{pid}.example/{n}",
@@ -55,7 +55,7 @@ class _GatedStub(BaseProvider):
     id = "gated-stub"
     name = "GatedStub"
     types = ("movie",)
-    sections = (Section(id="cinema", title="Фільми", type="movie"),)
+    sections = (Section(id="cinema", title="Фільми", form="movie"),)
     can_gate = True
     _results: ClassVar[list[SearchResult]] = []
     _content_calls: ClassVar[list[str]] = []
@@ -84,7 +84,7 @@ class _FreeStub(BaseProvider):
     id = "free-stub"
     name = "FreeStub"
     types = ("movie",)
-    sections = (Section(id="cinema", title="Фільми", type="movie"),)
+    sections = (Section(id="cinema", title="Фільми", form="movie"),)
     _results: ClassVar[list[SearchResult]] = []
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
@@ -98,7 +98,7 @@ class _FreeStub(BaseProvider):
     async def content(self, external_id: str, http: httpx.AsyncClient) -> ContentResponse:
         return ContentResponse(
             id=f"free-stub:{external_id}",
-            type="movie",
+            form="movie",
             title="Айчаку",
             year=2024,
             translations=[Translation(id="uk", label="UK")],
@@ -214,7 +214,7 @@ async def test_filter_gated_items_keeps_transient_upstream_errors() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_group_content_gated_backstop_no_health_down() -> None:
-    """ADR-0002 backstop (#139): a cold-cache g1: detail call whose
+    """ADR-0002 backstop (#139): a cold-cache g2: detail call whose
     content() raises ``gated`` must NOT record a health-down, and must
     cache the verdict so later calls short-circuit. ``filter_gated_items``
     normally warms ``gated_cache`` during ``load_home``; a sweep timeout

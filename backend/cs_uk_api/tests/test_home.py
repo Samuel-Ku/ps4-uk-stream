@@ -14,7 +14,7 @@ Seams under test:
 
   - ``GET /api/content/{groupKey}`` — the groupKey lookup route that
     returns the merged item + provider list (or 404 for unknown key).
-    Discriminated on the ``g1:`` prefix vs the existing
+    Discriminated on the ``g2:`` prefix vs the existing
     ``provider:external`` content_id semantics.
 
   - Cache TTL — 30 min (issue #70 AC: 30-min cache or documented
@@ -44,7 +44,7 @@ from cs_uk_api.models import (
     Translation,
 )
 from cs_uk_api.providers import PROVIDERS
-from cs_uk_api.providers.base import BaseProvider
+from cs_uk_api.providers.base import BaseProvider, model_b_axes
 
 
 # ---------------------------------------------------------------------------
@@ -59,10 +59,12 @@ def item(
     year: int | None = None,
     n: str = "1",
 ) -> SearchResult:
+    mb_form, mb_styles = model_b_axes(cast(Any, media_type))
     return SearchResult(
         id=f"{pid}:{n}",
         provider=pid,
-        type=cast(Any, media_type),
+        form=mb_form,
+        styles=mb_styles,
         title=title,
         year=year,
         url=f"https://{pid}.example/{n}",
@@ -335,15 +337,15 @@ def test_aggregate_by_group_key_combines_providers_in_first_seen_order() -> None
     carrying both providers, in first-seen order."""
     items = [
         HomeItem(
-            group_key="g1:dune", title="Дюна", year=2021, type="movie",
+            group_key="g2:dune", title="Дюна", year=2021, form="movie",
             poster=None, providers=["p1"],
         ),
         HomeItem(
-            group_key="g1:dune", title="Дюна", year=2021, type="movie",
+            group_key="g2:dune", title="Дюна", year=2021, form="movie",
             poster=None, providers=["p2"],
         ),
         HomeItem(
-            group_key="g1:smol", title="Смолфут", year=2018, type="movie",
+            group_key="g2:smol", title="Смолфут", year=2018, form="movie",
             poster=None, providers=["p3"],
         ),
     ]
@@ -520,7 +522,7 @@ def test_home_route_returns_200_with_expected_rows_shape(
                 # when there are no other providers; the test focuses on
                 # the response envelope.
                 __import__("cs_uk_api.models", fromlist=["Section"]).Section(
-                    id="x", title="X", type="movie"
+                    id="x", title="X", form="movie"
                 ),
             ),
             newest_section="page",
@@ -535,7 +537,7 @@ def test_home_route_returns_200_with_expected_rows_shape(
     types_seen = [row["type"] for row in body["rows"]]
     assert "newest" in types_seen
     items = next(row["items"] for row in body["rows"] if row["type"] == "newest")
-    assert items[0]["group_key"].startswith("g1:")
+    assert items[0]["group_key"].startswith("g2:")
 
 
 def test_home_route_omits_popular_row_when_animeon_returns_no_items(
@@ -575,7 +577,7 @@ def test_home_route_includes_popular_row_when_animeon_returns_items(
         # opens and ``browse("popular", ...)`` is called.
         sections = (
             __import__("cs_uk_api.models", fromlist=["Section"]).Section(
-                id="popular", title="Популярні", type="anime"
+                id="popular", title="Популярні", styles=frozenset({"anime"})
             ),
         )
 
@@ -680,8 +682,8 @@ def test_home_route_accumulates_multiple_sections_of_same_type(
         # Two cartoon sections, both type=cartoon. They would map to the
         # same row; the accumulator must extend, not overwrite.
         sections = (
-            Section(id="a", title="A", type="cartoon"),
-            Section(id="b", title="B", type="cartoon"),
+            Section(id="a", title="A", styles=frozenset({"cartoon"})),
+            Section(id="b", title="B", styles=frozenset({"cartoon"})),
         )
 
         async def search(self, q, http):  # type: ignore[no-untyped-def]
@@ -822,7 +824,7 @@ def test_content_by_group_key_returns_merged_item_with_providers(
 
 def test_content_by_group_key_returns_404_for_unknown_key() -> None:
     client = TestClient(app)
-    r = client.get("/api/content/g1:0000000000000000")
+    r = client.get("/api/content/g2:0000000000000000")
     assert r.status_code == 404
     assert r.json()["detail"]["error"] == "not_found"
 
@@ -831,7 +833,7 @@ def test_content_by_provider_id_still_returns_content_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The existing /api/content/{provider:external} route is preserved
-    by the g1:-prefix discriminator."""
+    by the g2:-prefix discriminator."""
 
     class _Prov(BaseProvider):
         id = "preserved"
@@ -844,7 +846,7 @@ def test_content_by_provider_id_still_returns_content_response(
         async def content(self, external_id, http):  # type: ignore[no-untyped-def]
             return ContentResponse(
                 id=f"preserved:{external_id}",
-                type="movie",
+                form="movie",
                 title="Old route preserved",
                 translations=[Translation(id="uk", label="UK")],
             )

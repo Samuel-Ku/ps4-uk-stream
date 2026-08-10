@@ -48,10 +48,10 @@ _ALLOWED_HOSTS: frozenset[str] = frozenset({"kinovezha.tv", "tortuga.tw"})
 #   films -> Фільми, series -> Серіали,
 #   cartoons -> Мультфільми, s-cartoons -> Мультсеріали.
 KINOVEZHA_SECTIONS: tuple[Section, ...] = (
-    Section(id="films", title="Фільми", type="movie"),
-    Section(id="series", title="Серіали", type="series"),
-    Section(id="cartoons", title="Мультфільми", type="movie"),
-    Section(id="s-cartoons", title="Мультсеріали", type="series"),
+    Section(id="films", title="Фільми", form="movie"),
+    Section(id="series", title="Серіали", form="series"),
+    Section(id="cartoons", title="Мультфільми", form="movie"),
+    Section(id="s-cartoons", title="Мультсеріали", form="series"),
 )
 
 # Section path -> external kind prefix for `_classify_from_url`.
@@ -186,7 +186,6 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
-        type=_classify_from_url(href),  # type: ignore[arg-type]
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
@@ -280,12 +279,14 @@ class KinoVezhaProvider(BaseProvider):
             _page_number(str(a.get("href") or "")) > page
             for a in soup.select("div#pagination a[href*='/page/']")
         )
-        # Section type overrides per-card URL classification — the path
+        # Section kind overrides per-card URL classification — the path
         # itself doesn't always carry a kind prefix on browse listings.
+        # Contract #135: the override lands on ``form`` (the section is
+        # form-only; the legacy ``type`` field is gone).
         kind = _SECTION_KIND.get(section)
         if kind:
             results = [
-                r.model_copy(update={"type": kind})
+                r.model_copy(update={"form": kind})
                 for r in results
             ]
         return results, has_next
@@ -347,7 +348,6 @@ class KinoVezhaProvider(BaseProvider):
         mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"kinovezha:{external_id}",
-            type=media_type,  # type: ignore[arg-type]
             title=title_el.get_text(strip=True),
             description=description,
             poster=poster,

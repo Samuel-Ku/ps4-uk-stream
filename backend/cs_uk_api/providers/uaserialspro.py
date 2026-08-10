@@ -69,12 +69,12 @@ USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64; rv:144.0) Gecko/20100101 Firefox/1
 # Sections exposed by UASerialsPro's main navigation. Per the upstream
 # `mainPage = mainPageOf(...)` in UASerialsProProvider.kt.
 UASERIALSPRO_SECTIONS: tuple[Section, ...] = (
-    Section(id="films", title="Фільми", type="movie"),
-    Section(id="series", title="Серіали", type="series"),
-    Section(id="fcartoon", title="Мультфільми", type="movie"),
-    Section(id="cartoons", title="Мультсеріали", type="series"),
-    Section(id="anime", title="Аніме", type="anime"),
-    Section(id="exclusive", title="Ексклюзив", type="movie"),
+    Section(id="films", title="Фільми", form="movie"),
+    Section(id="series", title="Серіали", form="series"),
+    Section(id="fcartoon", title="Мультфільми", form="movie"),
+    Section(id="cartoons", title="Мультсеріали", form="series"),
+    Section(id="anime", title="Аніме", styles=frozenset({"anime"})),
+    Section(id="exclusive", title="Ексклюзив", form="movie"),
 )
 
 # Whitelisted slug shape: `<numeric>-<kebab>`. Used at the provider
@@ -191,7 +191,6 @@ def _parse_card(card: Tag, provider_id: str, media_type: str) -> SearchResult | 
     return SearchResult(
         id=f"{provider_id}:{m.group(1)}",
         provider=provider_id,
-        type=media_type,  # type: ignore[arg-type]
         title=title,
         poster=poster,
         form=mb_form,
@@ -231,7 +230,6 @@ def _parse_search_card(a: Tag, provider_id: str) -> SearchResult | None:
     return SearchResult(
         id=f"{provider_id}:{m.group(1)}",
         provider=provider_id,
-        type="series",  # safe default; content() refines the type
         title=title,
         year=None,
         poster=poster,
@@ -376,7 +374,6 @@ class UASerialsProProvider(BaseProvider):
         mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"uaserialspro:{external_id}",
-            type=media_type,  # type: ignore[arg-type]
             title=title,
             year=year,
             description=description,

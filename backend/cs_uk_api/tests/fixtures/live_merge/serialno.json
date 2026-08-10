@@ -2,7 +2,7 @@
  {
   "id": "serialno:1398-dyuna",
   "provider": "serialno",
-  "type": "series",
+  "form": "series",
   "title": "Дюна",
   "year": null,
   "poster": "https://serialno.tv/uploads/mini/poster/9/4bf6be2bbc3ed814d57f42d635e90f.jpg",

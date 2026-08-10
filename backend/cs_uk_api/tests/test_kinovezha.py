@@ -59,7 +59,7 @@ async def test_kinovezha_browse_films_parses_results():
             results, has_next = await KinoVezhaProvider().browse("films", 1, http)
     # Real captured listing: 18 .movie-item cards on page 1.
     assert len(results) == 18
-    assert all(r.type == "movie" for r in results)
+    assert all(r.form == "movie" for r in results)
     assert all(r.id.startswith("kinovezha:") for r in results)
     assert all(r.url.startswith("https://kinovezha.tv/") for r in results)
     # The films listing shows 9+ pages of pagination → has_next True.
@@ -84,7 +84,7 @@ async def test_kinovezha_browse_films_follows_page_1_redirect():
             results, has_next = await KinoVezhaProvider().browse("films", 1, http)
     # Same parsed result as the direct page-1 fetch.
     assert len(results) == 18
-    assert all(r.type == "movie" for r in results)
+    assert all(r.form == "movie" for r in results)
     assert has_next is True
 
 
@@ -100,7 +100,7 @@ async def test_kinovezha_browse_series_parses_results():
         async with httpx.AsyncClient() as http:
             results, has_next = await KinoVezhaProvider().browse("series", 1, http)
     assert len(results) == 18
-    assert all(r.type == "series" for r in results)
+    assert all(r.form == "series" for r in results)
     assert has_next is True
 
 
@@ -118,7 +118,7 @@ async def test_kinovezha_browse_cartoons_classifies_movies():
         async with httpx.AsyncClient() as http:
             results, has_next = await KinoVezhaProvider().browse("cartoons", 1, http)
     assert len(results) == 18
-    assert all(r.type == "movie" for r in results)
+    assert all(r.form == "movie" for r in results)
     assert has_next is True
 
 
@@ -137,7 +137,7 @@ async def test_kinovezha_browse_scartoons_classifies_series():
             )
     # Real captured listing: 15 .movie-item cards on page 1.
     assert len(results) == 15
-    assert all(r.type == "series" for r in results)
+    assert all(r.form == "series" for r in results)
     # The s-cartoons listing has no pagination block — fits on one page.
     assert has_next is False
 
@@ -167,7 +167,7 @@ async def test_kinovezha_content_movie_parses_title_poster():
             c = await KinoVezhaProvider().content("2809-volodari-vsesvitu", http)
     assert "Володарі Всесвіту" in c.title
     # Жанр contains "Фільми" → movie, not series.
-    assert c.type == "movie"
+    assert c.form == "movie"
     assert c.poster is not None
     assert c.poster.startswith("https://kinovezha.tv/")
     # Movie content pages expose a single iframe; we surface it as
@@ -195,7 +195,7 @@ async def test_kinovezha_content_series_parses_seasons():
         async with httpx.AsyncClient() as http:
             c = await KinoVezhaProvider().content("2831-enn-droyid", http)
     assert "Енн Дроїд" in c.title
-    assert c.type == "series"
+    assert c.form == "series"
     assert c.seasons is not None
     assert [s.number for s in c.seasons] == [1]
     # Captured player JSON lists two episodes under season 1.
@@ -229,7 +229,7 @@ async def test_kinovezha_content_series_shifted_genre_row_not_misclassified():
         )
         async with httpx.AsyncClient() as http:
             c = await KinoVezhaProvider().content("2831-enn-droyid", http)
-    assert c.type == "series"
+    assert c.form == "series"
     assert c.seasons is not None
     assert len(c.seasons[0].episodes) == 2
 

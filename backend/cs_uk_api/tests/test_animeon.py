@@ -88,7 +88,7 @@ async def test_search_returns_results():
             results = await AnimeONProvider().search("naruto", http)
     assert len(results) >= 1
     assert results[0].provider == "animeon"
-    assert results[0].type == "anime"
+    assert "anime" in results[0].styles
     assert "Наруто" in results[0].title
 
 
@@ -273,7 +273,7 @@ async def test_content_parses_title_description_and_translations():
         async with httpx.AsyncClient() as http:
             c = await AnimeONProvider().content("913", http)
     assert c.id == "animeon:913"
-    assert c.type == "anime"
+    assert "anime" in c.styles
     assert c.title == "Наруто"
     assert c.poster is not None
     assert c.poster.startswith("https://animeon.club/api/uploads/images/")
@@ -419,7 +419,7 @@ async def test_content_movie_returns_movie_without_seasons():
         )
         async with httpx.AsyncClient() as http:
             c = await AnimeONProvider().content("8100", http)
-    assert c.type == "movie"
+    assert c.form == "movie"
     assert c.seasons is None
     assert c.translations_level == "content"
     assert c.title == "Люпен III: Перший"

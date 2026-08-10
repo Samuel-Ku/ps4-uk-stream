@@ -35,8 +35,8 @@ IMG_URL = "https://img.unimay.media"
 # Per the upstream Kotlin's `mainPageOf(...)` call: two sections,
 # both typed as `anime` because every row on Unimay is an anime.
 UNIMAY_SECTIONS: tuple[Section, ...] = (
-    Section(id="updates", title="Останні релізи", type="anime"),
-    Section(id="projects", title="Наші проєкти", type="anime"),
+    Section(id="updates", title="Останні релізи", styles=frozenset({"anime"})),
+    Section(id="projects", title="Наші проєкти", styles=frozenset({"anime"})),
 )
 
 # Type-string values in the API's `release.type` field. Anything else
@@ -138,7 +138,6 @@ class UnimayProvider(BaseProvider):
                 SearchResult(
                     id=f"{self.id}:{code}",
                     provider=self.id,
-                    type=_type_from_api(item.get("type")),  # type: ignore[arg-type]
                     title=str(names.get("ukr") or names.get("eng") or code),
                     year=item.get("year"),
                     poster=_poster_url(images.get("poster")),
@@ -180,7 +179,6 @@ class UnimayProvider(BaseProvider):
                 SearchResult(
                     id=f"{self.id}:{code}",
                     provider=self.id,
-                    type=_type_from_api(release.get("type")),  # type: ignore[arg-type]
                     title=str(release.get("name") or code),
                     poster=_poster_url(release.get("posterUuid")),
                     url=_project_url(code),
@@ -209,7 +207,6 @@ class UnimayProvider(BaseProvider):
                 SearchResult(
                     id=f"{self.id}:{code}",
                     provider=self.id,
-                    type=_type_from_api(item.get("type")),  # type: ignore[arg-type]
                     title=str(names.get("ukr") or names.get("eng") or code),
                     year=item.get("year"),
                     poster=_poster_url(images.get("poster")),
@@ -249,7 +246,6 @@ class UnimayProvider(BaseProvider):
         mb_form, mb_styles = _unimay_axes(media_type)
         return ContentResponse(
             id=f"{self.id}:{external_id}",
-            type=media_type,  # type: ignore[arg-type]
             title=title,
             year=data.get("year"),
             description=str(data.get("description") or ""),

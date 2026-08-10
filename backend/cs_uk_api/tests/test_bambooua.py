@@ -45,14 +45,15 @@ async def test_bambooua_search_classifies_by_url_path():
         router.post("https://bambooua.com/").respond(200, text=search_html)
         async with httpx.AsyncClient() as http:
             results = await BambooUAProvider().search("love", http)
-    types_by_kind = {r.url.split("/")[3]: r.type for r in results}
-    # The upstream maps the URL path segment to a MediaType:
-    #   dorama  -> "dorama"
-    #   anime   -> "anime"
-    #   lakorn  -> "series"
-    #   cinema  -> "movie"
-    assert types_by_kind.get("dorama") == "dorama"
-    assert types_by_kind.get("lakorn") == "series"
+    types_by_kind = {r.url.split("/")[3]: r for r in results}
+    # The upstream maps the URL path segment to a MediaType, which now
+    # surfaces as Model B axes (form + styles):
+    #   dorama  -> styles={dorama}, form=series
+    #   anime   -> styles={anime}, form=series
+    #   lakorn  -> form=series
+    #   cinema  -> form=movie
+    assert "dorama" in types_by_kind["dorama"].styles
+    assert types_by_kind["lakorn"].form == "series"
     # /zhanr/ is a category index page that the upstream scripts also
     # surface; classify such listings as 'series' (the safe default).
     assert types_by_kind.get("zhanr") is not None
@@ -152,10 +153,10 @@ async def test_bambooua_browse_cinema_parses_results():
     assert len(results) == 21
     # Type is per-card, not per-section. The cinema listing also has
     # 3 dorama/ and 1 zhanr/ cards mixed in.
-    cinema_count = sum(1 for r in results if r.type == "movie")
+    cinema_count = sum(1 for r in results if r.form == "movie")
     assert cinema_count == 17
-    types_by_kind = {r.url.split("/")[3]: r.type for r in results}
-    assert types_by_kind["dorama"] == "dorama"
+    types_by_kind = {r.url.split("/")[3]: r for r in results}
+    assert "dorama" in types_by_kind["dorama"].styles
     # The real listing has 13 pages.
     assert has_next is True
 
@@ -170,11 +171,11 @@ async def test_bambooua_browse_anime_parses_results():
     assert len(results) == 21
     # The anime listing has 2 /voice/ cards and 1 /lgbtq/ card
     # alongside 18 anime cards. Type is per-card, not per-section.
-    anime_count = sum(1 for r in results if r.type == "anime")
+    anime_count = sum(1 for r in results if "anime" in r.styles)
     assert anime_count == 18
-    types_by_kind = {r.url.split("/")[3]: r.type for r in results}
-    assert types_by_kind.get("voice") == "series"
-    assert types_by_kind.get("lgbtq") == "series"
+    types_by_kind = {r.url.split("/")[3]: r for r in results}
+    assert types_by_kind["voice"].form == "series"
+    assert types_by_kind["lgbtq"].form == "series"
     assert has_next is True
 
 
@@ -203,7 +204,7 @@ async def test_bambooua_content_free_movie_parses_title_poster():
             c = await BambooUAProvider().content(
                 "cinema/1041-you-are-the-apple-of-my-eye", http
             )
-    assert c.type == "movie"
+    assert c.form == "movie"
     assert c.poster is not None
     assert c.poster.startswith("https://bambooua.com")
 
@@ -229,7 +230,7 @@ async def test_bambooua_content_single_file_movie_prefixes_episode_id():
             c = await BambooUAProvider().content(
                 "cinema/1041-you-are-the-apple-of-my-eye", http
             )
-    assert c.type == "movie"
+    assert c.form == "movie"
     assert c.seasons is not None
     assert len(c.seasons) == 1
     assert len(c.seasons[0].episodes) == 1
@@ -267,7 +268,7 @@ async def test_bambooua_content_free_series_parses_seasons():
         )
         async with httpx.AsyncClient() as http:
             c = await BambooUAProvider().content("dorama/1119-blood-river", http)
-    assert c.type == "dorama"
+    assert "dorama" in c.styles
     assert c.seasons is not None
     # One season (Субтитри folder) with all 19 listed episodes.
     assert len(c.seasons) == 1

@@ -26,7 +26,7 @@ async def test_kinotron_search_parses_real_response():
     assert len(results) == 3
     assert results[0].title == "Ван Піс / Великий куш"
     assert results[0].provider == "kinotron"
-    assert results[0].type == "series"
+    assert results[0].form == "series"
     assert results[0].id.startswith("kinotron:4808")
 
 
@@ -44,7 +44,7 @@ async def test_kinotron_browse_films_has_exact_cards_and_next():
         async with httpx.AsyncClient() as http:
             results, has_next = await KinoTronProvider().browse("films", 1, http)
     assert len(results) == 18
-    assert all(result.type == "movie" for result in results)
+    assert all(result.form == "movie" for result in results)
     assert has_next is True
     assert all(r.url.startswith("https://kinotron.tv/") for r in results)
 
@@ -78,7 +78,7 @@ async def test_kinotron_browse_serials_follows_page_1_redirect():
         async with httpx.AsyncClient() as http:
             results, has_next = await KinoTronProvider().browse("serials", 1, http)
     assert len(results) == 18
-    assert all(result.type == "series" for result in results)
+    assert all(result.form == "series" for result in results)
     assert has_next is True
 
 
@@ -95,7 +95,7 @@ async def test_kinotron_content_movie_parses_title_poster():
         async with httpx.AsyncClient() as http:
             content = await KinoTronProvider().content("9728-djuna", http)
     assert content.title.startswith("Дюна")
-    assert content.type == "movie"
+    assert content.form == "movie"
     assert content.poster and content.poster.startswith("https://kinotron.tv/")
 
 
@@ -149,7 +149,7 @@ async def test_kinotron_movie_with_double_quoted_player_file_is_not_gated():
         async with httpx.AsyncClient() as http:
             content = await KinoTronProvider().content("10381-rzdvjane-bazhannja", http)
             stream = await KinoTronProvider().stream("10381-rzdvjane-bazhannja", None, http)
-    assert content.type == "movie"
+    assert content.form == "movie"
     assert stream.url == "https://zetvideo.net/vid/1/films/a.season.for.family.2023.1080p/hls/index.m3u8"
     assert stream.type == "m3u8"
 
@@ -181,7 +181,7 @@ async def test_kinotron_series_parses_seasons_and_type():
         router.get("https://ashdi.vip/serial/3329").respond(200, text=_fixture("player_series.html"))
         async with httpx.AsyncClient() as http:
             content = await KinoTronProvider().content("3663-pervorodn-pradavn-pershonarodzhenn", http)
-    assert content.type == "series"
+    assert content.form == "series"
     assert content.seasons and len(content.seasons) == 2
     assert len(content.seasons[0].episodes) == 22
     assert content.seasons[1].episodes[0].number == 1
@@ -228,7 +228,7 @@ async def test_kinotron_series_with_dead_player_keeps_default_translation():
         router.get("https://ashdi.vip/serial/3329").respond(200, text=_fixture("player_movie.html"))
         async with httpx.AsyncClient() as http:
             content = await KinoTronProvider().content("3663-pervorodn-pradavn-pershonarodzhenn", http)
-    assert content.type == "series"
+    assert content.form == "series"
     assert content.translations and len(content.translations) == 1
     assert content.translations[0].id == "uk"
 

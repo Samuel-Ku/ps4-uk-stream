@@ -91,7 +91,7 @@ async def test_search_classifies_films_as_movie():
     # Our v2 spec maps them to a sensible default — for search results
     # we accept "movie" / "series" / "anime" (anything reasonable; the
     # content() endpoint refines the type).
-    assert all(r.type in {"movie", "series", "anime"} for r in results)
+    assert all(r.form in {"movie", "series"} for r in results)
 
 
 @pytest.mark.asyncio
@@ -121,7 +121,7 @@ async def test_browse_films_parses_results():
             results, has_next = await UASerialsProProvider().browse("films", 1, http)
     assert len(results) == 18
     # Films section cards all classify as movie.
-    assert all(r.type == "movie" for r in results)
+    assert all(r.form == "movie" for r in results)
     # All IDs begin with the provider prefix.
     assert all(r.id.startswith("uaserialspro:") for r in results)
     # Captured home page has pagination links (page/2/, page/3/, …).
@@ -137,7 +137,7 @@ async def test_browse_page2_uses_dle_pagination():
         async with httpx.AsyncClient() as http:
             results, _ = await UASerialsProProvider().browse("films", 2, http)
     assert len(results) == 18
-    assert all(r.type == "movie" for r in results)
+    assert all(r.form == "movie" for r in results)
 
 
 @pytest.mark.asyncio
@@ -176,7 +176,7 @@ async def test_browse_series_classifies_as_series():
         async with httpx.AsyncClient() as http:
             results, _ = await UASerialsProProvider().browse("series", 1, http)
     assert len(results) == 18
-    assert all(r.type == "series" for r in results)
+    assert all(r.form == "series" for r in results)
 
 
 @pytest.mark.asyncio
@@ -209,7 +209,7 @@ async def test_content_movie_parses_title_year_poster():
     # Title is the visible `.short-title` text.
     assert "Шопен" in c.title
     # Жанр row contains "Фільм" → Movie.
-    assert c.type == "movie"
+    assert c.form == "movie"
     # Year from `/year/2025/`.
     assert c.year == 2025
     # Poster from `div.fimg img-wide img`.
@@ -239,7 +239,7 @@ async def test_content_series_parses_seasons():
         async with httpx.AsyncClient() as http:
             c = await UASerialsProProvider().content("12585-enn-droyid", http)
     assert "Енн" in c.title or "Дройід" in c.title
-    assert c.type == "series"
+    assert c.form == "series"
     assert c.seasons is not None
     assert len(c.seasons) >= 1
     # Each season has at least one episode with the s{N}e{M} suffix.

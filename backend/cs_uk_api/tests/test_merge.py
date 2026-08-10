@@ -7,6 +7,7 @@ Seam under test: the pure functions in ``cs_uk_api.merge`` —
 from __future__ import annotations
 
 import logging
+from typing import Any, cast
 
 import pytest
 
@@ -26,7 +27,7 @@ def item(pid: str, title: str, media_type: str = "movie", year: int | None = Non
     return SearchResult(
         id=f"{pid}:{n}",
         provider=pid,
-        type=media_type,  # type: ignore[arg-type]
+        form=cast(Any, media_type),
         title=title,
         year=year,
         url=f"https://{pid}.example/{n}",
@@ -107,8 +108,8 @@ def test_group_key_is_prefixed_and_stable() -> None:
     k1 = group_key("дюна", "movie", 2021)
     k2 = group_key("дюна", "movie", 2021)
     assert k1 == k2
-    assert k1.startswith("g1:")
-    assert len(k1) > len("g1:") + 8
+    assert k1.startswith("g2:")
+    assert len(k1) > len("g2:") + 8
 
 
 def test_group_key_changes_with_any_component() -> None:
@@ -201,7 +202,7 @@ def test_merge_groups_have_stable_group_keys() -> None:
     ])
     assert len(forward) == len(reverse) == 1
     assert forward[0].key == reverse[0].key
-    assert forward[0].key.startswith("g1:")
+    assert forward[0].key.startswith("g2:")
 
 
 def test_item_group_key_is_pure_function_of_item_data() -> None:
@@ -273,11 +274,11 @@ def test_group_key_from_agrees_with_merge_core() -> None:
     # sibling's own item key — both must agree.
     sibling = item("eneyida", "Дюна", year=2021, n="2")
     group_key = merge_results([it, sibling])[0].key
-    assert group_key_from(it.title, it.type, it.year, it.id) == group_key
+    assert group_key_from(it.title, it.form, it.year, it.id) == group_key
     # Same property holds for an item alone: its item key matches the
     # singleton group's key.
     solo = merge_results([it])[0]
-    assert group_key_from(it.title, it.type, it.year, it.id) == solo.key
+    assert group_key_from(it.title, it.form, it.year, it.id) == solo.key
 
 
 def test_alias_bridge_limit_solo_vs_pooled_keys_differ() -> None:

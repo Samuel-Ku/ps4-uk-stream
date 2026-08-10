@@ -36,6 +36,7 @@ import pytest
 from cs_uk_api.home import round_robin_dedup
 from cs_uk_api.merge import group_key_from, item_group_key
 from cs_uk_api.models import SearchResult
+from cs_uk_api.providers.base import model_b_axes
 
 
 def _make_item(
@@ -44,10 +45,12 @@ def _make_item(
     year: int | None = None,
     n: str = "1",
 ) -> SearchResult:
+    mb_form, mb_styles = model_b_axes(cast(Any, "movie"))
     return SearchResult(
         id=f"{pid}:{n}",
         provider=pid,
-        type=cast(Any, "movie"),
+        form=mb_form,
+        styles=mb_styles,
         title=title,
         year=year,
         url=f"https://{pid}.example/{n}",
@@ -127,7 +130,7 @@ def test_home_item_member_keys_field_present_in_wire_shape() -> None:
 # ---------------------------------------------------------------------------
 # This is the contract SearchGroup.member_keys relies on: the
 # per-item key computed by ``item_group_key(item)`` must equal the
-# ``group_key_from(item.title, item.type, item.year, item.id)`` the
+# ``group_key_from(item.title, item.form, item.year, item.id)`` the
 # single-source content route uses. Already verified for HomeItem in
 # test_home.py above; this is a one-liner guardrail for SearchGroup.
 
@@ -140,4 +143,4 @@ def test_member_key_matches_group_key_from_for_item() -> None:
     that records under the played item's key can match it against
     any member key of the merged card without translation."""
     item = _make_item("p1", "Дюна", year=2021, n="p1-1")
-    assert item_group_key(item) == group_key_from(item.title, item.type, item.year, item.id)
+    assert item_group_key(item) == group_key_from(item.title, item.form, item.year, item.id)

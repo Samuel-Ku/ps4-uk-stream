@@ -35,14 +35,14 @@ BASE_URL = "https://bambooua.com"
 # the dead `world-bl` listing (301 -> homepage, verified live 2026-08-09)
 # is retired from the exposed set.
 BAMBOUA_SECTIONS: tuple[Section, ...] = (
-    Section(id="cinema", title="Фільми", type="movie"),
-    Section(id="dorama", title="Дорами", type="series"),
-    Section(id="anime", title="Аніме", type="anime"),
-    Section(id="lakorn", title="Лакорн", type="series"),
-    Section(id="voice", title="Озвучення", type="series"),
-    Section(id="tv-show", title="ТВ-шоу", type="series"),
-    Section(id="done", title="Завершені", type="series"),
-    Section(id="now", title="Поточні", type="series"),
+    Section(id="cinema", title="Фільми", form="movie"),
+    Section(id="dorama", title="Дорами", form="series"),
+    Section(id="anime", title="Аніме", styles=frozenset({"anime"})),
+    Section(id="lakorn", title="Лакорн", form="series"),
+    Section(id="voice", title="Озвучення", form="series"),
+    Section(id="tv-show", title="ТВ-шоу", form="series"),
+    Section(id="done", title="Завершені", form="series"),
+    Section(id="now", title="Поточні", form="series"),
 )
 
 # URL path segment -> MediaType. Longest prefixes first so a longer
@@ -209,7 +209,6 @@ def _parse_card(slide: Tag, provider_id: str) -> SearchResult | None:
     return SearchResult(
         id=f"{provider_id}:{ext}",
         provider=provider_id,
-        type=_type_from_url(href),  # type: ignore[arg-type]
         title=title_el.get_text(strip=True),
         poster=poster,
         url=urljoin(BASE_URL, href),
@@ -434,7 +433,6 @@ class BambooUAProvider(BaseProvider):
         mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"bambooua:{external_id}",
-            type=media_type,  # type: ignore[arg-type]
             title=title.strip(),
             description=description,
             poster=poster,

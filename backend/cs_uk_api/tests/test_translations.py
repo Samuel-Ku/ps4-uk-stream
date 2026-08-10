@@ -33,7 +33,7 @@ def test_episode_can_carry_translations():
 def test_content_response_translations_level_default_is_content():
     cr = ContentResponse(
         id="x:y",
-        type="series",
+        form="series",
         title="X",
         translations=[Translation(id="uk", label="Українська")],
         seasons=[Season(number=1, episodes=[Episode(number=1, id="x:s1e1", title="E1")])],
@@ -45,7 +45,7 @@ def test_content_response_translations_level_default_is_content():
 def test_content_response_translations_level_can_be_episode():
     cr = ContentResponse(
         id="x:y",
-        type="series",
+        form="series",
         title="X",
         translations=[Translation(id="uk", label="Українська")],
         translations_level="episode",
@@ -59,7 +59,7 @@ def test_content_response_rejects_unknown_translations_level():
     with pytest.raises(ValidationError):
         ContentResponse(
             id="x:y",
-            type="series",
+            form="series",
             title="X",
             translations=[Translation(id="uk", label="Українська")],
             translations_level="bogus",  # type: ignore[arg-type]
@@ -70,7 +70,8 @@ def test_translations_field_present_on_round_trip():
     """Pydantic round-trips the new fields through dict()/model_dump."""
     cr = ContentResponse(
         id="x:y",
-        type="anime",
+        form="series",
+        styles=frozenset({"anime"}),
         title="Naruto",
         translations=[Translation(id="uk", label="Українська")],
         seasons=[

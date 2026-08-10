@@ -10,7 +10,7 @@ Ticket #106's acceptance, pinned at the HTTP seam:
     codecs risks forcing a transcode path we can't serve) —
     ``IsDirectStream: true``, a fictitious stable ``Path``, and a fresh
     ``PlaySessionId`` UUID.
-  - A movie resolves through its ``g1:`` group key to the group's
+  - A movie resolves through its ``g2:`` group key to the group's
     first-seen provider, whose ``stream()`` is called with the BARE
     external id (translation=None → the first default) — the same id a
     native client hands ``/api/stream``.
@@ -51,7 +51,7 @@ from cs_uk_api.models import (
     Translation,
 )
 from cs_uk_api.providers import PROVIDERS
-from cs_uk_api.providers.base import BaseProvider, ProviderError
+from cs_uk_api.providers.base import BaseProvider, ProviderError, model_b_axes
 
 TOKEN = SETTINGS.jellyfin_token
 
@@ -62,7 +62,7 @@ _POSTER_SERIES = "https://cdn.example.test/posters/serial.jpg"
 def _dune() -> ContentResponse:
     return ContentResponse(
         id="p1:dune-1",
-        type="movie",
+        form="movie",
         title="Дюна",
         year=2021,
         description="Епічна науково-фантастична стрічка.",
@@ -74,7 +74,7 @@ def _dune() -> ContentResponse:
 def _serial() -> ContentResponse:
     return ContentResponse(
         id="p1:serial-1",
-        type="series",
+        form="series",
         title="Сериалал серіал",
         year=2023,
         description="Детективний серіал.",
@@ -152,10 +152,12 @@ def _card(
     *,
     poster: str | None = None,
 ) -> SearchResult:
+    mb_form, mb_styles = model_b_axes(cast(Any, media_type))
     return SearchResult(
         id=f"{pid}:{id_}",
         provider=pid,
-        type=cast(Any, media_type),
+        form=mb_form,
+        styles=mb_styles,
         title=title,
         year=2021 if media_type == "movie" else 2023,
         poster=poster,
@@ -392,7 +394,7 @@ def test_series_item_not_directly_playable_404(client: TestClient) -> None:
 def test_cold_cache_404_and_unknown_ids_404(client: TestClient) -> None:
     """Cold resolution map and unknown ids both 404 — never 5xx."""
     r = client.post(
-        "/Items/g1:deadbeefdeadbeef/PlaybackInfo", headers={"X-Emby-Token": TOKEN}, json={}
+        "/Items/g2:deadbeefdeadbeef/PlaybackInfo", headers={"X-Emby-Token": TOKEN}, json={}
     )
     assert r.status_code == 404
     r2 = client.post(
@@ -462,8 +464,8 @@ def test_gated_stream_degrades_to_404_without_health_impact(client: TestClient) 
 
 
 def test_requires_token_all_spellings(client: TestClient) -> None:
-    assert client.post("/Items/g1:deadbeefdeadbeef/PlaybackInfo", json={}).status_code == 401
-    assert client.get("/Items/g1:deadbeefdeadbeef/PlaybackInfo").status_code == 401
+    assert client.post("/Items/g2:deadbeefdeadbeef/PlaybackInfo", json={}).status_code == 401
+    assert client.get("/Items/g2:deadbeefdeadbeef/PlaybackInfo").status_code == 401
 
 
 @pytest.mark.asyncio

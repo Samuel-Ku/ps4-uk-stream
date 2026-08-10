@@ -4,14 +4,11 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_serializer
 
-# Model B axes (ADR-0001, expand step #129–#134): form is the
+# Model B axes (ADR-0001, contract step #135): form is the
 # cinematic-vs-episodic split, styles the optional genre tags. Empty
-# frozenset = ordinary live-action (decided: empty, not "live").
-#
-# The legacy ``MediaType`` alias stays for the expand step — ``type``
-# remains on the wire alongside ``form``/``styles``. Removing it is the
-# contract step (#135), which is still pending.
-MediaType = Literal["movie", "series", "anime", "cartoon", "dorama"]
+# frozenset = ordinary live-action (decided: empty, not "live"). The
+# legacy ``MediaType``/``type`` axis is gone — every content item ships
+# exactly ``form`` + ``styles``.
 MediaForm = Literal["movie", "series"]
 MediaStyle = Literal["anime", "cartoon", "dorama"]
 StreamType = Literal["mp4", "m3u8", "hls", "dash"]
@@ -25,16 +22,15 @@ def _empty_styles() -> frozenset[MediaStyle]:
 class SearchResult(BaseModel):
     id: str
     provider: str
-    type: MediaType
+    # Model B (ADR-0001, contract #135): ``form`` is required — every
+    # piece of content is either a movie or a series. ``styles`` is the
+    # decided set of genre tags; empty frozenset = ordinary live-action
+    # (the decided default, not an absence marker).
+    form: MediaForm
     title: str
     year: int | None = None
     poster: str | None = None
     url: str
-    # Model B axes (ADR-0001, expand #129): form + styles ride alongside
-    # ``type`` until the contract step (#135). Both optional in expand —
-    # an unpopulated item is treated as pass-any by the section/search
-    # filters (an explicit filter excludes an item without the axis).
-    form: MediaForm | None = None
     styles: frozenset[MediaStyle] = Field(default_factory=_empty_styles)
 
     @field_serializer("styles")
@@ -94,22 +90,22 @@ class SearchGroup(BaseModel):
     group_key: str
     title: str
     year: int | None = None
-    type: MediaType
     poster: str | None = None
-    # Model B (expand #129): first-seen-wins, like the other canonical
-    # fields; ``form``/``styles`` come from the first source row.
-    form: MediaForm | None = None
+    # Model B (contract #135): first-seen-wins, like the other canonical
+    # fields; ``form``/``styles`` come from the first source row. ``form``
+    # is required (no legacy ``type`` on the wire anymore).
+    form: MediaForm
     styles: frozenset[MediaStyle] = Field(default_factory=_empty_styles)
     #: Per-provider ``SearchResult`` rows that collapsed into this
     #: group. Always non-empty (an empty group was dropped upstream).
     #: Order = first-seen in the merge pass; the first source also
-    #: wins the canonical title/year/type/poster fields above.
+    #: wins the canonical title/year/form/poster fields above.
     sources: list[SearchResult]
     #: Every per-item group key that contributed to this merged card
     #: (issue #89). First-seen order — the canonical ``group_key``
     #: (``yearful-preferred-min``) is always the first element for
     #: groups with at least one yearful member. Sort key is the
-    #: ``g1:`` digest in lexicographic order; ``"g1:"`` prefix sorts
+    #: ``g2:`` digest in lexicographic order; ``"g2:"`` prefix sorts
     #: before any other character so the yearful preference still
     #: wins on tie.
     member_keys: list[str] = Field(default_factory=list)
@@ -159,7 +155,10 @@ class Season(BaseModel):
 
 class ContentResponse(BaseModel):
     id: str
-    type: MediaType
+    # Model B (ADR-0001, contract #135): ``form`` is required — the
+    # Movie/Series verdict every consumer (facade, filters, merge)
+    # reads. The legacy ``type`` axis is gone.
+    form: MediaForm
     title: str
     year: int | None = None
     description: str = ""
@@ -172,8 +171,6 @@ class ContentResponse(BaseModel):
     #: the same title yields the same key from any provider. Client resume/
     #: memory records anchor on this, not on the provider-scoped id.
     group_key: str = ""
-    # Model B (optional in expand): form + styles axes (ADR-0001).
-    form: MediaForm | None = None
     styles: frozenset[MediaStyle] = Field(default_factory=_empty_styles)
 
     @field_serializer("styles")
@@ -201,9 +198,18 @@ HealthStatus = Literal[STATUS_OK, STATUS_DEGRADED, STATUS_DOWN, STATUS_WARMING]
 
 
 class ProviderInfo(BaseModel):
+    """One provider's capabilities on ``/api/providers``.
+
+    Model B shape (ADR-0001, contract #135): ``forms`` is the rollup of
+    the provider's cinematic-vs-episodic forms, ``styles`` the rollup of
+    its style-tagged content (∅ = no style-tagged content). This replaces
+    the legacy single ``types`` axis.
+    """
+
     id: str
     name: str
-    types: list[MediaType]
+    forms: list[MediaForm]
+    styles: list[MediaStyle]
     status: HealthStatus = "ok"
     last_error_at: str | None = None
 
@@ -211,9 +217,11 @@ class ProviderInfo(BaseModel):
 class Section(BaseModel):
     id: str
     title: str
-    type: MediaType
-    # Model B filter axes (ADR-0001): the section narrows its browse
-    # results by these match rules (CONTEXT.md «Section schema»):
+    # Model B filter axes (ADR-0001, ticket #134, contract #135): the
+    # section narrows its browse results by these match rules (CONTEXT.md
+    # «Section schema»). The legacy ``type`` axis is gone — a section's
+    # kind is exactly its ``form`` + ``styles`` filter axes (∅ = the
+    # ordinary-only filter).
     #   form — exact-or-None: ``None`` passes everything, else
     #     ``item.form == section.form`` must hold.
     #   styles — 3-case filter: ``None`` passes anything (including
@@ -262,9 +270,9 @@ class ErrorResponse(BaseModel):
 # stable groupKey plus the list of provider ids that contributed to it
 # (dedup is by groupKey — same title from two providers is one row, and
 # the client receives the union of providers that surfaced it). The
-# ``type`` and ``poster`` fields are sourced from the first-seen
-# provider; the spec doesn't preserve attribution at the field level,
-# only at the row level (via ``providers``).
+# ``form``/``styles`` and ``poster`` fields are sourced from the
+# first-seen provider; the spec doesn't preserve attribution at the
+# field level, only at the row level (via ``providers``).
 #
 # ``HomeRow`` aggregates ``HomeItem`` rows under a human label. The
 # ``type`` field doubles as a routing key for the row's contents:
@@ -272,9 +280,10 @@ class ErrorResponse(BaseModel):
 #     ``newest_section``.
 #   - ``"popular"`` — «Популярні зараз», only when animeon's ``popular``
 #     browse returned data (issue #70 AC).
-#   - a media-type literal (``"movie"``, ``"series"``, ``"anime"``,
-#     ``"cartoon"``, ``"dorama"``) — one row per type, aggregating every
-#     provider section whose ``Section.type`` matches.
+#   - a media-kind literal (``"movie"``, ``"series"``, ``"anime"``,
+#     ``"cartoon"``, ``"dorama"``) — one row per kind, aggregating every
+#     provider section whose Model B axes (``form``/``styles``) map to
+#     that kind (``home.section_row_type``).
 #
 # ``GroupContentResponse`` is the ``/api/content/{groupKey}`` payload:
 # the merged item plus the full providers list. It deliberately mirrors
@@ -287,10 +296,10 @@ class HomeItem(BaseModel):
     group_key: str
     title: str
     year: int | None = None
-    type: MediaType
     poster: str | None = None
-    # Model B (optional in expand): form + styles axes (ADR-0001).
-    form: MediaForm | None = None
+    # Model B (contract #135): ``form`` is required, ``styles`` the
+    # decided tag set (∅ = ordinary). The legacy ``type`` axis is gone.
+    form: MediaForm
     styles: frozenset[MediaStyle] = Field(default_factory=_empty_styles)
     #: Provider ids that contributed this row. Always non-empty (a row
     #: with zero providers was dropped upstream). Order = round-robin
@@ -335,7 +344,7 @@ class GroupContentResponse(BaseModel):
 class GroupSourceContentResponse(ContentResponse):
     """``/api/content/{groupKey}?source=<provider>`` payload (v3 spec §3.3).
 
-    Inherits every field of ``ContentResponse`` (id, type, title, year,
+    Inherits every field of ``ContentResponse`` (id, form, title, year,
     description, poster, translations, seasons, translations_level,
     country, group_key) — the chosen source's content body is the
     response body verbatim, no transformation. The added ``sources``

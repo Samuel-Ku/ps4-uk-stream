@@ -62,16 +62,12 @@ def _result(
     form: str | None,
     styles: set[str],
     n: str = "1",
-    type: str | None = None,
 ) -> SearchResult:
-    # ``type`` defaults to matching ``form`` (the legacy MediaType is
-    # derived from the axis in most fixtures); tests that need to
-    # decouple the two axes (e.g. merge-ordering) pass ``type``
-    # explicitly.
+    # Contract #135: the legacy ``type`` axis is gone — ``form`` is the
+    # merge key and ``styles`` the tag set; nothing else to decouple.
     return SearchResult(
         id=f"{pid}:{n}",
         provider=pid,
-        type=cast(Any, type if type is not None else ("movie" if form == "movie" else "series")),
         title=title,
         poster=f"https://{pid}.example/{n}.jpg",
         url=f"https://{pid}.example/{n}",
@@ -232,8 +228,8 @@ def test_search_filter_applies_before_merge() -> None:
     # merge: if the filter ran after, the group would form first (its
     # canonical form is the first-seen movie member) and be filtered out
     # wholesale — yielding zero groups instead of one series-only group.
-    movie = _result("p1", "Дюна", form="movie", styles=set(), type="series")
-    series = _result("p2", "Дюна", form="series", styles=set(), type="series")
+    movie = _result("p1", "Дюна", form="movie", styles=set())
+    series = _result("p2", "Дюна", form="series", styles=set())
     PROVIDERS["p1"] = _search_stub("p1", [movie])
     PROVIDERS["p2"] = _search_stub("p2", [series])
 
@@ -293,7 +289,6 @@ def test_browse_section_form_filter() -> None:
     sec = Section(
         id="films",
         title="Фільми",
-        type=cast(Any, "anime"),
         form=cast(Any, "movie"),
     )
     PROVIDERS["p1"] = _browse_stub("p1", (sec,), {"films": [movie, series]})
@@ -310,7 +305,6 @@ def test_browse_section_styles_intersection() -> None:
     sec = Section(
         id="ani",
         title="Аніме",
-        type=cast(Any, "anime"),
         styles=frozenset(cast(Any, {"anime"})),
     )
     PROVIDERS["p1"] = _browse_stub("p1", (sec,), {"ani": [anime, ordinary]})
@@ -329,7 +323,6 @@ def test_browse_section_styles_empty_is_ordinary_only() -> None:
     sec = Section(
         id="ord",
         title="Звичайне",
-        type=cast(Any, "series"),
         styles=frozenset(),
     )
     PROVIDERS["p1"] = _browse_stub("p1", (sec,), {"ord": [ordinary, anime]})
@@ -345,7 +338,7 @@ def test_browse_section_no_axes_passes_everything() -> None:
     everything — un-migrated sections behave unchanged."""
     movie = _result("p1", "Дюна", form="movie", styles=set())
     anime = _result("p1", "Наруто", form="series", styles={"anime"}, n="2")
-    sec = Section(id="all", title="Все", type=cast(Any, "movie"))
+    sec = Section(id="all", title="Все")
     PROVIDERS["p1"] = _browse_stub("p1", (sec,), {"all": [movie, anime]})
 
     r = TestClient(app).get("/api/browse?provider=p1&section=all")

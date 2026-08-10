@@ -35,9 +35,9 @@ async def test_klontv_search_parses_results():
     assert all(r.url.startswith("https://klonua.com/") for r in results)
     # Type classification: serialy URLs must produce `series`, filmy URLs
     # must produce `movie`. First card is a serialy link.
-    types_by_path = {r.url.split("/")[3]: r.type for r in results}
-    assert types_by_path.get("serialy") == "series"
-    assert types_by_path.get("filmy") == "movie"
+    types_by_path = {r.url.split("/")[3]: r for r in results}
+    assert types_by_path["serialy"].form == "series"
+    assert types_by_path["filmy"].form == "movie"
 
 
 @pytest.mark.asyncio
@@ -63,9 +63,9 @@ async def test_klontv_browse_films_page1():
         for r in results
     )
     # Type classification is consistent with the URL path.
-    type_by_path = {r.url.split("/")[3]: r.type for r in results}
-    assert type_by_path.get("filmy") == "movie"
-    assert type_by_path.get("serialy") == "series"
+    type_by_path = {r.url.split("/")[3]: r for r in results}
+    assert type_by_path["filmy"].form == "movie"
+    assert type_by_path["serialy"].form == "series"
     assert has_next is True
 
 
@@ -79,7 +79,7 @@ async def test_klontv_browse_series_page1():
         async with httpx.AsyncClient() as http:
             results, has_next = await KlonTVProvider().browse("series", 1, http)
     assert len(results) == 48
-    assert all(r.type == "series" for r in results)
+    assert all(r.form == "series" for r in results)
     assert all(r.id.startswith("klontv:series/") for r in results)
     assert all(r.url.startswith("https://klonua.com/serialy/") for r in results)
     assert has_next is True
@@ -110,7 +110,7 @@ async def test_klontv_content_movie_parses_title_poster_player():
         async with httpx.AsyncClient() as http:
             c = await KlonTVProvider().content("films/11719-duna-chastyna-druga", http)
     assert "Дюна" in c.title
-    assert c.type == "movie"
+    assert c.form == "movie"
     assert c.poster is not None
     assert c.poster.startswith("https://klonua.com/uploads/")
     # Movies expose a single playable URL; surface it as season 1
@@ -141,7 +141,7 @@ async def test_klontv_content_series_parses_seasons():
         async with httpx.AsyncClient() as http:
             c = await KlonTVProvider().content("series/8431-duna", http)
     assert "Дюна" in c.title
-    assert c.type == "series"
+    assert c.form == "series"
     assert c.seasons is not None
     assert len(c.seasons) >= 1
     assert all(len(s.episodes) >= 1 for s in c.seasons)
@@ -172,7 +172,7 @@ async def test_klontv_content_follows_section_redirect():
         async with httpx.AsyncClient() as http:
             c = await KlonTVProvider().content("films/10905-serial", http)
     assert "Дюна" in c.title
-    assert c.type == "series"
+    assert c.form == "series"
     assert c.seasons is not None
     assert len(c.seasons) >= 1
 

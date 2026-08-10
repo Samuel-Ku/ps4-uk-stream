@@ -67,7 +67,7 @@ class _OneResult(_StubBase):
     async def search(self, q, http):
         from cs_uk_api.models import SearchResult
 
-        return [SearchResult(id="one-result:x", provider="one-result", type="movie", title="X", url="https://x/")]
+        return [SearchResult(id="one-result:x", provider="one-result", form="movie", title="X", url="https://x/")]
 
 
 def _fa_provider(provider_id: str, exc: BaseException):

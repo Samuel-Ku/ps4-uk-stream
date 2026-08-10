@@ -45,6 +45,7 @@ from .models import (
     HealthStatus,
     HomeResponse,
     MediaForm,
+    MediaStyle,
     ProviderInfo,
     ProviderSections,
     SearchResponse,
@@ -52,6 +53,8 @@ from .models import (
 )
 from .poster_proxy import fetch as fetch_poster
 from .providers import PROVIDERS
+from .providers.base import BaseProvider
+from .providers.base import model_b_axes as _model_b_axes
 from .service import (
     content_provider_error as _content_provider_error,
 )
@@ -193,12 +196,34 @@ async def list_providers() -> list[ProviderInfo]:
         ProviderInfo(
             id=p.id,
             name=p.name,
-            types=list(p.types),  # type: ignore[arg-type]
+            # Model B capabilities (contract #135): derive the provider's
+            # form/styles rollup from its internal classification — the
+            # legacy single ``types`` axis is gone from the wire.
+            forms=_provider_forms(p),
+            styles=_provider_styles(p),
             status=_provider_status(p.id),
             last_error_at=TRACKER.last_error_at(p.id),
         )
         for p in PROVIDERS.values()
     ]
+
+
+def _provider_forms(p: BaseProvider) -> list[MediaForm]:
+    """The provider's ``MediaForm`` rollup, deduped in a stable order."""
+    seen: list[MediaForm] = []
+    for kind in p.types:
+        form = _model_b_axes(kind)[0]
+        if form not in seen:
+            seen.append(form)
+    return seen
+
+
+def _provider_styles(p: BaseProvider) -> list[MediaStyle]:
+    """The provider's style-tag rollup (∅ on the wire when none)."""
+    styles: set[MediaStyle] = set()
+    for kind in p.types:
+        styles.update(_model_b_axes(kind)[1])
+    return sorted(styles)
 
 
 def _provider_status(provider_id: str) -> HealthStatus:
@@ -348,17 +373,17 @@ async def content(
     content_id: str,
     source: str | None = Query(default=None),
 ) -> ContentResponse | GroupContentResponse | GroupSourceContentResponse:
-    """Discriminator: ``g1:…`` group keys route to the merged lookup;
+    """Discriminator: ``g2:…`` group keys route to the merged lookup;
     everything else is the existing ``provider:external`` content path.
 
-    For ``g1:…`` keys, an optional ``?source=<provider>`` query param
+    For ``g2:…`` keys, an optional ``?source=<provider>`` query param
     routes to the lazy single-source fetch (issue #60 / v3 spec §3.3):
     returns that ONE source's v2 ContentResponse + a ``providers`` echo
     for the source-switching chip strip. Without ``?source=``, the
     legacy ``GroupContentResponse{item, providers}`` shape is returned
     (preserved for backwards compatibility).
     """
-    if content_id.startswith("g1:"):
+    if content_id.startswith("g2:"):
         if source is not None:
             return await _content_by_group_key_and_source(content_id, source)
         return await _content_by_group_key(content_id)
@@ -393,7 +418,7 @@ async def _content_by_id(content_id: str) -> ContentResponse:
     # Stateless per-item group key (issue #69): pure function of the item's
     # own title/type/year, so client state survives across sessions and
     # provider-set changes.
-    resp.group_key = group_key_from(resp.title, resp.type, resp.year, content_id)
+    resp.group_key = group_key_from(resp.title, resp.form, resp.year, content_id)
     _content_cache.set(cache_key, resp)
     return resp
 
@@ -500,7 +525,7 @@ async def _content_by_group_key_and_source(
     # Re-derive the group key on this single-source response so the
     # returned ContentResponse is self-identifying (issue #69 stateless
     # identity — same key the merge core would compute for this item).
-    resp.group_key = group_key_from(resp.title, resp.type, resp.year, resp.id)
+    resp.group_key = group_key_from(resp.title, resp.form, resp.year, resp.id)
     return GroupSourceContentResponse(
         **resp.model_dump(),
         sources=sources_echo,

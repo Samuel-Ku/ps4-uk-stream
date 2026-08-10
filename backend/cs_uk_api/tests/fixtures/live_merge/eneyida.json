@@ -2,7 +2,7 @@
  {
   "id": "eneyida:films/9758-duna-proroctvo",
   "provider": "eneyida",
-  "type": "movie",
+  "form": "movie",
   "title": "Дюна: Пророцтво",
   "year": null,
   "poster": "https://eneyida.tv/uploads/posts/2025-03/9549.webp",
@@ -11,7 +11,7 @@
  {
   "id": "eneyida:films/9366-duna-chastyna-druga",
   "provider": "eneyida",
-  "type": "movie",
+  "form": "movie",
   "title": "Дюна: Частина друга",
   "year": null,
   "poster": "https://eneyida.tv/uploads/posts/2024-03/1710403697_p.jpg",
@@ -20,7 +20,7 @@
  {
   "id": "eneyida:films/6396-djuna",
   "provider": "eneyida",
-  "type": "movie",
+  "form": "movie",
   "title": "Дюна",
   "year": null,
   "poster": "https://eneyida.tv/uploads/posts/2021-12/cover.jpg",
@@ -29,7 +29,7 @@
  {
   "id": "eneyida:films/6395-dity-djuny",
   "provider": "eneyida",
-  "type": "movie",
+  "form": "movie",
   "title": "Діти Дюни",
   "year": null,
   "poster": "https://eneyida.tv/uploads/posts/2021-10/1633297581_pxp2ynkhlinkfqploxna9xoj2xp.jpeg",
@@ -38,7 +38,7 @@
  {
   "id": "eneyida:films/6394-djuna",
   "provider": "eneyida",
-  "type": "movie",
+  "form": "movie",
   "title": "Дюна",
   "year": null,
   "poster": "https://eneyida.tv/uploads/posts/2021-10/1633296450_14987415_ua_aa0e38ff037566a74f35577d496fc508.jpeg",
@@ -47,7 +47,7 @@
  {
   "id": "eneyida:films/6393-djuna",
   "provider": "eneyida",
-  "type": "movie",
+  "form": "movie",
   "title": "Дюна",
   "year": null,
   "poster": "https://eneyida.tv/uploads/posts/2021-10/1633295575_80182.jpeg",
@@ -56,7 +56,7 @@
  {
   "id": "eneyida:films/3752-dyuna-hodorovskogo",
   "provider": "eneyida",
-  "type": "movie",
+  "form": "movie",
   "title": "«Дюна» Ходоровського",
   "year": null,
   "poster": "https://eneyida.tv/uploads/posts/2020-05/1589205553_1.jpg",

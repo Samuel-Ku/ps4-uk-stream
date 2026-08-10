@@ -49,9 +49,9 @@ _ALLOWED_HOSTS: frozenset[str] = frozenset({"doramy.world", "ashdi.vip"})
 # Sections exposed by DoramyWorld's main navigation. Per the upstream
 # `mainPage = mainPageOf(...)` declaration in DoramyWorldProvider.kt.
 DORAMYWORLD_SECTIONS: tuple[Section, ...] = (
-    Section(id="film", title="Фільми", type="movie"),
-    Section(id="dorama", title="Дорами", type="dorama"),
-    Section(id="show", title="Розважальні шоу", type="series"),
+    Section(id="film", title="Фільми", form="movie"),
+    Section(id="dorama", title="Дорами", styles=frozenset({"dorama"})),
+    Section(id="show", title="Розважальні шоу", form="series"),
 )
 
 # URL path segment -> MediaType. Longest prefixes first; we only need
@@ -242,7 +242,6 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
     return SearchResult(
         id=f"{provider_id}:{ext}",
         provider=provider_id,
-        type=_type_from_url(href),  # type: ignore[arg-type]
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
@@ -361,7 +360,6 @@ class DoramyWorldProvider(BaseProvider):
         mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"doramyworld:{external_id}",
-            type=media_type,  # type: ignore[arg-type]
             title=title,
             year=year,
             description=description,

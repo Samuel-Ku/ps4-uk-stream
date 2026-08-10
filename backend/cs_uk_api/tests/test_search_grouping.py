@@ -55,7 +55,7 @@ def _result(
     return SearchResult(
         id=f"{pid}:{n}",
         provider=pid,
-        type=cast(Any, media_type),
+        form=cast(Any, media_type),
         title=title,
         year=year,
         poster=poster or f"https://{pid}.example/{n}.jpg",
@@ -176,14 +176,14 @@ def test_search_group_has_group_key_title_year_type_poster_sources() -> None:
         group_key=mg.key,
         title=mg.sources[0].title,
         year=mg.sources[0].year,
-        type=mg.sources[0].type,  # type: ignore[arg-type]
+        form=mg.sources[0].form,
         poster=mg.sources[0].poster,
         sources=list(mg.sources),
     )
-    assert sg.group_key.startswith("g1:")
+    assert sg.group_key.startswith("g2:")
     assert sg.title == "Дюна"
     assert sg.year == 2021
-    assert sg.type == "movie"
+    assert sg.form == "movie"
     assert sg.poster == "https://uakino.example/1.jpg"
     assert len(sg.sources) == 2
     assert {s.provider for s in sg.sources} == {"uakino", "eneyida"}
@@ -218,7 +218,7 @@ def test_search_group_member_keys_includes_all_member_group_keys() -> None:
         group_key=mg.key,
         title=mg.sources[0].title,
         year=mg.sources[0].year,
-        type=mg.sources[0].type,  # type: ignore[arg-type]
+        form=mg.sources[0].form,
         poster=mg.sources[0].poster,
         sources=list(mg.sources),
         member_keys=list(dict.fromkeys(member_keys)),
@@ -247,7 +247,7 @@ def test_search_response_groups_field_replaces_results(monkeypatch: pytest.Monke
     assert "groups" in body
     assert "results" not in body  # v3 contract: flat results are gone
     assert len(body["groups"]) == 1
-    assert body["groups"][0]["group_key"].startswith("g1:")
+    assert body["groups"][0]["group_key"].startswith("g2:")
     assert body["groups"][0]["title"] == "Дюна"
     assert len(body["groups"][0]["sources"]) == 2
     # Issue #89: member_keys is on the wire so the client can match
@@ -511,7 +511,7 @@ def test_search_single_provider_one_group_one_source(monkeypatch: pytest.MonkeyP
         {
             "id": "uakino:1",
             "provider": "uakino",
-            "type": "movie",
+            "form": "movie",
             "title": "Смолфут",
             "year": 2018,
             "poster": "https://uakino.example/1.jpg",

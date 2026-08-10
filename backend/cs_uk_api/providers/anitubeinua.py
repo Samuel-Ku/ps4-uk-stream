@@ -64,7 +64,7 @@ ASHDI_REFERER = "https://qeruya.cyou"
 
 # The one and only section: the site root path is `/anime/page/N/`.
 ANITUBEINUA_SECTIONS: tuple[Section, ...] = (
-    Section(id="page", title="Нові", type="anime"),
+    Section(id="page", title="Нові", styles=frozenset({"anime"})),
 )
 
 # External id: numeric news id, hyphen, slug. Used as a security
@@ -174,7 +174,6 @@ def _parse_story(card: Any, provider_id: str) -> SearchResult | None:
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
-        type="anime",
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
@@ -607,7 +606,6 @@ class AnitubeinuaProvider(BaseProvider):
         mb_form, mb_styles = model_b_axes("anime")
         return ContentResponse(
             id=f"{self.id}:{external_id}",
-            type="anime",
             title=title,
             year=year,
             description=description,

@@ -16,7 +16,7 @@ consumes:
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import Any, cast
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -64,7 +64,7 @@ class _AuthStub(BaseProvider):
                 SearchResult(
                     id="auth-stub:one",
                     provider=self.id,
-                    type=cast(Any, "movie"),
+                    form="movie",
                     title="Дюна",
                     year=2021,
                     poster=None,

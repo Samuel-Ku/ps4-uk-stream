@@ -186,9 +186,10 @@ _COLLECTION_TYPE_BY_ROW = {
     "popular": "tvshows",
 }
 
-#: Home ``MediaType`` → Jellyfin item Type. Only Movie/Series are expressible
+#: Home-row kind → Jellyfin item Type. Only Movie/Series are expressible
 #: on the wire (AC: "correct Type (Movie/Series)"); style-tagged rows are
-#: episodic content and become Series.
+#: episodic content and become Series. Row kinds come from the Model B
+#: section axes (contract #135) — the legacy ``type`` axis is gone.
 _JF_TYPE_BY_ROW = {
     "movie": "Movie",
     "series": "Series",
@@ -220,7 +221,7 @@ def _row_dto(row: HomeRow, server_id: str) -> BaseItemDto:
 
 
 def _item_dto(row: HomeRow, item: HomeItem, server_id: str) -> BaseItemDto:
-    """One library card: Movie/Series item carrying the ``g1:`` id.
+    """One library card: Movie/Series item carrying the ``g2:`` id.
 
     ``ImageTags.Primary`` is set only when the card carries a poster
     (D9). ``year`` is surfaced as ``ProductionYear`` (Jellyfin's field);
@@ -230,7 +231,7 @@ def _item_dto(row: HomeRow, item: HomeItem, server_id: str) -> BaseItemDto:
         Name=item.title,
         ServerId=server_id,
         Id=item.group_key,
-        Type=_JF_TYPE_BY_ROW.get(item.type, "Series"),
+        Type=_JF_TYPE_BY_ROW.get(item.form, "Series"),
         ProductionYear=item.year,
         ParentId=_VIEW_ID_BY_TYPE[row.type],
     )
@@ -240,7 +241,7 @@ def _item_dto(row: HomeRow, item: HomeItem, server_id: str) -> BaseItemDto:
 
 
 def _poster_for(item_id: str) -> str | None:
-    """The canonical poster URL for a ``g1:`` item id, or None.
+    """The canonical poster URL for a ``g2:`` item id, or None.
 
     Resolution walks the cached home snapshot — the same lookup the
     native ``/api/content/{group_key}`` route uses — and takes the
@@ -260,7 +261,7 @@ def _poster_for(item_id: str) -> str | None:
 
 
 def _view_id_for_item(item_id: str) -> str | None:
-    """The view id that surfaced a ``g1:`` item, from the cached home.
+    """The view id that surfaced a ``g2:`` item, from the cached home.
 
     Wraps the same home walk `_poster_for` uses so a detail page can
     tell the client which library the item belongs to (D5). None when
@@ -284,14 +285,14 @@ def _content_dto(group_key: str, content: ContentResponse, server_id: str) -> Ba
     so the tag and the route always agree (a card with no art means no
     tag AND a 404 image, never a dangling tag). Translations stay
     server-side — the wire carries no translation surface. The item id
-    is the stateless ``g1:`` group key, so the client's bookmarks and
+    is the stateless ``g2:`` group key, so the client's bookmarks and
     the native route agree.
     """
     dto = BaseItemDto(
         Name=content.title,
         ServerId=server_id,
         Id=group_key,
-        Type="Movie" if content.type == "movie" else "Series",
+        Type="Movie" if content.form == "movie" else "Series",
         ProductionYear=content.year,
         Overview=content.description,
     )
@@ -382,7 +383,7 @@ async def _user_views() -> BaseItemDtoQueryResult:
 
 def _search_group_dto(group: SearchGroup, server_id: str) -> BaseItemDto:
     """One search-result card (ticket #106): the merged group in the same
-    listing shape as ``_item_dto`` (D5/D9) — ``g1:`` id, Movie/Series
+    listing shape as ``_item_dto`` (D5/D9) — ``g2:`` id, Movie/Series
     Type from the group's canonical type, ``ImageTags.Primary`` present
     *iff* the card has a poster.
 
@@ -393,7 +394,7 @@ def _search_group_dto(group: SearchGroup, server_id: str) -> BaseItemDto:
         Name=group.title,
         ServerId=server_id,
         Id=group.group_key,
-        Type=_JF_TYPE_BY_ROW.get(group.type, "Series"),
+        Type=_JF_TYPE_BY_ROW.get(group.form, "Series"),
         ProductionYear=group.year,
     )
     if group.poster is not None:
@@ -408,7 +409,7 @@ def _search_hint(group: SearchGroup) -> SearchHint:
         ItemId=group.group_key,
         Id=group.group_key,
         Name=group.title,
-        Type=_JF_TYPE_BY_ROW.get(group.type, "Series"),
+        Type=_JF_TYPE_BY_ROW.get(group.form, "Series"),
         ProductionYear=group.year,
     )
     if group.poster is not None:
@@ -444,7 +445,7 @@ async def _jf_search_groups(search_term: str) -> list[SearchGroup]:
 
 async def _jf_search(search_term: str) -> BaseItemDtoQueryResult:
     """Listing-shaped search result (ticket #106, D10): one card per
-    merged group, ``g1:`` ids, Movie/Series types matching the #105
+    merged group, ``g2:`` ids, Movie/Series types matching the #105
     detail surface."""
     groups = await _jf_search_groups(search_term)
     server_id = _server_id()
@@ -629,14 +630,14 @@ async def items_listing(
     """Library listing for one view, children of a series/season
     (ticket #105 hierarchy, D3), OR a merged-catalog search
     (ticket #106): when ``searchTerm`` is present, the listing is the
-    shared ``/api/search`` merged groups as cards (``g1:`` ids, same
+    shared ``/api/search`` merged groups as cards (``g2:`` ids, same
     Movie/Series shape as a view's cards).
 
     Two parent kinds are served by the same route:
 
       - ``parentId`` = a view's ``Id`` (echoed from ``/UserViews``) —
         the home-row cards, exactly the ticket #104 behaviour.
-      - ``parentId`` = a series' ``g1:`` group key → the season list
+      - ``parentId`` = a series' ``g2:`` group key → the season list
         (``Type: Season``). ``parentId`` = a ``<group_key>:S<n>`` season
         id → the season's episodes (``Type: Episode``).
 
@@ -831,7 +832,7 @@ async def search_hints(
     The alternate search surface clients hit for the global search box
     (the web/desktop SDK's ``getSearchHints`` → ``/Search/Hints``) —
     same merged groups as ``/Items?searchTerm=``, in hint shape with the
-    ``g1:`` ``ItemId`` the detail/image routes resolve. Missing or empty
+    ``g2:`` ``ItemId`` the detail/image routes resolve. Missing or empty
     term → empty hints, never an error.
     """
     groups = await _jf_search_groups(search_term or "")
@@ -846,7 +847,7 @@ def _split_season_suffix(parent_id: str) -> tuple[str, int | None]:
     carries an ``:S<n>`` tail, so ``rpartition`` cleanly separates the
     trailing season marker. A series/movie group key returns itself.
     """
-    if not parent_id.startswith("g1:"):
+    if not parent_id.startswith("g2:"):
         return parent_id, None
     head, sep, tail = parent_id.rpartition(":")
     if sep and tail.startswith("S") and tail[1:].isdigit():
@@ -893,19 +894,19 @@ async def _hierarchy(parent_id: str | None) -> BaseItemDtoQueryResult:
     dependencies=[Depends(require_token)],
 )
 async def item_detail(item_id: str) -> BaseItemDto:
-    """Item detail (ticket #105, D2/D3): resolve a ``g1:`` key to its
+    """Item detail (ticket #105, D2/D3): resolve a ``g2:`` key to its
     ContentResponse via the shared resolution map, and return a
     Movie/Series DTO.
 
     Unresolvable ids 404 with the same "item unavailable" verdict as a
-    cold resolution cache (D2): ``g1:`` keys not in the cached home, and
+    cold resolution cache (D2): ``g2:`` keys not in the cached home, and
     episode ids — served through the season listing, not reverse-
     resolvable on their own.
     """
     # Episode wire ids (``p1:s1e1``) are not reverse-resolvable: there is
     # no group key in them. They are served exclusively through the
     # season hierarchy, so /Items/{id} answers 404 for them.
-    if not item_id.startswith("g1:"):
+    if not item_id.startswith("g2:"):
         raise HTTPException(status_code=404, detail="item_unavailable")
     group_key, season_number = _split_season_suffix(item_id)
     content = await resolve_group_content(group_key)
@@ -988,7 +989,7 @@ async def _serve_item_image(
 ) -> Response:
     """The poster for ``item_id`` as an inline image response, or 404."""
     poster_url = _poster_for(item_id)
-    if poster_url is None and item_id.startswith("g1:"):
+    if poster_url is None and item_id.startswith("g2:"):
         # Item not in the home snapshot (surfaced via Latest/search);
         # resolve from the content cache which holds the poster URL.
         content = await resolve_group_content(item_id)
@@ -1086,10 +1087,10 @@ async def _resolve_stream(item_id: str) -> StreamResponse | None:
     route does — same bare external ids, ``translation=None`` (default
     voice), same shared ``httpx`` client:
 
-      - a movie's ``g1:`` group key → the group's first-seen provider
+      - a movie's ``g2:`` group key → the group's first-seen provider
         (the same provider the detail page shows first), whose BARE
         external id is what stream() consumes. Playability is decided on
-        the content's FORM — ``content.type == "movie"`` — the same
+        the content's FORM — ``content.form == "movie"`` — the same
         verdict detail renders as ``Type="Movie"``, NOT the card's style
         literal (``SearchResult.type`` can say ``"anime"`` for an anime
         FILM; conflating style with form would 404 a film the client just
@@ -1108,13 +1109,13 @@ async def _resolve_stream(item_id: str) -> StreamResponse | None:
     degrades to None → 404, the facade's standing "never 5xx" posture
     (D2), and the provider+health recording stays colocated with it.
     """
-    if item_id.startswith("g1:"):
+    if item_id.startswith("g2:"):
         # Series/season keys and cold groups: not playable on their own.
         group_key, season_number = _split_season_suffix(item_id)
         if season_number is not None:
             return None
         content = await resolve_group_content(group_key)
-        if content is None or content.type != "movie":
+        if content is None or content.form != "movie":
             return None
         per_provider = resolve_group(group_key)
         if per_provider is None:

@@ -32,11 +32,11 @@ ASHDI_REFERER = "https://tortuga.wtf/"
 # Sections mirror the upstream `mainPage = mainPageOf(...)`. The "page"
 # section is the site root ("Нове аніме").
 ANIMEUA_SECTIONS: tuple[Section, ...] = (
-    Section(id="page", title="Нове аніме", type="anime"),
-    Section(id="film", title="Повнометражки", type="movie"),
-    Section(id="anime", title="Аніме серіали", type="anime"),
-    Section(id="ona", title="ONA", type="anime"),
-    Section(id="ova", title="OVA", type="anime"),
+    Section(id="page", title="Нове аніме", styles=frozenset({"anime"})),
+    Section(id="film", title="Повнометражки", form="movie"),
+    Section(id="anime", title="Аніме серіали", styles=frozenset({"anime"})),
+    Section(id="ona", title="ONA", styles=frozenset({"anime"})),
+    Section(id="ova", title="OVA", styles=frozenset({"anime"})),
 )
 
 # Same as the upstream Kotlin `fileRegex`. The capture group is either a
@@ -106,7 +106,7 @@ def _parse_cards(html: str, provider: str, media_type: MediaTypeStr) -> list[Sea
             "anime", form="movie" if media_type == "movie" else "series"
         )
         results.append(SearchResult(
-            id=f"{provider}:{external_id}", provider=provider, type=media_type,
+            id=f"{provider}:{external_id}", provider=provider,
             title=title, poster=poster, url=urljoin(BASE_URL, str(href)),
             form=mb_form, styles=mb_styles,
         ))
@@ -273,7 +273,13 @@ class AnimeUAProvider(BaseProvider):
         self, section: str, page: int, http: httpx.AsyncClient
     ) -> tuple[list[SearchResult], bool]:
         response = await self._get(_section_url(section, page), http)
-        section_type = next(item.type for item in self.sections if item.id == section)
+        # Contract #135: sections carry Model B axes, not the legacy
+        # ``type`` — the card classifier needs the legacy type string,
+        # derived from the axes (style wins, else form).
+        axes = next(item for item in self.sections if item.id == section)
+        section_type = (
+            min(axes.styles) if axes.styles else (axes.form or "series")
+        )
         results = _parse_cards(response.text, self.id, section_type)
         soup = BeautifulSoup(response.text, "lxml")
         has_next = any(
@@ -324,7 +330,6 @@ class AnimeUAProvider(BaseProvider):
         )
         return ContentResponse(
             id=f"{self.id}:{external_id}",
-            type=kind,
             title=title_el.get_text(" ", strip=True),
             year=year,
             description=description,

@@ -6,7 +6,7 @@
 
 ---
 
-> **Shipped-vs-decided (2026-08-08 sync):** the sections below document the **decided target model** (Model B). The backend ships the Model B **expand step**: every item (search/browse/content/home) and `Section` carries optional `form`/`styles` axes, all 19 providers populate them via the shared `model_b_axes` mapping, and `/api/search` + `/api/browse` filter on them (tickets #129–#134). The **contract step is still pending** (#135): the legacy `MediaType` field remains on the wire, `type` still ships alongside `form`/`styles`, and `anime`/`cartoon`/`dorama` remain conflated with `movie`/`series` for clients that read only `type`.
+> **Shipped (Model B, contract step #135, 2026-08-10):** the sections below document the shipped model — the decided target IS the wire contract. Every content item (search/browse/content/home) carries required `form` + `styles` axes; `Section` declares its `form`/`styles` filter axes; all providers populate them via the shared `model_b_axes` mapping; `/api/search` + `/api/browse` filter on them (tickets #129–#135). The legacy `MediaType`/`type` field is gone from models, providers, and API responses — `anime`/`cartoon`/`dorama` ship as `styles`, never conflated with `movie`/`series`.
 
 ## Catalog taxonomy (Model B — form + style)
 

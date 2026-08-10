@@ -70,9 +70,9 @@ logger = logging.getLogger(__name__)
 #  * "popular"   -> /api/stats/anime/<date>?withView=false
 #  * "page"      -> /api/anime?pageSize=24&pageIndex=N (paginated)
 ANIMEON_SECTIONS: tuple[Section, ...] = (
-    Section(id="seasons", title="Сезон", type="anime"),
-    Section(id="popular", title="Популярні", type="anime"),
-    Section(id="page", title="Нове аніме", type="anime"),
+    Section(id="seasons", title="Сезон", styles=frozenset({"anime"})),
+    Section(id="popular", title="Популярні", styles=frozenset({"anime"})),
+    Section(id="page", title="Нове аніме", styles=frozenset({"anime"})),
 )
 
 # Bare integer ids only (matches the v1 Kotlin's
@@ -304,7 +304,6 @@ class AnimeONProvider(BaseProvider):
             out.append(SearchResult(
                 id=f"{self.id}:{item['id']}",
                 provider=self.id,
-                type="anime",
                 title=title,
                 poster=_poster_url((item.get("image") or {}).get("preview")),
                 form=mb_form,
@@ -354,7 +353,6 @@ class AnimeONProvider(BaseProvider):
                 SearchResult(
                     id=f"{ANIMEON_ID}:{item['id']}",
                     provider="animeon",
-                    type="anime",
                     title=str(item.get("titleUa", "")).strip(),
                     poster=_poster_url(image.get("preview")),
                     form=mb_form,
@@ -403,7 +401,6 @@ class AnimeONProvider(BaseProvider):
         mb_form, mb_styles = model_b_axes("anime")
         return ContentResponse(
             id=f"{self.id}:{external_id}",
-            type="anime",
             title=title,
             year=year_int,
             description=description,
@@ -477,7 +474,6 @@ class AnimeONProvider(BaseProvider):
         mb_form, mb_styles = model_b_axes("anime", form="movie")
         return ContentResponse(
             id=f"{self.id}:{external_id}",
-            type="movie",
             title=title,
             year=year,
             description=description,

@@ -50,8 +50,8 @@ SITE_URL = "https://coani.net"
 # one for films and one for serials. The new catalog endpoint serves
 # both from the same route, so the section only labels the row.
 COANINET_SECTIONS: tuple[Section, ...] = (
-    Section(id="films", title="Фільми", type="movie"),
-    Section(id="series", title="Серіали", type="series"),
+    Section(id="films", title="Фільми", form="movie"),
+    Section(id="series", title="Серіали", form="series"),
 )
 
 # Type-string value the API uses for serial items.
@@ -133,7 +133,6 @@ def _parse_card(item: object) -> SearchResult | None:
     return SearchResult(
         id=f"coaninet:{seo_slug}",
         provider="coaninet",
-        type=media_type,  # type: ignore[arg-type]
         title=str(name),
         year=year,
         poster=poster,
@@ -299,7 +298,6 @@ class CoaninetProvider(BaseProvider):
         mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"coaninet:{external_id}",
-            type=media_type,  # type: ignore[arg-type]
             title=str(name),
             year=year,
             description=description,

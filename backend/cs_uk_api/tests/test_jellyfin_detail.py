@@ -58,7 +58,7 @@ from cs_uk_api.models import (
     Translation,
 )
 from cs_uk_api.providers import PROVIDERS
-from cs_uk_api.providers.base import BaseProvider, ProviderError
+from cs_uk_api.providers.base import BaseProvider, ProviderError, model_b_axes
 
 TOKEN = SETTINGS.jellyfin_token
 USER = "fdc808859fc45eb8ac5aa6faddc12c72"
@@ -70,7 +70,7 @@ _POSTER_SERIES = "https://cdn.example.test/posters/serial.jpg"
 def _dune() -> ContentResponse:
     return ContentResponse(
         id="p1:dune-1",
-        type="movie",
+        form="movie",
         title="Дюна",
         year=2021,
         description="Епічна науково-фантастична стрічка.",
@@ -82,7 +82,7 @@ def _dune() -> ContentResponse:
 def _serial() -> ContentResponse:
     return ContentResponse(
         id="p1:serial-1",
-        type="series",
+        form="series",
         title="Сериалал серіал",
         year=2023,
         description="Детективний серіал.",
@@ -160,10 +160,12 @@ def _card(
     *,
     poster: str | None = None,
 ) -> SearchResult:
+    mb_form, mb_styles = model_b_axes(cast(Any, media_type))
     return SearchResult(
         id=f"{pid}:{id_}",
         provider=pid,
-        type=cast(Any, media_type),
+        form=mb_form,
+        styles=mb_styles,
         title=title,
         year=2021 if media_type == "movie" else 2023,
         poster=poster,

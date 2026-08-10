@@ -41,8 +41,8 @@ def _err(status: int, error: str | None = None) -> HopResult:
 
 
 def test_pick_season_id_takes_first() -> None:
-    hop = _ok([{"Id": "g1:k:S1"}, {"Id": "g1:k:S2"}])
-    assert pick_season_id(hop) == "g1:k:S1"
+    hop = _ok([{"Id": "g2:k:S1"}, {"Id": "g2:k:S2"}])
+    assert pick_season_id(hop) == "g2:k:S1"
 
 
 def test_pick_season_id_none_when_empty() -> None:
@@ -74,7 +74,7 @@ def test_walk_flags_no_episodes_when_rail_empty() -> None:
     """
     res = walk_series(
         "Серіал",
-        "g1:k",
+        "g2:k",
         seasons=_ok([]),  # Seasons hop 200 but empty
         episodes=_ok([]),
         playback=_ok([{"Id": "x"}]),
@@ -89,22 +89,22 @@ def test_walk_flags_no_episodes_when_episodes_empty() -> None:
     """Seasons resolve, but the episode-rail exposes zero episodes (BUG-2)."""
     res = walk_series(
         "Серіал",
-        "g1:k",
-        seasons=_ok([{"Id": "g1:k:S1"}]),
+        "g2:k",
+        seasons=_ok([{"Id": "g2:k:S1"}]),
         episodes=_ok([]),  # rail resolves a season but no episodes
         playback=_ok([{"Id": "x"}]),
         stream=HopResult(status=200),
     )
     assert res.status == NO_EPISODES
     assert res.episode_id is None
-    assert res.season_id == "g1:k:S1"
+    assert res.season_id == "g2:k:S1"
 
 
 def test_walk_full_pass_through_all_hops() -> None:
     res = walk_series(
         "Серіал",
-        "g1:k",
-        seasons=_ok([{"Id": "g1:k:S1"}]),
+        "g2:k",
+        seasons=_ok([{"Id": "g2:k:S1"}]),
         episodes=_ok([{"Id": "p1:s1e1"}]),
         playback=_ok([{"Id": "p1:s1e1"}]),
         stream=HopResult(status=200),
@@ -112,7 +112,7 @@ def test_walk_full_pass_through_all_hops() -> None:
     assert res.status == OK
     assert res.failed is False
     assert res.episode_id == "p1:s1e1"
-    assert res.season_id == "g1:k:S1"
+    assert res.season_id == "g2:k:S1"
     assert res.stream_status == 200
 
 
@@ -122,7 +122,7 @@ def test_walk_full_pass_through_all_hops() -> None:
 def test_walk_fails_at_seasons() -> None:
     res = walk_series(
         "Серіал",
-        "g1:k",
+        "g2:k",
         seasons=_err(404, "item_unavailable"),
         episodes=_ok([{"Id": "p1:s1e1"}]),
         playback=_ok([{"Id": "x"}]),
@@ -137,8 +137,8 @@ def test_walk_fails_at_seasons() -> None:
 def test_walk_fails_at_episodes() -> None:
     res = walk_series(
         "Серіал",
-        "g1:k",
-        seasons=_ok([{"Id": "g1:k:S1"}]),
+        "g2:k",
+        seasons=_ok([{"Id": "g2:k:S1"}]),
         episodes=_err(500),
         playback=_ok([{"Id": "x"}]),
         stream=HopResult(status=200),
@@ -152,8 +152,8 @@ def test_walk_fails_at_episodes() -> None:
 def test_walk_fails_at_playbackinfo() -> None:
     res = walk_series(
         "Серіал",
-        "g1:k",
-        seasons=_ok([{"Id": "g1:k:S1"}]),
+        "g2:k",
+        seasons=_ok([{"Id": "g2:k:S1"}]),
         episodes=_ok([{"Id": "p1:s1e1"}]),
         playback=_err(404, "item_unavailable"),
         stream=HopResult(status=200),
@@ -166,8 +166,8 @@ def test_walk_fails_at_playbackinfo() -> None:
 def test_walk_fails_at_stream() -> None:
     res = walk_series(
         "Серіал",
-        "g1:k",
-        seasons=_ok([{"Id": "g1:k:S1"}]),
+        "g2:k",
+        seasons=_ok([{"Id": "g2:k:S1"}]),
         episodes=_ok([{"Id": "p1:s1e1"}]),
         playback=_ok([{"Id": "p1:s1e1"}]),
         stream=_err(404, "item_unavailable"),
@@ -181,7 +181,7 @@ def test_walk_fails_at_stream() -> None:
 
 
 def _series(status: str, hop: str = "stream", error: str | None = None) -> SeriesResult:
-    return SeriesResult(title="t", group_key="g1:k", status=status, hop=hop, error=error)
+    return SeriesResult(title="t", group_key="g2:k", status=status, hop=hop, error=error)
 
 
 def test_provider_rollup_counts() -> None:
@@ -261,15 +261,15 @@ _HOME = {
             "type": "series",
             "items": [
                 {
-                    "group_key": "g1:uakino:serial",
+                    "group_key": "g2:uakino:serial",
                     "title": "Серіал A",
-                    "type": "series",
+                    "form": "series",
                     "providers": ["uakino"],
                 },
                 {
-                    "group_key": "g1:serialno:broken",
+                    "group_key": "g2:serialno:broken",
                     "title": "Серіал B",
-                    "type": "series",
+                    "form": "series",
                     "providers": ["serialno"],
                 },
             ],
@@ -281,11 +281,11 @@ _HOME = {
 def test_sweep_home_walks_four_hops_per_series() -> None:
     client = _FakeClient(
         {
-            "http://h/Shows/g1:uakino:serial/Seasons": _ok([{"Id": "g1:uakino:serial:S1"}]),
-            "http://h/Shows/g1:uakino:serial/Episodes": _ok([{"Id": "uakino:s1e1"}]),
+            "http://h/Shows/g2:uakino:serial/Seasons": _ok([{"Id": "g2:uakino:serial:S1"}]),
+            "http://h/Shows/g2:uakino:serial/Episodes": _ok([{"Id": "uakino:s1e1"}]),
             "http://h/Items/uakino:s1e1/PlaybackInfo": _ok([{"Id": "uakino:s1e1"}]),
             "http://h/Videos/uakino:s1e1/stream": HopResult(status=200),
-            "http://h/Shows/g1:serialno:broken/Seasons": _ok([]),  # empty -> NO_EPISODES
+            "http://h/Shows/g2:serialno:broken/Seasons": _ok([]),  # empty -> NO_EPISODES
         }
     )
     results = sweep_home(_HOME, client, "tok", "http://h", per_provider=1)
@@ -307,8 +307,8 @@ def test_sweep_home_walks_four_hops_per_series() -> None:
 def test_sweep_home_episodes_url_carries_season_id() -> None:
     client = _FakeClient(
         {
-            "http://h/Shows/g1:uakino:serial/Seasons": _ok([{"Id": "g1:uakino:serial:S1"}]),
-            "http://h/Shows/g1:uakino:serial/Episodes": _ok([{"Id": "uakino:s1e1"}]),
+            "http://h/Shows/g2:uakino:serial/Seasons": _ok([{"Id": "g2:uakino:serial:S1"}]),
+            "http://h/Shows/g2:uakino:serial/Episodes": _ok([{"Id": "uakino:s1e1"}]),
             "http://h/Items/uakino:s1e1/PlaybackInfo": _ok([{"Id": "uakino:s1e1"}]),
             "http://h/Videos/uakino:s1e1/stream": HopResult(status=200),
         }
@@ -316,13 +316,13 @@ def test_sweep_home_episodes_url_carries_season_id() -> None:
     sweep_home(_HOME, client, "tok", "http://h", per_provider=1)
     from urllib.parse import unquote
     season_calls = [unquote(url) for url, _ in client.calls if "Episodes?seasonId=" in unquote(url)]
-    assert season_calls and "g1:uakino:serial:S1" in season_calls[0]
+    assert season_calls and "g2:uakino:serial:S1" in season_calls[0]
 
 def test_sweep_home_posts_to_playbackinfo() -> None:
     client = _FakeClient(
         {
-            "http://h/Shows/g1:uakino:serial/Seasons": _ok([{"Id": "g1:uakino:serial:S1"}]),
-            "http://h/Shows/g1:uakino:serial/Episodes": _ok([{"Id": "uakino:s1e1"}]),
+            "http://h/Shows/g2:uakino:serial/Seasons": _ok([{"Id": "g2:uakino:serial:S1"}]),
+            "http://h/Shows/g2:uakino:serial/Episodes": _ok([{"Id": "uakino:s1e1"}]),
             "http://h/Items/uakino:s1e1/PlaybackInfo": _ok([{"Id": "uakino:s1e1"}]),
             "http://h/Videos/uakino:s1e1/stream": HopResult(status=200),
         }
@@ -337,8 +337,8 @@ def test_sweep_home_posts_to_playbackinfo() -> None:
 def test_sweep_home_limits_per_provider() -> None:
     client = _FakeClient(
         {
-            "http://h/Shows/g1:uakino:serial/Seasons": _ok([{"Id": "g1:uakino:serial:S1"}]),
-            "http://h/Shows/g1:uakino:serial/Episodes": _ok([{"Id": "uakino:s1e1"}]),
+            "http://h/Shows/g2:uakino:serial/Seasons": _ok([{"Id": "g2:uakino:serial:S1"}]),
+            "http://h/Shows/g2:uakino:serial/Episodes": _ok([{"Id": "uakino:s1e1"}]),
             "http://h/Items/uakino:s1e1/PlaybackInfo": _ok([{"Id": "uakino:s1e1"}]),
             "http://h/Videos/uakino:s1e1/stream": HopResult(status=200),
         }
@@ -358,21 +358,21 @@ def test_series_items_by_provider_groups_series_only() -> None:
                 "title": "Фільми",
                 "type": "movie",
                 "items": [
-                    {"group_key": "g1:m", "title": "Ф", "type": "movie", "providers": ["uakino"]}
+                    {"group_key": "g2:m", "title": "Ф", "form": "movie", "providers": ["uakino"]}
                 ],
             },
             {
                 "title": "Серіали",
                 "type": "series",
                 "items": [
-                    {"group_key": "g1:s", "title": "С", "type": "series", "providers": ["uakino"]}
+                    {"group_key": "g2:s", "title": "С", "form": "series", "providers": ["uakino"]}
                 ],
             },
         ]
     }
     grouped = _series_items_by_provider(home)
     assert list(grouped.keys()) == ["uakino"]
-    assert grouped["uakino"][0]["group_key"] == "g1:s"
+    assert grouped["uakino"][0]["group_key"] == "g2:s"
 
 
 def test_sweep_home_skips_provider_with_no_series() -> None:

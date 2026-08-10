@@ -53,7 +53,7 @@ async def test_cikavaideya_search_classifies_by_subtitle_tags():
             results = await CikavaIdeyaProvider().search("всесв", http)
     by_title = {r.title: r for r in results}
     # First card is "Як влаштований Всесвіт" → Серіали → series.
-    assert by_title["Як влаштований Всесвіт"].type == "series"
+    assert by_title["Як влаштований Всесвіт"].form == "series"
 
 
 @pytest.mark.asyncio
@@ -66,7 +66,7 @@ async def test_cikavaideya_browse_filmy_section_parses_results():
     # Per the captured filmy listing: 18 .th-item cards.
     assert len(results) == 18
     # Each card carries the "Фільми" subtitle tag → all are movies.
-    assert all(r.type == "movie" for r in results)
+    assert all(r.form == "movie" for r in results)
     # All IDs begin with the provider id prefix.
     assert all(r.id.startswith("cikavaideya:") for r in results)
     # Pagination links exist (`<div class="navigation">` containing
@@ -83,7 +83,7 @@ async def test_cikavaideya_browse_serialy_classifies_as_series():
         async with httpx.AsyncClient() as http:
             results, has_next = await CikavaIdeyaProvider().browse("serialy", 1, http)
     assert len(results) == 18
-    assert all(r.type == "series" for r in results)
+    assert all(r.form == "series" for r in results)
     assert has_next is True
 
 
@@ -101,7 +101,7 @@ async def test_cikavaideya_browse_cartoon_section_classifies_by_subtitle():
         async with httpx.AsyncClient() as http:
             results, has_next = await CikavaIdeyaProvider().browse("cartoon", 1, http)
     assert len(results) == 18
-    type_counts = {t: sum(1 for r in results if r.type == t) for t in {"movie", "series"}}
+    type_counts = {t: sum(1 for r in results if r.form == t) for t in {"movie", "series"}}
     # Regression: longest-prefix-first classification must put "Фільми"
     # ahead of "Анімаційні" — at least one card in this section is
     # tagged "Фільми / Анімаційні" and should classify as `movie`.
@@ -139,7 +139,7 @@ async def test_cikavaideya_content_movie_parses_title_poster():
         async with httpx.AsyncClient() as http:
             c = await CikavaIdeyaProvider().content("281-duelianty", http)
     assert "Дуелянти" in c.title
-    assert c.type == "movie"
+    assert c.form == "movie"
     assert c.poster is not None
     assert c.poster.startswith("https://cikava-ideya.top/uploads/")
     # Movie content pages expose a single Player1 URL; the parser
@@ -166,7 +166,7 @@ async def test_cikavaideya_content_series_parses_seasons():
         async with httpx.AsyncClient() as http:
             c = await CikavaIdeyaProvider().content("226-jak-vlashtovanij-vsesvit", http)
     assert "Всесвіт" in c.title
-    assert c.type == "series"
+    assert c.form == "series"
     # Captured page exposes 5 seasons with episode counts: [8, 8, 9, 8, 2].
     assert c.seasons is not None
     assert [s.number for s in c.seasons] == [1, 2, 3, 4, 5]

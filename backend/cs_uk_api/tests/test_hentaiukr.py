@@ -54,7 +54,7 @@ async def test_hentaiukr_search_filters_by_name_substring():
     # upstream itself uses the integer `id` for episodes (see
     # `loadLinks(data.split(", ")[1].toInt())`).
     assert r.id == "hentaiukr:159"
-    assert r.type == "anime"
+    assert "anime" in r.styles
     assert r.poster is not None
     assert r.poster.startswith("https://hentaiukr.com")
     assert r.url == "https://hentaiukr.com/video/159_velychezni_tsyts_ky_nagaj/"
@@ -96,7 +96,7 @@ async def test_hentaiukr_search_classifies_all_results_as_anime():
         )
         async with httpx.AsyncClient() as http:
             results = await HentaiUkrProvider().search("хоч", http)
-    assert all(r.type == "anime" for r in results)
+    assert all("anime" in r.styles for r in results)
 
 
 @pytest.mark.asyncio
@@ -137,7 +137,7 @@ async def test_hentaiukr_sections_lists_one():
     assert len(sections) == 1
     assert sections[0].id == "hentai"
     assert sections[0].title == "Хентай"
-    assert sections[0].type == "anime"
+    assert sections[0].styles == frozenset({"anime"})
 
 
 def _objects_route(router: "respx.MockRouter") -> None:
@@ -175,7 +175,7 @@ async def test_hentaiukr_content_parses_title_year_poster():
             c = await HentaiUkrProvider().content("159", http)
     assert "Наґай" in c.title
     assert "Хентай" not in c.title  # no "| Хентай..." suffix
-    assert c.type == "anime"
+    assert "anime" in c.styles
     assert c.year == 2025
     assert c.poster is not None
     assert c.poster.startswith("https://hentaiukr.com")

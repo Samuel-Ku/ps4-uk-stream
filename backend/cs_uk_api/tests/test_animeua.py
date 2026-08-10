@@ -38,7 +38,7 @@ async def test_animeua_search_parses_real_response():
     assert len(results) == 2
     assert results[0].id == "animeua:8079-dandadan-2"
     assert results[0].provider == "animeua"
-    assert results[0].type == "anime"
+    assert "anime" in results[0].styles
     assert results[0].title == "Дандадан 2"
     assert results[0].url == "https://animeua.club/8079-dandadan-2.html"
     assert results[0].poster == "https://animeua.club/uploads/posts/2025-08/3a43204e424cfba2f1d29df67940cccd.webp"
@@ -52,7 +52,10 @@ async def test_animeua_sections_match_upstream_main_page():
     sections = AnimeUAProvider().sections
     assert [s.id for s in sections] == ["page", "film", "anime", "ona", "ova"]
     assert [s.title for s in sections] == ["Нове аніме", "Повнометражки", "Аніме серіали", "ONA", "OVA"]
-    assert [s.type for s in sections] == ["anime", "movie", "anime", "anime", "anime"]
+    # Contract #135: sections carry Model B axes (style wins, else form).
+    assert [(s.form, sorted(s.styles or [])) for s in sections] == [
+        (None, ["anime"]), ("movie", []), (None, ["anime"]), (None, ["anime"]), (None, ["anime"]),
+    ]
 
 
 @pytest.mark.asyncio
@@ -66,7 +69,7 @@ async def test_animeua_series_parses_seasons_and_episode_translations():
         async with httpx.AsyncClient() as http:
             content = await AnimeUAProvider().content("7952-dandadan", http)
     assert content.id == "animeua:7952-dandadan"
-    assert content.type == "anime"
+    assert "anime" in content.styles
     # Model B axes: a `/serial/` player = anime series → form=series
     # with the anime style (not the plain-series default).
     assert content.form == "series"

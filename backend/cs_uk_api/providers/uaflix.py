@@ -53,12 +53,12 @@ _EXTERNAL_ID_RE = re.compile(r"[a-z][a-z0-9-]*")
 # sub-path `/serials/multseial/`. The `multserialy` section id stays
 # as upstream Kotlin names it; only the URL path is aliased.
 UAFLIX_SECTIONS: tuple[Section, ...] = (
-    Section(id="filmy", title="Фільми", type="movie"),
-    Section(id="serialy", title="Серіали", type="series"),
-    Section(id="doramy", title="Дорами", type="dorama"),
-    Section(id="cartoons", title="Мультфільми", type="cartoon"),
-    Section(id="multserialy", title="Мультсеріали", type="series"),
-    Section(id="anime", title="Аніме", type="anime"),
+    Section(id="filmy", title="Фільми", form="movie"),
+    Section(id="serialy", title="Серіали", form="series"),
+    Section(id="doramy", title="Дорами", styles=frozenset({"dorama"})),
+    Section(id="cartoons", title="Мультфільми", styles=frozenset({"cartoon"})),
+    Section(id="multserialy", title="Мультсеріали", form="series"),
+    Section(id="anime", title="Аніме", styles=frozenset({"anime"})),
 )
 
 # Map section id -> browse URL path. Five sections use the natural
@@ -200,7 +200,6 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
-        type=_type_from_url(href),  # type: ignore[arg-type]
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
@@ -235,7 +234,6 @@ def _parse_search_card(card: Tag, provider_id: str) -> SearchResult | None:
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
-        type=_type_from_url(href),  # type: ignore[arg-type]
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
@@ -525,7 +523,6 @@ class UAFlixProvider(BaseProvider):
         mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"uaflix:{external_id}",
-            type=media_type,  # type: ignore[arg-type]
             title=title,
             description=description,
             poster=poster,

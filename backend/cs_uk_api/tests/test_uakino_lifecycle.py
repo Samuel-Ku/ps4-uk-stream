@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Iterator
-from typing import Any, cast
+from typing import Any
 
 import httpx
 import pytest
@@ -147,7 +147,7 @@ def _result(pid: str, title: str, *, year: int | None = None, n: str = "1") -> S
     return SearchResult(
         id=f"{pid}:{n}",
         provider=pid,
-        type=cast(Any, "movie"),
+        form="movie",
         title=title,
         year=year,
         poster=f"https://{pid}.example/{n}.jpg",
@@ -155,14 +155,13 @@ def _result(pid: str, title: str, *, year: int | None = None, n: str = "1") -> S
     )
 
 
-def _dune_content() -> ContentResponse:
-    return ContentResponse(
-        id="uakino:filmy:12567-dyuna",
-        type=cast(Any, "movie"),
-        title="Дюна",
-        year=2021,
-        translations=[Translation(id="uk", label="Українська")],
-    )
+def _dune_content() -> ContentResponse:        return ContentResponse(
+            id="uakino:filmy:12567-dyuna",
+            form="movie",
+            title="Дюна",
+            year=2021,
+            translations=[Translation(id="uk", label="Українська")],
+        )
 
 
 def _wait_until(predicate: Any, what: str, timeout: float = 2.0) -> None:

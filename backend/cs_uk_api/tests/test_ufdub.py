@@ -32,7 +32,7 @@ async def test_ufdub_search_parses_results():
     assert all(r.provider == "ufdub" for r in results)
     anime_one = next(r for r in results if "Net-juu no Susume" in r.title)
     assert anime_one.id.startswith("ufdub:anime-")
-    assert anime_one.type == "anime"
+    assert "anime" in anime_one.styles
     assert anime_one.url.startswith("https://ufdub.com/anime/")
 
 
@@ -46,13 +46,13 @@ async def test_ufdub_search_classifies_types_by_url_path():
     # The id is `ufdub:<kind>-<slug>`. For hyphened kinds like
     # `cartoon-serial`, splitting on `-` gives `cartoon` as the first
     # chunk, so we use the URL path segment instead.
-    types_by_url_kind = {r.url.split("/")[3]: r.type for r in results}
+    types_by_url_kind = {r.url.split("/")[3]: r for r in results}
     # Regression: `/cartoon-serial/` must classify as `series`, not
     # `movie` (caught by the code-reviewer — `cartoon` was matching
     # before `cartoon-serial`).
-    assert types_by_url_kind.get("cartoon-serial") == "series"
-    assert types_by_url_kind.get("anime") == "anime"
-    assert types_by_url_kind.get("dorama") == "dorama"
+    assert types_by_url_kind["cartoon-serial"].form == "series"
+    assert "anime" in types_by_url_kind["anime"].styles
+    assert "dorama" in types_by_url_kind["dorama"].styles
 
 
 @pytest.mark.asyncio
@@ -65,7 +65,7 @@ async def test_ufdub_browse_anime_section_parses_results():
     # Regression: `.short-text, .short` selector returned each card
     # twice (32 results for 16 cards). Use only the inner `.short-text`.
     assert len(results) == 16
-    assert all(r.type == "anime" for r in results)
+    assert all("anime" in r.styles for r in results)
     assert all(r.id.startswith("ufdub:anime-") for r in results)
     # Regression: DLE pagination is `<span class="navigation">`, not
     # `<div class="navigation">`, and the marker link is `/page/N/`.
@@ -135,7 +135,7 @@ async def test_ufdub_content_cartoon_serial_kind_opens():
         async with httpx.AsyncClient() as http:
             c = await UFDubProvider().content("cartoon-serial-308-wondla", http)
     assert c.title
-    assert c.type == "series"
+    assert c.form == "series"
 
 
 @pytest.mark.asyncio
@@ -155,7 +155,7 @@ async def test_ufdub_content_movie_parses_title_poster():
         async with httpx.AsyncClient() as http:
             c = await UFDubProvider().content("film-48-fokus-pokus-hocus-pocus", http)
     assert "Фокус" in c.title
-    assert c.type == "movie"
+    assert c.form == "movie"
     assert c.poster is not None
     assert c.poster.startswith("https://ufdub.com")
 
@@ -199,7 +199,7 @@ async def test_ufdub_content_anime_classifies_as_anime():
         ).respond(200, text=player_html)
         async with httpx.AsyncClient() as http:
             c = await UFDubProvider().content("anime-23-rekomendaciji-dlja-chudovogo-zhittja-onlajn-net-juu-no-susume", http)
-    assert c.type == "anime"
+    assert "anime" in c.styles
 
 
 @pytest.mark.asyncio

@@ -51,8 +51,8 @@ _ALLOWED_HOSTS: frozenset[str] = frozenset({"klonua.com", "ashdi.vip"})
 # contract only ships `films` and `series` (multfilmy/multserialy/
 # anime are out of scope for now).
 KLONTV_SECTIONS: tuple[Section, ...] = (
-    Section(id="films", title="Фільми", type="movie"),
-    Section(id="series", title="Серіали", type="series"),
+    Section(id="films", title="Фільми", form="movie"),
+    Section(id="series", title="Серіали", form="series"),
 )
 
 # Path prefix -> MediaType. The site uses `/filmy/` (with a `y`)
@@ -179,7 +179,6 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
-        type=_type_from_url(href),  # type: ignore[arg-type]
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
@@ -339,7 +338,6 @@ class KlonTVProvider(BaseProvider):
         mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"klontv:{external_id}",
-            type=media_type,  # type: ignore[arg-type]
             title=title_el.get_text(strip=True),
             description=description,
             poster=poster,

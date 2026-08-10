@@ -45,7 +45,7 @@ async def test_unimay_search_parses_results():
     r = results[0]
     assert r.id == "unimay:dandadan"
     assert r.provider == "unimay"
-    assert r.type == "anime"
+    assert "anime" in r.styles
     assert "Дан Да Дан" in r.title
     assert r.poster is not None
     assert r.poster.startswith("https://img.unimay.media/")
@@ -74,10 +74,10 @@ async def test_unimay_search_classifies_movie_results():
     # Regression: "Фільм" rows must be `movie`, "Телесеріал" rows must be
     # `anime`. The upstream Kotlin source lumps both into `TvType.Anime`,
     # but our v2 contract separates them.
-    assert by_code["suzume-locking-up-the-doors"].type == "movie"
-    assert by_code["the-light-of-a-firefly-forest"].type == "movie"
-    assert by_code["chainsaw-man"].type == "anime"
-    assert by_code["solo-leveling"].type == "anime"
+    assert by_code["suzume-locking-up-the-doors"].form == "movie"
+    assert by_code["the-light-of-a-firefly-forest"].form == "movie"
+    assert "anime" in by_code["chainsaw-man"].styles
+    assert "anime" in by_code["solo-leveling"].styles
 
 
 @pytest.mark.asyncio
@@ -100,7 +100,7 @@ async def test_unimay_sections_lists_two():
     sections = UnimayProvider().sections
     ids = [s.id for s in sections]
     assert ids == ["updates", "projects"]
-    assert all(s.type == "anime" for s in sections)
+    assert all(s.styles == frozenset({"anime"}) for s in sections)
 
 
 @pytest.mark.asyncio
@@ -183,7 +183,7 @@ async def test_unimay_content_series_parses_title_poster_and_episodes():
         async with httpx.AsyncClient() as http:
             c = await UnimayProvider().content("dandadan", http)
     assert c.id == "unimay:dandadan"
-    assert c.type == "anime"
+    assert "anime" in c.styles
     assert "Дан Да Дан" in c.title
     assert c.year == 2024
     assert c.poster is not None
@@ -213,7 +213,7 @@ async def test_unimay_content_movie_classifies_as_movie():
         )
         async with httpx.AsyncClient() as http:
             c = await UnimayProvider().content("haikyuu-final", http)
-    assert c.type == "movie"
+    assert c.form == "movie"
     # Movies don't have seasons.
     assert c.seasons is None
 

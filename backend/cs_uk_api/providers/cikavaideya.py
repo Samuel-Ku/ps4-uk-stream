@@ -37,10 +37,10 @@ ASHDI_REFERER = "https://tortuga.wtf/"
 # Sections exposed by CikavaIdeya's main navigation. Per the upstream
 # `mainPage = mainPageOf(...)` in CikavaIdeyaProvider.kt.
 CIKAVA_SECTIONS: tuple[Section, ...] = (
-    Section(id="filmy", title="Фільми", type="movie"),
-    Section(id="serialy", title="Серіали", type="series"),
-    Section(id="cartoon", title="Мультсеріали", type="series"),
-    Section(id="arthaus", title="Артхаус", type="movie"),
+    Section(id="filmy", title="Фільми", form="movie"),
+    Section(id="serialy", title="Серіали", form="series"),
+    Section(id="cartoon", title="Мультсеріали", form="series"),
+    Section(id="arthaus", title="Артхаус", form="movie"),
 )
 
 # Per-card type classifier mirrors the upstream Kotlin conditional:
@@ -150,7 +150,6 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
     return SearchResult(
         id=f"{provider_id}:{m.group(1)}",
         provider=provider_id,
-        type=_classify_from_tags(subtitle_text),  # type: ignore[arg-type]
         title=title,
         year=year,
         poster=poster,
@@ -269,8 +268,7 @@ class CikavaIdeyaProvider(BaseProvider):
     #: Gated verdicts (removed / trailer-only / no-player titles, dead
     #: ashdi embeds) must flow through `filter_gated_items` so the
     #: ADR-0002 catalog sweep drops those cards from home during
-    #: `load_home`; `resolve_group_content` additionally backstops a
-    #: cold-cache g1: detail call so a gated verdict never records a
+    #: `load_home`; `resolve_group_content` additionally backstops a            # Cold-cache g2: detail call so a gated verdict never records a
     #: health-down (#139).
     can_gate = True
 
@@ -371,7 +369,6 @@ class CikavaIdeyaProvider(BaseProvider):
         mb_form, mb_styles = model_b_axes(_classify_from_tags(tags_text))  # type: ignore[arg-type]
         return ContentResponse(
             id=f"cikavaideya:{external_id}",
-            type=_classify_from_tags(tags_text),  # type: ignore[arg-type]
             title=title_el.get_text(strip=True),
             description=description,
             poster=poster,

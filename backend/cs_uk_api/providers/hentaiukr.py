@@ -37,7 +37,7 @@ CFG_SUFFIX = "plur.cfg.json"
 # Per the upstream Kotlin `mainPageOf(objectsUrl to "Хентай")` — exactly
 # one section. NSFW rows collapse to `anime` in our v2 contract.
 HENTAIUKR_SECTIONS: tuple[Section, ...] = (
-    Section(id="hentai", title="Хентай", type="anime"),
+    Section(id="hentai", title="Хентай", styles=frozenset({"anime"})),
 )
 
 # Source-size preference. The upstream adds all sources to the
@@ -68,7 +68,6 @@ def _parse_video_array(
             SearchResult(
                 id=f"{provider_id}:{item['id']}",
                 provider=provider_id,
-                type="anime",
                 title=str(item["name"]),
                 poster=urljoin(BASE_URL, str(item["thumb"])) if item.get("thumb") else None,
                 url=urljoin(BASE_URL, str(item["url"])),
@@ -190,7 +189,6 @@ class HentaiUkrProvider(BaseProvider):
         mb_form, mb_styles = model_b_axes("anime")
         return ContentResponse(
             id=f"{self.id}:{external_id}",
-            type="anime",
             title=title,
             year=year,
             description=description,

@@ -32,10 +32,10 @@ _STREAM_ALLOWED_HOSTS: frozenset[str] = frozenset({"ashdi.vip"})
 # the anime sub-site (Ukrainian-dubbed anime). Section ids are stable;
 # titles are user-facing and may change.
 UAKINO_SECTIONS: tuple[Section, ...] = (
-    Section(id="filmy", title="Фільми", type="movie"),
-    Section(id="serials", title="Серіали", type="series"),
-    Section(id="animeukr", title="Аніме", type="series"),
-    Section(id="cartoons", title="Мультфільми", type="movie"),
+    Section(id="filmy", title="Фільми", form="movie"),
+    Section(id="serials", title="Серіали", form="series"),
+    Section(id="animeukr", title="Аніме", form="series"),
+    Section(id="cartoons", title="Мультфільми", form="movie"),
 )
 
 # external_id is "<section>:<id>-<slug>" (e.g. "filmy:12567-dyuna").
@@ -142,7 +142,6 @@ def _parse_cards(html: str) -> list[SearchResult]:
             SearchResult(
                 id=f"uakino:{section}:{item_id}-{slug}",
                 provider="uakino",
-                type=kind,  # type: ignore[arg-type]
                 title=title,
                 year=year,
                 poster=poster,
@@ -378,7 +377,6 @@ class UakinoProvider(BaseProvider):
             )
             return ContentResponse(
                 id=f"uakino:{external_id}",
-                type="series",
                 title=title,
                 year=year,
                 description=description,
@@ -415,7 +413,6 @@ class UakinoProvider(BaseProvider):
         mb_form, mb_styles = model_b_axes(movie_type, form="movie")  # type: ignore[arg-type]
         return ContentResponse(
             id=f"uakino:{external_id}",
-            type=movie_type,  # type: ignore[arg-type]
             title=title,
             year=year,
             description=description,

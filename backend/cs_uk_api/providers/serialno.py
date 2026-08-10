@@ -74,7 +74,7 @@ def _season_list(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # and the spec note, the site is series-only — the homepage lists
 # series and there is no film/cartoon section in scope.
 SERIALNO_SECTIONS: tuple[Section, ...] = (
-    Section(id="series", title="Серіали", type="series"),
+    Section(id="series", title="Серіали", form="series"),
 )
 
 # Slug regex: the site uses Latin transliteration of Ukrainian titles
@@ -142,7 +142,6 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
-        type="series",
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
@@ -272,7 +271,6 @@ class SerialnoProvider(BaseProvider):
         mb_form, mb_styles = model_b_axes("series")
         return ContentResponse(
             id=f"serialno:{external_id}",
-            type="series",
             title=title_el.get_text(strip=True),
             description=description,
             poster=poster,

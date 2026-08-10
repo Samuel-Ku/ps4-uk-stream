@@ -82,7 +82,7 @@ class BaseItemDto(BaseModel):
     render one item's page and to walk Series → Season → Episode:
     ``Overview`` (description), ``IndexNumber``/``ParentIndexNumber``
     (position inside a season / season number) and ``SeriesId`` (the
-    owning series' ``g1:`` key) on Season/Episode items.
+    owning series' ``g2:`` key) on Season/Episode items.
     """
 
     Name: str | None = None
@@ -149,7 +149,7 @@ class MediaStreamInfo(BaseModel):
 class MediaSourceInfo(BaseModel):
     """The thin ``MediaSources[0]`` of PlaybackInfo (spec D6).
 
-    ``Id`` = the item id (the ``g1:`` group key or the provider-scoped
+    ``Id`` = the item id (the ``g2:`` group key or the provider-scoped
     episode wire id); ``Container`` = the provider's ``StreamResponse``
     type (mp4/m3u8/hls); ``Path`` is a FICTITIOUS stable string — the
     bytes always come from ``/Videos/{id}/stream``, never from Path.
@@ -183,7 +183,7 @@ class SearchHint(BaseModel):
 
     The search-box surface some clients hit (``GET /Search/Hints``) —
     the same merged-group card as the ``/Items?searchTerm=`` listing, in
-    hint shape: ``ItemId`` is the ``g1:`` group key the detail/image
+    hint shape: ``ItemId`` is the ``g2:`` group key the detail/image
     routes resolve, ``Type`` the Movie/Series verdict. ``ImageTags``
     present *iff* the card has a poster (D9), mirroring ``BaseItemDto``.
     """

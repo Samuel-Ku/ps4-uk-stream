@@ -49,10 +49,10 @@ def _make_provider(pid: str, *, sections: tuple[Section, ...] = ()):
         name = pid
 
         async def search(self, q, http):
-            return [SearchResult(id=f"{pid}:x", provider=pid, type="movie", title="X", url="https://x/")]
+            return [SearchResult(id=f"{pid}:x", provider=pid, form="movie", title="X", url="https://x/")]
 
         async def browse(self, section, page, http):
-            return ([SearchResult(id=f"{pid}:x", provider=pid, type="movie", title="X", url="https://x/")], False)
+            return ([SearchResult(id=f"{pid}:x", provider=pid, form="movie", title="X", url="https://x/")], False)
 
     _Stub.sections = sections
     return _Stub()
@@ -95,10 +95,10 @@ def test_api_sections_excludes_retired_providers():
     try:
         PROVIDERS.clear()
         PROVIDERS["alpha"] = _make_provider(
-            "alpha", sections=(Section(id="top", title="Top", type="movie"),)
+            "alpha", sections=(Section(id="top", title="Top", form="movie"),)
         )
         PROVIDERS["beta"] = _make_provider(
-            "beta", sections=(Section(id="hot", title="Hot", type="movie"),)
+            "beta", sections=(Section(id="hot", title="Hot", form="movie"),)
         )
 
         r = client.get("/api/sections")
@@ -151,7 +151,7 @@ def test_api_browse_rejects_retired_provider():
     try:
         PROVIDERS.clear()
         PROVIDERS["alive"] = _make_provider(
-            "alive", sections=(Section(id="top", title="Top", type="movie"),)
+            "alive", sections=(Section(id="top", title="Top", form="movie"),)
         )
 
         r = client.get("/api/browse?provider=alive&section=top")

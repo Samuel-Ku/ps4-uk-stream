@@ -53,7 +53,7 @@ async def test_eneyida_search_parses_results():
             results = await EneyidaProvider().search("дюна", http)
     assert len(results) == 7
     assert all(r.provider == "eneyida" for r in results)
-    assert {r.type for r in results} == {"movie"}
+    assert {r.form for r in results} == {"movie"}
 
 
 @pytest.mark.asyncio
@@ -232,7 +232,7 @@ async def test_eneyida_content_film_with_series_payload_classifies_as_series() -
             content = await EneyidaProvider().content(
                 "films/10103-druga-svitova-viina-z-tomom-genksom", http
             )
-    assert content.type == "series"
+    assert content.form == "series"
     assert content.seasons and content.seasons[0].episodes
     ep = content.seasons[0].episodes[0]
     assert ep.id == "eneyida:films/10103-druga-svitova-viina-z-tomom-genksom:s1e1"

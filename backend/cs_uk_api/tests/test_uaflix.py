@@ -54,9 +54,9 @@ async def test_uaflix_search_classifies_types_by_url_path():
             results = await UAFlixProvider().search("дюна", http)
     # URL's path segment determines the type: /films/ -> movie,
     # /serials/ -> series. The fixture mixes both.
-    types_by_path = {r.url.split("/")[3]: r.type for r in results}
-    assert types_by_path.get("films") == "movie"
-    assert types_by_path.get("serials") == "series"
+    types_by_path = {r.url.split("/")[3]: r for r in results}
+    assert types_by_path["films"].form == "movie"
+    assert types_by_path["serials"].form == "series"
 
 
 @pytest.mark.asyncio
@@ -111,7 +111,7 @@ async def test_uaflix_content_movie_parses_title_poster_player():
         async with httpx.AsyncClient() as http:
             c = await UAFlixProvider().content("films-djuna-1984", http)
     assert "Дюна" in c.title
-    assert c.type == "movie"
+    assert c.form == "movie"
     assert c.poster is not None
     assert c.poster.startswith("https://uafix.net/uploads/")
     # Movies have no seasons.
@@ -130,7 +130,7 @@ async def test_uaflix_content_series_parses_seasons():
         )
         async with httpx.AsyncClient() as http:
             c = await UAFlixProvider().content("serials-djuna-proroctvo", http)
-    assert c.type == "series"
+    assert c.form == "series"
     assert "Пророцтво" in c.title
     assert c.seasons is not None
     assert len(c.seasons) >= 1
@@ -171,7 +171,7 @@ async def test_uaflix_content_series_drops_empty_season():
         )
         async with httpx.AsyncClient() as http:
             c = await UAFlixProvider().content("serials-test-serial", http)
-    assert c.type == "series"
+    assert c.form == "series"
     assert c.seasons is not None
     # Season 1 (no inline episodes) is dropped; only season 2 survives.
     assert [s.number for s in c.seasons] == [2]
@@ -197,7 +197,7 @@ async def test_uaflix_content_serial_without_links_probes_player():
         )
         async with httpx.AsyncClient() as http:
             c = await UAFlixProvider().content("serials-vajld-pak", http)
-    assert c.type == "series"
+    assert c.form == "series"
     assert c.seasons is not None
     assert len(c.seasons) >= 1
     first = c.seasons[0].episodes[0]

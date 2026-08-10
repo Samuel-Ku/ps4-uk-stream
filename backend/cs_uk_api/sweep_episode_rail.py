@@ -294,7 +294,10 @@ def render_report(providers: Sequence[ProviderResult]) -> str:
 #: Item ``type`` values that denote an episodic (series) card — the only
 #: cards with an episode-rail to sweep. Mirrors ``_JF_TYPE_BY_ROW`` in the
 #: facade router (movie is a dead end for this sweep; D3).
-_SERIES_TYPES = frozenset({"series", "anime", "cartoon", "dorama"})
+#: Home-row kinds that are episodic (sweepable). Contract #135: rows
+#: are kinded by ``HomeRow.type``; the items inside carry Model B axes,
+#: and a ``form`` of ``series`` is the episodic signal.
+_SERIES_TYPES = frozenset({"series"})
 
 #: Style-free open() of a json body; kept tiny so tests can fake a client
 #: without dragging in httpx. A client is ``Callable[[str, dict], HopResult]``
@@ -313,7 +316,7 @@ def _series_items_by_provider(home: dict[str, Any]) -> dict[str, list[dict[str, 
     out: dict[str, list[dict[str, Any]]] = {}
     for row in home.get("rows", []):
         for item in row.get("items", []):
-            if item.get("type") not in _SERIES_TYPES:
+            if item.get("form") not in _SERIES_TYPES:
                 continue
             providers = item.get("providers") or []
             if not providers:
@@ -365,7 +368,7 @@ def sweep_home(
             continue
         p = ProviderResult(provider=provider)
         for item in items:
-            # Group keys and episode ids carry ':'/'/' (e.g. "g1:uakino:k",
+            # Group keys and episode ids carry ':'/'/' (e.g. "g2:uakino:k",
             # "uakino:s1e1") — percent-encode them so the URL stays valid
             # and a provider break is never misattributed to a bad request.
             raw_gk = item["group_key"]

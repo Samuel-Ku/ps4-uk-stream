@@ -6,16 +6,16 @@ views/detail tests use):
   - ``GET /Items?searchTerm=<q>`` (and the user-prefixed
     ``/Users/{id}/Items?searchTerm=<q>``) feeds the SHARED ``/api/search``
     merged groups and returns listing-shaped cards: one card per merged
-    group, ``g1:`` ids, ``Movie``/``Series`` types, and
+    group, ``g2:`` ids, ``Movie``/``Series`` types, and
     ``ImageTags.Primary`` present *iff* the card has a poster (D9).
   - Cross-provider duplicates collapse into ONE card (the merge core).
   - Opening a search result resolves in the #105 detail surface:
-    ``/Items/{g1:...}`` returns the movie/series detail and
-    ``/Items?parentId=<g1:...>`` the season hierarchy — the facade
+    ``/Items/{g2:...}`` returns the movie/series detail and
+    ``/Items?parentId=<g2:...>`` the season hierarchy — the facade
     registers search groups into the shared group-key resolution map,
     because most search results are NOT in the 30-min home snapshot.
   - ``GET /Search/Hints?searchTerm=<q>`` returns the same cards in
-    hint shape (``ItemId`` = the ``g1:`` key).
+    hint shape (``ItemId`` = the ``g2:`` key).
   - Empty/absent term and total upstream failure degrade to an EMPTY
     result (200), never an error — the Jellyfin-tolerant answer (D5).
   - All three surfaces sit behind the same ``require_token`` gate (D4).
@@ -46,7 +46,7 @@ from cs_uk_api.main import (
 )
 from cs_uk_api.models import ContentResponse, Episode, SearchResult, Season, Translation
 from cs_uk_api.providers import PROVIDERS
-from cs_uk_api.providers.base import BaseProvider, ProviderError
+from cs_uk_api.providers.base import BaseProvider, ProviderError, model_b_axes
 
 TOKEN = SETTINGS.jellyfin_token
 USER = "fdc808859fc45eb8ac5aa6faddc12c72"
@@ -58,7 +58,7 @@ _POSTER_SERIES = "https://cdn.example.test/posters/serial.jpg"
 def _dune() -> ContentResponse:
     return ContentResponse(
         id="p1:dune-1",
-        type="movie",
+        form="movie",
         title="Дюна",
         year=2021,
         description="Епічна науково-фантастична стрічка.",
@@ -70,7 +70,7 @@ def _dune() -> ContentResponse:
 def _serial() -> ContentResponse:
     return ContentResponse(
         id="p1:serial-1",
-        type="series",
+        form="series",
         title="Сериалал серіал",
         year=2023,
         description="Детективний серіал.",
@@ -97,10 +97,12 @@ def _result(
     year: int | None = None,
     poster: str | None = None,
 ) -> SearchResult:
+    mb_form, mb_styles = model_b_axes(cast(Any, media_type))
     return SearchResult(
         id=f"{pid}:{external}",
         provider=pid,
-        type=cast(Any, media_type),
+        form=mb_form,
+        styles=mb_styles,
         title=title,
         year=year if year is not None else (2021 if media_type == "movie" else 2023),
         poster=poster,
@@ -229,7 +231,7 @@ def test_search_term_returns_merged_cards(client: TestClient) -> None:
     dune = by_name["Дюна"]
     assert dune["Type"] == "Movie"
     assert dune["ProductionYear"] == 2021
-    assert dune["Id"].startswith("g1:")
+    assert dune["Id"].startswith("g2:")
     assert set(dune["ImageTags"].keys()) == {"Primary"}
     # Poster-less card: no ImageTags (D9).
     assert by_name["Сокіл"]["ImageTags"] == {}
@@ -250,7 +252,7 @@ def test_search_merges_cross_provider_duplicates(client: TestClient) -> None:
     items = _search_items(client, "дюна")
     assert len(items) == 1
     assert items[0]["Name"] == "Дюна"
-    assert items[0]["Id"].startswith("g1:")
+    assert items[0]["Id"].startswith("g2:")
     assert items[0]["Type"] == "Movie"
 
 
@@ -272,7 +274,7 @@ def test_search_term_absent_keeps_listing(client: TestClient) -> None:
         name = "Animeon"
         types = ("movie", "series")
         newest_section = "page"
-        sections = (Section(id="movie", title="Фільми", type="movie"),)
+        sections = (Section(id="movie", title="Фільми", form="movie"),)
 
         async def search(self, query: str, http: Any) -> list[SearchResult]:
             return []
@@ -357,7 +359,7 @@ def test_search_hints_shape(client: TestClient) -> None:
     assert body["TotalRecordCount"] == 3
     by_name = {h["Name"]: h for h in body["SearchHints"]}
     dune = by_name["Дюна"]
-    assert dune["ItemId"].startswith("g1:")
+    assert dune["ItemId"].startswith("g2:")
     assert dune["Id"] == dune["ItemId"]
     assert dune["Type"] == "Movie"
     assert set(dune["ImageTags"].keys()) == {"Primary"}

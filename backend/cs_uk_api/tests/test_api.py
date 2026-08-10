@@ -58,7 +58,7 @@ def test_stream_rejects_invalid_translation_via_provider_hook(monkeypatch):
         async def content(self, external_id, http):
             return ContentResponse(
                 id=external_id,
-                type="series",
+                form="series",
                 title="T",
                 translations=[Translation(id="uk", label="UK")],
                 translations_level="episode",
@@ -106,7 +106,7 @@ def test_content_route_accepts_slash_in_content_id(monkeypatch):
             seen.append(external_id)
             return ContentResponse(
                 id=f"slash-test:{external_id}",
-                type="series",
+                form="series",
                 title="T",
                 translations=[Translation(id="uk", label="UK")],
             )
@@ -181,7 +181,7 @@ def test_content_route_blocks_russian_country(monkeypatch):
         async def content(self, external_id, http):
             return ContentResponse(
                 id=f"russian-test:{external_id}",
-                type="movie",
+                form="movie",
                 title="Блокированный",
                 translations=[Translation(id="uk", label="UK")],
                 country="росія",
@@ -218,7 +218,7 @@ def test_content_route_allows_non_russian_country(monkeypatch):
         async def content(self, external_id, http):
             return ContentResponse(
                 id=f"ukr-test:{external_id}",
-                type="movie",
+                form="movie",
                 title="Не блокувати",
                 translations=[Translation(id="uk", label="UK")],
                 country="україна",
@@ -254,7 +254,7 @@ def test_content_route_passes_open_when_country_unknown(monkeypatch):
         async def content(self, external_id, http):
             return ContentResponse(
                 id=f"unknown-test:{external_id}",
-                type="movie",
+                form="movie",
                 title="Невідома країна",
                 translations=[Translation(id="uk", label="UK")],
                 country=None,
@@ -317,7 +317,7 @@ def test_content_route_respects_block_russian_disabled(monkeypatch):
             async def content(self, external_id, http):
                 return ContentResponse(
                     id=f"russian-disabled-test:{external_id}",
-                    type="movie",
+                    form="movie",
                     title="Разрешено",
                     translations=[Translation(id="uk", label="UK")],
                     country="росія",

@@ -17,7 +17,7 @@ def test_sections_lists_uakino_with_sections():
     assert isinstance(sections, list)
     assert len(sections) > 0
     s0 = sections[0]
-    assert {"id", "title", "type"} <= set(s0.keys())
+    assert {"id", "title", "form", "styles"} <= set(s0.keys())
 
 
 def test_sections_omits_providers_without_sections():

@@ -28,12 +28,15 @@ BASE_URL = "https://ufdub.com"
 _ALLOWED_HOSTS: frozenset[str] = frozenset({"ufdub.com", "video.ufdub.com"})
 
 UFDUB_SECTIONS: tuple[Section, ...] = (
-    Section(id="filmy", title="Фільми", type="movie"),
-    Section(id="serialy", title="Серіали", type="series"),
-    Section(id="doramy", title="Дорами", type="dorama"),
-    Section(id="cartoons", title="Мультфільми", type="movie"),
-    Section(id="multserialy", title="Мультсеріали", type="series"),
-    Section(id="anime", title="Аніме", type="anime"),
+    Section(id="filmy", title="Фільми", form="movie"),
+    Section(id="serialy", title="Серіали", form="series"),
+    Section(id="doramy", title="Дорами", styles=frozenset({"dorama"})),
+    # Ufdub cartoon films are tagged ``form=series, styles={cartoon}``
+    # (model_b_axes default form for style-tagged types) — a ``form``
+    # axis would filter them all out, so the section filters by style.
+    Section(id="cartoons", title="Мультфільми", styles=frozenset({"cartoon"})),
+    Section(id="multserialy", title="Мультсеріали", form="series"),
+    Section(id="anime", title="Аніме", styles=frozenset({"anime"})),
 )
 
 # Path prefix -> MediaType. Order matters: longest prefixes first so
@@ -140,7 +143,6 @@ def _parse_card(card: Tag | BeautifulSoup, provider_id: str) -> SearchResult | N
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
-        type=_type_from_url(href),  # type: ignore[arg-type]
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
@@ -269,7 +271,6 @@ class UFDubProvider(BaseProvider):
         mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"ufdub:{external_id}",
-            type=media_type,  # type: ignore[arg-type]
             title=title_el.get_text(strip=True),
             description=description,
             poster=poster,

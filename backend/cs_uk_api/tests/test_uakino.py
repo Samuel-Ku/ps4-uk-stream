@@ -72,18 +72,16 @@ async def test_uakino_search_parses_results_and_filters_junk():
     assert all("news" not in r.url and "franchise" not in r.url for r in results)
     # the Дюна movie (2021) and both Дюна series are present
     movie = next(r for r in results if r.url.endswith("genre-action/12567-dyuna.html"))
-    assert movie.type == "movie"
     assert movie.form == "movie"
     assert movie.styles == frozenset()
     assert movie.year == 2021
     assert movie.poster is not None
     assert movie.poster.startswith("https://uakino.best/")
     series = next(r for r in results if r.url.endswith("seriesss/10458-dyuna-1-sezon.html"))
-    assert series.type == "series"
     assert series.form == "series"
     assert series.styles == frozenset()
     series2 = next(r for r in results if r.url.endswith("seriesss/drama_series/24872-duna-proroctvo-1-sezon.html"))
-    assert series2.type == "series"
+    assert series2.form == "series"
     # search must be a same-origin POST to /index.php
     method, path, data = session.calls[0]
     assert method == "POST" and path == "/index.php"
@@ -115,7 +113,7 @@ async def test_uakino_content_movie_parses_metadata_and_voices():
     async with httpx.AsyncClient() as http:
         c = await _provider(session).content("filmy:12567-dyuna", http)
 
-    assert c.type == "movie"
+    assert c.form == "movie"
     assert c.title == "Дюна"
     assert c.year == 2021
     assert c.description
@@ -144,7 +142,7 @@ async def test_uakino_content_movie_without_voice_uses_default_translation():
     )
     async with httpx.AsyncClient() as http:
         c = await _provider(session).content("filmy:12567-dyuna", http)
-    assert c.type == "movie"
+    assert c.form == "movie"
     assert c.seasons is None
     assert [(t.id, t.label) for t in c.translations] == [("uk", "Українська")]
 
@@ -190,7 +188,7 @@ async def test_uakino_content_movie_direct_player_not_gated():
     )
     async with httpx.AsyncClient() as http:
         c = await _provider(session).content("filmy:12567-dyuna", http)
-    assert c.type == "movie"
+    assert c.form == "movie"
     assert c.seasons is None
     assert [(t.id, t.label) for t in c.translations] == [("uk", "Українська")]
 
@@ -229,7 +227,7 @@ async def test_uakino_content_series_parses_episodes_and_voice_groups():
             "seriesss:35253-kramnycia-dlia-vbyvc-2-sezon", http
         )
 
-    assert c.type == "series"
+    assert c.form == "series"
     # Model B axes: a plain seriesss item → form=series, no style tag.
     assert c.form == "series"
     assert c.styles == frozenset()
@@ -261,7 +259,7 @@ async def test_uakino_content_accepts_legacy_kind_prefixed_ids():
     )
     async with httpx.AsyncClient() as http:
         c = await _provider(session).content("serial-35253-kramnycia-dlia-vbyvc-2-sezon", http)
-    assert c.type == "series"
+    assert c.form == "series"
 
 
 @pytest.mark.asyncio
@@ -431,7 +429,7 @@ async def test_uakino_browse_parses_listing_and_detects_next():
     assert has_next is True
     assert len(results) == 40
     assert all(r.id.startswith("uakino:") for r in results)
-    assert all(r.type == "movie" for r in results)
+    assert all(r.form == "movie" for r in results)
 
 
 @pytest.mark.asyncio

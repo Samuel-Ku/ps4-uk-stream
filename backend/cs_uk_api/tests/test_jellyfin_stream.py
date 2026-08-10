@@ -82,7 +82,7 @@ def _fake_host() -> Iterator[None]:
 def _dune() -> ContentResponse:
     return ContentResponse(
         id="p1:dune-1",
-        type="movie",
+        form="movie",
         title="Дюна",
         year=2021,
         description="Епічна науково-фантастична стрічка.",
@@ -94,7 +94,7 @@ def _dune() -> ContentResponse:
 def _serial() -> ContentResponse:
     return ContentResponse(
         id="p1:serial-1",
-        type="series",
+        form="series",
         title="Сериалал серіал",
         year=2023,
         description="Детективний серіал.",
@@ -182,7 +182,7 @@ def _seed(streams: dict[str, StreamResponse]) -> _StreamStub:
             SearchResult(
                 id="p1:dune-1",
                 provider="p1",
-                type="movie",
+                form="movie",
                 title="Дюна",
                 year=2021,
                 poster="https://cdn.example.test/posters/dune.jpg",
@@ -191,7 +191,7 @@ def _seed(streams: dict[str, StreamResponse]) -> _StreamStub:
             SearchResult(
                 id="p1:serial-1",
                 provider="p1",
-                type="series",
+                form="series",
                 title="Сериалал серіал",
                 year=2023,
                 poster="https://cdn.example.test/posters/serial.jpg",
@@ -244,7 +244,7 @@ def client() -> TestClient:
 
 
 def _home_seed(client: TestClient, stub: _StreamStub) -> tuple[_StreamStub, str, str]:
-    """Register ``stub``, run /api/home once, pull the movie's ``g1:``
+    """Register ``stub``, run /api/home once, pull the movie's ``g2:``
     group key and the episode wire id."""
     PROVIDERS["p1"] = stub
     r = client.get("/api/home")
@@ -566,8 +566,8 @@ def test_stream_and_segment_are_public(client: TestClient) -> None:
     """Stream and segment routes are public (no token required): the PS4
     media player fetches the stream URL directly and does not carry auth
     headers. This mirrors the public-image-route convention."""
-    assert client.get("/Videos/g1:abcdefabcdefabcdef/stream").status_code == 404
+    assert client.get("/Videos/g2:abcdefabcdefabcdef/stream").status_code == 404
     assert (
-        client.get("/Videos/g1:abcdefabcdefabcdef/segment", params={"url": f"{_CDN}/s.ts"}).status_code
+        client.get("/Videos/g2:abcdefabcdefabcdef/segment", params={"url": f"{_CDN}/s.ts"}).status_code
         == 404
     )

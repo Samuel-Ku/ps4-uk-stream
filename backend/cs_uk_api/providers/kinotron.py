@@ -19,11 +19,11 @@ BASE_URL = "https://kinotron.tv"
 # to an attacker-controlled host.
 _ALLOWED_HOSTS: frozenset[str] = frozenset({"kinotron.tv", "ashdi.vip"})
 SECTIONS = (
-    Section(id="films", title="Фільми", type="movie"),
-    Section(id="serials", title="Серіали", type="series"),
-    Section(id="cartoons", title="Мультфільми", type="movie"),
-    Section(id="cartoon-series", title="Мультсеріали", type="cartoon"),
-    Section(id="anime", title="Аніме", type="anime"),
+    Section(id="films", title="Фільми", form="movie"),
+    Section(id="serials", title="Серіали", form="series"),
+    Section(id="cartoons", title="Мультфільми", form="movie"),
+    Section(id="cartoon-series", title="Мультсеріали", styles=frozenset({"cartoon"})),
+    Section(id="anime", title="Аніме", styles=frozenset({"anime"})),
 )
 
 # external_id is a numeric-prefixed slug (e.g. "10496-mesniki-..."). Gate
@@ -70,7 +70,7 @@ def _parse_cards(html: str, provider: str, media_type: MediaTypeStr) -> list[Sea
         poster = urljoin(BASE_URL, str(image.get("data-src"))) if image and image.get("data-src") else None
         mb_form, mb_styles = model_b_axes(media_type)
         results.append(SearchResult(
-            id=f"{provider}:{external_id}", provider=provider, type=media_type,
+            id=f"{provider}:{external_id}", provider=provider,
             title=title, year=int(year_match.group()) if year_match else None,
             poster=poster, url=urljoin(BASE_URL, str(link["href"])),
             form=mb_form, styles=mb_styles,
@@ -176,7 +176,13 @@ class KinoTronProvider(BaseProvider):
         if response.status_code != 200:
             raise ProviderError("not_found", f"status {response.status_code}")
         soup = BeautifulSoup(response.text, "lxml")
-        section_type = next(item.type for item in self.sections if item.id == section)
+        # Contract #135: sections carry Model B axes, not the legacy
+        # ``type`` — the card classifier needs the legacy type string,
+        # derived from the axes (style wins, else form).
+        axes = next(item for item in self.sections if item.id == section)
+        section_type = (
+            min(axes.styles) if axes.styles else (axes.form or "series")
+        )
         results = _parse_cards(response.text, self.id, section_type)
         has_next = any(_page_number(str(a.get("href", ""))) > page for a in soup.select(".navigation a[href*='/page/']"))
         return results, has_next
@@ -243,7 +249,7 @@ class KinoTronProvider(BaseProvider):
                 raise ProviderError("gated", "no playable files on player page")
         description_el = soup.select_one(".full-text")
         mb_form, mb_styles = model_b_axes(kind)
-        return ContentResponse(id=f"{self.id}:{external_id}", type=kind, title=title_el.get_text(" ", strip=True),
+        return ContentResponse(id=f"{self.id}:{external_id}", title=title_el.get_text(" ", strip=True),
             description=description_el.get_text(" ", strip=True) if description_el else "",
             poster=poster, translations=translations, seasons=seasons, translations_level=translations_level, country=country,
             form=mb_form, styles=mb_styles)

@@ -33,7 +33,7 @@ from cs_uk_api.config import SETTINGS
 from cs_uk_api.main import _home_cache, _home_sources_cache
 from cs_uk_api.models import SearchResult, Section
 from cs_uk_api.providers import PROVIDERS
-from cs_uk_api.providers.base import BaseProvider
+from cs_uk_api.providers.base import BaseProvider, model_b_axes
 
 #: The router *module* (the ``cs_uk_api.jellyfin`` package re-exports
 #: ``router`` as the APIRouter, shadowing the submodule under that name).
@@ -57,10 +57,12 @@ def _item(
     n: str = "1",
     poster: str | None = None,
 ) -> SearchResult:
+    mb_form, mb_styles = model_b_axes(cast(Any, media_type))
     return SearchResult(
         id=f"{pid}:{n}",
         provider=pid,
-        type=cast(Any, media_type),
+        form=mb_form,
+        styles=mb_styles,
         title=title,
         year=year,
         poster=poster,
@@ -131,10 +133,10 @@ def _seed() -> _ViewsStub:
             # The home route gates «Популярні зараз» on
             # ``pid == "animeon" and has_section("popular")`` — declare
             # the section so the gate opens and the row appears.
-            Section(id="popular", title="Популярні", type="anime"),
-            Section(id="movie", title="Фільми", type="movie"),
-            Section(id="series", title="Серіали", type="series"),
-            Section(id="anime", title="Аніме", type="anime"),
+            Section(id="popular", title="Популярні", styles=frozenset({"anime"})),
+            Section(id="movie", title="Фільми", form="movie"),
+            Section(id="series", title="Серіали", form="series"),
+            Section(id="anime", title="Аніме", styles=frozenset({"anime"})),
         ),
         by_section={
             "movie": [
@@ -257,7 +259,7 @@ def test_items_listing_returns_row_cards(client: TestClient) -> None:
     assert dune["Type"] == "Movie"
     assert dune["ProductionYear"] == 2021
     assert dune["ParentId"] == movie_view
-    assert dune["Id"].startswith("g1:")
+    assert dune["Id"].startswith("g2:")
 
 
 def test_items_listing_series_type_mapping(client: TestClient) -> None:
@@ -422,8 +424,8 @@ def test_poster_primary_query_is_single_encoded(client: TestClient, monkeypatch:
         newest_section="page",
         newest=[_item("animeon", "Дюна", "movie", 2021, poster=escaped)],
         sections=(
-            Section(id="popular", title="Популярні", type="anime"),
-            Section(id="movie", title="Фільми", type="movie"),
+            Section(id="popular", title="Популярні", styles=frozenset({"anime"})),
+            Section(id="movie", title="Фільми", form="movie"),
         ),
         by_section={
             "movie": [_item("animeon", "Дюна", "movie", 2021, n="2", poster=escaped)],

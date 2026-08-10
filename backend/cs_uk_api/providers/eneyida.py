@@ -15,20 +15,19 @@ from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
-    MediaType,
     SearchResult,
     Season,
     Section,
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError, model_b_axes
+from .base import BaseProvider, MediaTypeStr, ProviderError, model_b_axes
 
 BASE_URL = "https://eneyida.tv"
 _ALLOWED_HOSTS: frozenset[str] = frozenset({"eneyida.tv", "hdvbua.pro"})
 ENEYIDA_SECTIONS = (
-    Section(id="films", title="Фільми", type="movie"),
-    Section(id="series", title="Серіали", type="series"),
+    Section(id="films", title="Фільми", form="movie"),
+    Section(id="series", title="Серіали", form="series"),
 )
 _PATH_TYPE: tuple[tuple[tuple[str, ...], str], ...] = (
     (("serials", "series"), "series"),
@@ -64,7 +63,7 @@ def _external_id_from_url(href: str) -> str | None:
     return f"{section}/{m.group(1)}"
 
 
-def _type_from_url(href: str) -> MediaType:
+def _type_from_url(href: str) -> MediaTypeStr:
     return "series" if "/serials/" in href or "/series/" in href else "movie"
 
 
@@ -89,7 +88,6 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
     return SearchResult(
         id=f"{provider_id}:{ext}",
         provider=provider_id,
-        type=_type_from_url(str(a["href"])),
         title=title,
         poster=urljoin(BASE_URL, str(poster_src)) if poster_src else None,
         url=urljoin(BASE_URL, str(a["href"])),
@@ -222,7 +220,7 @@ class EneyidaProvider(BaseProvider):
         player = _player_url(r.text)
         if not player:
             raise ProviderError("parse_failed", "player missing")
-        typ: MediaType = "series" if kind == "series" else "movie"
+        typ: MediaTypeStr = "series" if kind == "series" else "movie"
         seasons = await self._seasons(player, external_id, http)
         if seasons:
             # Issue #165: a /films/ page can carry a series-structured
@@ -245,7 +243,6 @@ class EneyidaProvider(BaseProvider):
         mb_form, mb_styles = model_b_axes(typ)
         return ContentResponse(
             id=f"{self.id}:{external_id}",
-            type=typ,
             title=h1.get_text(strip=True),
             poster=urljoin(BASE_URL, str(img.get("src"))) if img else None,
             translations=[Translation(id="uk", label="Українська")],
