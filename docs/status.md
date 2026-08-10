@@ -55,7 +55,7 @@ boundary validation is `fullmatch` everywhere; uakino movies without a
   playback against the real site for smoke-testing (issue #30, spec
   §7.1); `backend/cs_uk_api/scripts/README.md` documents it.
 - Switchfin manual-test pipeline (`scripts/switchfin_test.py`, issues
-  #143–#146): cold-starts the uvicorn backend, tails its request-log
+  #143–#147): cold-starts the uvicorn backend, tails its request-log
   middleware line (`METHOD path -> status (ms)`) as the detection
   channel, and verifies the wire. The 2 handshake steps (login + views)
   are self-issued headlessly; with a phone attached it drives the real
@@ -63,7 +63,12 @@ boundary validation is `fullmatch` everywhere; uakino movies without a
   views (open + first card + type-aware play), applies a per-step logcat
   error filter, and writes `docs/switchfin-test-report.md`. Step
   definitions are data in `docs/test-artifacts/switchfin/steps.yaml` +
-  `tap-coords.yaml` (populated by `--calibrate`).
+  `tap-coords.yaml` (populated by `--calibrate`). Run with
+  `python scripts/switchfin_test.py`: it cold-starts the backend with
+  `CS_UK_JF_CAPTURE_DIR` capture enabled, slices the run's real-client
+  records into `backend/cs_uk_api/tests/fixtures/jellyfin/
+  capture.real-client.jsonl` (never `capture.jsonl`), and its runner unit
+  tests live in `backend/cs_uk_api/tests/test_switchfin_runner.py`.
 - Live smoke test confirmed `/api/providers` returns all registered
   providers and the validation/404 paths behave correctly.
 

@@ -1,0 +1,2 @@
+{"ts": 1786257025.003158, "method": "POST", "path": "/Users/AuthenticateByName", "query": {}, "headers": {"user-agent": "<scrubbed>"}, "status": 200}
+{"ts": 1786257048.2847881, "method": "GET", "path": "/UserViews", "query": {}, "headers": {"x-emby-token": "<scrubbed>", "user-agent": "<scrubbed>"}, "status": 200}

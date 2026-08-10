@@ -127,6 +127,25 @@ class ReportMeta:
     resolution: str
 
 
+@dataclass(frozen=True)
+class CaptureWindow:
+    """Inclusive [start_ts, end_ts] host-epoch window for capture slicing.
+
+    The runner records ``time.time()`` at the START/END marker emission
+    points (ticket #147); the capture middleware stamps each record with the
+    same host's ``time.time()``, so one clock orders both sides.
+    """
+
+    start_ts: float
+    end_ts: float
+
+    def contains(self, ts: object) -> bool:
+        """True when a record's ``ts``, if numeric, falls inside the window."""
+        if not isinstance(ts, (int, float)) or isinstance(ts, bool):
+            return False
+        return self.start_ts <= ts <= self.end_ts
+
+
 def status_of(line: str) -> int | None:
     m = LOG_LINE_RE.search(line)
     return int(m.group("status")) if m else None

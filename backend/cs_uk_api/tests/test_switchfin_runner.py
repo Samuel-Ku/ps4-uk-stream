@@ -9,6 +9,7 @@ this file adds the repo root so ``scripts.switchfin_test`` imports.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -29,6 +30,7 @@ from scripts.switchfin_adb import (  # type: ignore[import-not-found]
 )
 from scripts.switchfin_model import (  # type: ignore[import-not-found]
     CALIBRATION_ELEMENTS,
+    CaptureWindow,
     ReportMeta,
     Step,
 )
@@ -39,8 +41,11 @@ from scripts.switchfin_report import (  # type: ignore[import-not-found]
 )
 from scripts.switchfin_test import (  # type: ignore[import-not-found]
     Runner,
+    capture_in_window,
     load_steps,
     load_tap_coords,
+    reset_capture_dir,
+    splice_capture,
 )
 
 # --------------------------------------------------------------------------
@@ -507,7 +512,9 @@ def test_poster_line_first_does_not_poison_gk(tmp_path: Path) -> None:
 
     assert all(r.ok for r in results), [r.note for r in results if not r.ok]
     assert seen_gk, "the play step's Type probe never ran"
-    assert seen_gk[0] == "g1", f"gk captured as {seen_gk[0]!r} — poster suffix leaked in"
+    assert (
+        seen_gk[0] == "g1"
+    ), f"gk captured as {seen_gk[0]!r} — poster suffix leaked in"
 
 
 # --------------------------------------------------------------------------
@@ -612,3 +619,124 @@ def test_tap_failure_records_fail_instead_of_crashing(tmp_path: Path) -> None:
     assert by_name["play_newest"].skipped
     assert by_name["open_view_movie"].ok
     assert run_exit_code(results) == 1
+
+
+# --------------------------------------------------------------------------
+# capture fixture slicing (#147)
+# --------------------------------------------------------------------------
+
+
+def _capture_line(
+    ts: float, method: str = "GET", path: str = "/System/Info/Public"
+) -> str:
+    record: dict[str, object] = {
+        "ts": ts,
+        "method": method,
+        "path": path,
+        "query": {},
+        "headers": {},
+        "status": 200,
+    }
+    return json.dumps(record)
+
+
+def test_capture_in_window_predicate() -> None:
+    record = json.loads(_capture_line(150.0))
+    assert capture_in_window(record, CaptureWindow(100.0, 200.0))
+    assert not capture_in_window(record, CaptureWindow(160.0, 200.0))
+    assert not capture_in_window(record, CaptureWindow(100.0, 140.0))
+    # non-numeric / missing ts fields are out of window, never a crash
+    assert not capture_in_window({}, CaptureWindow(100.0, 200.0))
+    assert not capture_in_window({"ts": "not-a-number"}, CaptureWindow(100.0, 200.0))
+
+
+def test_splice_capture_keeps_only_in_window_records(tmp_path: Path) -> None:
+    capture = tmp_path / "capture.jsonl"
+    out = tmp_path / "capture.real-client.jsonl"
+    lines = [
+        _capture_line(100.0),
+        _capture_line(150.0),
+        _capture_line(200.0),
+        _capture_line(250.0),
+    ]
+    capture.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    kept = splice_capture(capture, out, CaptureWindow(120.0, 220.0))
+
+    assert kept == 2
+    written = out.read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["ts"] for line in written] == [150.0, 200.0]
+    # the working capture the backend appended to is never modified
+    assert capture.read_text(encoding="utf-8").splitlines() == lines
+
+
+def test_splice_capture_is_inclusive_of_both_bounds(tmp_path: Path) -> None:
+    capture = tmp_path / "capture.jsonl"
+    out = tmp_path / "capture.real-client.jsonl"
+    capture.write_text(
+        "\n".join([_capture_line(100.0), _capture_line(200.0), _capture_line(300.0)])
+        + "\n",
+        encoding="utf-8",
+    )
+
+    kept = splice_capture(capture, out, CaptureWindow(100.0, 300.0))
+
+    assert kept == 3
+
+
+def test_splice_capture_skips_malformed_lines(tmp_path: Path) -> None:
+    capture = tmp_path / "capture.jsonl"
+    out = tmp_path / "capture.real-client.jsonl"
+    # a partial line from a mid-write append must not crash the splice
+    capture.write_text(
+        _capture_line(150.0) + "\n{truncated-json\n" + _capture_line(250.0) + "\n",
+        encoding="utf-8",
+    )
+
+    kept = splice_capture(capture, out, CaptureWindow(100.0, 300.0))
+
+    assert kept == 2
+
+
+def test_splice_capture_missing_source_writes_nothing(tmp_path: Path) -> None:
+    out = tmp_path / "capture.real-client.jsonl"
+
+    kept = splice_capture(tmp_path / "missing.jsonl", out, CaptureWindow(0.0, 1.0))
+
+    assert kept == 0
+    assert not out.exists()
+
+
+def test_splice_capture_no_matches_leaves_fixture_untouched(tmp_path: Path) -> None:
+    """A window matching nothing (a degenerate or failed run) must not clobber
+    an existing good fixture to empty — a FAIL run keeps the last capture."""
+    capture = tmp_path / "capture.jsonl"
+    out = tmp_path / "capture.real-client.jsonl"
+    capture.write_text(_capture_line(100.0) + "\n", encoding="utf-8")
+    out.write_text(_capture_line(999.0) + "\n", encoding="utf-8")
+
+    kept = splice_capture(capture, out, CaptureWindow(200.0, 300.0))
+
+    assert kept == 0
+    assert out.read_text(encoding="utf-8").splitlines() == [_capture_line(999.0)]
+
+
+def test_reset_capture_dir_empties_existing_dir(tmp_path: Path) -> None:
+    capture_dir = tmp_path / "capture"
+    capture_dir.mkdir()
+    stale = capture_dir / "capture.jsonl"
+    stale.write_text("stale\n", encoding="utf-8")
+
+    reset_capture_dir(capture_dir)
+
+    assert capture_dir.is_dir()
+    assert not stale.exists()
+    assert list(capture_dir.iterdir()) == []
+
+
+def test_reset_capture_dir_creates_missing_dir(tmp_path: Path) -> None:
+    capture_dir = tmp_path / "capture"
+
+    reset_capture_dir(capture_dir)
+
+    assert capture_dir.is_dir()

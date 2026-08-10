@@ -16,6 +16,10 @@ Three sequential slices:
     of each. Per-view verdicts; a failed step skips the rest of its view.
   * #146 — type-aware play (Movie = 1 tap, Series = 4 taps), a logcat
     error filter per step window, and ``docs/switchfin-test-report.md``.
+  * #147 — capture: cold-start the backend with ``CS_UK_JF_CAPTURE_DIR``
+    set, empty the working capture dir, then slice the run's real-client
+    records into ``backend/cs_uk_api/tests/fixtures/jellyfin/
+    capture.real-client.jsonl`` (never touching ``capture.jsonl``).
 
 The runner deliberately does NOT import ``cs_uk_api`` — only ``pyyaml``
 plus the Python stdlib. Everything the backend knows is learned through
@@ -51,6 +55,7 @@ if str(REPO_ROOT) not in sys.path:
 from scripts.switchfin_adb import Adb, LogTailer, calibrate
 from scripts.switchfin_model import (
     Branch,
+    CaptureWindow,
     Expect,
     PlayTap,
     ReportMeta,
@@ -72,6 +77,22 @@ DEFAULT_STEPS = ARTIFACTS_DIR / "steps.yaml"
 DEFAULT_TAP_COORDS = ARTIFACTS_DIR / "tap-coords.yaml"
 DEFAULT_BACKEND_LOG = ARTIFACTS_DIR / "backend.log"
 DEFAULT_REPORT = REPO_ROOT / "docs" / "switchfin-test-report.md"
+
+#: #147 capture plumbing. The backend subprocess runs with ``cwd=backend/``,
+#: so the capture dir must be an absolute repo-root path — a bare
+#: ``docs/test-artifacts/...`` would resolve under ``backend/`` and be
+#: silently written to the wrong tree.
+CAPTURE_DIR = REPO_ROOT / "docs" / "test-artifacts" / "switchfin" / "capture"
+CAPTURE_JSONL = CAPTURE_DIR / "capture.jsonl"
+FIXTURE_REAL_CLIENT = (
+    REPO_ROOT
+    / "backend"
+    / "cs_uk_api"
+    / "tests"
+    / "fixtures"
+    / "jellyfin"
+    / "capture.real-client.jsonl"
+)
 
 #: HTTP timeout for the runner's own handshake requests. The first
 #: ``/UserViews`` call builds the home cache by scraping every provider, so
@@ -149,6 +170,67 @@ def load_tap_coords(path: Path) -> dict[str, tuple[int, int]]:
 
 
 # --------------------------------------------------------------------------
+# capture fixture slicing (#147)
+# --------------------------------------------------------------------------
+
+
+def capture_in_window(record: dict[str, object], window: CaptureWindow) -> bool:
+    """True when a capture record's ``ts`` (host epoch) is within ``window``.
+
+    Records missing a numeric ``ts`` (a scrubbed or partial write) are
+    excluded rather than compared, so a bad line can never widen the slice.
+    """
+    return window.contains(record.get("ts"))
+
+
+def splice_capture(capture_path: Path, out_path: Path, window: CaptureWindow) -> int:
+    """Slice ``capture/capture.jsonl`` to the run window and write the fixture.
+
+    Reads the working capture the backend appended to during the run, keeps
+    the records whose ``ts`` lands in ``window``, and writes them (verbatim
+    JSONL lines, original order) to ``out_path`` — the committed
+    ``capture.real-client.jsonl`` fixture. ``capture_path`` is never written.
+
+    A missing source — or a window that matches no records (a degenerate or
+    failed run) — leaves ``out_path`` untouched, so a good fixture is never
+    clobbered to empty. Returns the number of records written.
+    """
+    if not capture_path.exists():
+        return 0
+    kept: list[str] = []
+    for line in capture_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue  # a partial line from a concurrent append — skip it
+        if capture_in_window(record, window):
+            kept.append(line)
+    if not kept:
+        return 0
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+    return len(kept)
+
+
+def reset_capture_dir(capture_dir: Path) -> None:
+    """Empty the working capture dir so a run starts from a clean slate.
+
+    A prior run's ``capture.jsonl`` would otherwise bleed into this run's
+    window slice (the record timestamps would be older than ``start_ts``,
+    but the file must start empty to guarantee that). Ensures the dir exists
+    because the backend's capture middleware appends without creating it.
+    """
+    if capture_dir.exists():
+        for child in capture_dir.iterdir():
+            if child.is_file():
+                child.unlink()
+    else:
+        capture_dir.mkdir(parents=True, exist_ok=True)
+
+
+# --------------------------------------------------------------------------
 # backend cold-start + readiness
 # --------------------------------------------------------------------------
 
@@ -178,13 +260,15 @@ def cold_start(log_path: Path, port: int) -> subprocess.Popen[bytes]:
         "--port",
         str(port),
     ]
+    env = dict(os.environ)
+    env["CS_UK_JF_CAPTURE_DIR"] = str(CAPTURE_DIR)
     try:
         return subprocess.Popen(
             cmd,
             cwd=str(BACKEND_DIR),
             stdout=log_fh,
             stderr=subprocess.STDOUT,
-            env=dict(os.environ),
+            env=env,
         )
     except BaseException:
         log_fh.close()
@@ -603,6 +687,12 @@ def _run_suite(
     tap_coords: dict[str, tuple[int, int]],
 ) -> int:
     tailer = LogTailer(args.log)
+    # Host-epoch markers at the run's edges. The capture middleware stamps
+    # records with the backend host's ``time.time()``; the runner emits the
+    # START/END markers from that same host, so recording ``time.time()`` at
+    # emission gives a window directly comparable to the capture records —
+    # no phone-clock dependency.
+    start_ts = time.time()
     if adb.available():
         adb.marker("SWITCHFIN_TEST_START")
     runner = Runner(
@@ -615,12 +705,20 @@ def _run_suite(
         timeout_s=args.timeout_s,
     )
     results = runner.run()
+    end_ts = time.time()
     if adb.available():
         adb.marker("SWITCHFIN_TEST_END")
         dump = adb.logcat_dump()
     else:
         dump = []
     results = apply_logcat_filter(results, dump)
+
+    window = CaptureWindow(start_ts, end_ts)
+    kept = splice_capture(CAPTURE_JSONL, FIXTURE_REAL_CLIENT, window)
+    print(
+        f"capture: {kept} record(s) sliced to "
+        f"{FIXTURE_REAL_CLIENT.relative_to(REPO_ROOT)}"
+    )
 
     meta = build_meta(args, adb)
     args.report.write_text(render_report(results, meta), encoding="utf-8")
@@ -642,6 +740,10 @@ def main(argv: list[str] | None = None) -> int:
     args.timeout_s = args.timeout if args.timeout is not None else timeout_s
     tap_coords = load_tap_coords(args.tap_coords)
 
+    # Empty the working capture dir before the backend starts so this run's
+    # ``capture.jsonl`` (and therefore its slice) is never contaminated by a
+    # previous run's records.
+    reset_capture_dir(CAPTURE_DIR)
     proc = cold_start(args.log, args.port)
     try:
         wait_for_backend(args.host, args.port)
