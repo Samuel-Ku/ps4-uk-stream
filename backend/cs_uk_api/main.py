@@ -4,9 +4,7 @@ import asyncio
 import logging
 import os
 import time
-from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import TypeVar, cast
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -26,6 +24,10 @@ from .catalog_state import load_home as _catalog_load_home
 from .catalog_state import sources_cache as _catalog_sources_cache
 from .config import SETTINGS
 from .country import is_blocked_country
+from .filters import matches_axes as _matches_axes
+from .filters import parse_style_filter as _parse_style_filter
+from .filters import section_matches as _section_matches
+from .filters import style_key as _style_key
 from .health import TRACKER
 from .http_client import close_client, get_client
 from .jellyfin import router as jellyfin_router
@@ -41,30 +43,30 @@ from .models import (
     HealthStatus,
     HomeResponse,
     MediaForm,
-    MediaStyle,
     ProviderFailure,
     ProviderInfo,
     ProviderSections,
     SearchGroup,
     SearchResponse,
     SearchResult,
-    Section,
     STATUS_DOWN,
     STATUS_WARMING,
     StreamResponse,
 )
 from .poster_proxy import fetch as fetch_poster
 from .providers import PROVIDERS
-from .providers.base import BaseProvider, ProviderError
+from .providers.base import BaseProvider
+from .service import (
+    content_provider_error as _content_provider_error,
+)
+from .service import inject_sources_into_unavailable_error as _inject_sources_into_unavailable_error
+from .service import split_content_id as _split_content_id
+from .service import stream_provider_error as _stream_provider_error
+from .service import upstream_guard as _upstream_guard
 from .uakino_browser import DEFAULT_CHROMIUM, get_session
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("cs_uk_api")
-
-#: Valid ``?style=`` tokens (Model B, ticket #134). Kept as a module
-#: constant because ``MediaStyle.__args__`` is a typing special form
-#: that mypy rejects on attribute access.
-_STYLE_TOKENS: frozenset[str] = frozenset({"anime", "cartoon", "dorama"})
 
 # uakino's browser-session provider cannot work without a system Chromium
 # binary (v3 spec §2.1): mark it down deterministically at startup instead
@@ -84,14 +86,6 @@ _blocklist_cache = _catalog_blocklist_cache
 #: Clearing them clears the shared state.
 _home_cache = _catalog_home_cache
 _home_sources_cache = _catalog_sources_cache
-
-T = TypeVar("T")
-
-# Sentinel for ``_upstream_guard(..., on_error=...)``: distinguishes the
-# parameter's "no default provided" state from a legitimate ``None`` default.
-# Callers that want to degrade to None on upstream failure must pass
-# ``on_error=None`` explicitly; omitting the kwarg means "raise 502".
-_UNSET: object = object()
 
 #: Bound on how long an explicit uakino route waits for the browser
 #: session to become ready before answering 503 ``warming`` (issue #193).
@@ -131,79 +125,6 @@ async def _warm_and_heartbeat() -> None:
     await session.heartbeat_loop(record=lambda ok: TRACKER.record("uakino", ok))
 
 
-def _split_content_id(content_id: str) -> tuple[str, str]:
-    """Content id "provider:external" -> (provider, external).
-
-    The named accessor for the provider-by-prefix derivation shared by the
-    content and stream routes; malformed ids yield ("", "").
-    """
-    provider_id, _, external_id = content_id.partition(":")
-    return provider_id, external_id
-
-
-async def _upstream_guard(
-    provider_id: str,
-    coro: Awaitable[T],
-    log_label: str,
-    *,
-    on_error: T | object = _UNSET,
-    exc_handler: Callable[[Exception], None] | None = None,
-) -> T:
-    """Await an upstream provider call with health recording + the 502 guard.
-
-    The record+log+raise(502) pattern shared by every upstream try/except
-    site lives here and nowhere else. The failure path runs in this order:
-
-      1. ``exc_handler(e)`` — if provided, runs first. It either raises
-         (translating the upstream error into a client-side response such
-         as 400/404) or returns. The helper does NOT record when the
-         handler raises; translation-level errors are not upstream-health
-         signals.
-      2. ``TRACKER.record(provider_id, ok=False)`` + warning log.
-      3. Either return ``on_error`` (when an explicit default was passed)
-         or raise the canonical 502 ``upstream_unreachable``.
-
-    ``on_error`` uses the ``_UNSET`` sentinel (NOT ``None``) as its
-    default, so callers can distinguish "no default" (raises 502) from
-    "degrade to None" (returns None). Pass ``on_error=None`` explicitly
-    when the degraded value legitimately is None.
-    """
-    try:
-        result = await coro
-    except Exception as e:
-        if exc_handler is not None:
-            exc_handler(e)
-        TRACKER.record(provider_id, ok=False)
-        log.warning("%s failed provider=%s err=%s", log_label, provider_id, e)
-        if on_error is _UNSET:
-            raise HTTPException(502, detail=ErrorResponse(error="upstream_unreachable", message=str(e)).model_dump()) from e
-        # The sentinel check above guarantees this is a real T (the caller
-        # passed an explicit default), but mypy cannot narrow ``T | object``
-        # to ``T`` from ``is not _UNSET`` alone.
-        return cast(T, on_error)
-    TRACKER.record(provider_id, ok=True)
-    return result
-
-
-def _content_provider_error(e: Exception) -> None:
-    """Subscription-gated content is a client-visible 404, not an
-    upstream-health signal — the item is deliberately unavailable."""
-    if isinstance(e, ProviderError) and e.code == "gated":
-        raise HTTPException(404, detail=ErrorResponse(error=e.code, message=e.message).model_dump()) from e
-
-
-def _stream_provider_error(e: Exception) -> None:
-    """Translation-level validation errors are client-side semantics, not
-    upstream-health signals — they must not move the needle. A gated
-    stream is a deliberate "no playable file" verdict → 404."""
-    if not isinstance(e, ProviderError):
-        return
-    if e.code == "invalid_translation":
-        raise HTTPException(400, detail=ErrorResponse(error=e.code, message=e.message).model_dump()) from e
-    if e.code in ("translation_missing", "gated"):
-        raise HTTPException(404, detail=ErrorResponse(error=e.code, message=e.message).model_dump()) from e
-
-
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     global _warm_task
@@ -218,10 +139,7 @@ async def lifespan(_app: FastAPI):
         try:
             await asyncio.wait_for(_warm_task, timeout=_WARM_TASK_DRAIN_S)
         except (TimeoutError, asyncio.CancelledError):
-            # CancelledError is the expected result of the cancel above;
-            # a TimeoutError means the drain bound fired on a mid-warm
-            # browser launch. Neither is an error worth a stack trace.
-            log.debug("uakino warm task drained on shutdown")
+            pass
         _warm_task = None
     # The uakino browser session is lazily created on first request and
     # runs a headless Chromium; close it on shutdown so SIGTERM doesn't
@@ -359,80 +277,6 @@ async def browse(
     return resp
 
 
-def _section_matches(item: SearchResult, section: Section) -> bool:
-    """Model B section match semantics (CONTEXT.md «Section schema»).
-
-    - ``form``: ``None`` passes everything; else ``item.form ==
-      section.form`` must hold.
-    - ``styles``: 3-case — ``None`` passes anything (including empty);
-      ``frozenset()`` (∅) passes only ordinary-only items
-      (``item.styles == frozenset()``); a non-empty set passes iff
-      ``item.styles & section.styles`` is non-empty (intersection).
-    """
-    if section.form is not None and item.form != section.form:
-        return False
-    if section.styles is None:
-        return True
-    if not section.styles:
-        return not item.styles
-    return bool(item.styles & section.styles)
-
-
-def _parse_style_filter(raw: str | None) -> frozenset[MediaStyle] | None:
-    """Parse the ``?style=`` query param into a style filter set.
-
-    Decided semantics (CONTEXT.md «Search filter axes»): a comma-
-    separated list with intersection matching — an item passes iff it
-    carries at least one of the requested styles. Absent/empty = any
-    (``None``). There is deliberately NO ordinary-only token on search:
-    ``Section`` is the way to filter to ordinary-only (∅ styles), and
-    ``?style`` stays a plain intersection list.
-
-    Invalid style tokens raise a 400 — a typo should surface at the
-    API boundary, not silently pass everything.
-    """
-    if raw is None:
-        return None
-    parts = [p.strip() for p in raw.split(",") if p.strip()]
-    if not parts:
-        return None
-    invalid = [p for p in parts if p not in _STYLE_TOKENS]
-    if invalid:
-        raise HTTPException(
-            400,
-            detail=ErrorResponse(
-                error="invalid_style",
-                message=f"unknown style token(s): {', '.join(invalid)}",
-            ).model_dump(),
-        )
-    return frozenset(cast(MediaStyle, p) for p in parts)
-
-
-def _style_key(style_filter: frozenset[MediaStyle] | None) -> str:
-    """Stable cache-key fragment for a style filter."""
-    if not style_filter:
-        return ""
-    return ",".join(sorted(style_filter))
-
-
-def _matches_axes(
-    item: SearchResult,
-    form: MediaForm | None,
-    style_filter: frozenset[MediaStyle] | None,
-) -> bool:
-    """Model B axis match for a single search result (ADR-0001).
-
-    - ``form``: exact-or-None — ``None`` passes, else
-      ``item.form == form`` must hold. An item whose provider hasn't
-      populated ``form`` yet (``None``) fails an explicit filter.
-    - ``style_filter``: ``None`` passes; a non-empty set passes iff
-      ``item.styles & style_filter`` is non-empty (intersection).
-    """
-    return (form is None or item.form == form) and (
-        style_filter is None or bool(item.styles & style_filter)
-    )
-
-
 def _should_skip_uakino_in_fanout() -> bool:
     """True when uakino must be dropped from a ``provider=all`` fan-out.
 
@@ -512,12 +356,6 @@ async def search(
     if provider != "all" and provider not in PROVIDERS:
         raise HTTPException(400, detail=ErrorResponse(error="unknown_provider", message=provider).model_dump())
     style_filter = _parse_style_filter(style)
-    if provider == "uakino":
-        # Explicit uakino: 502 on a startup marker, bounded wait on
-        # ready_event, 503 ``warming`` on timeout (issue #196). Gated
-        # before any cache read so a marker or a still-warming session
-        # never serves a stale cached response.
-        await _await_uakino_ready()
     # Fan-out skip (issue #193): while uakino's browser session is not
     # ready (warming) or pinned down, drop it from the ``provider=all``
     # fan-out instead of letting it burn the search budget on a session
@@ -533,6 +371,10 @@ async def search(
     cached = _search_cache.get(cache_key)
     if cached is not None:
         return cached  # type: ignore[return-value]
+    if provider == "uakino":
+        # Explicit uakino: 502 on a startup marker, bounded wait on
+        # ready_event, 503 ``warming`` on timeout (issue #196).
+        await _await_uakino_ready()
     if skip_uakino:
         selected = [p for p in PROVIDERS.values() if p.id != "uakino"]
     else:
@@ -913,26 +755,6 @@ async def _content_by_group_key_and_source(
         **resp.model_dump(),
         sources=sources_echo,
     )
-
-
-def _inject_sources_into_unavailable_error(
-    exc: HTTPException, sources: list[SearchResult]
-) -> None:
-    """Add the spec-required ``sources`` echo to an upstream-guard 502.
-
-    Called from the 502 re-raise path so the chip strip stays up even
-    when the focused source's ``content()`` raised. The echo is
-    JSON-serialized as a plain list of dicts because FastAPI's
-    HTTPException detail is encoded by ``json.dumps`` directly (no
-    Pydantic reduction). If the upstream detail is not a dict, the
-    function is a no-op — the caller will re-raise the original
-    exception unchanged.
-    """
-    if not isinstance(exc.detail, dict):
-        return
-    new_detail = dict(exc.detail)
-    new_detail["sources"] = [s.model_dump() for s in sources]
-    exc.detail = new_detail
 
 
 @app.get("/api/stream/{content_id:path}")
