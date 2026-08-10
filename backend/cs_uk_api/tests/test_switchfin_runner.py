@@ -172,7 +172,7 @@ steps:
             - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
               status: 200
             - request: "GET /Videos/[^ ]+/stream -> (200|206|302)"
-              status: [200, 302]
+              status: [200, 206, 302]
             - request: "POST /Sessions/Playing -> 204"
               status: 204
       series:
@@ -185,7 +185,7 @@ steps:
             - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
               status: 200
             - request: "GET /Videos/[^ ]+/stream -> (200|206|302)"
-              status: [200, 302]
+              status: [200, 206, 302]
             - request: "POST /Sessions/Playing -> 204"
               status: 204
   - name: back_to_grid
@@ -216,7 +216,7 @@ steps:
             - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
               status: 200
             - request: "GET /Videos/[^ ]+/stream -> (200|206|302)"
-              status: [200, 302]
+              status: [200, 206, 302]
             - request: "POST /Sessions/Playing -> 204"
               status: 204
       series:
@@ -229,7 +229,7 @@ steps:
             - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
               status: 200
             - request: "GET /Videos/[^ ]+/stream -> (200|206|302)"
-              status: [200, 302]
+              status: [200, 206, 302]
             - request: "POST /Sessions/Playing -> 204"
               status: 204
 """
