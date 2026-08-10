@@ -105,6 +105,9 @@ RESTART_READY_TIMEOUT_S = 120.0
 #: tap, so an 8s deadline races it — play_newest fired PlaybackInfo +
 #: stream + segments but its Sessions/Playing landed 1s past the deadline.
 PLAY_TIMEOUT_S = 25.0
+#: How long to wait for the Views-grid request after the sidebar folders
+#: tap in a nav step (device-driving B19/#209).
+NAV_GRID_TIMEOUT_S = 5.0
 #: Extra settle after the relaunched app's first reconnect request.
 APP_SETTLE_S = 2.0
 
@@ -710,12 +713,17 @@ class Runner:
             return
 
     def _run_nav(self, step: Step) -> StepResult:
-        """Press BACK ``step.nav`` times to return to the library grid.
+        """Return to the Views grid (device-driving B6, B19/#209).
 
-        The real client has no visible "back to grid" button on detail/play
-        screens, so the runner navigates with BACK keyevents (device-driving
-        B6). A nav step issues no HTTP request and passes trivially; a device
-        that vanished mid-run fails here so the run stops cleanly.
+        The real client's screen stack after a played view is deeper than a
+        fixed BACK count can reliably unwind: runs #6-#9 all showed the
+        open step after a played view tapping a DETAIL instead of the grid.
+        A nav step now (1) presses a couple of BACKs to exit the player and
+        any dialog, then (2) taps the sidebar folders icon — which
+        deterministically opens the Views grid (``GET /Users/{u}/Views``,
+        B21) — and waits for that request, retrying once with an extra BACK
+        if the tap landed before the player closed. Without the folders
+        calibration it falls back to the legacy fixed BACKs.
         """
         if not self._adb_available:
             return StepResult(
@@ -727,7 +735,7 @@ class Runner:
                 note="adb device not available",
             )
         try:
-            for _ in range(step.nav):
+            for _ in range(min(step.nav, 2)):
                 self._adb.back()
         except (OSError, subprocess.CalledProcessError) as exc:
             return StepResult(
@@ -737,7 +745,50 @@ class Runner:
                 ok=False,
                 note=f"adb back failed: {exc}",
             )
-        return StepResult(step.name, step.phase, step.view, ok=True)
+        folders = self._taps.get("sidebar_folders")
+        if folders is None:
+            # legacy fallback: the remaining fixed BACKs
+            try:
+                for _ in range(max(0, step.nav - 2)):
+                    self._adb.back()
+            except (OSError, subprocess.CalledProcessError) as exc:
+                return StepResult(
+                    step.name,
+                    step.phase,
+                    step.view,
+                    ok=False,
+                    note=f"adb back failed: {exc}",
+                )
+            return StepResult(step.name, step.phase, step.view, ok=True)
+        scan_from = len(self._tailer.all_lines())
+        views_re = re.compile(r"GET /UserViews|GET /Users/[^ ]+/Views")
+        for _attempt in range(2):
+            failure = self._safe_tap(folders, note_prefix="sidebar_folders")
+            if failure is not None:
+                return StepResult(
+                    step.name, step.phase, step.view, ok=False, note=failure
+                )
+            deadline = time.monotonic() + NAV_GRID_TIMEOUT_S
+            while time.monotonic() < deadline:
+                if any(
+                    views_re.search(line)
+                    for line in self._tailer.all_lines()[scan_from:]
+                ):
+                    return StepResult(step.name, step.phase, step.view, ok=True)
+                time.sleep(POLL_INTERVAL_S)
+            # the tap may have landed while the player still covered the
+            # UI — exit one more level and retry the folders tap
+            try:
+                self._adb.back()
+            except (OSError, subprocess.CalledProcessError):
+                pass
+        return StepResult(
+            step.name,
+            step.phase,
+            step.view,
+            ok=False,
+            note="Views grid did not open after the sidebar folders tap",
+        )
 
     def _safe_tap(self, coords: tuple[int, int], note_prefix: str = "") -> str | None:
         """Run one adb tap, converting a mid-run device failure into a note.
