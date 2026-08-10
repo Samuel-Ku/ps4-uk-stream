@@ -530,6 +530,22 @@ The regenerated capture fixture now shows clean one-page pagination (each
 view: startIndex 0→18 once — the B11 fix in the contract) and 24 play
 lines (4 plays × PlaybackInfo+stream).
 
+## Run #12 (2026-08-10, after #206 gk capture) — 5/7 plays
+
+- **play_movie FIXED** (the gk-capture + pill-normalization fix, e135635).
+- **play_cartoon now takes the SERIES branch** — the gk capture correctly
+  identifies the first card as a series now (it had been mis-branching to
+  the movie pill), but first_season/first_episode still fired nothing.
+- Failures moved: play_popular regressed (pill locate, zero requests),
+  open_view_dorama flaked (tap at 756,1126 fired no /Items — the 7th
+  card is only partially visible at the grid's bottom edge). The two
+  bottom-area taps (view_dorama_x 756,1126 and first_episode 995,135)
+  are the flakiest — both failed this run.
+
+The remaining failures are intermittent content-churn / cold-scrape races
+in the play taps (the #205/#210 class) plus occasional bottom-edge tap
+misses. The runner itself is stable: nav, open, and detail pass 100%.
+
 ## Open questions (for the next session)
 
 - DONE (2026-08-10): `Adb.back()` + `phase: nav` steps wired into the runner;
