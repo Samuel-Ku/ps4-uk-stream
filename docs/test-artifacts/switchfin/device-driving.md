@@ -389,6 +389,39 @@ better contract: 0 `startIndex=18` lines (the B11 pagination loop is gone
 from the recording) and 11 real play lines (PlaybackInfo / stream /
 Sessions/Playing).
 
+## Run #7 (2026-08-10, after #210 warm) — 3/7 views fully pass
+
+Популярні зараз joined the full-pass list (open + detail + play — the
+#210 first-card warm fixed its 16.8s cold detail). Новинки and Серіали
+pass again. Remaining failures, all mapped:
+
+### B22. Play steps share the 8s step deadline — the app reports
+Sessions/Playing ~5s after the tap (FIXED)
+
+play_newest fired PlaybackInfo (294ms) + stream 200 + HLS segments but
+its Sessions/Playing landed at +5s, just past the 8s deadline — the
+locate+retry loop's screenshot attempts pushed the effective tap late.
+Fixed: play steps get their own `PLAY_TIMEOUT_S = 25s` window
+(`max(timeout_s, play_timeout_s)`); the runner unit test feeds a delayed
+Sessions/Playing to pin the tolerance.
+
+### B19 recurrence (open after playback)
+
+open_view_movie and open_view_anime timed out — in both windows the tap
+opened a DETAIL (a series item + /Similar), not the Views grid: after
+play_popular and play_series streamed, the 4×BACK nav left the app on a
+detail screen. Same root cause as run #6 — tracked in #209. The open
+steps that FOLLOW a non-played view still work.
+
+### Play paths with zero requests (cartoon, dorama)
+
+play_cartoon (movie branch: locate+retry found no pill) and play_dorama
+(series branch: first_season/first_episode) fired ZERO backend requests.
+The empty-window backend-*.txt files are intentionally not rewritten
+(#149), so the stale run-#6 files linger — the logcat-*.txt files carry
+run #7's real content. Needs an on-device look at the cartoon/dorama
+detail screens (layout/probe suspicion, #206).
+
 ## Open questions (for the next session)
 
 - DONE (2026-08-10): `Adb.back()` + `phase: nav` steps wired into the runner;

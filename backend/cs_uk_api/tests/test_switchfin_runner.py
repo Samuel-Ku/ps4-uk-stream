@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -294,6 +295,9 @@ def make_harness(
     adb: FakeAdb | None = None,
     probe_fn: Callable[[dict[str, str]], str | None] | None = None,
     play_locator: Callable[[], tuple[int, int] | None] | None = None,
+    #: fast failure-path tests: a 1s override keeps max(timeout_s, 1.0)
+    #: at the fixture's 8s step timeout instead of PLAY_TIMEOUT_S (B22)
+    play_timeout_s: float = 1.0,
 ) -> tuple[Runner, FakeTailer, FakeAdb]:
     """Build a Runner whose taps/issues append scripted backend.log lines."""
     steps_path = tmp_path / "steps.yaml"
@@ -338,6 +342,7 @@ def make_harness(
         issue_fn=issue,
         probe_fn=probe_fn or (lambda _ctx: probe),
         play_locator_fn=play_locator,
+        play_timeout_s=play_timeout_s,
     )
     return runner, tailer, adb
 
@@ -604,6 +609,49 @@ def test_restart_skipped_without_device(tmp_path: Path) -> None:
     assert restart.ok is True
     assert restart.skipped is True
     assert adb.restarts == 0
+
+
+# --------------------------------------------------------------------------
+# B22: play steps tolerate the app's ~5s playback-start latency
+# --------------------------------------------------------------------------
+
+
+def test_play_step_tolerates_delayed_sessions_playing(tmp_path: Path) -> None:
+    """Sessions/Playing arrives seconds after the tap — the play step must
+    keep its expect window open long enough to catch it (device-driving B22:
+    play_newest fired PlaybackInfo + stream + segments but its
+    Sessions/Playing landed just past the 8s step deadline).
+    """
+    tap_lines = {k: list(v) for k, v in FULL_TAP_LINES.items()}
+    # the play_button tap fires PlaybackInfo + stream immediately, but
+    # Sessions/Playing only arrives after a delay (the app's buffer
+    # latency) — a repeating timer feeds every play step its own Playing
+    tap_lines[TAPS["play_button"]] = [
+        "POST /Items/g1/PlaybackInfo -> 200 (0ms)",
+        "GET /Videos/g1/stream -> 302 (0ms)",
+    ]
+    adb = FakeAdb(lines=[], tap_lines=tap_lines)
+    stop = threading.Event()
+
+    def feed_playing() -> None:
+        while not stop.is_set():
+            adb._lines.append("POST /Sessions/Playing -> 204 (0ms)")
+            time.sleep(1.0)
+
+    feeder = threading.Thread(target=feed_playing, daemon=True)
+    feeder.start()
+    try:
+        runner, _, _ = make_harness(tmp_path, adb=adb, play_timeout_s=30.0)
+        results = runner.run()
+    finally:
+        stop.set()
+        feeder.join(timeout=2)
+
+    by_name = {r.name: r for r in results}
+    # both movie play steps land all three expects: PlaybackInfo + stream
+    # immediately on tap, Sessions/Playing up to a second later
+    assert by_name["play_newest"].ok is True
+    assert by_name["play_movie"].ok is True
 
 
 # --------------------------------------------------------------------------

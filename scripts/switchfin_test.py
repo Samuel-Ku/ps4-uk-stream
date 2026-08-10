@@ -100,6 +100,11 @@ FIXTURE_REAL_CLIENT = (
 #: (device-driving B17/B18). A timeout here is a precondition note, not a
 #: failure — the open steps report the app's actual state honestly.
 RESTART_READY_TIMEOUT_S = 120.0
+#: Play steps get a longer window than the step timeout (device-driving
+#: B22): the app buffers ~5s before reporting Sessions/Playing after the
+#: tap, so an 8s deadline races it — play_newest fired PlaybackInfo +
+#: stream + segments but its Sessions/Playing landed 1s past the deadline.
+PLAY_TIMEOUT_S = 25.0
 #: Extra settle after the relaunched app's first reconnect request.
 APP_SETTLE_S = 2.0
 
@@ -445,6 +450,7 @@ class Runner:
         probe_fn: Callable[[dict[str, str]], str | None] | None = None,
         play_locator_fn: Callable[[], tuple[int, int] | None] | None = None,
         request_timeout: float = REQUEST_TIMEOUT_S,
+        play_timeout_s: float = PLAY_TIMEOUT_S,
     ) -> None:
         self._steps = steps
         self._taps = tap_coords
@@ -454,6 +460,7 @@ class Runner:
         self._port = port
         self._timeout_s = timeout_s
         self._request_timeout = request_timeout
+        self._play_timeout_s = play_timeout_s
         self._issue_fn = issue_fn or self._issue_default
         self._probe_fn = probe_fn or self._probe_default
         #: Locates the Play pill for the Movie branch (#202/B10). The real
@@ -826,12 +833,13 @@ class Runner:
             )
         step_start = len(self._tailer.all_lines())
         notes: list[str] = []
+        play_timeout = max(self._timeout_s, self._play_timeout_s)
         for play_tap in branch.taps:
             if not self._adb_available:
                 notes.append(f"{play_tap.tap}: adb device not available")
                 break
             if play_tap.tap == "play_button":
-                if self._tap_play_with_retry(play_tap, step_start):
+                if self._tap_play_with_retry(play_tap, step_start, play_timeout):
                     continue
                 notes.append(f"{play_tap.tap}: timeout (locate+retry)")
                 continue
@@ -844,7 +852,9 @@ class Runner:
             if failure is not None:
                 notes.append(failure)
                 break
-            if not self._wait_for_expects(play_tap.expects, scan_from):
+            if not self._wait_for_expects(
+                play_tap.expects, scan_from, window_s=play_timeout
+            ):
                 notes.append(f"{play_tap.tap}: timeout")
         ok = not notes
         return StepResult(
@@ -857,18 +867,21 @@ class Runner:
             window_lines=tuple(self._tailer.all_lines()[step_start:]),
         )
 
-    def _tap_play_with_retry(self, play_tap: PlayTap, scan_from: int) -> bool:
-        """Locate and tap the Play pill, retrying until the step timeout.
+    def _tap_play_with_retry(
+        self, play_tap: PlayTap, scan_from: int, timeout_s: float
+    ) -> bool:
+        """Locate and tap the Play pill, retrying until the step deadline.
 
         Two failure modes from the first real-device run (B10): the pill's
         y varies per item (description length), and the detail screen needs
         time to render its buttons after the gk request. Loop until the
-        step deadline: screenshot -> find the teal pill -> tap its center
-        (or the calibrated coordinate when the scan finds nothing) -> check
-        the expects in a short window; repeat. PlaybackInfo landing on any
-        attempt counts. ``False`` on timeout or a vanished device.
+        deadline (``PLAY_TIMEOUT_S`` for play steps, B22): screenshot ->
+        find the teal pill -> tap its center (or the calibrated coordinate
+        when the scan finds nothing) -> check the expects in a short
+        window; repeat. PlaybackInfo landing on any attempt counts.
+        ``False`` on timeout or a vanished device.
         """
-        deadline = time.monotonic() + self._timeout_s
+        deadline = time.monotonic() + timeout_s
         fallback = self._taps.get(play_tap.tap)
         while True:
             coords = self._play_locator_fn() or fallback
