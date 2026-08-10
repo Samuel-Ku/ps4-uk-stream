@@ -626,6 +626,8 @@ async def items_listing(
     parent_id: str | None = Query(default=None, alias="parentId"),
     user_id: str | None = Query(default=None, alias="userId"),
     search_term: str | None = Query(default=None, alias="searchTerm"),
+    start_index: int = Query(default=0, alias="startIndex"),
+    limit: int | None = Query(default=None),
 ) -> BaseItemDtoQueryResult:
     """Library listing for one view, children of a series/season
     (ticket #105 hierarchy, D3), OR a merged-catalog search
@@ -656,7 +658,17 @@ async def items_listing(
     for row in home.rows:
         if row.type == row_type:
             dtos = [_item_dto(row, it, server_id) for it in row.items]
-            return BaseItemDtoQueryResult(Items=dtos, TotalRecordCount=len(dtos))
+            total = len(dtos)
+            end = None if limit is None else start_index + limit
+            # Honest slicing (device-driving B11): the real client requests
+            # ``startIndex``/``limit`` pages and stops when a page comes back
+            # short. Ignoring the params made page 2 repeat page 1, so the
+            # app's infinite scroll re-requested it forever.
+            return BaseItemDtoQueryResult(
+                Items=dtos[start_index:end],
+                TotalRecordCount=total,
+                StartIndex=start_index,
+            )
     # A valid view id whose row is currently absent (e.g. «Популярні
     # зараз» when no provider carries it) is an empty library, not an
     # error — same tolerant answer as an unknown parent.
@@ -748,7 +760,9 @@ async def items_latest(
     on the console as a "302" — so the wire shape here is a list, while
     the content stays the same row lookup as ``/Items``.
     """
-    result = await items_listing(parent_id=parent_id, user_id=user_id, search_term=None)
+    result = await items_listing(
+        parent_id=parent_id, user_id=user_id, search_term=None, start_index=0, limit=None
+    )
     return result.Items
 
 
@@ -761,6 +775,8 @@ async def user_items_listing(
     user_id: str,
     parent_id: str | None = Query(default=None, alias="parentId"),
     search_term: str | None = Query(default=None, alias="searchTerm"),
+    start_index: int = Query(default=0, alias="startIndex"),
+    limit: int | None = Query(default=None),
 ) -> BaseItemDtoQueryResult:
     """Server-style spelling of the library listing (Switchfin).
 
@@ -772,7 +788,13 @@ async def user_items_listing(
     exactly this URL); registered after ``Resume``/``Latest`` so those
     literal segments win over this parameterized route.
     """
-    return await items_listing(parent_id=parent_id, user_id=user_id, search_term=search_term)
+    return await items_listing(
+        parent_id=parent_id,
+        user_id=user_id,
+        search_term=search_term,
+        start_index=start_index,
+        limit=limit,
+    )
 
 
 @router.get(

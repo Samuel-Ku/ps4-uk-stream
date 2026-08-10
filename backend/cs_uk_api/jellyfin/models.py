@@ -104,13 +104,15 @@ class BaseItemDtoQueryResult(BaseModel):
     """``ItemsResult``-style envelope every list endpoint returns.
 
     ``TotalRecordCount`` is what Jellyfin clients use to render
-    scrolling; the facade caps every listing at the home row size (20),
-    so it always equals ``len(Items)`` (D5: no pagination in v1).
+    scrolling; ``Items`` is the requested ``startIndex``/``limit`` page of
+    the (home-row-capped, 20-item) listing, and ``TotalRecordCount`` stays
+    the full count so a client knows more pages exist (device-driving B11:
+    ignoring the slice made page 2 repeat page 1 and the real client's
+    infinite scroll looped on it forever).
 
     ``StartIndex`` must be present: Switchfin's ``Result<T>`` wrapper is
     parsed via ``NLOHMANN_JSON_FROM`` (no default), so a missing key
-    raises ``out_of_range.403`` on the console. Always 0 — no
-    pagination.
+    raises ``out_of_range.403`` on the console. Echoes the requested page.
     """
 
     Items: list[BaseItemDto] = Field(default_factory=list)

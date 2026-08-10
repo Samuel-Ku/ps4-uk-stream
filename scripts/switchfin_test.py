@@ -183,6 +183,101 @@ def issue_path(step: Step, ctx: dict[str, str]) -> str:
     raise RuntimeError(f"step {step.name} has no path to issue")
 
 
+def find_play_pill(png: bytes) -> tuple[int, int] | None:
+    """Locate the teal Play pill on a Switchfin detail screenshot (#202/B10).
+
+    The client renders Play as a wide teal pill whose y varies per item
+    (title/description length) — a fixed coordinate misses. On a detail
+    screen (no sidebar) the widest horizontal teal run is the pill; return
+    its center in screenshot pixels, or ``None`` when nothing pill-sized is
+    found (caller falls back to the calibrated coordinate).
+
+    PIL is a lazy import so a headless env without it degrades to ``None``
+    (the runner keeps working via the calibrated tap) instead of crashing.
+    """
+    try:
+        import io  # noqa: PLC0415
+
+        from PIL import Image  # type: ignore[import-untyped]  # noqa: PLC0415
+    except ImportError:
+        return None
+
+    img = Image.open(io.BytesIO(png)).convert("RGB")
+    w, h = img.size
+    px = img.load()
+
+    def tealish(r: int, g: int, b: int) -> bool:
+        # The client's accent family (sampled on-device): cyan-teal such as
+        # (103, 201, 229). Generous bounds; the wide-run filter does the rest.
+        return g >= 140 and b >= 170 and r <= 180 and abs(g - b) <= 90
+
+    min_w = max(80, int(w * 0.05))  # the pill is ~270px on a 3168px screen
+    best: tuple[int, int, int] | None = None  # (y, x0, x1)
+    for y in range(0, h, 3):
+        run_start, run_len = -1, 0
+        max_start, max_len = -1, 0
+        for x in range(w):
+            if tealish(*px[x, y]):
+                if run_start < 0:
+                    run_start = x
+                run_len += 1
+                if run_len > max_len:
+                    max_len, max_start = run_len, run_start
+            else:
+                run_start, run_len = -1, 0
+        if max_len >= min_w and (best is None or max_len > best[2] - best[1]):
+            best = (y, max_start, max_start + max_len)
+    if best is None:
+        return None
+    best_y, x0, x1 = best
+    mid_x = (x0 + x1) // 2
+    # Vertical extent measured at the pill's LEFT edge: the play triangle
+    # sits in the center and splits the teal column there, but the edges are
+    # solid fill for the full height. The lowest contiguous teal band is the
+    # pill — hero/backdrop art above it also reads teal and must not widen
+    # the band.
+    edge_x = x0 + max(20, (x1 - x0) // 6)
+    ys = sorted({yy for yy in range(0, h, 2) if tealish(*px[edge_x, yy])})
+    if not ys:
+        return None
+    bands: list[list[int]] = []
+    band = [ys[0]]
+    for prev, cur in zip(ys, ys[1:]):
+        if cur - prev > 6:
+            bands.append(band)
+            band = [cur]
+        else:
+            band.append(cur)
+    bands.append(band)
+    band = bands[-1]  # the pill sits below the hero art
+    y0, y1 = band[0], band[-1]
+    if len(band) < 20:  # the pill is ~100px tall on a 3168px screen
+        return None
+    if y1 - y0 < 40 or y1 - y0 > 220:
+        return None
+
+    # Solidity: the pill is a UNIFORM teal fill, whereas wide teal runs in
+    # poster art are gradients (a sky, e.g.). Reject anything whose interior
+    # channel spread is large — horizontally along the best row and
+    # vertically down the (solid) left edge.
+    sx = [px[x, best_y] for x in range(x0 + 20, x1 - 20, 8)]
+    sy = [px[edge_x, yy] for yy in range(y0 + 10, y1 - 10, 8)]
+    if not sx or not sy:
+        return None
+
+    def spread(samples: list[tuple[int, int, int]]) -> int:
+        # Per-channel spread across samples: a uniform pill is ~0 in every
+        # channel; a poster gradient varies in at least one.
+        return max(
+            max(s[k] for s in samples) - min(s[k] for s in samples) for k in range(3)
+        )
+
+    if max(spread(sx), spread(sy)) > 45:
+        return None
+
+    return (mid_x, (y0 + y1) // 2)
+
+
 def load_tap_coords(path: Path) -> dict[str, tuple[int, int]]:
     if not path.exists():
         return {}
@@ -339,6 +434,7 @@ class Runner:
         timeout_s: float,
         issue_fn: Callable[[Step, dict[str, str]], None] | None = None,
         probe_fn: Callable[[dict[str, str]], str | None] | None = None,
+        play_locator_fn: Callable[[], tuple[int, int] | None] | None = None,
         request_timeout: float = REQUEST_TIMEOUT_S,
     ) -> None:
         self._steps = steps
@@ -351,6 +447,11 @@ class Runner:
         self._request_timeout = request_timeout
         self._issue_fn = issue_fn or self._issue_default
         self._probe_fn = probe_fn or self._probe_default
+        #: Locates the Play pill for the Movie branch (#202/B10). The real
+        #: default screenshots the device and pixel-scans for the teal pill;
+        #: tests inject a scripted position. ``None`` degrades to the
+        #: calibrated ``play_button`` coordinate.
+        self._play_locator_fn = play_locator_fn or self._default_play_locator
         # Probe once — a device doesn't vanish mid-run, and per-step checks
         # would spawn an `adb devices` subprocess for every skipped step.
         self._adb_available = adb.available()
@@ -548,13 +649,18 @@ class Runner:
         step_start = len(self._tailer.all_lines())
         notes: list[str] = []
         for play_tap in branch.taps:
+            if not self._adb_available:
+                notes.append(f"{play_tap.tap}: adb device not available")
+                break
+            if play_tap.tap == "play_button":
+                if self._tap_play_with_retry(play_tap, step_start):
+                    continue
+                notes.append(f"{play_tap.tap}: timeout (locate+retry)")
+                continue
             coords = self._taps.get(play_tap.tap)
             if coords is None:
                 notes.append(f"{play_tap.tap}: no calibration")
                 continue
-            if not self._adb_available:
-                notes.append(f"{play_tap.tap}: adb device not available")
-                break
             scan_from = len(self._tailer.all_lines())
             failure = self._safe_tap(coords, play_tap.tap)
             if failure is not None:
@@ -573,6 +679,45 @@ class Runner:
             window_lines=tuple(self._tailer.all_lines()[step_start:]),
         )
 
+    def _tap_play_with_retry(self, play_tap: PlayTap, scan_from: int) -> bool:
+        """Locate and tap the Play pill, retrying until the step timeout.
+
+        Two failure modes from the first real-device run (B10): the pill's
+        y varies per item (description length), and the detail screen needs
+        time to render its buttons after the gk request. Loop until the
+        step deadline: screenshot -> find the teal pill -> tap its center
+        (or the calibrated coordinate when the scan finds nothing) -> check
+        the expects in a short window; repeat. PlaybackInfo landing on any
+        attempt counts. ``False`` on timeout or a vanished device.
+        """
+        deadline = time.monotonic() + self._timeout_s
+        fallback = self._taps.get(play_tap.tap)
+        while True:
+            coords = self._play_locator_fn() or fallback
+            if coords is not None:
+                failure = self._safe_tap(coords, play_tap.tap)
+                if failure is not None:
+                    return False  # device vanished mid-run
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            if self._wait_for_expects(
+                play_tap.expects, scan_from, window_s=min(1.5, remaining)
+            ):
+                return True
+            time.sleep(0.4)
+
+    def _default_play_locator(self) -> tuple[int, int] | None:
+        """Best-effort Play-pill scan; any failure degrades to the calibrated tap."""
+        try:
+            png = self._adb.screenshot_png()
+        except (OSError, subprocess.CalledProcessError):
+            return None
+        try:
+            return find_play_pill(png)
+        except Exception:  # noqa: BLE001 — a bad frame must not kill the run
+            return None
+
     def _select_branch(self, step: Step, item_type: str) -> Branch | None:
         key = "movie" if item_type == "Movie" else "series"
         for branch in step.branches:
@@ -582,11 +727,17 @@ class Runner:
 
     # -- detection --------------------------------------------------------
 
-    def _wait_for_expects(self, expects: tuple[Expect, ...], scan_from: int) -> bool:
-        """True once every expect matched a new log line within the timeout."""
+    def _wait_for_expects(
+        self, expects: tuple[Expect, ...], scan_from: int, window_s: float | None = None
+    ) -> bool:
+        """True once every expect matched a new log line within the timeout.
+
+        ``window_s`` bounds a single call (used by the play-button retry
+        loop, which re-checks between attempts); default is the step timeout.
+        """
         if not expects:
             return True
-        deadline = time.monotonic() + self._timeout_s
+        deadline = time.monotonic() + (self._timeout_s if window_s is None else window_s)
         matched: set[int] = set()
         while time.monotonic() < deadline:
             for line in self._tailer.all_lines()[scan_from:]:

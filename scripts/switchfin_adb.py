@@ -13,6 +13,7 @@ import re
 import select
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -80,6 +81,29 @@ class Adb:
             check=True,
             timeout=ADB_SHELL_TIMEOUT_S,
         )
+
+    def screenshot_png(self) -> bytes:
+        """Capture the screen as PNG bytes (device-driving, B2).
+
+        ``adb exec-out screencap -p`` corrupts the PNG over wifi adb
+        (truncated IDAT), so capture to on-device storage and pull instead.
+        The file is removed from the device afterwards; the local copy is a
+        tempfile that is deleted before returning.
+        """
+        self.shell("screencap -p /sdcard/switchfin_screenshot.png")
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+        try:
+            subprocess.run(
+                [self.binary, "pull", "/sdcard/switchfin_screenshot.png", str(tmp_path)],
+                check=True,
+                timeout=ADB_SHELL_TIMEOUT_S,
+                capture_output=True,
+            )
+            return tmp_path.read_bytes()
+        finally:
+            tmp_path.unlink(missing_ok=True)
+            self.shell("rm -f /sdcard/switchfin_screenshot.png")
 
     def marker(self, text: str) -> None:
         """Best-effort logcat marker via ``adb shell log -t``."""

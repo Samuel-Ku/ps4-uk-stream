@@ -48,6 +48,7 @@ from scripts.switchfin_report import (  # type: ignore[import-not-found]
 from scripts.switchfin_test import (  # type: ignore[import-not-found]
     Runner,
     capture_in_window,
+    find_play_pill,
     issue_path,
     load_steps,
     load_tap_coords,
@@ -103,6 +104,11 @@ class FakeAdb:
 
     def shell(self, command: str) -> str:
         return "n/a"
+
+    def screenshot_png(self) -> bytes:
+        # Not a real frame: find_play_pill(b"") raises -> the default locator
+        # returns None -> the retry loop falls back to the calibrated tap.
+        return b""
 
 
 # --------------------------------------------------------------------------
@@ -276,6 +282,7 @@ def make_harness(
     issue_ok: bool = True,
     adb: FakeAdb | None = None,
     probe_fn: Callable[[dict[str, str]], str | None] | None = None,
+    play_locator: Callable[[], tuple[int, int] | None] | None = None,
 ) -> tuple[Runner, FakeTailer, FakeAdb]:
     """Build a Runner whose taps/issues append scripted backend.log lines."""
     steps_path = tmp_path / "steps.yaml"
@@ -319,6 +326,7 @@ def make_harness(
         timeout_s=timeout_s,
         issue_fn=issue,
         probe_fn=probe_fn or (lambda _ctx: probe),
+        play_locator_fn=play_locator,
     )
     return runner, tailer, adb
 
@@ -614,6 +622,82 @@ def test_movie_play_taps_once(tmp_path: Path) -> None:
     play = next(r for r in results if r.name == "play_newest")
     assert play.ok, play.note
     assert adb.taps[-1:] == [TAPS["play_button"]]
+
+
+def _teal_pill_png(size: tuple[int, int], pill: tuple[int, int, int, int]) -> bytes:
+    """A plain gray frame with a teal rectangle (a synthetic detail screen)."""
+    import io
+
+    from PIL import Image, ImageDraw  # type: ignore[import-untyped]
+
+    img = Image.new("RGB", size, (220, 220, 220))
+    ImageDraw.Draw(img).rectangle(pill, fill=(0, 170, 210))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_find_play_pill_locates_teal_pill() -> None:
+    """#202: the pill scan returns the teal rectangle's center (device-driving
+    B10 — the fixed coordinate misses because the pill's y varies per item)."""
+    center = find_play_pill(_teal_pill_png((1600, 900), (700, 400, 970, 500)))
+    assert center is not None
+    assert center[0] == 835  # (700 + 970) // 2
+    assert abs(center[1] - 450) <= 2  # row scan steps of 2px
+
+
+def test_find_play_pill_absent_on_plain_frame() -> None:
+    assert find_play_pill(_teal_pill_png((1600, 900), (0, 0, 0, 0))) is None
+
+
+def test_play_button_retries_until_located(tmp_path: Path) -> None:
+    """The Movie branch locates the pill and retries when the first attempt
+    lands before the detail has rendered (B10 timing race)."""
+    steps_yaml = STEPS_YAML.replace("timeout_s: 0.4", "timeout_s: 3.0")
+    attempts: list[int] = []
+
+    def locator() -> tuple[int, int] | None:
+        attempts.append(1)
+        return None if len(attempts) == 1 else (825, 470)
+
+    tap_lines = {k: list(v) for k, v in FULL_TAP_LINES.items()}
+    tap_lines[(500, 400)] = []  # calibrated spot: pill not rendered yet
+    tap_lines[(825, 470)] = FULL_TAP_LINES[(500, 400)]  # pill: playback fires
+
+    runner, _, adb = make_harness(
+        tmp_path,
+        steps_yaml=steps_yaml,
+        tap_lines=tap_lines,
+        play_locator=locator,
+    )
+    results = runner.run()
+
+    play = next(r for r in results if r.name == "play_newest")
+    assert play.ok, play.note
+    assert len(attempts) >= 2, "the locator must be retried"
+    assert (825, 470) in adb.taps
+
+
+def test_play_button_fails_cleanly_when_pill_never_found(tmp_path: Path) -> None:
+    """No pill and no PlaybackInfo -> the play step ❌ but the run continues
+    (other views still run; the failure is recorded, not a crash)."""
+    steps_yaml = STEPS_YAML.replace("timeout_s: 0.4", "timeout_s: 0.6")
+    tap_lines = {k: list(v) for k, v in FULL_TAP_LINES.items()}
+    tap_lines[(500, 400)] = []
+
+    runner, _, _ = make_harness(
+        tmp_path,
+        steps_yaml=steps_yaml,
+        tap_lines=tap_lines,
+        play_locator=lambda: None,
+    )
+    results = runner.run()
+
+    play = next(r for r in results if r.name == "play_newest")
+    assert play.ok is False
+    assert "play_button" in play.note
+    movie_open = next(r for r in results if r.name == "open_view_movie")
+    assert movie_open.ok, movie_open.note  # the run continued
 
 
 def test_nav_step_presses_back_between_views(tmp_path: Path) -> None:

@@ -192,6 +192,17 @@ def _view_id(name: str, views: list[dict[str, Any]]) -> str:
     return cast(str, next(v["Id"] for v in views if v["Name"] == name))
 
 
+def _items_page(
+    client: TestClient, view_id: str, *, start_index: int, limit: int | None = None
+) -> dict[str, Any]:
+    params: dict[str, object] = {"parentId": view_id, "userId": USER, "startIndex": start_index}
+    if limit is not None:
+        params["limit"] = limit
+    r = client.get("/Items", params=params, headers={"X-Emby-Token": TOKEN})
+    assert r.status_code == 200
+    return cast("dict[str, Any]", r.json())
+
+
 def _items(client: TestClient, view_id: str) -> list[dict[str, Any]]:
     r = client.get(
         "/Items",
@@ -260,6 +271,48 @@ def test_items_listing_returns_row_cards(client: TestClient) -> None:
     assert dune["ProductionYear"] == 2021
     assert dune["ParentId"] == movie_view
     assert dune["Id"].startswith("g2:")
+
+
+def test_items_listing_honors_start_index_and_limit(client: TestClient) -> None:
+    """The real client pages a listing with ``startIndex``/``limit`` and
+    stops when a page comes back short (device-driving B11: the route
+    ignored the slice, page 2 repeated page 1, and the app's infinite
+    scroll re-requested page 2 forever). Page 2 must be a *different*
+    slice, and ``TotalRecordCount`` must stay the full count so the app
+    knows more pages exist.
+    """
+    PROVIDERS["animeon"] = _seed()
+    _auth(client)
+    movie_view = _view_id("Фільми", _views(client))
+    page1 = _items_page(client, movie_view, start_index=0, limit=1)
+    page2 = _items_page(client, movie_view, start_index=1, limit=1)
+
+    assert len(page1["Items"]) == 1
+    assert len(page2["Items"]) == 1
+    assert page1["Items"][0]["Id"] != page2["Items"][0]["Id"]
+    assert page1["TotalRecordCount"] == 2
+    assert page1["StartIndex"] == 0
+    assert page2["StartIndex"] == 1
+
+    # A page beyond the end is empty but keeps the full count (the client
+    # reads the short page and stops scrolling).
+    beyond = _items_page(client, movie_view, start_index=5, limit=18)
+    assert beyond["Items"] == []
+    assert beyond["TotalRecordCount"] == 2
+
+    # The Switchfin client spells the listing under the user
+    # (``/Users/{id}/Items``, apiUserLibrary) — the same slice must apply
+    # there, or the app's page 2 still repeats page 1 (B11).
+    prefixed = client.get(
+        f"/Users/{USER}/Items",
+        params={"parentId": movie_view, "startIndex": 1, "limit": 1},
+        headers={"X-Emby-Token": TOKEN},
+    )
+    assert prefixed.status_code == 200
+    body = prefixed.json()
+    assert body["Items"] == page2["Items"]
+    assert body["StartIndex"] == 1
+    assert body["TotalRecordCount"] == 2
 
 
 def test_items_listing_series_type_mapping(client: TestClient) -> None:
