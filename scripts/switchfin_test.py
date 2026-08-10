@@ -38,7 +38,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -630,7 +630,7 @@ def build_meta(args: argparse.Namespace, adb: Adb) -> ReportMeta:
     else:
         android = model = resolution = "n/a"
     return ReportMeta(
-        date=datetime.now(UTC).astimezone().date().isoformat(),
+        date=datetime.now(timezone.utc).astimezone().date().isoformat(),
         android=android,
         build=args.app_version,
         backend_url=f"http://{args.host}:{args.port}",
