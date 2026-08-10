@@ -25,6 +25,10 @@ ADB_DEVICES_TIMEOUT_S = 5
 ADB_SHELL_TIMEOUT_S = 10
 GETEVENT_SAMPLE_S = 4.0
 
+#: The Switchfin Android app under test (device-driving B17/B18).
+APP_PACKAGE = "fun.dragonfly.switchfin"
+APP_ACTIVITY = f"{APP_PACKAGE}/.SwitchfinActivity"
+
 
 class Adb:
     """Thin wrapper over ``adb`` shell commands. Each call is a subprocess."""
@@ -115,6 +119,18 @@ class Adb:
             )
         except (OSError, subprocess.CalledProcessError):
             pass
+
+    def restart_app(self, settle_s: float = 2.0) -> None:
+        """Force-stop and relaunch the Switchfin app (device-driving B17/B18).
+
+        The runner otherwise drives the app's PREVIOUS session: stale grid
+        ids that 404 on detail (B17) and a mid-connect state that swallows
+        the first open tap (B18). Relaunching AFTER warmup means the app's
+        first grid loads hit warm caches.
+        """
+        self.shell(f"am force-stop {APP_PACKAGE}")
+        time.sleep(settle_s)
+        self.shell(f"am start -n {APP_ACTIVITY}")
 
     def shell(self, command: str) -> str:
         try:

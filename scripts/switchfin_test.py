@@ -95,6 +95,13 @@ FIXTURE_REAL_CLIENT = (
     / "capture.real-client.jsonl"
 )
 
+#: How long to wait for a relaunched app to reconnect to the backend
+#: (device-driving B17/B18). A timeout here is a precondition note, not a
+#: failure — the open steps report the app's actual state honestly.
+RESTART_READY_TIMEOUT_S = 120.0
+#: Extra settle after the relaunched app's first reconnect request.
+APP_SETTLE_S = 2.0
+
 #: HTTP timeout for the runner's own handshake requests. The first
 #: ``/UserViews`` call builds the home cache by scraping every provider, so
 #: a cold backend can take well over the 8s step-detection window to answer.
@@ -476,6 +483,12 @@ class Runner:
                 # missed prime just means the app may hit a slow first
                 # open, which the open step reports on its own. Keep going.
                 continue
+            if step.phase == "restart":
+                result = self._run_restart(step)
+                results.append(result)
+                if not result.ok:
+                    break  # app could not be relaunched — stop cleanly
+                continue
             if step.phase == "nav":
                 result = self._run_nav(step)
                 results.append(result)
@@ -523,6 +536,56 @@ class Runner:
             timed_out=not ok,
             note=("" if ok else f"timeout waiting for {step.expects[0].request}"),
             window_lines=tuple(self._tailer.all_lines()[scan_from:]),
+        )
+
+    def _run_restart(self, step: Step) -> StepResult:
+        """Relaunch the app and wait until it reconnects (device-driving B17/B18).
+
+        Fixes two run-#4 failures: B17 (the app drove a stale grid whose
+        ids 404 on detail) and B18 (the first open tap raced the app's cold
+        start). A reconnect timeout is recorded as a precondition note, not
+        a failure — the open steps then report the app's real state.
+        """
+        if not self._adb_available:
+            return StepResult(
+                step.name,
+                step.phase,
+                step.view,
+                ok=True,
+                skipped=True,
+                note="adb device not available",
+            )
+        scan_from = len(self._tailer.all_lines())
+        try:
+            self._adb.restart_app()
+        except (OSError, subprocess.CalledProcessError) as exc:
+            return StepResult(
+                step.name,
+                step.phase,
+                step.view,
+                ok=False,
+                note=f"app restart failed: {exc}",
+            )
+        ready = re.compile(
+            r"GET /System/Info|GET /DisplayPreferences|POST /Users/AuthenticateByName|GET /Users/[^ ]+/Items"
+        )
+        deadline = time.monotonic() + RESTART_READY_TIMEOUT_S
+        while time.monotonic() < deadline:
+            if any(
+                ready.search(line) for line in self._tailer.all_lines()[scan_from:]
+            ):
+                time.sleep(APP_SETTLE_S)
+                return StepResult(step.name, step.phase, step.view, ok=True)
+            time.sleep(POLL_INTERVAL_S)
+        return StepResult(
+            step.name,
+            step.phase,
+            step.view,
+            ok=True,
+            note=(
+                "app did not reconnect within "
+                f"{RESTART_READY_TIMEOUT_S:.0f}s — proceeding (precondition, not a test)"
+            ),
         )
 
     def _run_nav(self, step: Step) -> StepResult:
@@ -909,6 +972,32 @@ def _resolve_calibration(
     return None
 
 
+def splice_restart_step(steps: list[Step]) -> list[Step]:
+    """Insert a ``phase: restart`` step after the last warmup step (#208).
+
+    The runner relaunches the app only once the backend is up AND every
+    view's cache is warm, so the app's first grid loads hit warm caches.
+    """
+    last_warmup = -1
+    for index, step in enumerate(steps):
+        if step.phase == "warmup":
+            last_warmup = index
+    if last_warmup < 0:
+        return list(steps)
+    out = list(steps)
+    out.insert(
+        last_warmup + 1,
+        Step(
+            name="restart_app",
+            phase="restart",
+            view=None,
+            tap=None,
+            expects=(),
+        ),
+    )
+    return out
+
+
 def _run_suite(
     args: argparse.Namespace,
     adb: Adb,
@@ -968,6 +1057,9 @@ def main(argv: list[str] | None = None) -> int:
     timeout_s, steps = load_steps(args.steps)
     args.timeout_s = args.timeout if args.timeout is not None else timeout_s
     tap_coords = load_tap_coords(args.tap_coords)
+    # #208 (B17/B18): relaunch the app between warmup and the first open
+    # step so the phone drives a fresh grid against warm caches.
+    steps = splice_restart_step(steps)
 
     # Empty the working capture dir before the backend starts so this run's
     # ``capture.jsonl`` (and therefore its slice) is never contaminated by a

@@ -307,18 +307,83 @@ despite `cache_home_s = 1800`. Unclear why the warm cache wasn't reused
 (possibly the app's `includeItemTypes=Series` variant hits a different
 cache key, or the view scrape is per-query). Needs a controlled check.
 
+## Run #4 (2026-08-10, after B15) — verdict FAIL: 25 passed, 6 skipped, 6 failed
+
+`Серіали` became the **first fully-passing view** (open + detail + play,
+real streaming: PlaybackInfo -> stream 206 -> HLS segments ->
+Sessions/Playing 204) — the B15 status-allowlist fix was verified live.
+New failures, grouped by cause:
+
+### B17. Stale app grid — the movie first card 404s on detail
+
+`open_first_card_movie` timed out: the app tapped a card whose detail
+returned `404 item_unavailable` in 70ms (`GET /Users/{u}/Items/g2:068dde…`),
+while `/Similar` for the same id returned an empty 200. The id is NOT in
+the current movie grid (verified by re-listing) — the app held a stale grid
+from before the backend restart/catalog change. Root fix is runner-side:
+**restart the app (force-stop + relaunch) at suite start** so the grid is
+never stale, and wait for readiness before the first tap.
+
+### B18. First open step races the app's cold start
+
+`open_view_newest` (the first UI step) timed out with ZERO app requests in
+its window — the app was still connecting (it had only just re-authed and
+loaded its default view ~11s earlier) when the tap landed. Same fix as B17:
+wait for the app to be ready before driving.
+
+### B19. 4×BACK after playback does not return to the grid
+
+After `play_series` streamed, `back_to_grid_after_series` passed (4 BACKs)
+but the app landed on Home, not the views grid — `open_view_anime` then
+fired nothing (its window is full of Home's background catalog merges:
+kinotron/ashdi/bambooua/animeon episode-walks). The nav steps need a
+screen-state check (e.g., assert a `/Views` or grid request, or detect
+Home and press an extra BACK), not blind fixed-count BACKs.
+
+### B20. Detail/play cold-scrape timeouts persist (B13 recurrence)
+
+`open_first_card_popular` timed out on a 17.5s cold detail scrape
+(`GET /Users/{u}/Items/g2:702cb6… -> 200 (17526ms)`); `play_cartoon`
+locate+retry found no pill (window shows only animeon scraper warnings —
+the detail never finished rendering); `play_dorama` first_season/first_episode
+both timed out (window full of catalog merges). Warmup covers grids only —
+the per-item detail/Seasons/Episodes paths are still cold. Tracked in
+#205 (backend perf) and #210 (runner warm path).
+
 ## Open questions (for the next session)
 
 - DONE (2026-08-10): `Adb.back()` + `phase: nav` steps wired into the runner;
   `seasons_tab` removed from the series flow (B7); warmup phase (B1); detail
   poster expect dropped (B10); dynamic play-pill locate + retry (B10/#202);
   /Items startIndex/limit pagination honored (B11/#203); stream expect now
-  allows 206 (B15). See `git log` on this branch.
-- **B13**: cold per-item scrapes (Seasons/Episodes/streams) still blow the
-  8s step timeout — extend warmup or the step timeout / backend warm path.
+  allows 206 (B15); #201/#202 closed. See `git log` on this branch.
+- **B17/B18**: restart the app + wait for readiness at suite start (runner).
+- **B19**: verify screen state after playback nav instead of fixed BACKs.
+- **B13/B20**: cold per-item scrapes still blow the 8s step timeout — extend
+  warmup to the first-card detail path or the step timeout / backend warm path.
 - **B14**: the Type probe races content churn — probe the item the app
   actually opened, or make the branch decision tolerant (try the pill scan;
   if absent, fall through to the series branch).
 - **B16**: why did the anime view open re-scrape after a 70s-old warmup.
-- **Run the full 37-step suite again** after B15 and check the verdict,
-  snapshots, capture fixture, and logcat filters end-to-end.
+
+## Running the suite (2026-08-10, codified)
+
+```bash
+cd ps4-uk-stream
+backend/.venv/bin/python scripts/switchfin_test.py --skip-calibrate --port 8003
+```
+
+The runner cold-starts its own backend on the port and drives the phone
+over WiFi adb (`192.168.2.143:38631`). Lessons:
+
+- **Never launch it with a bare `&` from a 30s-timeout terminal call** — the
+  command runner reaps the process group. Use `setsid … &` (survives) or a
+  long timeout, and verify the backend.log mtime advances.
+- **A leftover uvicorn on the port silently hijacks the run**: the runner's
+  own uvicorn fails to bind, `wait_for_backend` connects to the leftover
+  (possibly pre-fix code, wrong capture env), and the run verifies against
+  stale logs. Before each run: `ss -tlnp | grep <port>` must be empty and
+  `pgrep -f uvicorn` must show only the runner's own child (lstart AFTER
+  launch).
+- **Python buffers stdout when redirected** — pass `-u` to see step
+  progress in the run log.

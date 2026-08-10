@@ -122,6 +122,13 @@ def _render_header(results: list[StepResult], meta: ReportMeta) -> list[str]:
         lines += ["## Warmup", ""]
         lines += [f"- {r.name}: {_mark(r)}" for r in warmup]
         lines.append("")
+    device = [r for r in results if r.phase in ("restart", "nav")]
+    if device:
+        lines += ["## Device", ""]
+        for r in device:
+            suffix = f" — {r.note}" if r.note else ""
+            lines.append(f"- {r.name}: {_mark(r)}{suffix}")
+        lines.append("")
     return lines
 
 

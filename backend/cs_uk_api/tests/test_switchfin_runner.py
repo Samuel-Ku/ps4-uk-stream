@@ -54,6 +54,7 @@ from scripts.switchfin_test import (  # type: ignore[import-not-found]
     load_tap_coords,
     reset_capture_dir,
     splice_capture,
+    splice_restart_step,
 )
 
 # --------------------------------------------------------------------------
@@ -84,6 +85,7 @@ class FakeAdb:
         self.taps: list[tuple[int, int]] = []
         self.backs: int = 0
         self.markers: list[str] = []
+        self.restarts: int = 0
         self._available = True
 
     def available(self) -> bool:
@@ -95,6 +97,11 @@ class FakeAdb:
 
     def back(self) -> None:
         self.backs += 1
+
+    def restart_app(self) -> None:
+        self.restarts += 1
+        # the real app reconnects by polling /System/Info on relaunch
+        self._lines.append("GET /System/Info -> 200 (0ms)")
 
     def marker(self, text: str) -> None:
         self.markers.append(text)
@@ -525,6 +532,74 @@ def test_warmup_failure_keeps_the_run_going(tmp_path: Path) -> None:
     assert by_name["warmup_newest"].timed_out is True
     assert by_name["open_view_newest"].ok is True  # the run continued
     assert run_exit_code(results) == 1  # the failed warmup marks the verdict
+
+
+# --------------------------------------------------------------------------
+# restart phase (device-driving B17/B18, ticket #208): relaunch the app
+# between warmup and the first open step, wait for it to reconnect
+# --------------------------------------------------------------------------
+
+
+def test_splice_restart_step_inserts_after_last_warmup() -> None:
+    def step(name: str, phase: str) -> Step:
+        return Step(name=name, phase=phase, view=None, tap=None, expects=())
+
+    steps = [
+        step("login", "handshake"),
+        step("views", "handshake"),
+        step("warmup_a", "warmup"),
+        step("warmup_b", "warmup"),
+        step("open", "open"),
+    ]
+    spliced = splice_restart_step(steps)
+    assert [s.name for s in spliced] == [
+        "login",
+        "views",
+        "warmup_a",
+        "warmup_b",
+        "restart_app",
+        "open",
+    ]
+    assert spliced[4].phase == "restart"
+    # no warmup steps -> unchanged
+    assert [s.name for s in splice_restart_step(steps[:2])] == ["login", "views"]
+
+
+def test_restart_phase_relaunches_app_and_runs_open_after(tmp_path: Path) -> None:
+    """Runner.run relaunches the app on the restart step and keeps driving."""
+    steps_yaml = STEPS_YAML.replace(
+        "  - name: open_view_newest\n",
+        "  - name: restart_app\n    phase: restart\n"
+        "  - name: open_view_newest\n",
+    )
+    assert "phase: restart" in steps_yaml
+
+    runner, _, adb = make_harness(tmp_path, steps_yaml=steps_yaml)
+    results = runner.run()
+    by_name = {r.name: r for r in results}
+
+    assert adb.restarts == 1
+    assert by_name["restart_app"].ok is True
+    assert by_name["open_view_newest"].ok is True  # drove after the relaunch
+
+
+def test_restart_skipped_without_device(tmp_path: Path) -> None:
+    """No device -> the restart step is skipped, not failed."""
+    steps_yaml = STEPS_YAML.replace(
+        "  - name: open_view_newest\n",
+        "  - name: restart_app\n    phase: restart\n"
+        "  - name: open_view_newest\n",
+    )
+    adb = FakeAdb(lines=[], tap_lines={})
+    adb._available = False
+    runner, _, adb = make_harness(tmp_path, steps_yaml=steps_yaml, adb=adb)
+
+    results = runner.run()
+    restart = next(r for r in results if r.name == "restart_app")
+
+    assert restart.ok is True
+    assert restart.skipped is True
+    assert adb.restarts == 0
 
 
 # --------------------------------------------------------------------------
