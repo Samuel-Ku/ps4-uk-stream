@@ -129,8 +129,17 @@ def _content_url(external_id: str) -> str:
 
     Used by `stream()` to rebuild the content URL from an id. The
     id's first segment is the section; the rest is the slug.
+
+    The upstream emits TWO URL shapes (live 2026-08-09): older
+    plain-slug pages answer at `/section/<slug>/` (trailing slash),
+    while newer numeric-id pages answer ONLY at `/section/<id>-<slug>`
+    + ``.html`` (e.g. `/anime/100067-geroinja-zi-strichkoju.html`);
+    the trailing-slash form 404s for them. The slug's leading digit
+    is the discriminator.
     """
     section, _, slug = external_id.partition("-")
+    if slug and slug[0].isdigit():
+        return f"{BASE_URL}/{section}/{slug}.html"
     return f"{BASE_URL}/{section}/{slug}/"
 
 
