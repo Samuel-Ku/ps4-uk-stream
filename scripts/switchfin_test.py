@@ -40,7 +40,7 @@ import urllib.request
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml  # type: ignore[import-untyped]
 
@@ -157,9 +157,30 @@ def load_steps(path: Path) -> tuple[float, list[Step]]:
                 body=raw.get("body"),
                 capture_token=bool(raw.get("capture_token")),
                 use_token=bool(raw.get("use_token")),
+                view_id=raw.get("view_id"),
+                nav=int(raw.get("nav") or 0),
             )
         )
     return timeout_s, steps
+
+
+def issue_path(step: Step, ctx: dict[str, str]) -> str:
+    """Resolve the HTTP path a runner-issued step should hit.
+
+    Handshake steps carry an explicit ``path``. Warmup steps (B1) carry a
+    ``view_id`` instead and are issued as the same library listing the
+    phone's tap produces: ``GET /Users/{user}/Items?parentId={view_id}``.
+    """
+    if step.path:
+        # ``Step`` is Any here when mypy can't resolve ``scripts.*`` (the
+        # repo runs mypy on ``cs_uk_api`` only), so cast for the return type
+        return cast(str, step.path)
+    if step.view_id:
+        user_id = ctx.get("user_id")
+        if not user_id:
+            raise RuntimeError(f"step {step.name} needs a user_id (login first)")
+        return f"/Users/{user_id}/Items?parentId={step.view_id}"
+    raise RuntimeError(f"step {step.name} has no path to issue")
 
 
 def load_tap_coords(path: Path) -> dict[str, tuple[int, int]]:
@@ -343,11 +364,21 @@ class Runner:
         for index, step in enumerate(self._steps):
             if self._adb_available:
                 self._adb.marker(f"STEP_{index + 1}_{step.name}")
-            if step.phase == "handshake":
+            if step.phase in ("handshake", "warmup"):
                 result = self._run_handshake(step)
                 results.append(result)
-                if not result.ok:  # #144: stop, exit non-zero
+                if not result.ok and step.phase == "handshake":
+                    # #144: stop, exit non-zero
                     break
+                # A failed warmup (B1) is a precondition, not a test: a
+                # missed prime just means the app may hit a slow first
+                # open, which the open step reports on its own. Keep going.
+                continue
+            if step.phase == "nav":
+                result = self._run_nav(step)
+                results.append(result)
+                if not result.ok:
+                    break  # device vanished — stop, don't fake the rest
                 continue
             if step.view and step.view in failed_views:
                 results.append(
@@ -391,6 +422,36 @@ class Runner:
             note=("" if ok else f"timeout waiting for {step.expects[0].request}"),
             window_lines=tuple(self._tailer.all_lines()[scan_from:]),
         )
+
+    def _run_nav(self, step: Step) -> StepResult:
+        """Press BACK ``step.nav`` times to return to the library grid.
+
+        The real client has no visible "back to grid" button on detail/play
+        screens, so the runner navigates with BACK keyevents (device-driving
+        B6). A nav step issues no HTTP request and passes trivially; a device
+        that vanished mid-run fails here so the run stops cleanly.
+        """
+        if not self._adb_available:
+            return StepResult(
+                step.name,
+                step.phase,
+                step.view,
+                ok=False,
+                skipped=True,
+                note="adb device not available",
+            )
+        try:
+            for _ in range(step.nav):
+                self._adb.back()
+        except (OSError, subprocess.CalledProcessError) as exc:
+            return StepResult(
+                step.name,
+                step.phase,
+                step.view,
+                ok=False,
+                note=f"adb back failed: {exc}",
+            )
+        return StepResult(step.name, step.phase, step.view, ok=True)
 
     def _safe_tap(self, coords: tuple[int, int], note_prefix: str = "") -> str | None:
         """Run one adb tap, converting a mid-run device failure into a note.
@@ -551,14 +612,13 @@ class Runner:
     def _issue_default(self, step: Step, ctx: dict[str, str]) -> None:
         if step.use_token and not ctx.get("token"):
             raise RuntimeError("no token captured yet")
-        if not step.path:
-            raise RuntimeError(f"step {step.name} has no path to issue")
+        path = issue_path(step, ctx)
         headers = {"Content-Type": "application/json"}
         if ctx.get("token"):
             headers["X-Emby-Token"] = ctx["token"]
         data = json.dumps(step.body).encode() if step.body is not None else None
         req = urllib.request.Request(
-            f"http://{self._host}:{self._port}{step.path}",
+            f"http://{self._host}:{self._port}{path}",
             data=data,
             headers=headers,
             method=step.method or "GET",
@@ -567,7 +627,7 @@ class Runner:
             with urllib.request.urlopen(req, timeout=self._request_timeout) as resp:
                 payload = resp.read()
         except urllib.error.HTTPError as exc:
-            raise RuntimeError(f"{step.method} {step.path} -> {exc.code}") from exc
+            raise RuntimeError(f"{step.method} {path} -> {exc.code}") from exc
         if step.capture_token:
             obj = json.loads(payload)
             ctx["token"] = str(obj["AccessToken"])

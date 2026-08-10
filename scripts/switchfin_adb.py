@@ -44,9 +44,39 @@ class Adb:
             return False
         return any(line.endswith("\tdevice") for line in out.splitlines())
 
+    #: Hold duration for a tap (ms). The Switchfin client polls touch state
+    #: once per frame and drops a plain `input tap` (DOWN+UP in ~50 ms)
+    #: entirely; a press held >= ~300 ms registers as a click (device-driving
+    #: findings B2, 2026-08-10).
+    TAP_HOLD_MS = 350
+
     def tap(self, x: int, y: int) -> None:
+        """Tap via a held touchscreen press (see TAP_HOLD_MS).
+
+        ``input tap`` is too fast for the SDL client's per-frame touch poll;
+        ``input touchscreen swipe X Y X Y 350`` is the working tap.
+        """
         subprocess.run(
-            [self.binary, "shell", "input", "tap", str(x), str(y)],
+            [
+                self.binary,
+                "shell",
+                "input",
+                "touchscreen",
+                "swipe",
+                str(x),
+                str(y),
+                str(x),
+                str(y),
+                str(self.TAP_HOLD_MS),
+            ],
+            check=True,
+            timeout=ADB_SHELL_TIMEOUT_S,
+        )
+
+    def back(self) -> None:
+        """Press the app's global BACK (exits dialog/detail/library to grid)."""
+        subprocess.run(
+            [self.binary, "shell", "input", "keyevent", "KEYCODE_BACK"],
             check=True,
             timeout=ADB_SHELL_TIMEOUT_S,
         )

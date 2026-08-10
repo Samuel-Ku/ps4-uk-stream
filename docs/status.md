@@ -61,7 +61,10 @@ boundary validation is `fullmatch` everywhere; uakino movies without a
   middleware line (`METHOD path -> status (ms)`) as the detection
   channel, and verifies the wire. The 2 handshake steps (login + views)
   are self-issued headlessly; with a phone attached it drives the real
-  Switchfin client via `adb shell input tap` through all 7 library
+  Switchfin client via hold-tap adb input (see
+  `docs/test-artifacts/switchfin/device-driving.md` — plain `input tap`
+  is too fast for this Qt/SDL client and is missed between frame polls)
+  through all 7 library
   views (open + first card + type-aware play), applies a per-step logcat
   error filter, and writes `docs/switchfin-test-report.md`. For each ❌
   step it also dumps `logcat-<step>.txt` (spec-required) and

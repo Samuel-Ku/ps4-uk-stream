@@ -56,7 +56,6 @@ CALIBRATION_ELEMENTS = (
     "view_dorama_x",
     "first_card",
     "play_button",
-    "seasons_tab",
     "first_season",
     "first_episode",
 )
@@ -90,7 +89,7 @@ class Branch:
 @dataclass(frozen=True)
 class Step:
     name: str
-    phase: str  # handshake | open | detail | play
+    phase: str  # handshake | warmup | open | detail | play | nav
     view: str | None
     tap: str | None  # calibration key for open/detail steps
     expects: tuple[Expect, ...]
@@ -101,6 +100,16 @@ class Step:
     body: dict[str, Any] | None = None
     capture_token: bool = False
     use_token: bool = False
+    #: Data-only view uuid (issue #151). For ``phase: warmup`` steps the
+    #: runner builds ``GET /Users/{user}/Items?parentId={view_id}`` from it
+    #: (device-driving B1): the cold scrape takes ~21s, which blows both the
+    #: app's own request timeout dialog and the step-detection window, so
+    #: the runner primes each view's cache before the phone taps it.
+    view_id: str | None = None
+    #: Number of BACK presses for a ``phase: nav`` step (device-driving B6):
+    #: the real client needs BACK between per-view steps (player -> detail ->
+    #: library -> grid). Calibrated per device (4 on the OnePlus 8 Pro).
+    nav: int = 0
 
 
 @dataclass(frozen=True)

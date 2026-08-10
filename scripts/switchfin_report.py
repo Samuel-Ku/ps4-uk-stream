@@ -117,6 +117,11 @@ def _render_header(results: list[StepResult], meta: ReportMeta) -> list[str]:
         lines.append("")
     else:
         lines += ["- handshake aborted — no steps ran after the failure", ""]
+    warmup = [r for r in results if r.phase == "warmup"]
+    if warmup:
+        lines += ["## Warmup", ""]
+        lines += [f"- {r.name}: {_mark(r)}" for r in warmup]
+        lines.append("")
     return lines
 
 

@@ -20,6 +20,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -46,6 +48,7 @@ from scripts.switchfin_report import (  # type: ignore[import-not-found]
 from scripts.switchfin_test import (  # type: ignore[import-not-found]
     Runner,
     capture_in_window,
+    issue_path,
     load_steps,
     load_tap_coords,
     reset_capture_dir,
@@ -78,6 +81,7 @@ class FakeAdb:
         self._lines = lines
         self._tap_lines = tap_lines
         self.taps: list[tuple[int, int]] = []
+        self.backs: int = 0
         self.markers: list[str] = []
         self._available = True
 
@@ -87,6 +91,9 @@ class FakeAdb:
     def tap(self, x: int, y: int) -> None:
         self.taps.append((x, y))
         self._lines.extend(self._tap_lines.get((x, y), []))
+
+    def back(self) -> None:
+        self.backs += 1
 
     def marker(self, text: str) -> None:
         self.markers.append(text)
@@ -127,6 +134,13 @@ steps:
     expect:
       - request: "GET /UserViews -> 200"
         status: 200
+  - name: warmup_newest
+    phase: warmup
+    view_id: v_newest
+    use_token: true
+    expect:
+      - request: "GET (/Users/[^ ]+)?/Items -> 200"
+        status: 200
   - name: open_view_newest
     phase: open
     view: newest
@@ -142,8 +156,6 @@ steps:
       - request: __GK_REQUEST__
         status: 200
         capture: gk
-      - request: "GET /Items/[^ ]+/Images/Primary -> 200"
-        status: 200
   - name: play_newest
     phase: play
     view: newest
@@ -158,16 +170,11 @@ steps:
             - request: "POST /Sessions/Playing -> 204"
               status: 204
       series:
-        - tap: seasons_tab
-          expect:
-            - request: "GET /Shows/[^ ]+/Seasons -> 200"
-              status: 200
         - tap: first_season
           expect:
             - request: "GET /Shows/[^ ]+/Episodes -> 200"
               status: 200
         - tap: first_episode
-        - tap: play_button
           expect:
             - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
               status: 200
@@ -175,6 +182,9 @@ steps:
               status: [200, 302]
             - request: "POST /Sessions/Playing -> 204"
               status: 204
+  - name: back_to_grid
+    phase: nav
+    nav: 4
   - name: open_view_movie
     phase: open
     view: movie
@@ -190,8 +200,6 @@ steps:
       - request: __GK_REQUEST__
         status: 200
         capture: gk
-      - request: "GET /Items/[^ ]+/Images/Primary -> 200"
-        status: 200
   - name: play_movie
     phase: play
     view: movie
@@ -206,16 +214,11 @@ steps:
             - request: "POST /Sessions/Playing -> 204"
               status: 204
       series:
-        - tap: seasons_tab
-          expect:
-            - request: "GET /Shows/[^ ]+/Seasons -> 200"
-              status: 200
         - tap: first_season
           expect:
             - request: "GET /Shows/[^ ]+/Episodes -> 200"
               status: 200
         - tap: first_episode
-        - tap: play_button
           expect:
             - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
               status: 200
@@ -232,7 +235,6 @@ TAPS: dict[str, tuple[int, int]] = {
     "view_movie_x": (400, 200),
     "first_card": (500, 300),
     "play_button": (500, 400),
-    "seasons_tab": (500, 450),
     "first_season": (500, 500),
     "first_episode": (500, 550),
 }
@@ -249,9 +251,14 @@ FULL_TAP_LINES: dict[tuple[int, int], list[str]] = {
         "GET /Videos/g1/stream -> 302 (0ms)",
         "POST /Sessions/Playing -> 204 (0ms)",
     ],
-    (500, 450): ["GET /Shows/g1/Seasons -> 200 (0ms)"],
     (500, 500): ["GET /Shows/g1/Episodes -> 200 (0ms)"],
-    (500, 550): ["GET /Users/u1/Items/e1 -> 200 (0ms)"],
+    # device-driving B7: the episode-row tap auto-plays on the real client,
+    # so first_episode fires the whole playback sequence by itself.
+    (500, 550): [
+        "POST /Items/e1/PlaybackInfo -> 200 (0ms)",
+        "GET /Videos/e1/stream -> 302 (0ms)",
+        "POST /Sessions/Playing -> 204 (0ms)",
+    ],
 }
 
 
@@ -293,8 +300,11 @@ def make_harness(
     def issue(step: Step, ctx: dict[str, str]) -> None:
         if not issue_ok:
             return
-        assert step.method is not None and step.path is not None
-        lines.append(f"{step.method} {step.path} -> 200 (0ms)")
+        # warmup steps omit method/path — the real issuer defaults to GET and
+        # builds the path from view_id; mirror both here
+        method = step.method or "GET"
+        path = issue_path(step, ctx)
+        lines.append(f"{method} {path.split('?')[0]} -> 200 (0ms)")
         if step.capture_token:
             ctx["token"] = "tok"
             ctx["user_id"] = "u1"
@@ -326,7 +336,7 @@ def test_every_step_gets_verdict_in_report(tmp_path: Path) -> None:
     runner, _, _ = make_harness(tmp_path)
     results = runner.run()
 
-    assert len(results) == 8
+    assert len(results) == 10  # 2 handshake + 1 warmup + 2 views × (open+detail+play) + nav
     assert all(r.ok for r in results), [r.note for r in results if not r.ok]
 
     meta = ReportMeta(
@@ -403,12 +413,14 @@ def test_logcat_error_flips_step_to_fail(tmp_path: Path) -> None:
     results = runner.run()
     assert all(r.ok for r in results)
 
-    # Script a logcat dump whose step-3 window (after its STEP_3 marker,
-    # before STEP_4) carries a decode error.
+    # Script a logcat dump whose open_view_newest window (after its own
+    # STEP_<n> marker, before the next) carries a decode error.
+    names = [r.name for r in results]
+    error_step = names.index("open_view_newest") + 1
     dump: list[str] = []
     for index, result in enumerate(results, start=1):
         dump.append(f"08-08 10:00:00.000 I SWITCHFIN_TEST: STEP_{index}_{result.name}")
-        if index == 3:
+        if index == error_step:
             dump.append("08-08 10:00:00.050 E SWITCHFIN_TEST: nlohmann json exception")
 
     filtered = apply_logcat_filter(results, dump)
@@ -462,6 +474,49 @@ def test_handshake_failure_stops_the_run(tmp_path: Path) -> None:
     assert [r.name for r in results] == ["login"]
     assert results[0].ok is False
     assert run_exit_code(results) == 1
+
+
+# --------------------------------------------------------------------------
+# warmup phase (device-driving B1): prime each view's /Items cache
+# --------------------------------------------------------------------------
+
+
+def test_warmup_step_issues_view_items_request() -> None:
+    step = Step(
+        name="warmup_newest",
+        phase="warmup",
+        view=None,
+        tap=None,
+        expects=(),
+        view_id="abc123",
+        use_token=True,
+    )
+    assert issue_path(step, {"user_id": "u1"}) == "/Users/u1/Items?parentId=abc123"
+    with pytest.raises(RuntimeError):
+        issue_path(step, {})  # no user_id yet
+
+
+def test_warmup_failure_keeps_the_run_going(tmp_path: Path) -> None:
+    """A failed warmup records a verdict but must NOT abort the run.
+
+    Warmup is a precondition, not a test: if a prime fails the phone still
+    drives the view and the open step reports the real outcome. This pins
+    the ``continue`` (vs handshake's ``break``) in Runner.run.
+    """
+    steps_yaml = STEPS_YAML.replace(
+        '  - name: warmup_newest\n    phase: warmup\n    view_id: v_newest\n    use_token: true\n    expect:\n      - request: "GET (/Users/[^ ]+)?/Items -> 200"\n        status: 200\n',
+        '  - name: warmup_newest\n    phase: warmup\n    view_id: v_newest\n    use_token: true\n    expect:\n      - request: "GET /NEVER -> 200"\n        status: 200\n',
+    )
+    assert "GET /NEVER" in steps_yaml  # the replace actually landed
+
+    runner, _, _ = make_harness(tmp_path, steps_yaml=steps_yaml)
+    results = runner.run()
+    by_name = {r.name: r for r in results}
+
+    assert by_name["warmup_newest"].ok is False
+    assert by_name["warmup_newest"].timed_out is True
+    assert by_name["open_view_newest"].ok is True  # the run continued
+    assert run_exit_code(results) == 1  # the failed warmup marks the verdict
 
 
 # --------------------------------------------------------------------------
@@ -535,20 +590,21 @@ def test_ok_and_skipped_steps_write_no_snapshots(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------
 
 
-def test_series_play_taps_four_in_order(tmp_path: Path) -> None:
+def test_series_play_taps_two_in_order(tmp_path: Path) -> None:
     runner, _, adb = make_harness(tmp_path, probe="Series")
     results = runner.run()
 
     play = next(r for r in results if r.name == "play_newest")
     assert play.ok, play.note
 
+    # device-driving B7: the episode-row tap auto-plays on the real client,
+    # so the series branch is first_season -> first_episode (no separate
+    # seasons_tab / play_button taps).
     expected = [
-        TAPS["seasons_tab"],
         TAPS["first_season"],
         TAPS["first_episode"],
-        TAPS["play_button"],
     ]
-    assert adb.taps[-4:] == expected
+    assert adb.taps[-2:] == expected
 
 
 def test_movie_play_taps_once(tmp_path: Path) -> None:
@@ -558,6 +614,23 @@ def test_movie_play_taps_once(tmp_path: Path) -> None:
     play = next(r for r in results if r.name == "play_newest")
     assert play.ok, play.note
     assert adb.taps[-1:] == [TAPS["play_button"]]
+
+
+def test_nav_step_presses_back_between_views(tmp_path: Path) -> None:
+    """A ``phase: nav`` step emits BACK presses and passes without requests
+    (device-driving B6: the runner must navigate back to the grid between
+    per-view blocks on the real client)."""
+    runner, _, adb = make_harness(tmp_path, probe="Movie")
+    results = runner.run()
+
+    nav = next(r for r in results if r.name == "back_to_grid")
+    assert nav.ok, nav.note
+    assert nav.phase == "nav"
+    assert adb.backs == 4
+
+    # the views after the nav step still run normally
+    movie_open = next(r for r in results if r.name == "open_view_movie")
+    assert movie_open.ok, movie_open.note
 
 
 # --------------------------------------------------------------------------
@@ -570,14 +643,19 @@ def test_shipped_steps_yaml_parses() -> None:
     timeout_s, steps = load_steps(steps_path)
 
     assert timeout_s == 8
-    assert len(steps) == 23  # 2 handshake + 7 × (open + detail + play)
+    # 2 handshake + 7 warmup + 7 × (open + detail + play + back_to_grid nav)
+    assert len(steps) == 37
     assert sum(1 for s in steps if s.phase == "handshake") == 2
+    assert sum(1 for s in steps if s.phase == "warmup") == 7
     assert sum(1 for s in steps if s.phase == "open") == 7
     assert sum(1 for s in steps if s.phase == "detail") == 7
     assert sum(1 for s in steps if s.phase == "play") == 7
+    assert sum(1 for s in steps if s.phase == "nav") == 7
     for step in steps:
         if step.phase == "play":
             assert {branch.key for branch in step.branches} == {"movie", "series"}
+        if step.phase == "nav":
+            assert step.nav > 0  # device-driving B6: BACK to the grid
 
     # #151: each open_view step carries its uuid5 view id as a DATA field
     # (the router's `_VIEW_ID_BY_TYPE`), not as a comment. Read the raw YAML
@@ -601,8 +679,9 @@ def test_shipped_tap_coords_load() -> None:
     coords = load_tap_coords(taps_path)
 
     assert set(coords) == set(CALIBRATION_ELEMENTS)
-    # the placeholder is all zeros, so the runner treats it as uncalibrated
-    assert all(x == 0 and y == 0 for x, y in coords.values())
+    # Calibrated on the OnePlus 8 Pro (2026-08-10): every element the runner
+    # taps must have a real position (device-driving.md B8 table).
+    assert all(x > 0 and y > 0 for key, (x, y) in coords.items() if key != "login_button")
 
 
 def test_calibration_element_order_matches_definition() -> None:
@@ -617,7 +696,6 @@ def test_calibration_element_order_matches_definition() -> None:
         "view_dorama_x",
         "first_card",
         "play_button",
-        "seasons_tab",
         "first_season",
         "first_episode",
     )
@@ -666,20 +744,23 @@ def test_missing_marker_does_not_cascade_windows(tmp_path: Path) -> None:
     results = runner.run()
     assert all(r.ok for r in results)
 
+    names = [r.name for r in results]
+    missing_step = names.index("open_view_newest") + 1
+    error_step = names.index("open_first_card_newest") + 1
     dump: list[str] = []
     for index, result in enumerate(results, start=1):
-        if index == 3:  # open_view_newest's marker is evicted
+        if index == missing_step:  # open_view_newest's marker is evicted
             continue
         dump.append(f"08-08 10:00:00.000 I SWITCHFIN_TEST: STEP_{index}_{result.name}")
-        if index == 4:
+        if index == error_step:
             dump.append("08-08 10:00:00.050 E SWITCHFIN_TEST: nlohmann json exception")
 
     filtered = apply_logcat_filter(results, dump)
     by_name = {r.name: r for r in filtered}
-    # step 3 has no marker -> verdict untouched, no whole-dump attribution
+    # open_view_newest has no marker -> verdict untouched, no whole-dump attribution
     assert by_name["open_view_newest"].ok
     assert not by_name["open_view_newest"].logcat_hits
-    # step 4's own window still catches its error
+    # open_first_card_newest's own window still catches its error
     assert by_name["open_first_card_newest"].ok is False
     assert by_name["open_first_card_newest"].logcat_hits
 
@@ -884,15 +965,17 @@ def test_reset_capture_dir_creates_missing_dir(tmp_path: Path) -> None:
 
 
 def test_shipped_series_play_patterns_match_real_client_lines() -> None:
-    """#148: the ``seasons_tab``/``first_season`` expects must match the bare
-    access-log paths the real Switchfin client emits — ``/Shows/{series}/Seasons``
-    and ``/Shows/{series}/Episodes``, its ``apiShowSeasons``/``apiShowEpisodes``
-    constants in ``app/include/api/jellyfin/media.hpp`` (Switchfin source,
-    branch dev) — NOT the JS-SDK ``/Items?parentId=…`` spelling. The middleware
+    """#148 + device-driving B7: the shipped series-play expects must match
+    the bare access-log paths the real Switchfin client emits. The seasons
+    rail is ``/Shows/{series}/Seasons`` (``apiShowSeasons``) — fired on the
+    detail open, so no ``seasons_tab`` tap exists; the ``first_season`` tap
+    fires ``/Shows/{series}/Episodes`` (``apiShowEpisodes``) and the
+    ``first_episode`` row tap AUTO-PLAYS (PlaybackInfo + stream + Sessions).
+    Verified on-device 2026-08-10 (see device-driving.md B7). The middleware
     strips the query string, so an SDK-style call would log as a bare
     ``GET /Items`` and the step would time out against a real device. The
-    reference lines below encode that source-derived shape; a future
-    "correction" back to the spec's SDK spelling must fail this pin."""
+    reference lines below encode that verified shape; a future "correction"
+    back to the spec's SDK spelling must fail this pin."""
     steps_path = REPO_ROOT / "docs" / "test-artifacts" / "switchfin" / "steps.yaml"
     _, steps = load_steps(steps_path)
     play_series = next(
@@ -906,11 +989,12 @@ def test_shipped_series_play_patterns_match_real_client_lines() -> None:
     )
     assert series_branch is not None, "play_series is missing its series branch"
 
-    # Bare access-log lines in the shape the real client emits (source-derived
-    # above). Deliberately query-free: the middleware logs `request.url.path`.
+    # Bare access-log lines in the shape the real client emits (verified
+    # on-device). Deliberately query-free: the middleware logs
+    # `request.url.path`.
     real_client_lines = {
-        "seasons_tab": "GET /Shows/g1/Seasons -> 200 (5ms)",
         "first_season": "GET /Shows/g1/Episodes -> 200 (5ms)",
+        "first_episode": "POST /Items/e1/PlaybackInfo -> 200 (5ms)",
     }
     # Assert both pinned taps exist so a steps.yaml rename fails loudly here,
     # not silently (the loop below would otherwise skip and pass on nothing).
@@ -920,8 +1004,6 @@ def test_shipped_series_play_patterns_match_real_client_lines() -> None:
     for tap in series_branch.taps:
         real_line = real_client_lines.get(tap.tap)
         if real_line is None:
-            # first_episode has no expects; play_button's playback trio is
-            # orthogonal to the endpoint question #148 resolved.
             continue
         patterns = [e.request for e in tap.expects]
         assert patterns, f"{tap.tap} tap must expect the rail request"
