@@ -29,6 +29,7 @@ its request log; everything the phone knows is learned through logcat.
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import os
 import re
@@ -196,9 +197,9 @@ def find_play_pill(png: bytes) -> tuple[int, int] | None:
     (the runner keeps working via the calibrated tap) instead of crashing.
     """
     try:
-        import io  # noqa: PLC0415
+        import io
 
-        from PIL import Image  # type: ignore[import-untyped]  # noqa: PLC0415
+        from PIL import Image  # type: ignore[import-untyped]
     except ImportError:
         return None
 
@@ -242,7 +243,7 @@ def find_play_pill(png: bytes) -> tuple[int, int] | None:
         return None
     bands: list[list[int]] = []
     band = [ys[0]]
-    for prev, cur in zip(ys, ys[1:]):
+    for prev, cur in itertools.pairwise(ys):
         if cur - prev > 6:
             bands.append(band)
             band = [cur]
