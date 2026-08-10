@@ -31,6 +31,11 @@
 # matches on it — it matches wire lines (the middleware logs
 # `request.url.path`, and the view id only appears in the stripped query
 # string) — so the field is data documentation only.
+# Single source for the gk expected-request regex (#154): every view step
+# references it via the &gk_request anchor, so a one-character tightening
+# like #143's `[^ ]+` -> `[^ /]+` lands here once instead of at 7 sites.
+x-gk_request: &gk_request "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ /]+) -> 200"
+
 timeout_s: 8
 
 steps:
@@ -69,7 +74,7 @@ steps:
     view: newest
     tap: first_card
     expect:
-      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ /]+) -> 200"
+      - request: *gk_request
         status: 200
         capture: gk
       - request: "GET /Items/[^ ]+/Images/Primary -> 200"
@@ -89,7 +94,7 @@ steps:
     view: popular
     tap: first_card
     expect:
-      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ /]+) -> 200"
+      - request: *gk_request
         status: 200
         capture: gk
       - request: "GET /Items/[^ ]+/Images/Primary -> 200"
@@ -109,7 +114,7 @@ steps:
     view: movie
     tap: first_card
     expect:
-      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ /]+) -> 200"
+      - request: *gk_request
         status: 200
         capture: gk
       - request: "GET /Items/[^ ]+/Images/Primary -> 200"
@@ -129,7 +134,7 @@ steps:
     view: series
     tap: first_card
     expect:
-      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ /]+) -> 200"
+      - request: *gk_request
         status: 200
         capture: gk
       - request: "GET /Items/[^ ]+/Images/Primary -> 200"
@@ -149,7 +154,7 @@ steps:
     view: anime
     tap: first_card
     expect:
-      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ /]+) -> 200"
+      - request: *gk_request
         status: 200
         capture: gk
       - request: "GET /Items/[^ ]+/Images/Primary -> 200"
@@ -169,7 +174,7 @@ steps:
     view: cartoon
     tap: first_card
     expect:
-      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ /]+) -> 200"
+      - request: *gk_request
         status: 200
         capture: gk
       - request: "GET /Items/[^ ]+/Images/Primary -> 200"
@@ -189,7 +194,7 @@ steps:
     view: dorama
     tap: first_card
     expect:
-      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ /]+) -> 200"
+      - request: *gk_request
         status: 200
         capture: gk
       - request: "GET /Items/[^ ]+/Images/Primary -> 200"

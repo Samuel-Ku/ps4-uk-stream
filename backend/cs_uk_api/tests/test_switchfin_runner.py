@@ -102,7 +102,12 @@ class FakeAdb:
 # fixture data (mirrors the shipped steps.yaml shape, two views)
 # --------------------------------------------------------------------------
 
-STEPS_YAML = """\
+# Single source for the gk capture regex (#154): the fixture template
+# embeds the __GK_REQUEST__ marker, expanded from GK_REQUEST at import time,
+# so a one-character tightening lands at exactly one site instead of two.
+GK_REQUEST = "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ /]+) -> 200"
+
+_STEPS_YAML_TEMPLATE = """\
 timeout_s: 0.4
 steps:
   - name: login
@@ -134,7 +139,7 @@ steps:
     view: newest
     tap: first_card
     expect:
-      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ /]+) -> 200"
+      - request: __GK_REQUEST__
         status: 200
         capture: gk
       - request: "GET /Items/[^ ]+/Images/Primary -> 200"
@@ -182,7 +187,7 @@ steps:
     view: movie
     tap: first_card
     expect:
-      - request: "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ /]+) -> 200"
+      - request: __GK_REQUEST__
         status: 200
         capture: gk
       - request: "GET /Items/[^ ]+/Images/Primary -> 200"
@@ -219,6 +224,8 @@ steps:
             - request: "POST /Sessions/Playing -> 204"
               status: 204
 """
+
+STEPS_YAML = _STEPS_YAML_TEMPLATE.replace("__GK_REQUEST__", GK_REQUEST)
 
 TAPS: dict[str, tuple[int, int]] = {
     "view_newest_x": (100, 200),
