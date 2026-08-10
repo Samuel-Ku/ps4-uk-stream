@@ -47,6 +47,7 @@ VIEW_LABELS = {
 #: UI elements the ``--calibrate`` walkthrough records, in tap order.
 CALIBRATION_ELEMENTS = (
     "login_button",
+    "sidebar_folders",
     "view_newest_x",
     "view_popular_x",
     "view_movie_x",

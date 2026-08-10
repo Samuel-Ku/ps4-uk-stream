@@ -244,6 +244,7 @@ steps:
 STEPS_YAML = _STEPS_YAML_TEMPLATE.replace("__GK_REQUEST__", GK_REQUEST)
 
 TAPS: dict[str, tuple[int, int]] = {
+    "sidebar_folders": (80, 100),
     "view_newest_x": (100, 200),
     "view_movie_x": (400, 200),
     "first_card": (500, 300),
@@ -253,6 +254,8 @@ TAPS: dict[str, tuple[int, int]] = {
 }
 
 FULL_TAP_LINES: dict[tuple[int, int], list[str]] = {
+    # device-driving B21: the sidebar folders icon opens the Views grid
+    (80, 100): ["GET /UserViews -> 200 (0ms)"],
     (100, 200): ["GET /Users/u1/Items -> 200 (0ms)"],
     (400, 200): ["GET /Users/u1/Items -> 200 (0ms)"],
     (500, 300): [
@@ -846,6 +849,7 @@ def test_shipped_tap_coords_load() -> None:
 def test_calibration_element_order_matches_definition() -> None:
     assert CALIBRATION_ELEMENTS == (
         "login_button",
+        "sidebar_folders",
         "view_newest_x",
         "view_popular_x",
         "view_movie_x",

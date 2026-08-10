@@ -539,12 +539,16 @@ class Runner:
         )
 
     def _run_restart(self, step: Step) -> StepResult:
-        """Relaunch the app and wait until it reconnects (device-driving B17/B18).
+        """Relaunch the app and land it on the Views grid (B17/B18/B21).
 
-        Fixes two run-#4 failures: B17 (the app drove a stale grid whose
-        ids 404 on detail) and B18 (the first open tap raced the app's cold
-        start). A reconnect timeout is recorded as a precondition note, not
-        a failure — the open steps then report the app's real state.
+        Fixes run-#4 failures: B17 (the app drove a stale grid whose ids
+        404 on detail) and B18 (the first open tap raced the app's cold
+        start). A fresh launch lands on HOME, not the Views grid the
+        ``view_*_x`` taps expect (B21, run #5) — so after the app
+        reconnects, the runner taps the sidebar folders icon and waits for
+        ``/Views``. A reconnect/grid timeout is recorded as a precondition
+        note, not a failure — the open steps then report the app's real
+        state.
         """
         if not self._adb_available:
             return StepResult(
@@ -570,22 +574,52 @@ class Runner:
             r"GET /System/Info|GET /DisplayPreferences|POST /Users/AuthenticateByName|GET /Users/[^ ]+/Items"
         )
         deadline = time.monotonic() + RESTART_READY_TIMEOUT_S
+        connected = False
         while time.monotonic() < deadline:
             if any(
                 ready.search(line) for line in self._tailer.all_lines()[scan_from:]
             ):
-                time.sleep(APP_SETTLE_S)
-                return StepResult(step.name, step.phase, step.view, ok=True)
+                connected = True
+                break
             time.sleep(POLL_INTERVAL_S)
+        notes: list[str] = []
+        if not connected:
+            notes.append(
+                f"app did not reconnect within {RESTART_READY_TIMEOUT_S:.0f}s"
+            )
+        time.sleep(APP_SETTLE_S)
+        # B21: land on the Views grid so the view_*_x taps find the tiles.
+        grid = self._taps.get("sidebar_folders")
+        if grid is not None:
+            scan_from = len(self._tailer.all_lines())
+            failure = self._safe_tap(grid, note_prefix="sidebar_folders")
+            if failure is not None:
+                notes.append(failure)
+            else:
+                views_re = re.compile(r"GET /UserViews|GET /Users/[^ ]+/Views")
+                deadline = time.monotonic() + RESTART_READY_TIMEOUT_S
+                while time.monotonic() < deadline:
+                    if any(
+                        views_re.search(line)
+                        for line in self._tailer.all_lines()[scan_from:]
+                    ):
+                        return StepResult(
+                            step.name,
+                            step.phase,
+                            step.view,
+                            ok=True,
+                            note=" ".join(notes),
+                        )
+                    time.sleep(POLL_INTERVAL_S)
+                notes.append("Views grid did not open within 120s")
+        else:
+            notes.append("no calibration for 'sidebar_folders'; run --calibrate")
         return StepResult(
             step.name,
             step.phase,
             step.view,
             ok=True,
-            note=(
-                "app did not reconnect within "
-                f"{RESTART_READY_TIMEOUT_S:.0f}s — proceeding (precondition, not a test)"
-            ),
+            note=" ".join(notes),
         )
 
     def _run_nav(self, step: Step) -> StepResult:

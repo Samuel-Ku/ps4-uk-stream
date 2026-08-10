@@ -7,6 +7,9 @@
 #
 # Elements:
 #   login_button          — the sign-in button on the server screen
+#   sidebar_folders       — the sidebar "media folders" icon; opens the
+#                           Views grid (the screen the view_*_x taps expect,
+#                           device-driving B21)
 #   view_<name>_x         — the home-screen row for a library view
 #   first_card            — the first card in an opened library
 #   play_button           — the play action on the detail screen
@@ -18,6 +21,7 @@
 # fires (see docs/test-artifacts/switchfin/device-driving.md, B8 table).
 # Coordinates are for the DEFAULT (unscrolled) screen state.
 login_button: {x: 0, y: 0}
+sidebar_folders: {x: 141, y: 285}
 view_newest_x: {x: 756, y: 310}
 view_popular_x: {x: 1688, y: 310}
 view_movie_x: {x: 2620, y: 310}
