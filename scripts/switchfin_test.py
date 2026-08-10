@@ -37,6 +37,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -460,6 +461,9 @@ class Runner:
         #: tests inject a scripted position. ``None`` degrades to the
         #: calibrated ``play_button`` coordinate.
         self._play_locator_fn = play_locator_fn or self._default_play_locator
+        #: Only the real issuer (not a test fake) can warm the first-card
+        #: detail path over HTTP (#210/B13).
+        self._warm_details = issue_fn is None
         # Probe once — a device doesn't vanish mid-run, and per-step checks
         # would spawn an `adb devices` subprocess for every skipped step.
         self._adb_available = adb.available()
@@ -528,6 +532,11 @@ class Runner:
                 note=f"request failed: {exc}",
             )
         ok = self._wait_for_expects(step.expects, scan_from)
+        if step.phase == "warmup" and ok and self._warm_details:
+            # #210/B13: prime the first card's detail (+series play chain)
+            # so the phone's detail/play steps hit warm caches instead of
+            # 15-20s cold scrapes inside an 8s step window.
+            self._warm_view_details(step)
         return StepResult(
             step.name,
             step.phase,
@@ -621,6 +630,77 @@ class Runner:
             ok=True,
             note=" ".join(notes),
         )
+
+    def _warm_view_details(self, step: Step) -> None:
+        """Prime the first card's detail (+series play chain) cache (#210/B13).
+
+        The grid warmup (B1) leaves per-item paths cold: the app's first
+        card tap fires ``GET /Users/{u}/Items/{gk}`` (and, for a series,
+        auto-fires ``/Shows/{s}/Seasons``), and the play taps fire
+        ``/Shows/{s}/Episodes`` + ``POST /Items/{e}/PlaybackInfo``. Each
+        cold-scrapes the provider for ~15-20s — blowing the 8s step window.
+        Fetching them here, in order, populates the cache so the phone's
+        steps find warm paths. Best-effort: any failure is ignored and the
+        open/play steps report the app's real state.
+        """
+        view_id = step.view_id
+        user_id = self._ctx.get("user_id")
+        token = self._ctx.get("token")
+        if not view_id or not user_id or not token:
+            return
+        base = f"http://{self._host}:{self._port}"
+        headers = {"X-Emby-Token": token}
+        q = urllib.parse.quote
+
+        def get(path: str) -> dict[str, Any] | None:
+            try:
+                req = urllib.request.Request(f"{base}{path}", headers=headers)
+                with urllib.request.urlopen(
+                    req, timeout=self._request_timeout
+                ) as resp:
+                    return cast(dict[str, Any], json.loads(resp.read()))
+            except (OSError, ValueError):
+                return None
+
+        grid = get(f"/Users/{user_id}/Items?parentId={view_id}")
+        items = (grid or {}).get("Items") or []
+        if not items:
+            return
+        gk = items[0].get("Id")
+        if not gk:
+            return
+        detail = get(f"/Users/{user_id}/Items/{q(gk, safe='')}")
+        if not detail or detail.get("Type") != "Series":
+            return  # movie: the detail warm is the whole play path
+        # series: warm the season list, the first season's episodes, and the
+        # first episode's playback info (the play branch's three taps)
+        seasons = get(f"/Shows/{q(gk, safe='')}/Seasons?fields=ItemCounts&userId={user_id}")
+        season_items = (seasons or {}).get("Items") or []
+        if not season_items:
+            return
+        season_id = season_items[0].get("Id")
+        episodes = get(
+            f"/Shows/{q(gk, safe='')}/Episodes?seasonId={q(season_id, safe='')}"
+            f"&fields=ItemCounts%2CPrimaryImageAspectRatio%2CChapters%2COverview&userId={user_id}"
+        )
+        episode_items = (episodes or {}).get("Items") or []
+        if not episode_items:
+            return
+        episode_id = episode_items[0].get("Id")
+        body = json.dumps({}).encode()
+        try:
+            with urllib.request.urlopen(
+                urllib.request.Request(
+                    f"{base}/Items/{q(episode_id, safe='')}/PlaybackInfo",
+                    data=body,
+                    headers=headers,
+                    method="POST",
+                ),
+                timeout=self._request_timeout,
+            ):
+                pass
+        except (OSError, ValueError):
+            return
 
     def _run_nav(self, step: Step) -> StepResult:
         """Press BACK ``step.nav`` times to return to the library grid.

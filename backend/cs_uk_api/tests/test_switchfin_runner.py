@@ -18,7 +18,8 @@ import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
-from typing import cast
+from typing import Self, cast
+from unittest import mock
 
 import pytest
 
@@ -603,6 +604,120 @@ def test_restart_skipped_without_device(tmp_path: Path) -> None:
     assert restart.ok is True
     assert restart.skipped is True
     assert adb.restarts == 0
+
+
+# --------------------------------------------------------------------------
+# #210/B13: warmup primes the first card's detail + series play chain
+# --------------------------------------------------------------------------
+
+
+class _FakeResponse:
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+
+def test_warm_view_details_warms_movie_detail_only() -> None:
+    """A Movie first card warms grid + detail, and stops there."""
+    calls: list[tuple[str, str]] = []
+    responses = iter(
+        [
+            {"Items": [{"Id": "g2:m1", "Type": "Movie"}]},
+            {"Id": "g2:m1", "Type": "Movie"},
+        ]
+    )
+
+    def fake_urlopen(req: object, timeout: float = 10) -> _FakeResponse:
+        method = req.get_method() if hasattr(req, "get_method") else "GET"  # type: ignore[attr-defined]
+        url = req.full_url if hasattr(req, "full_url") else str(req)  # type: ignore[attr-defined]
+        calls.append((method, url))
+        return _FakeResponse(json.dumps(next(responses)).encode())
+
+    step = Step(
+        name="warmup_movie",
+        phase="warmup",
+        view=None,
+        tap=None,
+        expects=(),
+        view_id="v_movie",
+        use_token=True,
+    )
+    runner = Runner(
+        [step],
+        {},
+        FakeTailer([]),
+        FakeAdb(lines=[], tap_lines={}),
+        host="127.0.0.1",
+        port=1,
+        timeout_s=8.0,
+    )
+    runner._ctx["user_id"] = "u1"
+    runner._ctx["token"] = "tok"
+
+    with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        runner._warm_view_details(step)
+
+    assert [m for m, _ in calls] == ["GET", "GET"]
+    assert "Items?parentId=v_movie" in calls[0][1]
+    assert "/Items/g2%3Am1" in calls[1][1]
+
+
+def test_warm_view_details_warms_series_play_chain() -> None:
+    """A Series first card warms detail -> Seasons -> Episodes -> PlaybackInfo."""
+    calls: list[tuple[str, str]] = []
+    responses = iter(
+        [
+            {"Items": [{"Id": "g2:s1", "Type": "Series"}]},
+            {"Id": "g2:s1", "Type": "Series"},
+            {"Items": [{"Id": "g2:s1:S1", "Name": "Сезон 1"}]},
+            {"Items": [{"Id": "g2:s1:e1", "Name": "Серія 1"}]},
+            {"MediaSources": []},
+        ]
+    )
+
+    def fake_urlopen(req: object, timeout: float = 10) -> _FakeResponse:
+        method = req.get_method() if hasattr(req, "get_method") else "GET"  # type: ignore[attr-defined]
+        url = req.full_url if hasattr(req, "full_url") else str(req)  # type: ignore[attr-defined]
+        calls.append((method, url))
+        return _FakeResponse(json.dumps(next(responses)).encode())
+
+    step = Step(
+        name="warmup_series",
+        phase="warmup",
+        view=None,
+        tap=None,
+        expects=(),
+        view_id="v_series",
+        use_token=True,
+    )
+    runner = Runner(
+        [step],
+        {},
+        FakeTailer([]),
+        FakeAdb(lines=[], tap_lines={}),
+        host="127.0.0.1",
+        port=1,
+        timeout_s=8.0,
+    )
+    runner._ctx["user_id"] = "u1"
+    runner._ctx["token"] = "tok"
+
+    with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        runner._warm_view_details(step)
+
+    assert [m for m, _ in calls] == ["GET", "GET", "GET", "GET", "POST"]
+    assert "/Items/g2%3As1" in calls[1][1]
+    assert "/Shows/g2%3As1/Seasons" in calls[2][1]
+    assert "/Shows/g2%3As1/Episodes?seasonId=g2%3As1%3AS1" in calls[3][1]
+    assert calls[4][0] == "POST" and "/Items/g2%3As1%3Ae1/PlaybackInfo" in calls[4][1]
 
 
 # --------------------------------------------------------------------------
