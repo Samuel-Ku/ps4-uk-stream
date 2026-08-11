@@ -1034,6 +1034,8 @@ class Runner:
                 continue
             notes.append(f"{play_tap.tap}: timeout (retried)")
         ok = not notes
+        if not ok and self._adb_available:
+            self._save_failure_screenshot(step)
         return StepResult(
             step.name,
             step.phase,
@@ -1043,6 +1045,26 @@ class Runner:
             note="; ".join(notes),
             window_lines=tuple(self._tailer.all_lines()[step_start:]),
         )
+
+    def _save_failure_screenshot(self, step: Step) -> None:
+        """Best-effort: keep the failed step's screen for offline triage.
+
+        A play step that fires zero requests is invisible in the backend
+        window (empty windows aren't rewritten, #149) and the pill scan's
+        frames are discarded — write the last frame to
+        ``ARTIFACTS_DIR/screen-<step>.png`` so the failure is diagnosable
+        (runs #9-#13: movie/cartoon/dorama play taps that missed).
+        """
+        try:
+            png = self._adb.screenshot_png()
+        except (OSError, subprocess.CalledProcessError):
+            return
+        if not png:
+            return
+        try:
+            (ARTIFACTS_DIR / f"screen-{step.name}.png").write_bytes(png)
+        except OSError:
+            pass
 
     def _tap_play_with_retry(
         self, play_tap: PlayTap, scan_from: int, timeout_s: float

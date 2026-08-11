@@ -546,6 +546,18 @@ The remaining failures are intermittent content-churn / cold-scrape races
 in the play taps (the #205/#210 class) plus occasional bottom-edge tap
 misses. The runner itself is stable: nav, open, and detail pass 100%.
 
+## Run #13 (2026-08-10, after #205 tap retry) — 5/7 plays
+
+- **play_cartoon FIXED** (the #205 series-tap retry). The failures now
+  rotate: play_movie (pill locate, zero PlaybackInfo — the detail opened
+  g2:0dd97776 at 23:50:59 but nothing fired in 25s) and play_dorama
+  (retried season taps still silent). The movie-detail screen WAS open and
+  warm, so the pill locate is either missing a dimmed/wrong-position pill
+  or tapping a false teal positive in the poster art.
+- The runner now saves `screen-<step>.png` for failed play steps (#205
+  follow-up) — the next run's failures are visible instead of empty
+  windows.
+
 ## Open questions (for the next session)
 
 - DONE (2026-08-10): `Adb.back()` + `phase: nav` steps wired into the runner;

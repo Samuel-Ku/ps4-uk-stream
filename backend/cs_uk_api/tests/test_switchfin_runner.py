@@ -895,6 +895,28 @@ class _DelayedSeriesAdb(FakeAdb):
         super().tap(x, y)
 
 
+def test_play_failure_saves_screenshot(tmp_path: Path, monkeypatch) -> None:
+    """#205: a play step that fires nothing keeps its last frame as
+    ``screen-<step>.png`` so the failure is diagnosable offline."""
+    import scripts.switchfin_test as sf_test
+
+    monkeypatch.setattr(sf_test, "ARTIFACTS_DIR", tmp_path)
+
+    class _PicAdb(FakeAdb):
+        def screenshot_png(self) -> bytes:
+            return b"PNG-not-real"
+
+    tap_lines = {k: list(v) for k, v in FULL_TAP_LINES.items()}
+    tap_lines[TAPS["play_button"]] = []  # PlaybackInfo never fires
+    adb = _PicAdb(lines=[], tap_lines=tap_lines)
+    runner, _, adb = make_harness(tmp_path, adb=adb)
+    results = runner.run()
+
+    play = next(r for r in results if r.name == "play_newest")
+    assert not play.ok
+    assert (tmp_path / "screen-play_newest.png").exists()
+
+
 def test_series_play_retries_season_tap_when_detail_not_ready(
     tmp_path: Path,
 ) -> None:
