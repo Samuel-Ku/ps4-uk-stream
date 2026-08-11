@@ -739,12 +739,23 @@ probe. Tests: 931 pass, ruff/mypy clean (only pre-existing findings).
   connectivity while still serving cached 200s — every upstream times out
   at exactly the 8s timeout, detail/play 404 after ~17s. Restart fixes it.
   Prevention: watchdog / health check that restarts on all-providers-down.
-- **B13/B20**: cold per-item scrapes still blow the 8s step timeout — extend
-  warmup to the first-card detail path or the step timeout / backend warm path.
+- **B1/B13/B20/B16 — RESOLVED (2026-08-11, #204/#210, a6f5d33)**: the backend
+  now warms itself at startup — the home snapshot, then each view's first-card
+  detail chain via `resolve_group_content` (the one primitive detail/seasons/
+  episodes/playback read through). Live-verified on 8003: first `/UserViews`
+  3ms, view `/Items` 3ms, first-card detail 2-43ms (all 17-21s cold before);
+  the anime view's `/Items?includeItemTypes=Series` (B16 path) serves 20
+  items in 3ms — the "re-scrape" was the app auto-firing the first-card
+  DETAIL (now warmed), not the grid. State: `/api/health.catalog_warm`
+  (`status/home_warmed/content_warmed/failed`); disabled in tests via
+  `CS_UK_CATALOG_WARM=0` (conftest), default on.
+- **NEW (2026-08-11)**: row-form vs content-form mismatch — a card listed as
+  `Type: Series` in a view resolved to `Type: Movie` on its detail (form
+  verdict differs between the home row's first-seen source and the detail
+  source). The app renders the grid as a series then opens a movie detail.
 - **B14**: the Type probe races content churn — probe the item the app
   actually opened, or make the branch decision tolerant (try the pill scan;
   if absent, fall through to the series branch).
-- **B16**: why did the anime view open re-scrape after a 70s-old warmup.
 
 ## Running the suite (2026-08-10, codified)
 
