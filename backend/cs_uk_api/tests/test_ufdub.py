@@ -223,6 +223,43 @@ async def test_ufdub_content_parses_description_after_empty_lead_par():
 
 
 @pytest.mark.asyncio
+async def test_ufdub_content_parses_voices_as_people():
+    """Ticket #225: ufdub credits its dubbing team in ``div.voices``
+    blocks ("Перекладач:", "Актори озвучення:", ...) — the provider
+    never parsed them, so the People rail rendered empty on every ufdub
+    detail (observed live on Kamen Rider Gavv). The fixture carries the
+    full 5-block shape: lead, translator, editor, 7 voice actors, sound."""
+    content_html = _fixture("content_movie.html")
+    player_html = _fixture("player.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ufdub.com/film/48-fokus-pokus-hocus-pocus.html").respond(
+            200, text=content_html
+        )
+        router.get(
+            "https://video.ufdub.com/AT/VP.php?ID=2780",
+            headers={"Referer": "https://ufdub.com/"},
+        ).respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            c = await UFDubProvider().content("film-48-fokus-pokus-hocus-pocus", http)
+    by_role: dict[str, list[str]] = {}
+    for p in c.people:
+        by_role.setdefault(p.role, []).append(p.name)
+    # «Актори озвучення» maps to role Actor; the other blocks keep
+    # their label as the role.
+    assert by_role["Actor"] == ["Ayla", "Ninja", "Stepalex", "Hoshi", "VOLCUA", "Maxx Light", "irenneri"]
+    assert by_role["Перекладач"] == ["Ayla"]
+    assert by_role["Куратор проєкту"] == ["Ayla"]
+    assert by_role["Робота зі звуком"] == ["Грицька"]
+    assert len(c.people) == 11
+    # Person.id is the person's own page slug (per models.Person) —
+    # same name in different roles must not collide (Ayla is lead,
+    # translator, editor AND one of the voice actors → 4 ids).
+    ids = {p.id for p in c.people if p.name == "Ayla"}
+    assert len(ids) == 4
+    assert all(p.id.startswith("voice/") for p in c.people)
+
+
+@pytest.mark.asyncio
 async def test_ufdub_content_year_absent_stays_none():
     """A content page without a ``Рік:`` block must keep year=None, not
     crash — the meta block is optional upstream."""

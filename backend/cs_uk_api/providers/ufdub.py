@@ -13,6 +13,7 @@ from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
+    Person,
     SearchResult,
     Season,
     Section,
@@ -180,6 +181,44 @@ def _parse_card(card: Tag | BeautifulSoup, provider_id: str) -> SearchResult | N
     )
 
 
+def _extract_people(soup: BeautifulSoup) -> list[Person]:
+    """Ticket #225: ufdub credits its dubbing team in ``div.voices``
+    blocks ("Перекладач:", "Актори озвучення:", ...) — parse them into
+    People so the Jellyfin People rail renders instead of sitting empty
+    (observed live on Kamen Rider Gavv). Each block is
+    ``<label>:<br/>`` followed by one or more ``<a>`` links.
+
+    ``Person.id`` follows models.Person's contract: the person's own
+    page slug when the site exposes one — the ``/xfsearch/<kind>/<slug>/``
+    href — so the same name in different roles gets distinct ids.
+    """
+    people: list[Person] = []
+    for block in soup.select("div.voices"):
+        label = ""
+        for child in block.children:
+            if getattr(child, "name", None) == "br":
+                break
+            if isinstance(child, str):
+                label += child
+        label = label.strip(" :\t\n")
+        if not label or label == "Постер":
+            # A poster designer is not on-screen crew; skip it.
+            continue
+        # Exact-label match: a substring check would misclassify
+        # «Редактор» (which contains "актор") as an actor.
+        role = "Actor" if label.lower() in {"актори озвучення", "актори"} else label
+        for a in block.select("a"):
+            name = a.get_text(strip=True)
+            if not name:
+                continue
+            href = a.get("href") or ""
+            marker = "/xfsearch/"
+            idx = href.find(marker)
+            slug = href[idx + len(marker) :].rstrip("/") if idx >= 0 else name.lower()
+            people.append(Person(id=f"voice/{slug}", name=name, role=role))
+    return people
+
+
 class UFDubProvider(BaseProvider):
     id = "ufdub"
     name = "UFDub"
@@ -317,6 +356,7 @@ class UFDubProvider(BaseProvider):
             form=mb_form,
             styles=mb_styles,
             year=year,
+            people=_extract_people(soup),
         )
 
     @staticmethod
