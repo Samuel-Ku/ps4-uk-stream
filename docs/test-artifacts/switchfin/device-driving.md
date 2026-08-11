@@ -703,8 +703,13 @@ witnessed):
   "avatar" → 80 hits).
 - **Suggestions tab** ✅ — fires Resume + Latest + NextUp; the Latest
   shelf populates the grid.
-- **Genres tab** ❌ — `GET /Genres` returns `{Items: [], TotalRecordCount: 0}`
-  (deliberate stub; no provider parses genres). Ticket **#213**.
+- **Genres tab** ✅ (after #213) — `GET /Genres` returns the aggregated
+  shelf (ufdub card genres: Історія, Драма, Кримінал, Психологія, Фільми…).
+  Tapping a genre fires `/Items?genreIds=<name>&includeItemTypes=Movie`
+  and the filtered grid renders (verified live 2026-08-11: Кримінал → 18+
+  crime movies, paginated to startIndex=18). Note: «Фільми» appears as a
+  genre — a provider card-metadata quirk (form label in the Жанр block),
+  faithful aggregation, not a facade bug.
 - **Continue watching / Next up** ❌ (before #214) — `/Items/Resume` and
   `/Shows/NextUp` always empty because `Sessions/Playing/Stopped` etc.
   answer 204 and store nothing (D8). Ticket **#214** — FIXED below.
