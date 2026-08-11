@@ -201,6 +201,42 @@ _JF_TYPE_BY_ROW = {
     "dorama": "Series",
 }
 
+#: Reverse of ``_JF_TYPE_BY_ROW``: Jellyfin item Type → the home-row
+#: kinds that map to it. Multiple rows collapse onto one wire Type
+#: (series/anime/cartoon/dorama are all "Series"), so this is a
+#: set-valued index — used to translate ``includeItemTypes`` back to
+#: the row kinds the home snapshot is keyed by (ticket #213).
+_HOME_KINDS_BY_JF_TYPE: dict[str, set[str]] = {}
+for _kind, _jf_type in _JF_TYPE_BY_ROW.items():
+    _HOME_KINDS_BY_JF_TYPE.setdefault(_jf_type, set()).add(_kind)
+
+
+def _parse_include_types(include_item_types: str | None) -> set[str] | None:
+    """Parse ``includeItemTypes=Movie,Series`` into the home-row kinds.
+
+    None when the param is absent (no type filter); empty set when the
+    param is present but names nothing we express (→ filter everything
+    out, mirroring the client's expectation that an unexpressible type
+    yields an empty shelf).
+    """
+    if include_item_types is None:
+        return None
+    kinds: set[str] = set()
+    for t in include_item_types.split(","):
+        kinds.update(_HOME_KINDS_BY_JF_TYPE.get(t.strip(), set()))
+    return kinds
+
+
+def _parse_genre_ids(genre_ids: str | None) -> set[str] | None:
+    """Parse ``genreIds=a,b`` into a set (None when absent).
+
+    Genre ids ARE the genre names (Jellyfin's convention), so the value
+    round-trips directly as the shelf tap's filter (ticket #213).
+    """
+    if genre_ids is None:
+        return None
+    return {g for g in (x.strip() for x in genre_ids.split(",")) if g}
+
 
 def _poster_tag(poster_url: str) -> str:
     """Opaque ``ImageTags.Primary`` value (D9).
@@ -298,6 +334,10 @@ def _content_dto(group_key: str, content: ContentResponse, server_id: str) -> Ba
         Type="Movie" if content.form == "movie" else "Series",
         ProductionYear=content.year,
         Overview=content.description,
+        # Ticket #213: the detail page renders a genre row when present
+        # (Switchfin ``media_movie``/``media_series`` show labelGenres
+        # iff non-empty).
+        Genres=list(content.genres),
     )
     parent = _view_id_for_item(group_key)
     if parent is not None:
@@ -631,6 +671,7 @@ async def items_listing(
     search_term: str | None = Query(default=None, alias="searchTerm"),
     start_index: int = Query(default=0, alias="startIndex"),
     limit: int | None = Query(default=None),
+    genre_ids: str | None = Query(default=None, alias="genreIds"),
 ) -> BaseItemDtoQueryResult:
     """Library listing for one view, children of a series/season
     (ticket #105 hierarchy, D3), OR a merged-catalog search
@@ -658,9 +699,19 @@ async def items_listing(
         return await _hierarchy(parent_id)
     home = await load_home()
     server_id = _server_id()
+    wanted_genres = _parse_genre_ids(genre_ids)
     for row in home.rows:
         if row.type == row_type:
-            dtos = [_item_dto(row, it, server_id) for it in row.items]
+            items = row.items
+            if wanted_genres is not None:
+                # Ticket #213: the genre shelf's tap round-trips as
+                # ``genreIds=<id>`` — filter the view's cards to those
+                # carrying at least one requested genre (genre ids ARE
+                # the names).
+                items = [
+                    it for it in items if wanted_genres & set(it.genres)
+                ]
+            dtos = [_item_dto(row, it, server_id) for it in items]
             total = len(dtos)
             end = None if limit is None else start_index + limit
             # Honest slicing (device-driving B11): the real client requests
@@ -839,7 +890,12 @@ async def items_latest(
     the content stays the same row lookup as ``/Items``.
     """
     result = await items_listing(
-        parent_id=parent_id, user_id=user_id, search_term=None, start_index=0, limit=None
+        parent_id=parent_id,
+        user_id=user_id,
+        search_term=None,
+        start_index=0,
+        limit=None,
+        genre_ids=None,
     )
     return result.Items
 
@@ -855,6 +911,7 @@ async def user_items_listing(
     search_term: str | None = Query(default=None, alias="searchTerm"),
     start_index: int = Query(default=0, alias="startIndex"),
     limit: int | None = Query(default=None),
+    genre_ids: str | None = Query(default=None, alias="genreIds"),
 ) -> BaseItemDtoQueryResult:
     """Server-style spelling of the library listing (Switchfin).
 
@@ -872,6 +929,7 @@ async def user_items_listing(
         search_term=search_term,
         start_index=start_index,
         limit=limit,
+        genre_ids=genre_ids,
     )
 
 
@@ -894,15 +952,50 @@ async def user_item_detail(user_id: str, item_id: str) -> BaseItemDto:
     response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
-async def genres() -> BaseItemDtoQueryResult:
-    """Genre filter shelf (Switchfin ``apiGenres``).
+async def genres(
+    parent_id: str | None = Query(default=None, alias="parentId"),
+    include_item_types: str | None = Query(default=None, alias="includeItemTypes"),
+) -> BaseItemDtoQueryResult:
+    """Genre filter shelf (Switchfin ``apiGenres``, ticket #213).
 
-    The facade has no genre metadata — no provider exposes one — so the
-    shelf is deliberately empty. Switchfin parses the ``Genres`` wire via
-    ``NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT``; an empty
-    ``Result<T>`` renders an empty shelf rather than erroring.
+    Aggregates the ``genres`` metadata providers expose on their cards
+    (e.g. ufdub's ``div.short-c``) into a per-view shelf: every unique
+    genre across the view's cards, with ``ChildCount`` = how many cards
+    carry it. The client opens the shelf per library with
+    ``parentId=<view id>`` + ``includeItemTypes=<Movie|Series>``, so
+    both are honored (an absent parent → empty shelf, the pre-#213
+    behaviour real clients tolerated).
+
+    Genre wire shape (Switchfin ``jellyfin::Genres``): ``{Id, Name,
+    ImageTags, ChildCount}``. Id == Name, matching Jellyfin's own
+    convention (genre ids are the names) so the id round-trips as the
+    ``genreIds`` filter when the user taps a genre.
     """
-    return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
+    row_type = _VIEW_TYPE_BY_ID.get(parent_id or "")
+    if row_type is None:
+        return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
+    home = await load_home()
+    server_id = _server_id()
+    want_type = _parse_include_types(include_item_types)
+    counts: dict[str, int] = {}
+    for row in home.rows:
+        if row.type != row_type:
+            continue
+        for item in row.items:
+            if want_type is not None and item.form not in want_type:
+                continue
+            for genre in item.genres:
+                counts[genre] = counts.get(genre, 0) + 1
+    dtos = [
+        BaseItemDto(
+            Name=genre,
+            ServerId=server_id,
+            Id=genre,
+            ChildCount=count,
+        )
+        for genre, count in sorted(counts.items())
+    ]
+    return BaseItemDtoQueryResult(Items=dtos, TotalRecordCount=len(dtos))
 
 
 @router.get(

@@ -135,6 +135,13 @@ def _parse_card(card: Tag | BeautifulSoup, provider_id: str) -> SearchResult | N
     container = card.parent
     img = container.select_one(".img-box img") if container is not None else None
     poster = urljoin(BASE_URL, str(img["src"])) if img and img.get("src") else None
+    # Ticket #213: the ``div.short-c`` block is "Жанр: <a>Аніме</a> /
+    # <a>Жахи</a>" — parse the link texts as genre labels (skip the
+    # literal "Жанр:" prefix text node).
+    genre_links = a.parent.select("div.short-c a") if a.parent is not None else []
+    genres = [
+        x.get_text(strip=True) for x in genre_links if x.get_text(strip=True)
+    ]
     try:
         external_id = _external_id_from_url(href)
     except ProviderError:
@@ -148,6 +155,7 @@ def _parse_card(card: Tag | BeautifulSoup, provider_id: str) -> SearchResult | N
         url=urljoin(BASE_URL, href),
         form=mb_form,
         styles=mb_styles,
+        genres=genres,
     )
 
 

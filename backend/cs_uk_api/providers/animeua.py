@@ -339,6 +339,11 @@ class AnimeUAProvider(BaseProvider):
             styles=mb_styles,
             seasons=seasons,
             translations_level=translations_level,
+            # Ticket #213: the ``.pmovie__genres`` tag list (already
+            # parsed above for kind detection) IS the genre metadata —
+            # surface it on the detail so the Jellyfin detail page can
+            # render the genre row.
+            genres=tags,
         )
 
     async def stream(

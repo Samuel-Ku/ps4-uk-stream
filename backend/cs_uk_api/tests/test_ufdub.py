@@ -73,6 +73,23 @@ async def test_ufdub_browse_anime_section_parses_results():
 
 
 @pytest.mark.asyncio
+async def test_ufdub_browse_cards_expose_genres():
+    """Ticket #213: the listing cards carry a ``div.short-c`` block
+    ("Жанр: Аніме / Пригоди / Фентезі / Ісекай") — parse it into
+    ``SearchResult.genres`` so the Jellyfin genre shelf has data."""
+    listing_html = _fixture("anime_listing.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ufdub.com/anime/").respond(200, text=listing_html)
+        async with httpx.AsyncClient() as http:
+            results, _ = await UFDubProvider().browse("anime", 1, http)
+    assert len(results) >= 1
+    card = next(r for r in results if "мудреця" in r.title)
+    assert "Аніме" in card.genres
+    assert "Фентезі" in card.genres
+    assert "Ісекай" in card.genres
+
+
+@pytest.mark.asyncio
 async def test_ufdub_browse_film_page1_has_next_true():
     listing_html = _fixture("film_listing.html")
     with respx.mock(assert_all_called=True) as router:

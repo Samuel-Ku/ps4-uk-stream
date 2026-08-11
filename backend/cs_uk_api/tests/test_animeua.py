@@ -78,6 +78,8 @@ async def test_animeua_series_parses_seasons_and_episode_translations():
     assert content.year == 2024
     assert content.poster == "https://animeua.club/uploads/posts/2024-10/5458831_1730282979.webp"
     assert content.description
+    # Ticket #213: the ``.pmovie__genres`` tag list surfaces as genres.
+    assert "Бойовик" in content.genres
     assert content.translations_level == "episode"
     assert content.seasons is not None
     assert len(content.seasons) == 2

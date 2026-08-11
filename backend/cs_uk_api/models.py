@@ -32,6 +32,12 @@ class SearchResult(BaseModel):
     poster: str | None = None
     url: str
     styles: frozenset[MediaStyle] = Field(default_factory=_empty_styles)
+    #: Free-form genre labels parsed from the listing card (ticket #213),
+    #: e.g. ufdub's ``div.short-c`` "Жанр: Аніме / Жахи". Empty list =
+    #: the provider's page carries no genre metadata. Flows into the
+    #: home snapshot's ``HomeItem.genres`` and the Jellyfin ``/Genres``
+    #: shelf + ``genreIds`` filter.
+    genres: list[str] = Field(default_factory=list)
 
     @field_serializer("styles")
     def _ser_styles(self, value: frozenset[MediaStyle]) -> list[str]:
@@ -96,6 +102,10 @@ class SearchGroup(BaseModel):
     # is required (no legacy ``type`` on the wire anymore).
     form: MediaForm
     styles: frozenset[MediaStyle] = Field(default_factory=_empty_styles)
+    #: Genre labels (ticket #213) — first-seen-wins like the other
+    #: canonical fields (the merge core's ``sources[0]`` is the group's
+    #: first-seen member).
+    genres: list[str] = Field(default_factory=list)
     #: Per-provider ``SearchResult`` rows that collapsed into this
     #: group. Always non-empty (an empty group was dropped upstream).
     #: Order = first-seen in the merge pass; the first source also
@@ -172,6 +182,9 @@ class ContentResponse(BaseModel):
     #: memory records anchor on this, not on the provider-scoped id.
     group_key: str = ""
     styles: frozenset[MediaStyle] = Field(default_factory=_empty_styles)
+    #: Genre labels (ticket #213) — mirrors ``SearchResult.genres`` so
+    #: the detail surface and the genre shelf share one source.
+    genres: list[str] = Field(default_factory=list)
 
     @field_serializer("styles")
     def _ser_styles(self, value: frozenset[MediaStyle]) -> list[str]:
@@ -301,6 +314,9 @@ class HomeItem(BaseModel):
     # decided tag set (∅ = ordinary). The legacy ``type`` axis is gone.
     form: MediaForm
     styles: frozenset[MediaStyle] = Field(default_factory=_empty_styles)
+    #: Genre labels from the contributing card(s) (ticket #213), unioned
+    #: across sources like ``styles`` — first-seen order preserved.
+    genres: list[str] = Field(default_factory=list)
     #: Provider ids that contributed this row. Always non-empty (a row
     #: with zero providers was dropped upstream). Order = round-robin
     #: visit order across providers; first-seen wins for the title

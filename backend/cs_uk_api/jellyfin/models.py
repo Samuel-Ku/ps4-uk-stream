@@ -99,6 +99,14 @@ class BaseItemDto(BaseModel):
     SeriesId: str | None = None
     SeriesName: str | None = None
     PlaybackPositionTicks: int | None = None
+    #: Genre shelf (ticket #213): the genre name as both Id and Name
+    #: (Jellyfin's own convention — genre ids ARE the names), and
+    #: ChildCount = how many cards of the view carry the genre.
+    ChildCount: int | None = None
+    #: Free-form genre labels on an item (ticket #213) — the detail
+    #: surface renders them (``media_movie``/``media_series`` show a
+    #: ``labelGenres`` row when non-empty).
+    Genres: list[str] = Field(default_factory=list)
 
 
 class BaseItemDtoQueryResult(BaseModel):

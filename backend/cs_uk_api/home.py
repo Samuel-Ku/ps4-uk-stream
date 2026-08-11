@@ -148,6 +148,7 @@ def round_robin_dedup(
                 # other canonical fields.
                 form=sample.form,
                 styles=sample.styles,
+                genres=list(sample.genres),
                 providers=providers,
                 member_keys=member_keys,
             )

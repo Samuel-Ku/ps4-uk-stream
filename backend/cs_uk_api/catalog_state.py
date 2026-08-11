@@ -832,6 +832,7 @@ async def merged_search(
             # canonical fields.
             form=mg.sources[0].form,
             styles=mg.sources[0].styles,
+            genres=list(mg.sources[0].genres),
             sources=list(mg.sources),
             # Issue #89: every per-item group key that contributed to
             # this merged card. Deduped, first-seen order. The canonical
