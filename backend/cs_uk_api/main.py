@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 import cs_uk_api.providers._registry  # noqa: F401
 
+from . import watchdog as watchdog_mod
 from .cache import TtlCache
 from .catalog_state import _GATE_CHECK_TIMEOUT_S, resolve_group
 from .catalog_state import await_uakino_ready as _await_uakino_ready
@@ -98,6 +99,29 @@ _WARM_TASK_DRAIN_S: float = 1.0
 #: Handle of the background warm+heartbeat task started by ``lifespan``.
 _warm_task: asyncio.Task[None] | None = None
 
+#: Handle of the background watchdog task started by ``lifespan``
+#: (ticket #215).
+_watchdog_task: asyncio.Task[None] | None = None
+
+#: Watchdog tick period: how often the all-providers-down check runs.
+_WATCHDOG_INTERVAL_S: float = 60.0
+
+
+async def _watchdog_loop() -> None:
+    """Periodic all-providers-down check (ticket #215).
+
+    Scheduled once by ``lifespan``. Each tick asks the shared watchdog
+    whether EVERY non-marker provider is down simultaneously and, if so,
+    resets the shared httpx client (cooldown-gated). A tick failure must
+    never kill the loop — log and move on.
+    """
+    while True:
+        await asyncio.sleep(_WATCHDOG_INTERVAL_S)
+        try:
+            await watchdog_mod.WATCHDOG.check_and_reset()
+        except Exception:
+            log.exception("watchdog tick failed")
+
 
 async def _warm_and_heartbeat() -> None:
     """Background uakino warm + heartbeat (issue #193/#195).
@@ -125,13 +149,24 @@ async def _warm_and_heartbeat() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global _warm_task
+    global _warm_task, _watchdog_task
     if os.path.exists(DEFAULT_CHROMIUM):
         # Background warm+heartbeat (issue #193): uakino's browser session
         # is brought up once at startup instead of lazily on first request,
         # so its health is known before a client asks for it.
         _warm_task = asyncio.create_task(_warm_and_heartbeat())
+    # Background watchdog (ticket #215): a long-running process can lose
+    # ALL outbound connectivity while caches still serve 200s; this loop
+    # detects every-provider-down and resets the shared httpx client.
+    _watchdog_task = asyncio.create_task(_watchdog_loop())
     yield
+    if _watchdog_task is not None:
+        _watchdog_task.cancel()
+        try:
+            await asyncio.wait_for(_watchdog_task, timeout=1.0)
+        except (TimeoutError, asyncio.CancelledError):
+            pass
+        _watchdog_task = None
     if _warm_task is not None:
         _warm_task.cancel()
         try:
@@ -189,6 +224,31 @@ async def unhandled(_request: Request, exc: Exception) -> JSONResponse:
         status_code=500,
         content=ErrorResponse(error="internal", message=str(exc)).model_dump(),
     )
+
+
+@app.get("/api/health")
+async def health() -> dict[str, object]:
+    """Backend + provider health snapshot (ticket #215).
+
+    Returns per-provider status (the same ``/api/providers`` view),
+    whether ALL non-marker providers are simultaneously down (the wedge
+    signal — never a legit steady state), and the watchdog's reset
+    counter/last-reset time so an external supervisor can decide to
+    restart the process.
+    """
+    statuses = {
+        p.id: _provider_status(p.id)
+        for p in PROVIDERS.values()
+    }
+    return {
+        "providers": statuses,
+        "all_down": watchdog_mod.WATCHDOG.all_relevant_down(),
+        "watchdog": {
+            "reset_count": watchdog_mod.WATCHDOG.reset_count,
+            "last_reset_at": watchdog_mod.WATCHDOG.last_reset_at,
+            "cooldown_s": watchdog_mod.WATCHDOG.cooldown_s,
+        },
+    }
 
 
 @app.get("/api/providers")
