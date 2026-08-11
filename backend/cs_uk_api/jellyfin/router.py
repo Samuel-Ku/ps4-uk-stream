@@ -289,6 +289,33 @@ def _item_dto(row: HomeRow, item: HomeItem, server_id: str) -> BaseItemDto:
     return dto
 
 
+def _home_items() -> list[tuple[HomeRow, HomeItem]]:
+    """Every (row, item) pair in the cached home snapshot, or [].
+
+    Deliberately does NOT trigger a home build — a read that would fan
+    out to every provider belongs to the detail/list routes, not to
+    cheap snapshot lookups (poster, similar shelf).
+    """
+    home = get_home()
+    if home is None:
+        return []
+    return [(row, it) for row in home.rows for it in row.items]
+
+
+def _genres_for_group(group_key: str) -> list[str]:
+    """The snapshot card's genres for a ``g2:`` item, or [] (ticket #219).
+
+    The card parser (#213) harvests genre labels that the content page
+    often does not repeat — ufdub's ``div.short-c`` lists them while the
+    detail page carries only a description. The detail DTO falls back to
+    this so the genre row renders where the data exists.
+    """
+    for _row, it in _home_items():
+        if it.group_key == group_key:
+            return list(it.genres)
+    return []
+
+
 def _poster_for(item_id: str) -> str | None:
     """The canonical poster URL for a ``g2:`` item id, or None.
 
@@ -346,8 +373,11 @@ def _content_dto(group_key: str, content: ContentResponse, server_id: str) -> Ba
         Overview=content.description,
         # Ticket #213: the detail page renders a genre row when present
         # (Switchfin ``media_movie``/``media_series`` show labelGenres
-        # iff non-empty).
-        Genres=list(content.genres),
+        # iff non-empty). Ticket #219: the content page often does NOT
+        # repeat the card's genres (ufdub lists them on the card only) —
+        # fall back to the snapshot card's genres so the row renders
+        # where the data exists.
+        Genres=list(content.genres or _genres_for_group(group_key)),
     )
     parent = _view_id_for_item(group_key)
     if parent is not None:
@@ -1406,17 +1436,40 @@ async def playback_info(item_id: str) -> PlaybackInfoResponse:
     response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
-async def item_similar(item_id: str) -> BaseItemDtoQueryResult:
-    """Similar-shelf — always empty.
+async def item_similar(
+    item_id: str,
+    limit: int = Query(default=12),
+) -> BaseItemDtoQueryResult:
+    """Similar-shelf — same-genre cards from the cached snapshot (#218).
 
-    The facade has no similarity metadata, so the shelf is deliberately
-    empty. The answer is a full ``BaseItemDtoQueryResult`` envelope:
-    Switchfin parses every list response as ``Result<T>`` with
+    The app fires this on every movie/series detail page; it used to
+    answer a deliberately empty shelf. With genre metadata (#213) the
+    snapshot can answer it: cards sharing at least one genre with the
+    item, in the same Movie/Series + g2: + ImageTags shape as the view
+    grid, the item itself excluded, capped at ``limit`` (the client asks
+    for 12). A genre-less item or a cold snapshot stays an empty shelf.
+
+    The full ``BaseItemDtoQueryResult`` envelope is required: Switchfin
+    parses every list response as ``Result<T>`` with
     ``NLOHMANN_JSON_FROM`` (no defaults), so a missing ``StartIndex``
-    raised ``out_of_range.403`` on the console — this endpoint fired on
-    every movie/series detail page before the envelope was completed.
+    raised ``out_of_range.403`` on the console.
     """
-    return BaseItemDtoQueryResult()
+    wanted = set(_genres_for_group(item_id))
+    if not wanted:
+        return BaseItemDtoQueryResult()
+    server_id = _server_id()
+    dtos: list[BaseItemDto] = []
+    seen: set[str] = set()
+    for row, it in _home_items():
+        if it.group_key == item_id or it.group_key in seen:
+            continue
+        if not (set(it.genres) & wanted):
+            continue
+        seen.add(it.group_key)
+        dtos.append(_item_dto(row, it, server_id))
+        if len(dtos) >= limit:
+            break
+    return BaseItemDtoQueryResult(Items=dtos, TotalRecordCount=len(dtos))
 
 
 @router.get(

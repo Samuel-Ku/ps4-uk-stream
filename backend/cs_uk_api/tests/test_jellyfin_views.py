@@ -56,6 +56,7 @@ def _item(
     *,
     n: str = "1",
     poster: str | None = None,
+    genres: list[str] | None = None,
 ) -> SearchResult:
     mb_form, mb_styles = model_b_axes(cast(Any, media_type))
     return SearchResult(
@@ -67,6 +68,7 @@ def _item(
         year=year,
         poster=poster,
         url=f"https://{pid}.example/{n}",
+        genres=genres or [],
     )
 
 
@@ -376,6 +378,157 @@ def test_items_listing_unknown_parent_is_empty(client: TestClient) -> None:
     )
     assert r.status_code == 200
     assert r.json() == {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
+
+
+def _genres_seed() -> _ViewsStub:
+    """A snapshot where movies carry genre labels (#213).
+
+    Same-genre pairs so the Similar shelf has something to return: Дюна
+    and Війна share «Екшн», Дюна and Інтерстеллар share «Фантастика»,
+    Сокіл is genre-less (never similar)."""
+    return _ViewsStub(
+        "animeon",
+        newest_section="page",
+        newest=[
+            _item("animeon", "Дюна", "movie", 2021, n="1",
+                  genres=["Екшн", "Фантастика"], poster=_POSTER_MOVIE),
+            _item("animeon", "Війна", "movie", 2019, n="2", genres=["Екшн"]),
+        ],
+        sections=(
+            Section(id="movie", title="Фільми", form="movie"),
+        ),
+        by_section={
+            "movie": [
+                _item("animeon", "Дюна", "movie", 2021, n="1",
+                      genres=["Екшн", "Фантастика"], poster=_POSTER_MOVIE),
+                _item("animeon", "Інтерстеллар", "movie", 2014, n="2",
+                      genres=["Фантастика"]),
+                _item("animeon", "Сокіл", "movie", 2019, n="3"),
+            ],
+        },
+    )
+
+
+def test_items_similar_returns_same_genre_cards(client: TestClient) -> None:
+    """#218: the Similar shelf serves same-genre cards from the snapshot.
+
+    The app fires ``/Items/{gk}/Similar`` on every detail page; the
+    shelf was deliberately empty. With genres (#213) the snapshot can
+    answer it: cards sharing at least one genre, in the same Movie/
+    Series + g2: + ImageTags shape as the view grid, the item itself
+    excluded."""
+    PROVIDERS["animeon"] = _genres_seed()
+    _auth(client)
+    movie_view = _view_id("Фільми", _views(client))
+    by_name = {i["Name"]: i for i in _items(client, movie_view)}
+    dune_gk = by_name["Дюна"]["Id"]
+
+    r = client.get(f"/Items/{dune_gk}/Similar", headers={"X-Emby-Token": TOKEN})
+    assert r.status_code == 200
+    body = r.json()
+    names = {i["Name"] for i in body["Items"]}
+    # Війна (Екшн) and Інтерстеллар (Фантастика) both share a genre
+    assert names == {"Війна", "Інтерстеллар"}
+    assert "Дюна" not in names  # the item itself is excluded
+    assert all(i["Type"] == "Movie" for i in body["Items"])
+    assert all(i["Id"].startswith("g2:") for i in body["Items"])
+    assert body["TotalRecordCount"] == 2
+
+
+def test_items_similar_respects_limit(client: TestClient) -> None:
+    """#218: ``limit`` caps the shelf (the app asks for 12)."""
+    PROVIDERS["animeon"] = _genres_seed()
+    _auth(client)
+    movie_view = _view_id("Фільми", _views(client))
+    by_name = {i["Name"]: i for i in _items(client, movie_view)}
+    dune_gk = by_name["Дюна"]["Id"]
+
+    r = client.get(
+        f"/Items/{dune_gk}/Similar",
+        params={"limit": 1},
+        headers={"X-Emby-Token": TOKEN},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["Items"]) == 1
+    assert body["TotalRecordCount"] == 1
+
+
+def test_items_similar_genre_less_item_is_empty(client: TestClient) -> None:
+    """#218: a genre-less item (no similarity metadata) stays an empty
+    shelf — the same tolerant envelope, not an error."""
+    PROVIDERS["animeon"] = _genres_seed()
+    _auth(client)
+    movie_view = _view_id("Фільми", _views(client))
+    by_name = {i["Name"]: i for i in _items(client, movie_view)}
+    falcon_gk = by_name["Сокіл"]["Id"]
+
+    r = client.get(f"/Items/{falcon_gk}/Similar", headers={"X-Emby-Token": TOKEN})
+    assert r.status_code == 200
+    assert r.json() == {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
+
+
+def test_items_similar_unknown_item_is_empty(client: TestClient) -> None:
+    """#218: an unknown g2: id (not in the snapshot) is an empty shelf."""
+    PROVIDERS["animeon"] = _genres_seed()
+    _auth(client)
+    r = client.get(
+        "/Items/g2:0000000000000000/Similar",
+        headers={"X-Emby-Token": TOKEN},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
+
+
+def test_detail_genres_fall_back_to_snapshot_card(client: TestClient) -> None:
+    """#219: the detail DTO's Genres fall back to the snapshot card's
+    genres when the resolved content page carries none — the genre row
+    must render wherever the card parser (#213) found them.
+    """
+    PROVIDERS["animeon"] = _genres_seed()
+    _auth(client)
+    movie_view = _view_id("Фільми", _views(client))
+    by_name = {i["Name"]: i for i in _items(client, movie_view)}
+    dune_gk = by_name["Дюна"]["Id"]
+    # the resolved content carries NO genres (ufdub-style: the card lists
+    # them, the detail page does not) — the DTO must fall back to the card
+    content_cache.set(
+        "content:animeon:1",
+        ContentResponse(
+            id="animeon:1",
+            title="Дюна",
+            year=2021,
+            form="movie",
+            translations=[Translation(id="uk", label="Українська")],
+        ),
+    )
+
+    r = client.get(
+        f"/Users/{USER}/Items/{dune_gk}",
+        headers={"X-Emby-Token": TOKEN},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body["Genres"]) == {"Екшн", "Фантастика"}
+
+    # a genre-less card stays genre-less on the detail too
+    falcon_gk = by_name["Сокіл"]["Id"]
+    content_cache.set(
+        "content:animeon:3",
+        ContentResponse(
+            id="animeon:3",
+            title="Сокіл",
+            year=2019,
+            form="movie",
+            translations=[Translation(id="uk", label="Українська")],
+        ),
+    )
+    r = client.get(
+        f"/Users/{USER}/Items/{falcon_gk}",
+        headers={"X-Emby-Token": TOKEN},
+    )
+    assert r.status_code == 200
+    assert r.json()["Genres"] == []
 
 
 def test_items_listing_requires_token(client: TestClient) -> None:
