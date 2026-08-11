@@ -807,6 +807,87 @@ probe. Tests: 931 pass, ruff/mypy clean (only pre-existing findings).
     «Ми з тобою — повні протилежності» епізоди 1-2 → Святвечір
     (2026-07-05), Дилема зимової ночі (2026-07-12).
 
+## Device-state battles (2026-08-11, runs 9-11) — the phone must be UNWEDGED before a run
+
+Runs 9/9b/9c failed NOT because of the code but because the phone's
+SystemUI was wedged:
+
+- **Stuck NotificationShade**: the shade window held focus and covered
+  the app; `cmd statusbar collapse`, `KEYCODE_BACK`, swipe-up, and
+  `CLOSE_SYSTEM_DIALOGS` all failed to dismiss it. The app relaunched
+  BEHIND the shade and never made a request → `restart_app` timed out.
+- **Pocket mode**: the proximity sensor thought the phone was covered
+  ("Pocket mode is on… long press power to force quit") — only a
+  `input keyevent --longpress KEYCODE_POWER` dismisses it, and it
+  re-engages.
+- The screen kept dozing despite a 30-min `screen_off_timeout`.
+
+Remedy that worked (in order): `adb reboot` → wait for boot →
+`KEYCODE_SLEEP` + `KEYCODE_WAKEUP` cycle → `wm dismiss-keyguard` +
+`cmd statusbar collapse` → the app's server screen appeared clean.
+Fixes baked into the runner: per-step `Adb.wake()` (wake + keyguard),
+`Adb.keep_screen_on()` (pin `screen_off_timeout` to max for the run,
+restore after — `066046b`), and `find_views_grid` now tolerates
+non-landscape frames instead of IndexErroring (`39e944e`).
+
+If a run fails with zero phone requests, check the focus FIRST:
+`adb shell dumpsys window | grep mCurrentFocus` must NOT be
+`NotificationShade`, and the screen must be awake.
+
+## Popular-view flake (2026-08-11, run7+run8) — ROOT CAUSE + FIXED (#224)
+
+Two consecutive runs failed on the SAME popular first card — «Реінкарнація
+безробітного» (`animeon:7333`) — in two different failure modes:
+
+- **run7**: `play_popular` — the first-ever `/Shows/Seasons` resolution
+  took **37,165 ms** (cold full episode walk, 59 upstream fetches across
+  two retry rounds under animeon throttling) → the step deadline expired
+  and the app rendered an **empty `| Seasons` rail** (placeholder tiles).
+- **run8**: `open_first_card_popular` — animeon answered **502** for both
+  retry attempts → the detail handler 404'd → the step's expected `200`
+  never came. The app fired Seasons+detail for the same card in parallel,
+  re-resolving the key 4× in ~2s (4 upstream hits per failed open).
+
+Root cause chain (evidence in `backend-open_first_card_popular.txt`): the
+card was NOT in the warm's `content_cache` because at warm time animeon was
+`unreachable` — and the warm masked it: `catalog warm done: content_warmed=5
+failed=0` while the popular first card stayed cold (a provider-error `None`
+is indistinguishable from a legit unavailable verdict).
+
+Fix (`b8f94ed`, #224):
+
+- `resolve_group_content` is now **single-flight** per cache key — the app's
+detail+seasons+playback burst shares ONE upstream resolution and its verdict
+(run8's 4-hit storm → 1).
+- `item_detail` **degrades to a card-data DTO** when the item IS a known
+home card but its live resolution failed transiently (title/type/year/
+genres/poster render from the card, mirroring the seasons rail's tolerant
+empty answer). Deliberate 404s — cold cache, unknown ids, gated/blocked,
+season suffixes — are preserved via the `is_hard_unavailable` guard.
+- the warm now reports `cold_keys` (which first cards stayed cold) via
+`/api/health.catalog_warm`, and the runner's `wait_for_backend` **gates the
+first step on the warm finishing** (`WARM_READY_TIMEOUT_S=300`, disabled-
+warm reports `done` so it never blocks).
+
+### Run #10 (2026-08-11, after #224 + device-unwedge) — **FULL PASS ✅**
+
+All 7 views green, including **Популярні зараз: play ✅** — the exact
+step that failed in run7/run8. The backend log shows the #224 package
+working under the exact run8 scenario: animeon was `unreachable` at
+warm time again (`content_warmed=4 failed=0` — now with the cold_keys
+report showing the popular card stayed cold), the runner's warmup
+retried and landed the detail in 31s, and the actual play step's
+Seasons answered in **1ms from the warm cache**. First resolution can
+be slow; every subsequent step is fast — single-flight + cached content
+absorbing the upstream flake.
+
+### Run #11 (2026-08-11) — **FULL PASS AGAIN ✅** (2 consecutive)
+
+Same result as run10 — all 7 views green, `play_popular` ✅ again.
+Two consecutive full passes satisfy #224's acceptance criterion
+(2+ consecutive runs); the flake that took down run7 (37s cold
+seasons) and run8 (502 → 404 detail) is closed.
+
 ## Running the suite (2026-08-10, codified)
 
 ```bash
