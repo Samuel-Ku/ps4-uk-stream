@@ -297,13 +297,19 @@ async def health() -> dict[str, object]:
                 "home_warmed": _catalog_warm_state.home_warmed,
                 "content_warmed": _catalog_warm_state.content_warmed,
                 "failed": _catalog_warm_state.failed,
+                "cold_keys": _catalog_warm_state.cold_keys,
             }
             if _catalog_warm_state is not None
             else {
-                "status": "pending",
+                # Ticket #224: a disabled warm (CS_UK_CATALOG_WARM=0) is
+                # NOT "pending" — it will never finish, so the runner's
+                # warm gate must not block on it. Report done: there is
+                # nothing to wait for.
+                "status": "done" if not SETTINGS.catalog_warm_enabled else "pending",
                 "home_warmed": False,
                 "content_warmed": 0,
                 "failed": 0,
+                "cold_keys": [],
             }
         ),
     }

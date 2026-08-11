@@ -160,6 +160,53 @@ async def test_warm_catalog_none_result_does_not_abort(
     assert state.status == "done"
 
 
+async def test_warm_catalog_reports_cold_first_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#224: a first card that resolves None — provider down at warm
+    time, gated, unresolvable — is listed in ``cold_keys`` so the
+    health endpoint and the runner can SEE the warm left a row cold.
+    run8's warm reported ``content_warmed=5 failed=0`` while the
+    popular first card stayed cold (animeon ``unreachable``), masking
+    the gap that 404'd the app's first-card tap."""
+    home = _home([["gk1"], ["gk2"], ["gk3"]])
+
+    async def fake_load_home() -> HomeResponse:
+        return home
+
+    async def none_resolve(gk: str) -> ContentResponse | None:
+        return None
+
+    monkeypatch.setattr(catalog_warm, "load_home", fake_load_home)
+    monkeypatch.setattr(catalog_warm, "resolve_group_content", none_resolve)
+
+    state = await catalog_warm.warm_catalog()
+
+    assert state.content_warmed == 0
+    assert state.cold_keys == ["gk1", "gk2", "gk3"]
+    assert state.status == "done"
+
+
+async def test_warm_catalog_success_lists_no_cold_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = _home([["gk1"], ["gk2"]])
+
+    async def fake_load_home() -> HomeResponse:
+        return home
+
+    async def ok_resolve(gk: str) -> ContentResponse | None:
+        return _content(gk)
+
+    monkeypatch.setattr(catalog_warm, "load_home", fake_load_home)
+    monkeypatch.setattr(catalog_warm, "resolve_group_content", ok_resolve)
+
+    state = await catalog_warm.warm_catalog()
+
+    assert state.content_warmed == 2
+    assert state.cold_keys == []
+
+
 # ---------------------------------------------------------------------- API
 
 def test_health_exposes_catalog_warm_state() -> None:

@@ -581,6 +581,52 @@ def test_detail_cached_second_request_no_upstream_call(
     assert len(stub.content_calls) == 1
 
 
+def test_known_card_detail_degrades_when_upstream_blips(
+    client: TestClient,
+) -> None:
+    """#224: a card that IS in the home snapshot but whose live
+    ``content()`` resolution fails transiently (upstream blip — run8:
+    animeon ``unreachable`` then 502) still answers the detail with the
+    card's own data instead of a hard 404 that blanks the page mid-run.
+    """
+    stub = _DetailStub(
+        cards=[_card("p1", "dune-1", "Дюна", "movie", poster=_POSTER_MOVIE)],
+        # content() raises ProviderError for every id — the transient
+        # upstream-failure path resolve_group_content retries and gives
+        # up on.
+        content_by_external={},
+    )
+    PROVIDERS["p1"] = stub
+    _auth(client)
+    gk = _movie_gk(client)
+
+    body = _get(client, f"/Items/{gk}", userId=USER)
+    # The card data still renders: title, type, year, poster tag.
+    assert body["Name"] == "Дюна"
+    assert body["Type"] == "Movie"
+    assert body["ProductionYear"] == 2021
+    assert body["ImageTags"]["Primary"]
+
+
+def test_degraded_detail_keeps_d2_404_for_hard_unavailable(
+    client: TestClient,
+) -> None:
+    """#224: the degraded card answer must NOT mask deliberate 404
+    verdicts. A cold cache (no home) and an unknown group key still 404
+    exactly as D2 prescribes."""
+    # cold cache — a g2: key with NO home snapshot and NO sources map:
+    # the guard must not degrade (there is no card to degrade to).
+    assert client.get("/Items/g2:0000000000000000", headers={"X-Emby-Token": TOKEN}).status_code == 404
+    # known home, unknown group key — same verdict
+    PROVIDERS["p1"] = _seed()
+    _auth(client)
+    assert client.get("/Items/g2:0000000000000000", headers={"X-Emby-Token": TOKEN}).status_code == 404
+    # a season-suffixed id never degrades to card data (no season info
+    # in a card)
+    gk = _serial_gk(client)
+    assert client.get(f"/Items/{gk}:S9", headers={"X-Emby-Token": TOKEN}).status_code == 404
+
+
 def test_hierarchy_requires_token(client: TestClient) -> None:
     assert client.get("/Items/g1:deadbeefdeadbeef").status_code == 401
     assert client.get("/Items", params={"parentId": "g1:deadbeefdeadbeef"}).status_code == 401

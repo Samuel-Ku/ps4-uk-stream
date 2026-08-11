@@ -26,7 +26,7 @@ before a client connected.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from .catalog_state import load_home, resolve_group_content
@@ -47,6 +47,14 @@ class CatalogWarmState:
     home_warmed: bool
     content_warmed: int
     failed: int
+    #: First-card group keys whose content was NOT in the cache after
+    #: the warm (ticket #224) — a provider-error None (upstream down at
+    #: warm time) is indistinguishable from a legit unavailable verdict
+    #: here, so the failed counter alone MASKED run8's cold popular
+    #: card (``content_warmed=5 failed=0`` while animeon was
+    #: unreachable). The health endpoint and the runner read this to
+    #: see which rows the warm actually covered.
+    cold_keys: list[str] = field(default_factory=list)
 
 
 def first_card_keys(home: HomeResponse, per_row: int = 1) -> list[str]:
@@ -77,7 +85,9 @@ async def warm_catalog(
     stops; a per-card resolve failure is counted and skipped (the card
     stays cold — the app's own retry / runner warmup still covers it).
     """
-    state = CatalogWarmState(status="warming", home_warmed=False, content_warmed=0, failed=0)
+    state = CatalogWarmState(
+        status="warming", home_warmed=False, content_warmed=0, failed=0,
+    )
     resolve = _resolve if _resolve is not None else resolve_group_content
     try:
         home = await load_home()
@@ -93,12 +103,17 @@ async def warm_catalog(
         except Exception:  # noqa: BLE001 — keep warming the other cards
             log.warning("catalog warm: card detail failed key=%s", gk)
             state.failed += 1
+            state.cold_keys.append(gk)
             continue
         if content is not None:
             # A non-None verdict means the provider's detail landed in
             # the content cache — the card is actually warm. None is a
             # legit "item unavailable" (gated/unresolvable) verdict:
-            # nothing to count, nothing to blame.
+            # nothing to count, nothing to blame — but the card IS
+            # cold, and the health endpoint must say so (#224: run8's
+            # warm masked a provider-down popular card behind failed=0).
             state.content_warmed += 1
+        else:
+            state.cold_keys.append(gk)
     state.status = "done"
     return state

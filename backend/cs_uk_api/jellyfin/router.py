@@ -41,6 +41,7 @@ from pydantic import BaseModel
 from ..catalog_state import (
     get_home,
     group_key_for_external,
+    is_hard_unavailable,
     load_home,
     merged_search,
     peek_group_content,
@@ -329,6 +330,52 @@ def _year_for_group(group_key: str) -> int | None:
         if it.group_key == group_key:
             return it.year
     return None
+
+
+def _card_for_group(group_key: str) -> HomeItem | None:
+    """The snapshot card for a ``g2:`` item, or None (ticket #224).
+
+    The degraded-detail lookup: when a card IS in the cached home but
+    its live resolution failed transiently (upstream blip), the card
+    itself still carries enough truth (title, year, genres, poster,
+    view) to answer the detail. None when the item is not in the
+    current home snapshot — a cold cache has no card, so the D2 404
+    stands.
+    """
+    for _row, it in _home_items():
+        if it.group_key == group_key:
+            return it
+    return None
+
+
+def _card_dto(group_key: str, card: HomeItem, server_id: str) -> BaseItemDto:
+    """Degraded detail built purely from the home snapshot card (#224).
+
+    The card-data counterpart of ``_content_dto``: a known card whose
+    live ``content()`` resolution failed transiently (run8: animeon
+    ``unreachable``/502 for the popular first card) still answers the
+    detail with the card's own data — title, type, year, genres,
+    poster tag, parent view — instead of a hard 404 that blanks the
+    whole page mid-run. Same lookups ``_content_dto`` falls back to
+    (#219 genres, #220 year, D9 poster). Deliberate 404s (cold cache,
+    gated, blocked, unknown ids, season suffixes) never reach here —
+    see ``is_hard_unavailable``.
+    """
+    dto = BaseItemDto(
+        Name=card.title,
+        ServerId=server_id,
+        Id=group_key,
+        Type="Movie" if card.form == "movie" else "Series",
+        ProductionYear=card.year,
+        Genres=list(card.genres),
+    )
+    parent = _view_id_for_item(group_key)
+    if parent is not None:
+        dto.ParentId = parent
+    poster = _poster_for(group_key)
+    if poster is not None:
+        dto.ImageTags = {"Primary": _poster_tag(poster)}
+    return dto
 
 
 def _poster_for(item_id: str) -> str | None:
@@ -1209,6 +1256,17 @@ async def item_detail(item_id: str) -> BaseItemDto:
     group_key, season_number = _split_season_suffix(item_id)
     content = await resolve_group_content(group_key)
     if content is None:
+        # Ticket #224: a card that IS in the home snapshot but whose
+        # live resolution failed transiently (upstream blip/throttle)
+        # answers with the card's own data instead of a hard 404 — the
+        # same tolerant degradation _hierarchy gives an empty rail. The
+        # deliberate 404s are untouched: a season suffix, an unknown or
+        # cold-cache key, and a gated/blocked verdict (is_hard_unavailable)
+        # all still 404 exactly as D2 prescribes.
+        if season_number is None and not is_hard_unavailable(group_key):
+            card = _card_for_group(group_key)
+            if card is not None:
+                return _card_dto(group_key, card, _server_id())
         raise HTTPException(status_code=404, detail="item_unavailable")
 
     if season_number is not None:

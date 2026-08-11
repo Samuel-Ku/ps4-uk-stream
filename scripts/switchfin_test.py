@@ -132,6 +132,14 @@ PROBE_TIMEOUT_S = 10.0
 READY_TIMEOUT_S = 30.0
 SHUTDOWN_WAIT_S = 5.0
 
+#: How long the runner waits for the backend's startup catalog warm to
+#: report ``done`` before the first step (ticket #224). The facade
+#: answers in ~1-2s while the warm scrapes every view's first card for
+#: minutes; steps issued mid-warm raced a 17-21s cold scrape. The warm
+#: is best-effort, so this is a gate, not a failure — see
+#: ``wait_for_backend``.
+WARM_READY_TIMEOUT_S = 300.0
+
 
 # --------------------------------------------------------------------------
 # steps.yaml / tap-coords.yaml parsing (pure, unit-testable)
@@ -553,18 +561,65 @@ def cold_start(log_path: Path, port: int) -> subprocess.Popen[bytes]:
         raise
 
 
-def wait_for_backend(host: str, port: int, timeout: float = READY_TIMEOUT_S) -> None:
-    """Poll an unauthenticated endpoint until uvicorn answers."""
+def _wait_for_catalog_warm(host: str, port: int, timeout: float) -> None:
+    """Gate the first step on the backend's startup catalog warm (#224).
+
+    The facade answers ``/System/Info/Public`` in ~1-2s, but the warm
+    scrapes each view's first-card detail chain for minutes; a step that
+    starts mid-warm races a 17-21s cold scrape inside an 8s window (B1).
+    Polls ``/api/health`` until ``catalog_warm.status`` is ``done`` or
+    ``failed`` (best-effort warm: a failed warm must not hold the run
+    forever — log and proceed). A backend without the gate (older build
+    or a health endpoint that errors) never blocks the run.
+    """
+    url = f"http://{host}:{port}/api/health"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=2) as resp:
+                if resp.status != 200:
+                    return  # no warm gate on this backend — don't block
+                body = json.loads(resp.read().decode())
+            cw = body.get("catalog_warm")
+            status = cw.get("status") if isinstance(cw, dict) else None
+            if status is None:
+                return  # older backend without the gate — don't block
+            if status in ("done", "failed"):
+                if status == "failed":
+                    print(
+                        "⚠ catalog warm failed — starting steps against a cold cache",
+                        file=sys.stderr,
+                    )
+                return
+            # "pending" / "warming" — keep waiting
+        except (urllib.error.URLError, OSError, ValueError):
+            return  # gate unreachable — never block a run on it
+        time.sleep(1.0)
+    raise RuntimeError(
+        f"catalog warm did not finish within {timeout:.0f}s — start steps manually"
+    )
+
+
+def wait_for_backend(
+    host: str,
+    port: int,
+    timeout: float = READY_TIMEOUT_S,
+    warm_timeout: float = WARM_READY_TIMEOUT_S,
+) -> None:
+    """Poll an unauthenticated endpoint until uvicorn answers, then wait
+    for the startup catalog warm to finish (ticket #224)."""
     url = f"http://{host}:{port}/System/Info/Public"
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
             with urllib.request.urlopen(url, timeout=2) as resp:
                 if resp.status == 200:
-                    return
+                    break
         except (urllib.error.URLError, OSError):
             time.sleep(0.5)
-    raise RuntimeError("backend did not become ready")
+    else:
+        raise RuntimeError("backend did not become ready")
+    _wait_for_catalog_warm(host, port, warm_timeout)
 
 
 def _stop_backend(proc: subprocess.Popen[bytes]) -> None:

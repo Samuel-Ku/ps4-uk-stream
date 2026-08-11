@@ -17,9 +17,10 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Self, cast
+from typing import Any, Self, cast
 from unittest import mock
 
 import pytest
@@ -1649,3 +1650,96 @@ def test_shipped_series_play_patterns_match_real_client_lines() -> None:
             f"{tap.tap}: no expect matches the real client's {real_line!r} "
             f"(patterns: {patterns!r})"
         )
+
+
+# --------------------------------------------------------------------------
+# wait_for_backend warm gate (#224)
+# --------------------------------------------------------------------------
+
+
+class _WarmGateHandler(BaseHTTPRequestHandler):
+    """Serves the facade-ready route plus a scriptable /api/health warm
+    status; class attributes carry the script between calls."""
+
+    #: queue of warm statuses to serve, consumed one per /api/health poll
+    statuses: list[str] = []
+    polls: int = 0
+
+    def do_GET(self) -> None:
+        if self.path.startswith("/System/Info/Public"):
+            body = b"{}"
+        elif self.path.startswith("/api/health"):
+            type(self).polls += 1
+            status = type(self).statuses.pop(0) if type(self).statuses else "done"
+            body = json.dumps({"catalog_warm": {"status": status}}).encode()
+        else:
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, _fmt: str, *args: Any) -> None:
+        pass  # keep the test output quiet
+
+
+@pytest.fixture()
+def _warm_gate_server() -> Iterator[tuple[int, type[_WarmGateHandler]]]:
+    """A ThreadingHTTPServer on an ephemeral port serving the warm-gate
+    script; resets the script between tests."""
+    _WarmGateHandler.statuses = []
+    _WarmGateHandler.polls = 0
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _WarmGateHandler)
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield srv.server_address[1], _WarmGateHandler
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        thread.join(timeout=2.0)
+
+
+def test_wait_for_backend_gates_on_warm_completion(
+    _warm_gate_server: tuple[int, type[_WarmGateHandler]],
+) -> None:
+    """#224: wait_for_backend must not start the steps while the catalog
+    warm is still running — it polls /api/health until the warm reports
+    done (a fresh backend answers the facade in ~1s while the warm runs
+    minutes; steps issued mid-warm raced a 17-21s cold scrape)."""
+    from scripts import switchfin_test as st
+
+    port, handler = _warm_gate_server
+    handler.statuses = ["warming", "warming", "done"]
+    st.wait_for_backend("127.0.0.1", port, timeout=5.0, warm_timeout=10.0)
+    assert handler.polls >= 2  # polled health at least until it saw done
+
+
+def test_wait_for_backend_raises_when_warm_never_done(
+    _warm_gate_server: tuple[int, type[_WarmGateHandler]],
+) -> None:
+    """#224: a warm stuck in warming/pending for the whole budget is a
+    hard failure, not a silent proceed-into-the-storm."""
+    from scripts import switchfin_test as st
+
+    port, handler = _warm_gate_server
+    handler.statuses = ["warming"] * 1000
+    with pytest.raises(RuntimeError, match="catalog warm"):
+        st.wait_for_backend("127.0.0.1", port, timeout=5.0, warm_timeout=0.5)
+
+
+def test_wait_for_backend_skips_gate_when_warm_disabled(
+    _warm_gate_server: tuple[int, type[_WarmGateHandler]],
+) -> None:
+    """#224: an older/disabled backend whose health lacks a live warm
+    gate must not block the run — done is reported for the disabled
+    state and the gate returns immediately."""
+    from scripts import switchfin_test as st
+
+    port, handler = _warm_gate_server
+    handler.statuses = ["done"]
+    st.wait_for_backend("127.0.0.1", port, timeout=5.0, warm_timeout=10.0)
+    assert handler.polls >= 1

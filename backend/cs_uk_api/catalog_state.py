@@ -511,6 +511,16 @@ def peek_group_content(group_key: str) -> ContentResponse | None:
     return cast(ContentResponse, cached)
 
 
+#: Single-flight guard for ``resolve_group_content`` (ticket #224): a
+#: per-cache-key task so concurrent facade calls for the SAME item — the
+#: app fires detail + seasons + episodes + playback in one tick — share
+#: ONE upstream resolution and its verdict instead of N parallel
+#: re-resolves (run8 re-hit animeon 4x in ~2s during a 502 storm; run7's
+#: cold walk ballooned to 59 fetches across two retry rounds). The map
+#: is bounded: each entry is removed once its task finishes.
+_resolve_inflight: dict[str, asyncio.Task[ContentResponse | None]] = {}
+
+
 async def resolve_group_content(group_key: str) -> ContentResponse | None:
     """Resolve a ``g2:`` group key to ONE provider's content detail.
 
@@ -527,6 +537,11 @@ async def resolve_group_content(group_key: str) -> ContentResponse | None:
     unavailable" 404) or the provider's ``content()`` raises (the facade
     degrades to 404; it never surfaces a 502 like a native route would —
     Jellyfin clients treat both as "skip this item").
+
+    Single-flight (#224): concurrent callers for the same key wait for
+    the first resolution and share its verdict (success OR failure) — a
+    failed leader means the waiters return None without re-storming the
+    upstream.
     """
     per_provider = resolve_group(group_key)
     if per_provider is None:
@@ -537,6 +552,44 @@ async def resolve_group_content(group_key: str) -> ContentResponse | None:
     provider_id, item = next(iter(per_provider.items()))
     _, _, external_id = item.id.partition(":")
     cache_key = f"content:{provider_id}:{external_id}"
+    # Single-flight (#224): if a resolution for this key is already
+    # in flight, share ITS verdict (success or failure) instead of
+    # re-storming the upstream in parallel — the app fires detail +
+    # seasons + episodes + playback for one item in the same tick, and
+    # duplicate walks are what stretched run7's cold resolution and
+    # multiplied run8's 502s. The map entry is created synchronously
+    # (no await between the get and the set), so two callers in the
+    # same event-loop tick can never both become leader.
+    existing = _resolve_inflight.get(cache_key)
+    if existing is not None:
+        return await existing
+    task = asyncio.create_task(
+        _resolve_group_content_once(
+            cache_key, group_key, provider_id, external_id,
+        )
+    )
+    _resolve_inflight[cache_key] = task
+    try:
+        return await task
+    finally:
+        # Drop the guard once the burst is over (bounded memory); a
+        # later, genuinely new request starts a fresh resolution.
+        if _resolve_inflight.get(cache_key) is task:
+            _resolve_inflight.pop(cache_key, None)
+
+
+async def _resolve_group_content_once(
+    cache_key: str,
+    group_key: str,
+    provider_id: str,
+    external_id: str,
+) -> ContentResponse | None:
+    """One leader resolution for ``cache_key`` (single-flight, #224).
+
+    Re-checks the caches under the guard: a previous burst may have
+    landed a verdict between the caller's first check and the task
+    starting. Mirrors the body of the pre-#224 ``resolve_group_content``.
+    """
     if gated_cache.get(cache_key) is True:
         return None
     if blocklist_cache.get(cache_key) is not None:
@@ -556,11 +609,12 @@ async def resolve_group_content(group_key: str) -> ContentResponse | None:
             break
         except ProviderError as e:
             if e.code == "gated":
-                # ADR-0002: a gated verdict never moves the health tracker.
-                # Cache it so every later group-key call short-circuits —
-                # the load_home sweep normally populates `gated_cache`
-                # first, but a cold-cache g2: detail call must not record a
-                # health-down here either (#139).
+                # ADR-0002: a gated verdict never moves the health
+                # tracker. Cache it so every later group-key call
+                # short-circuits — the load_home sweep normally
+                # populates `gated_cache` first, but a cold-cache g2:
+                # detail call must not record a health-down here either
+                # (#139).
                 gated_cache.set(cache_key, True)
                 return None
             last_err = e
@@ -591,6 +645,27 @@ async def resolve_group_content(group_key: str) -> ContentResponse | None:
     resp.group_key = group_key
     content_cache.set(cache_key, resp)
     return resp
+
+
+def is_hard_unavailable(group_key: str) -> bool:
+    """True when a group key is DELIBERATELY unavailable — gated
+    (subscription), blocklisted (Russian content), or unknown — as
+    opposed to transiently unresolvable (an upstream blip).
+
+    Ticket #224: the facade detail route uses this to decide between a
+    degraded card answer (a known card whose live resolution failed
+    should still render) and the D2 404 — a gated/blocked verdict must
+    NEVER be masked by the degradation.
+    """
+    per_provider = resolve_group(group_key)
+    if per_provider is None:
+        return True  # unknown group — the cold-cache 404 stands
+    provider_id, item = next(iter(per_provider.items()))
+    _, _, external_id = item.id.partition(":")
+    cache_key = f"content:{provider_id}:{external_id}"
+    if gated_cache.get(cache_key) is True:
+        return True
+    return blocklist_cache.get(cache_key) is not None
 
 
 def should_skip_uakino_in_fanout() -> bool:
