@@ -105,6 +105,27 @@ def _type_from_url(href: str) -> str:
     return "series"  # safe default
 
 
+def _extract_year(soup: BeautifulSoup) -> int | None:
+    """Parse the content page's ``Рік:`` block (ticket #220).
+
+    ``div.fi-col-item`` rows are ``<span>Label:</span> <a>value</a>``;
+    the year row links to ``/xfsearch/year/<N>/``. The listing card
+    exposes no year — the content page is the only source for ufdub.
+    Returns None when the page carries no year (the meta block is
+    optional upstream).
+    """
+    for item in soup.select("div.full-info .fi-col-item"):
+        label = item.select_one("span")
+        link = item.select_one("a")
+        if label is None or link is None:
+            continue
+        if label.get_text(strip=True).rstrip(":").strip().lower() != "рік":
+            continue
+        text = link.get_text(strip=True)
+        return int(text) if text.isdigit() else None
+    return None
+
+
 def _section_url(section: str, page: int) -> str:
     paths = {
         "filmy": "/film/",
@@ -270,6 +291,7 @@ class UFDubProvider(BaseProvider):
             raise ProviderError(
                 "gated", "no playable media on player page"
             )
+        year = _extract_year(soup)
         seasons: list[Season] | None = None
         if media_type in ("series", "anime", "dorama"):
             seasons = [Season(number=1, episodes=[
@@ -286,6 +308,7 @@ class UFDubProvider(BaseProvider):
             seasons=seasons,
             form=mb_form,
             styles=mb_styles,
+            year=year,
         )
 
     @staticmethod

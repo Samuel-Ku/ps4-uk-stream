@@ -511,6 +511,67 @@ def test_detail_genres_fall_back_to_snapshot_card(client: TestClient) -> None:
     body = r.json()
     assert set(body["Genres"]) == {"Екшн", "Фантастика"}
 
+
+def test_detail_production_year_falls_back_to_snapshot_card(client: TestClient) -> None:
+    """#220: the detail DTO's ProductionYear falls back to the snapshot
+    card's year when the resolved content page carries none — the year
+    badge must render wherever either source exposes it."""
+    PROVIDERS["animeon"] = _genres_seed()
+    _auth(client)
+    movie_view = _view_id("Фільми", _views(client))
+    by_name = {i["Name"]: i for i in _items(client, movie_view)}
+    dune_gk = by_name["Дюна"]["Id"]
+    # the resolved content carries NO year (a provider whose content
+    # page lacks the meta block) — the DTO must fall back to the card's
+    # 2021 (the seed's card year)
+    content_cache.set(
+        "content:animeon:1",
+        ContentResponse(
+            id="animeon:1",
+            title="Дюна",
+            year=None,
+            form="movie",
+            translations=[Translation(id="uk", label="Українська")],
+        ),
+    )
+
+    r = client.get(
+        f"/Users/{USER}/Items/{dune_gk}",
+        headers={"X-Emby-Token": TOKEN},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ProductionYear"] == 2021
+
+
+def test_detail_production_year_content_wins_when_present(client: TestClient) -> None:
+    """#220: when the content page DOES carry a year (ufdub's ``Рік:``
+    block), it wins over the snapshot card's — the content page is the
+    truth, the card the cheap guess."""
+    PROVIDERS["animeon"] = _genres_seed()
+    _auth(client)
+    movie_view = _view_id("Фільми", _views(client))
+    by_name = {i["Name"]: i for i in _items(client, movie_view)}
+    dune_gk = by_name["Дюна"]["Id"]
+    content_cache.set(
+        "content:animeon:1",
+        ContentResponse(
+            id="animeon:1",
+            title="Дюна",
+            year=1984,
+            form="movie",
+            translations=[Translation(id="uk", label="Українська")],
+        ),
+    )
+
+    r = client.get(
+        f"/Users/{USER}/Items/{dune_gk}",
+        headers={"X-Emby-Token": TOKEN},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ProductionYear"] == 1984
+
     # a genre-less card stays genre-less on the detail too
     falcon_gk = by_name["Сокіл"]["Id"]
     content_cache.set(

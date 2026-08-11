@@ -316,6 +316,20 @@ def _genres_for_group(group_key: str) -> list[str]:
     return []
 
 
+def _year_for_group(group_key: str) -> int | None:
+    """The snapshot card's year for a ``g2:`` item, or None (ticket #220).
+
+    Mirrors ``_genres_for_group``: a provider whose content page lacks
+    the year meta block still gets the badge when the card carried a
+    year. The content page wins when it has one — the card is the cheap
+    guess.
+    """
+    for _row, it in _home_items():
+        if it.group_key == group_key:
+            return it.year
+    return None
+
+
 def _poster_for(item_id: str) -> str | None:
     """The canonical poster URL for a ``g2:`` item id, or None.
 
@@ -369,7 +383,13 @@ def _content_dto(group_key: str, content: ContentResponse, server_id: str) -> Ba
         ServerId=server_id,
         Id=group_key,
         Type="Movie" if content.form == "movie" else "Series",
-        ProductionYear=content.year,
+        # Ticket #220: the content page carries the year when the
+        # provider exposes one (ufdub's ``Рік:`` block); otherwise fall
+        # back to the snapshot card's year so the badge renders where
+        # either source has the data.
+        ProductionYear=content.year
+        if content.year is not None
+        else _year_for_group(group_key),
         Overview=content.description,
         # Ticket #213: the detail page renders a genre row when present
         # (Switchfin ``media_movie``/``media_series`` show labelGenres

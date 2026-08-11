@@ -178,6 +178,50 @@ async def test_ufdub_content_movie_parses_title_poster():
 
 
 @pytest.mark.asyncio
+async def test_ufdub_content_parses_year_from_full_info():
+    """Ticket #220: the content page carries a ``div.fi-col-item`` block
+    ("Рік: <a href="/xfsearch/year/1993/">1993</a>") — parse it into
+    ``ContentResponse.year`` so the detail DTO's ProductionYear renders.
+    The listing card exposes no year, so the content page is the only
+    source for ufdub."""
+    content_html = _fixture("content_movie.html")
+    player_html = _fixture("player.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ufdub.com/film/48-fokus-pokus-hocus-pocus.html").respond(
+            200, text=content_html
+        )
+        router.get(
+            "https://video.ufdub.com/AT/VP.php?ID=2780",
+            headers={"Referer": "https://ufdub.com/"},
+        ).respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            c = await UFDubProvider().content("film-48-fokus-pokus-hocus-pocus", http)
+    assert c.year == 1993
+
+
+@pytest.mark.asyncio
+async def test_ufdub_content_year_absent_stays_none():
+    """A content page without a ``Рік:`` block must keep year=None, not
+    crash — the meta block is optional upstream."""
+    content_html = _fixture("content_movie.html").replace(
+        '<div class="fi-col-item"><span>Рік:</span> <a href="https://ufdub.com/xfsearch/year/1993/">1993</a></div>',
+        "",
+    )
+    player_html = _fixture("player.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ufdub.com/film/48-fokus-pokus-hocus-pocus.html").respond(
+            200, text=content_html
+        )
+        router.get(
+            "https://video.ufdub.com/AT/VP.php?ID=2780",
+            headers={"Referer": "https://ufdub.com/"},
+        ).respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            c = await UFDubProvider().content("film-48-fokus-pokus-hocus-pocus", http)
+    assert c.year is None
+
+
+@pytest.mark.asyncio
 async def test_ufdub_content_dead_player_page_raises_gated():
     """Issue #164: a content page whose player page exposes no
     playable media (upstream emits an empty ``var a = []``) is a dead
