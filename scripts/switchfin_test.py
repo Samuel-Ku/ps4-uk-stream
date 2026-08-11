@@ -104,7 +104,10 @@ RESTART_READY_TIMEOUT_S = 120.0
 #: B22): the app buffers ~5s before reporting Sessions/Playing after the
 #: tap, so an 8s deadline races it — play_newest fired PlaybackInfo +
 #: stream + segments but its Sessions/Playing landed 1s past the deadline.
-PLAY_TIMEOUT_S = 25.0
+#: Raised to 45s after run5 (#218): a COLD first stream (~8s upstream
+#: fetch) plus the app's Sessions/Playing report pushed a healthy chain
+#: to 21s; the deadline must cover cold-stream latency, not just the tap.
+PLAY_TIMEOUT_S = 45.0
 #: Maximum BACK presses in a nav step before giving up on the Views grid
 #: (device-driving B19/#209). The empirical stack after a played view is
 #: player -> detail -> library grid -> Views grid, but the player's exit
@@ -1120,25 +1123,63 @@ class Runner:
         deadline (``PLAY_TIMEOUT_S`` for play steps, B22): screenshot ->
         find the teal pill -> tap its center (or the calibrated coordinate
         when the scan finds nothing) -> check the expects in a short
-        window; repeat. PlaybackInfo landing on any attempt counts.
-        ``False`` on timeout or a vanished device.
+        window; repeat. Once ANY expect line appears (PlaybackInfo etc.)
+        the tap has landed — stop tapping and wait for the rest of the
+        chain (a re-tap on a RUNNING player toggles pause; a cold first
+        stream can take ~8s, #218). ``False`` on timeout or a vanished
+        device.
         """
         deadline = time.monotonic() + timeout_s
         fallback = self._taps.get(play_tap.tap)
+        # Whether the tap has already landed: any expect line (even a
+        # partial chain — e.g. PlaybackInfo without the stream yet) proves
+        # the pill was hit, so re-tapping would only toggle pause/play on
+        # a RUNNING player. Once landed, stop tapping and wait for the
+        # rest of the chain (a cold first stream can take ~8s, run5).
+        landed = False
         while True:
-            coords = self._play_locator_fn() or fallback
-            if coords is not None:
-                failure = self._safe_tap(coords, play_tap.tap)
-                if failure is not None:
-                    return False  # device vanished mid-run
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return False
+            if not landed:
+                coords = self._play_locator_fn() or fallback
+                if coords is not None:
+                    failure = self._safe_tap(coords, play_tap.tap)
+                    if failure is not None:
+                        return False  # device vanished mid-run
+                if self._wait_for_expects(
+                    play_tap.expects, scan_from, window_s=min(1.5, remaining)
+                ):
+                    return True
+                if self._any_expect_line(play_tap.expects, scan_from):
+                    landed = True
+                    continue
+                time.sleep(0.4)
+                continue
             if self._wait_for_expects(
-                play_tap.expects, scan_from, window_s=min(1.5, remaining)
+                play_tap.expects, scan_from, window_s=remaining
             ):
                 return True
             time.sleep(0.4)
+
+    def _any_expect_line(
+        self, expects: tuple[Expect, ...], scan_from: int
+    ) -> bool:
+        """True iff any expect already matched a log line (request+status).
+
+        A partial match means the tap landed and the player is running —
+        the step should keep waiting for the rest of the chain, not
+        re-tap and risk toggling pause on a live player (#218).
+        """
+        for line in self._tailer.all_lines()[scan_from:]:
+            for exp in expects:
+                m = re.search(exp.request, line)
+                if not m:
+                    continue
+                status = status_of(line)
+                if status is not None and status in exp.status:
+                    return True
+        return False
 
     def _tap_expect_with_retry(
         self,
@@ -1270,7 +1311,10 @@ class Runner:
         # /Items/ endpoint (Resume/Latest/NextUp) — fail loudly instead of
         # silently interrogating /Items/<gk> for a Type that cannot exist.
         if not str(gk).startswith("g2:"):
-            log.warning("play probe: captured id is not a g2: card (gk=%r)", gk)
+            print(
+                f"play probe: captured id is not a g2: card (gk={gk!r})",
+                file=sys.stderr,
+            )
             return None
         url = f"http://{self._host}:{self._port}/Users/{user_id}/Items/{gk}"
         headers = {"X-Emby-Token": ctx.get("token", "")}

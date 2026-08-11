@@ -674,6 +674,50 @@ def test_play_step_tolerates_delayed_sessions_playing(tmp_path: Path) -> None:
     assert by_name["play_movie"].ok is True
 
 
+def test_play_step_does_not_retap_after_landing(tmp_path: Path) -> None:
+    """#218: once ANY expect line appears the tap has landed — the runner
+    must stop tapping and wait for the rest of the chain, not re-tap the
+    play pill (which toggles pause on a RUNNING player).
+
+    The movie branch needs all three of PlaybackInfo + stream +
+    Sessions/Playing; here the first two land on the tap but the Playing
+    report is slow (a cold first stream took ~8s on run5). The pre-fix
+    loop re-tapped the play_button every ~2s while waiting; the fixed
+    loop taps once and waits.
+    """
+    tap_lines = {k: list(v) for k, v in FULL_TAP_LINES.items()}
+    tap_lines[TAPS["play_button"]] = [
+        "POST /Items/g1/PlaybackInfo -> 200 (0ms)",
+        "GET /Videos/g1/stream -> 302 (0ms)",
+    ]
+    adb = FakeAdb(lines=[], tap_lines=tap_lines)
+    stop = threading.Event()
+
+    def feed_playing() -> None:
+        while not stop.is_set():
+            adb._lines.append("POST /Sessions/Playing -> 204 (0ms)")
+            # well past the 1.5s expect window: a pre-fix loop re-taps the
+            # pill (2nd tap) before the report lands; the fixed loop taps
+            # once and keeps waiting
+            time.sleep(3.5)
+
+    feeder = threading.Thread(target=feed_playing, daemon=True)
+    feeder.start()
+    try:
+        runner, _, adb = make_harness(tmp_path, adb=adb, play_timeout_s=30.0)
+        results = runner.run()
+    finally:
+        stop.set()
+        feeder.join(timeout=2)
+
+    play = next(r for r in results if r.name == "play_newest")
+    assert play.ok, play.note
+    # one tap per movie play step — the second expect is slow, but the
+    # runner never re-taps once PlaybackInfo/stream proved the tap landed
+    play_taps = [t for t in adb.taps if t == TAPS["play_button"]]
+    assert len(play_taps) == 2  # play_newest + play_movie, one each
+
+
 # --------------------------------------------------------------------------
 # #210/B13: warmup primes the first card's detail + series play chain
 # --------------------------------------------------------------------------
@@ -1265,6 +1309,41 @@ def test_poster_line_first_does_not_poison_gk(tmp_path: Path) -> None:
     assert (
         seen_gk[0] == "g1"
     ), f"gk captured as {seen_gk[0]!r} — poster suffix leaked in"
+
+
+def test_probe_guard_rejects_contaminated_gk(tmp_path: Path) -> None:
+    """#217: when the capture picks up a NON-card ``/Items/`` endpoint
+    (e.g. the app's ``/Items/Resume`` poll — no top-level Type), the play
+    probe must fail the step loudly, NOT crash with NameError (the guard
+    previously referenced an undefined ``log``). The step reports "could
+    not determine item Type" with the captured gk in the note."""
+    tap_lines = {k: list(v) for k, v in FULL_TAP_LINES.items()}
+    # the detail step's window catches a Resume poll AFTER the real card
+    # detail — last-match-wins captures "Resume" (the B14 failure shape)
+    tap_lines[TAPS["first_card"]] = [
+        "GET /Users/u1/Items/g1 -> 200 (0ms)",
+        "GET /Users/u1/Items/Resume -> 200 (0ms)",
+    ]
+    # the real default probe (no probe_fn stub): the guard runs and must
+    # return None instead of raising on the undefined ``log`` name — build
+    # a bare Runner (make_harness always substitutes a stub probe)
+    steps_path = tmp_path / "steps.yaml"
+    steps_path.write_text(STEPS_YAML, encoding="utf-8")
+    timeout_s, steps = load_steps(steps_path)
+    adb = FakeAdb(lines=[], tap_lines=tap_lines)
+    runner = Runner(
+        steps,
+        {},  # tap coords unused: the guard never taps
+        cast(LogTailer, FakeTailer(adb._lines)),
+        cast(Adb, adb),
+        host="0.0.0.0",
+        port=8000,
+        timeout_s=timeout_s,
+    )
+    # a contaminated capture (Resume poll) must be rejected BEFORE any
+    # HTTP — a NameError here means the guard regressed to ``log``
+    assert runner._probe_default({"gk": "Resume", "user_id": "u1"}) is None
+    assert runner._probe_default({}) is None  # missing gk/user also safe
 
 
 def test_gk_capture_prefers_last_line_in_window(tmp_path: Path) -> None:
