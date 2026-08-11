@@ -730,6 +730,36 @@ app restart, the phone's Home renders **Continue Watching (1)** and **Next Up
 (1)** rails with the Kamen Rider cards — the exact flow that was empty in the
 probe. Tests: 931 pass, ruff/mypy clean (only pre-existing findings).
 
+## Detail-screen unfilled-data probe (2026-08-11, runs 12 + manual) — ufdub description + People rail FIXED (#225)
+
+Continued the unfilled-data pass on the live device after run12 (third
+consecutive FULL PASS):
+
+- **Description** ❌→✅ — ufdub detail pages rendered a blank description
+  area even though `div.full-text` had one: the block opens with an EMPTY
+  spacer `<p>` and the real description in the second paragraph, and the
+  parser's `select_one("div.full-text p")` grabbed the empty one. Fix:
+  first non-empty paragraph (commit `6f32b60`). Live-verified on Kamen
+  Rider Gavv — the phone's detail now shows the full synopsis (wire
+  Overview 398 chars). Other providers select containers, not children,
+  so the bug was ufdub-unique.
+- **People rail** ❌→✅ — ufdub never parsed its dubbing-team credits
+  (`div.voices` blocks: «Куратор проєкту», «Перекладач», «Редактор»,
+  «Актори озвучення», «Робота зі звуком»), so the rail rendered its
+  header with zero tiles on every ufdub detail. Fix (commit `8d9bf5d`):
+  parse each block into `Person` — id from the person's own
+  `/xfsearch/<kind>/<slug>/` page slug, role `Actor` for «Актори
+  озвучення» (exact-label match — a substring check would misclassify
+  «Редактор»), block label otherwise; «Постер» skipped (poster
+  designers are not on-screen crew). Live-verified: the rail now renders
+  tiles on the phone (Манюха, Maxx Light, Twilight, Віхенька, Кіт,
+  Anomaliya, InSnake…); wire returns 11 people for «Леді Баг та Супер
+  Кіт: Париж» and 1 (Перекладач Doctor Os') for Gavv whose page only
+  has Постер+Перекладач.
+- **Quirk noted** (not a ticket): «Перекладач» names can be telegram
+  links (e.g. `https://t.me/lbcnua`) — the site's own link text. If the
+  rail ever needs cleaning, filter URL-shaped names at the DTO layer.
+
 ## Open questions (for the next session)
 
 - DONE (2026-08-10): `Adb.back()` + `phase: nav` steps wired into the runner;
