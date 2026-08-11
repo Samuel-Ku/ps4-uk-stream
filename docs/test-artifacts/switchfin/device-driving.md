@@ -767,6 +767,34 @@ probe. Tests: 931 pass, ruff/mypy clean (only pre-existing findings).
   the capture to card ids (`(?P<gk>g2:[^ /]+)` in steps.yaml) + a probe
   guard + the captured gk in the failure note. **Verified on device:
   run4 = 38/38 PASS, all 7 plays green.**
+- **play_newest false-fail (2026-08-11, run5 = 36/37)**: the video was
+  ACTUALLY playing (failure screenshot shows the teal progress bar) but the
+  step timed out — a cold first stream (~7.6s upstream fetch) stretched the
+  PlaybackInfo→stream→Sessions/Playing chain to 21s, racing the 25s
+  deadline; meanwhile `_tap_play_with_retry` re-tapped the play pill every
+  ~2s, which on a RUNNING player toggles pause. Fixed: once ANY expect line
+  appears the tap has landed — stop tapping and wait for the rest of the
+  chain (`window_s=remaining`); `PLAY_TIMEOUT_S` 25→45s. Regression tests:
+  no re-tap after landing (4 taps before, 2 after) + slow chain passes.
+  Also fixed a latent NameError in the probe guard (undefined `log` →
+  stderr print): the contaminated-gk path would have crashed, not failed
+  loudly. `165d4e4` (amended).
+- **UNFILLED DATA PASS (2026-08-11, #218-#223)**: drove the app to 6
+  different videos (Таємниця бункера, Легенда про Аанга, Історія палацу
+  Куньнін, Kamen Rider, Перша поїздка, Реінкарнація безробітного) and
+  catalogued every empty surface:
+  - `/Items/{id}/Similar` — always empty (#218) — **FIXED** (`b9f915f`):
+    same-genre cards from the cached snapshot; live: «Я матюкаюсь» → 2
+    similar (Щелепи, Енн).
+  - detail `Genres: []` even where the card parser (#213) harvested genres
+    (#219) — **FIXED** (`b9f915f`): `_content_dto` falls back to the
+    snapshot card's genres; live: [Фільми, Історія, Психологія].
+  - `ProductionYear: None` on 5/6 details; 120/130 home cards carry no
+    year — ufdub parses none (#220, OPEN).
+  - `People` rail never renders — detail DTO has no cast (#221, OPEN).
+  - rating badge shows `0` — no `CommunityRating` anywhere (#222, OPEN).
+  - episodes carry no Overview/RunTimeTicks/PremiereDate even though the
+    app requests `fields=...Overview` (#223, OPEN).
 
 ## Running the suite (2026-08-10, codified)
 
