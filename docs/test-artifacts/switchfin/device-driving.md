@@ -753,9 +753,15 @@ probe. Tests: 931 pass, ruff/mypy clean (only pre-existing findings).
   `Type: Series` in a view resolved to `Type: Movie` on its detail (form
   verdict differs between the home row's first-seen source and the detail
   source). The app renders the grid as a series then opens a movie detail.
-- **B14**: the Type probe races content churn — probe the item the app
-  actually opened, or make the branch decision tolerant (try the pill scan;
-  if absent, fall through to the series branch).
+- **B14 — ROOT CAUSE FOUND + FIXED (2026-08-11, #217)**: the play Type
+  probe's `gk` capture regex matched ANY `/Items/<id>` line — and the app
+  polls `/Items/Resume` every ~0.5s even with a detail open, so "last match
+  wins" (#206) overwrote `gk` with "Resume"; the probe then interrogated
+  /Items/Resume (a QueryResult without a top-level Type) and every play
+  step failed except the one that won the timing race. Fixed by anchoring
+  the capture to card ids (`(?P<gk>g2:[^ /]+)` in steps.yaml) + a probe
+  guard + the captured gk in the failure note. **Verified on device:
+  run4 = 38/38 PASS, all 7 plays green.**
 
 ## Running the suite (2026-08-10, codified)
 

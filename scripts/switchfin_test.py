@@ -1028,12 +1028,18 @@ class Runner:
     def _run_play(self, step: Step) -> StepResult:
         item_type = self._probe_fn(self._ctx)
         if item_type is None:
+            # #217: include the captured gk so a contaminated capture
+            # (e.g. a Resume poll line instead of the real card id) is
+            # visible in the report instead of a generic probe failure.
             return StepResult(
                 step.name,
                 step.phase,
                 step.view,
                 ok=False,
-                note="could not determine item Type (detail probe failed)",
+                note=(
+                    "could not determine item Type (detail probe failed; "
+                    f"gk={self._ctx.get('gk')!r})"
+                ),
             )
         branch = self._select_branch(step, item_type)
         if branch is None:
@@ -1258,6 +1264,13 @@ class Runner:
         gk = ctx.get("gk")
         user_id = ctx.get("user_id")
         if not gk or not user_id:
+            return None
+        # #217: only g2: card ids are ever probed here (the first card of a
+        # view). Anything else means the capture regex picked up a non-item
+        # /Items/ endpoint (Resume/Latest/NextUp) — fail loudly instead of
+        # silently interrogating /Items/<gk> for a Type that cannot exist.
+        if not str(gk).startswith("g2:"):
+            log.warning("play probe: captured id is not a g2: card (gk=%r)", gk)
             return None
         url = f"http://{self._host}:{self._port}/Users/{user_id}/Items/{gk}"
         headers = {"X-Emby-Token": ctx.get("token", "")}

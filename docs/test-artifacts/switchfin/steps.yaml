@@ -40,7 +40,14 @@
 # Single source for the gk expected-request regex (#154): every view step
 # references it via the &gk_request anchor, so a one-character tightening
 # like #143's `[^ ]+` -> `[^ /]+` lands here once instead of at 7 sites.
-x-gk_request: &gk_request "GET (/Users/[^ ]+)?/Items/(?P<gk>[^ /]+) -> 200"
+#
+# The gk is anchored to `g2:` card ids (#217): the app polls /Items/Resume
+# every ~0.5s even while a detail is open, so an unanchored `[^ /]+` captured
+# "Resume" (last match wins, #206) and the play Type probe then interrogated
+# /Items/Resume — a QueryResult without a top-level Type — failing every
+# play step except the one that won the timing race. First-card details are
+# always g2: keys, so the anchor loses nothing.
+x-gk_request: &gk_request "GET (/Users/[^ ]+)?/Items/(?P<gk>g2:[^ /]+) -> 200"
 
 timeout_s: 8
 
