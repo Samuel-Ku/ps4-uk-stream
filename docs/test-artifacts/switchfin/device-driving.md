@@ -586,6 +586,28 @@ content with the same player-page `var a` episode list. Verified live:
 episodes (`ufdub:dorama-408-…:s1e1…`). Regression test
 `test_ufdub_content_dorama_gets_single_season`.
 
+### B25 (NEW, backend ops): long-running process wedges — ALL upstreams
+unreachable while cached 200s still serve
+
+The user's "Президент Кертіс" (President Curtis) did not play: the app's
+`GET /Items/g2:1122d60d5c637572` 404'd `item_unavailable` after ~17s
+(two 8s-slot attempts). Live probe showed the SAME process (uptime 13.5h)
+reporting `upstream_unreachable` for **all 18 providers simultaneously**
+(empty error text, exactly the 8s upstream timeout), while a freshly
+started process reached the same sites in <2s and resolved the item
+(g2:814abd4799777d9c, 3 episodes, PlaybackInfo 200, manifest 200).
+
+Root cause: not a code bug — the long-running uvicorn's outbound
+connectivity silently died (network change / VPN-state change under it),
+and nothing restarts it. The health tracker recorded the failures but no
+watchdog acted. The app's stale key also re-resolved fine after restart
+(it maps to simpsonsuatv's "Колишня" S01E03 — the item's Overview shows
+"Президент Кертіс 1 сезон 3 серія").
+
+Fix (operational): restart the backend. Prevention: a watchdog / health
+endpoint that restarts the process when ALL providers go down
+simultaneously. Ticket #215.
+
 ## Run #14 (2026-08-10, after #205 series-tap retry + failure screenshots)
 
 - Новинки + Серіали + Аніме + Мультфільми pass fully (4/7 views),
@@ -713,6 +735,10 @@ probe. Tests: 931 pass, ruff/mypy clean (only pre-existing findings).
   restart nav; **B19/#209 nav now verifies the Views grid VISUALLY (pixel
   classifier, no HTTP — the grid opens client-side after the first launch)**;
   #201/#202 closed. See `git log` on this branch.
+- **B25/#215 (NEW)**: a long-running backend can lose ALL outbound
+  connectivity while still serving cached 200s — every upstream times out
+  at exactly the 8s timeout, detail/play 404 after ~17s. Restart fixes it.
+  Prevention: watchdog / health check that restarts on all-providers-down.
 - **B13/B20**: cold per-item scrapes still blow the 8s step timeout — extend
   warmup to the first-card detail path or the step timeout / backend warm path.
 - **B14**: the Type probe races content churn — probe the item the app
