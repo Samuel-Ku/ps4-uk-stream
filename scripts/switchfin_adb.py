@@ -35,6 +35,9 @@ class Adb:
 
     def __init__(self, binary: str = "adb") -> None:
         self.binary = binary
+        #: Previous ``screen_off_timeout`` captured by ``keep_screen_on``
+        #: so the device's setting is restored when the run ends.
+        self._screen_timeout_prev: str | None = None
 
     def available(self) -> bool:
         try:
@@ -152,10 +155,45 @@ class Adb:
         ids that 404 on detail (B17) and a mid-connect state that swallows
         the first open tap (B18). Relaunching AFTER warmup means the app's
         first grid loads hit warm caches.
+
+        Wakes first (#224-followup): on a dozing display the activity
+        starts behind the keyguard and never resumes — run9b's app never
+        reconnected after this step. The runner also pins the screen
+        timeout for the whole run (``keep_screen_on``), so this is a
+        belt-and-braces wake for the handoff moment.
         """
+        self.wake(settle_s=0.0)
         self.shell(f"am force-stop {APP_PACKAGE}")
         time.sleep(settle_s)
         self.shell(f"am start -n {APP_ACTIVITY}")
+
+    def keep_screen_on(self, on: bool) -> None:
+        """Pin / restore the screen-off timeout for the run's duration.
+
+        #224-followup: a full run idles the phone for minutes (the
+        backend's startup catalog warm) and the display dozes mid-step,
+        breaking every screenshot-based classifier (run9 IndexError,
+        run9b app-never-reconnected). Pinning the timeout to the max
+        value keeps the screen live for the whole run; the first call
+        remembers the device's previous value so ``keep_screen_on(False)``
+        restores it. Idempotent: the previous value is captured once.
+        """
+        if on:
+            if self._screen_timeout_prev is None:
+                # First on: remember the device's value, then pin.
+                self._screen_timeout_prev = self.shell(
+                    "settings get system screen_off_timeout"
+                )
+                self.shell("settings put system screen_off_timeout 2147483647")
+        else:
+            prev = self._screen_timeout_prev
+            self._screen_timeout_prev = None
+            if prev is not None:
+                # A blank/"null" read restores to the platform default.
+                self.shell(
+                    "settings put system screen_off_timeout "
+                    f"{(prev or '60000').strip()}"
+                )
 
     def shell(self, command: str) -> str:
         try:

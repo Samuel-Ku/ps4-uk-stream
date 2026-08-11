@@ -1538,6 +1538,11 @@ def _run_suite(
     start_ts = time.time()
     if adb.available():
         adb.marker("SWITCHFIN_TEST_START")
+        # #224-followup: keep the display awake for the whole run — a
+        # minutes-long idle (backend warm) otherwise dozes the screen and
+        # breaks every screenshot classifier (run9 IndexError, run9b app
+        # never reconnected). Restored in the finally below.
+        adb.keep_screen_on(True)
     runner = Runner(
         steps,
         tap_coords,
@@ -1547,7 +1552,11 @@ def _run_suite(
         port=args.port,
         timeout_s=args.timeout_s,
     )
-    results = runner.run()
+    try:
+        results = runner.run()
+    finally:
+        if adb.available():
+            adb.keep_screen_on(False)
     end_ts = time.time()
     if adb.available():
         adb.marker("SWITCHFIN_TEST_END")

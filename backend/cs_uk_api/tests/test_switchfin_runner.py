@@ -1450,6 +1450,39 @@ def test_read_getevent_bounds_when_no_input(monkeypatch: object) -> None:
     assert elapsed < 2.0, f"read_getevent blocked for {elapsed:.1f}s with no input"
 
 
+def test_keep_screen_on_pins_then_restores_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#224-followup: keep_screen_on(True) pins the display timeout to the
+    max so the phone never dozes mid-run (run9/run9b), and
+    keep_screen_on(False) restores the device's previous value — captured
+    once, so repeated calls stay idempotent."""
+    import scripts.switchfin_adb as adb_mod
+
+    calls: list[list[str]] = []
+
+    class _Resp:
+        stdout = ""
+
+    def fake_run(cmd: list[str], **_: object) -> _Resp:
+        calls.append(cmd)
+        resp = _Resp()
+        if "settings get system screen_off_timeout" in cmd[2]:
+            resp.stdout = "60000"
+        return resp
+
+    monkeypatch.setattr(adb_mod.subprocess, "run", fake_run)
+    adb = Adb(binary="fake-adb")
+
+    adb.keep_screen_on(True)
+    adb.keep_screen_on(True)  # idempotent — captures the previous value once
+    adb.keep_screen_on(False)
+
+    puts = [c[2] for c in calls if "settings put system screen_off_timeout" in c[2]]
+    assert puts == [
+        "settings put system screen_off_timeout 2147483647",
+        "settings put system screen_off_timeout 60000",
+    ]
+
+
 # --------------------------------------------------------------------------
 # review regression: a mid-run adb tap failure must not crash the run (#143 review-6)
 # --------------------------------------------------------------------------
