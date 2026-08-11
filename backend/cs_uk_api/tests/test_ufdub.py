@@ -200,6 +200,29 @@ async def test_ufdub_content_parses_year_from_full_info():
 
 
 @pytest.mark.asyncio
+async def test_ufdub_content_parses_description_after_empty_lead_par():
+    """Ticket #225: ufdub's ``div.full-text`` opens with an EMPTY
+    ``<p>`` spacer and the real description in the SECOND ``<p>`` —
+    ``select_one("div.full-text p")`` grabbed the empty one, so every
+    ufdub detail rendered a blank description area (observed live on
+    Kamen Rider Gavv). Pick the first non-empty paragraph."""
+    content_html = _fixture("content_movie.html")
+    player_html = _fixture("player.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ufdub.com/film/48-fokus-pokus-hocus-pocus.html").respond(
+            200, text=content_html
+        )
+        router.get(
+            "https://video.ufdub.com/AT/VP.php?ID=2780",
+            headers={"Referer": "https://ufdub.com/"},
+        ).respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            c = await UFDubProvider().content("film-48-fokus-pokus-hocus-pocus", http)
+    assert c.description.startswith("Згідно з легендою")
+    assert len(c.description) > 100
+
+
+@pytest.mark.asyncio
 async def test_ufdub_content_year_absent_stays_none():
     """A content page without a ``Рік:`` block must keep year=None, not
     crash — the meta block is optional upstream."""

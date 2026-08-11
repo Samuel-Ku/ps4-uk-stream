@@ -277,7 +277,15 @@ class UFDubProvider(BaseProvider):
             if poster_el and poster_el.get("src")
             else None
         )
-        desc_el = soup.select_one("div.full-text p")
+        # Ticket #225: ``div.full-text`` opens with an EMPTY ``<p>``
+        # spacer and the real description in the second paragraph —
+        # ``select_one`` grabbed the empty one, so every ufdub detail
+        # rendered a blank description area (observed live on Kamen
+        # Rider Gavv). Take the first non-empty paragraph.
+        desc_el = next(
+            (p for p in soup.select("div.full-text p") if p.get_text(strip=True)),
+            None,
+        )
         description = desc_el.get_text(strip=True) if desc_el else ""
         # Player URL is in an <input value="..."> or an inline JS var.
         player_url = self._extract_player_url(soup)
