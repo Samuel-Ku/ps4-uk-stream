@@ -87,6 +87,34 @@ def parse_ffprobe(payload: dict[str, Any]) -> PlayabilityProfile:
     )
 
 
+def fallback_episode_cid(content: dict[str, Any], provider: str) -> str:
+    """First streamable episode id of a content payload, caller-prefixed.
+
+    Series-only providers (serialno, anitubeinua, doramyworld,
+    simpsonsuatv) reject a bare search id at /api/stream — the client
+    must send an episode id. When the bare-id stream fails, gate.sh
+    falls back to the first episode exposed by content()'s ``seasons``
+    (ticket #142, issue #127).
+
+    The returned wire id follows the same ``<provider>:<external>``
+    shape the client sends, so episode ids that already carry the
+    ``<provider>:`` prefix (simpsonsuatv's full episode-page URL) pass
+    through unchanged, and bare ids get the CALLER's provider prefix
+    (the caller owns the stream URL, not the content payload). Empty
+    string when there is no usable episode — the caller advances to the
+    next search result.
+    """
+    seasons = content.get("seasons") or []
+    episodes = seasons[0].get("episodes") or [] if seasons else []
+    if not episodes:
+        return ""
+    ep_id = episodes[0].get("id") or ""
+    if not ep_id:
+        return ""
+    prefix = f"{provider}:"
+    return ep_id if ep_id.startswith(prefix) else prefix + ep_id
+
+
 def _read_input(path: str) -> str:
     if path == "-":
         return sys.stdin.read()
@@ -100,20 +128,35 @@ def _main(argv: list[str]) -> int:
     Commands:
       scan <html-file|->      — print JS-generation markers (one per line)
       profile <json-file|->   — print the playability profile line
+      fallback <json-file|-> <provider>
+                              — print the first-episode wire cid, or an
+                                empty line when there is no episode
     """
     if len(argv) < 3:
-        print("usage: gate_tools.py (scan|profile) <file|->", file=sys.stderr)
+        print("usage: gate_tools.py (scan|profile|fallback) …", file=sys.stderr)
         return 2
-    cmd, path = argv[1], argv[2]
-    text = _read_input(path)
+    cmd = argv[1]
     if cmd == "scan":
-        markers = scan_js_markers(text)
+        if len(argv) < 3:
+            print("usage: gate_tools.py scan <file|->", file=sys.stderr)
+            return 2
+        markers = scan_js_markers(_read_input(argv[2]))
         print("\n".join(markers) if markers else "clean")
         return 0
     if cmd == "profile":
-        profile = parse_ffprobe(json.loads(text))
+        if len(argv) < 3:
+            print("usage: gate_tools.py profile <file|->", file=sys.stderr)
+            return 2
+        profile = parse_ffprobe(json.loads(_read_input(argv[2])))
         risk = "ps4-soft-decode-risk" if profile.soft_decode_risk else "ok"
         print(f"{profile} | {risk}")
+        return 0
+    if cmd == "fallback":
+        if len(argv) < 4:
+            print("usage: gate_tools.py fallback <json-file|-> <provider>", file=sys.stderr)
+            return 2
+        cid = fallback_episode_cid(json.loads(_read_input(argv[2])), argv[3])
+        print(cid)
         return 0
     print(f"unknown command: {cmd}", file=sys.stderr)
     return 2

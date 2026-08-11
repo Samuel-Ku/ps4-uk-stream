@@ -168,21 +168,16 @@ gate_one() {
         # simpsonsuatv uses a full episode-page URL — so prefix only
         # when absent.
         if ! stream=$(curl -fsS --max-time 30 "$BASE/api/stream/$cid" 2>/dev/null); then
-            ep_cid=$(python3 -c "
-import json, sys
-try:
-    d = json.loads(sys.argv[1])
-    seasons = d.get('seasons') or []
-    eps = seasons[0].get('episodes') or [] if seasons else []
-    print(eps[0]['id'] if eps else '')
-except Exception:
-    print('')
-" "$content")
-            if [ -n "$ep_cid" ]; then
-                case "$ep_cid" in
-                    "$provider:"*) stream_cid="$ep_cid" ;;
-                    *) stream_cid="$provider:$ep_cid" ;;
-                esac
+            # Series-only providers (serialno, anitubeinua, doramyworld,
+            # simpsonsuatv) reject a bare id: their stream() needs the
+            # episode form the client sends. When the bare-id stream fails
+            # and content() exposed seasons, retry with the first
+            # episode's id (issue #127 / ticket #142). The extraction +
+            # prefixing decision lives in cs_uk_api.gate_tools
+            # (fallback_episode_cid) so the behaviour is pinned by
+            # execution, not grep.
+            stream_cid=$(python3 -m cs_uk_api.gate_tools fallback - "$provider" <<< "$content")
+            if [ -n "$stream_cid" ]; then
                 echo "GATE NOTE $provider: bare id not streamable — trying first episode ($stream_cid)"
                 cid="$stream_cid"
                 if ! stream=$(curl -fsS --max-time 30 "$BASE/api/stream/$cid" 2>/dev/null); then
