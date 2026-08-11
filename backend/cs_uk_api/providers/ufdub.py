@@ -263,7 +263,7 @@ class UFDubProvider(BaseProvider):
                 "gated", "no playable media on player page"
             )
         seasons: list[Season] | None = None
-        if media_type == "series" or media_type == "anime":
+        if media_type in ("series", "anime", "dorama"):
             seasons = [Season(number=1, episodes=[
                 Episode(number=i, id=f"{self.id}:{external_id}:s1e{i}", title=title)
                 for i, (title, _url) in enumerate(episodes, start=1)

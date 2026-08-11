@@ -232,6 +232,32 @@ async def test_ufdub_content_series_parses_episodes_from_player():
 
 
 @pytest.mark.asyncio
+async def test_ufdub_content_dorama_gets_single_season():
+    """Dorama is series-like: content() must surface the player page's
+    ``var a`` episodes as one season. Regression (run #14): dorama
+    titles classified as ``Type=Series`` in the catalog but the provider
+    returned ``seasons=None``, so /Seasons was empty and the titles were
+    unplayable in the app."""
+    content_html = _fixture("content_anime.html")
+    player_html = _fixture("player_series.html")
+    ext_id = "dorama-408-kamen-rider-gavv-kamen-raider-gavv"
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://ufdub.com/dorama/408-kamen-rider-gavv-kamen-raider-gavv.html"
+        ).respond(200, text=content_html)
+        router.get(
+            "https://video.ufdub.com/AT/VP.php?ID=285",
+            headers={"Referer": "https://ufdub.com/"},
+        ).respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            c = await UFDubProvider().content(ext_id, http)
+    assert c.seasons is not None and len(c.seasons) == 1
+    eps = c.seasons[0].episodes
+    assert len(eps) == 37
+    assert eps[0].id == f"ufdub:{ext_id}:s1e1"
+
+
+@pytest.mark.asyncio
 async def test_ufdub_stream_series_selects_requested_episode():
     """`<external>:s1e<N>` must resolve to the N-th `var a` entry, not
     always the first one (regression, issue #114). POS=5 is the live

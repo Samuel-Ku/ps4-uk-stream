@@ -558,6 +558,51 @@ misses. The runner itself is stable: nav, open, and detail pass 100%.
   follow-up) — the next run's failures are visible instead of empty
   windows.
 
+### B24 (NEW, backend): ufdub dorama titles have empty Seasons — unplayable
+
+A dorama detail (g2:431a703472c60b12, "Камен Райдер Ґавв" / Kamen Rider
+Gavv, ufdub provider) opened as `Type=Series` but `/Shows/{gk}/Seasons`
+returned `Items: []` — so the app renders NO season rail, the runner's
+first_season/first_episode taps hit nothing, and play_dorama timed out
+with zero PlaybackInfo requests (runs #13/#14). Reproduced live against
+8003:
+
+- `GET /Users/…/Items/g2:431a703472c60b12` -> 200, `Type: Series`
+- `GET /Shows/g2:431a703472c60b12/Seasons` -> 200, `Items: []`
+
+Root cause: ufdub's `content()` builds `seasons` only for
+`media_type in ("series", "anime")`, but `_type_from_url` maps
+`/dorama/` to `"dorama"`. The catalog classifies doramas as Series
+(form=series), so the app always asks for Seasons and gets an empty
+rail. bambooua/doramyworld/uaflix all build seasons for dorama; ufdub
+was the lone gap — and since `resolve_group_content` uses the group's
+FIRST provider, the failure was provider-order-dependent (flaky across
+catalog builds).
+
+Fix: ufdub `content()` now builds the single season for
+`media_type in ("series", "anime", "dorama")` — doramas are serialized
+content with the same player-page `var a` episode list. Verified live:
+`/Seasons` now returns Сезон 1 (`g2:…:S1`), `/Episodes` returns all 50
+episodes (`ufdub:dorama-408-…:s1e1…`). Regression test
+`test_ufdub_content_dorama_gets_single_season`.
+
+## Run #14 (2026-08-10, after #205 series-tap retry + failure screenshots)
+
+- Новинки + Серіали + Аніме + Мультфільми pass fully (4/7 views),
+  including play. **play_newest passed for the first time.**
+- **open_first_card_popular / open_first_card_movie ❌** — first-card taps
+  missed (same tap-miss class as play; the bottom-row dorama open flaked
+  in #12). Their plays skipped.
+- **play_dorama ❌ → B24.** The failure screenshot (`screen-play_dorama.png`)
+  showed a fully-rendered detail with NO season rail; the backend log
+  showed the detail + `/Seasons -> 200 (0ms)` but zero PlaybackInfo. Live
+  API repro proved the Seasons response was `Items: []` — a backend bug,
+  not a tap miss. Fixed + verified live (Сезон 1 + 50 episodes).
+- The new failure screenshots paid for themselves: `screen-play_movie` /
+  `screen-play_newest` (identical, blank light frames — saved when the
+  pill scan found nothing on an unloaded grid) vs `screen-play_dorama`
+  (real detail, teal pill, no rail).
+
 ## Open questions (for the next session)
 
 - DONE (2026-08-10): `Adb.back()` + `phase: nav` steps wired into the runner;
