@@ -20,7 +20,7 @@ import uuid
 from collections.abc import Callable, Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Self, cast
+from typing import Any, ClassVar, Self, cast
 from unittest import mock
 
 import pytest
@@ -95,6 +95,7 @@ class FakeAdb:
         self.taps: list[tuple[int, int]] = []
         self.backs: int = 0
         self.markers: list[str] = []
+        self.wakes: int = 0
         self.restarts: int = 0
         self._available = True
         #: after this many BACKs, screenshot_png reports the Views grid
@@ -123,6 +124,9 @@ class FakeAdb:
 
     def marker(self, text: str) -> None:
         self.markers.append(text)
+
+    def wake(self) -> None:
+        self.wakes += 1
 
     def logcat_dump(self) -> list[str]:
         return []
@@ -1090,6 +1094,15 @@ def test_find_views_grid_rejects_plain_frame() -> None:
     assert not find_views_grid(_teal_pill_png((3168, 1440), (0, 0, 0, 0)))
 
 
+def test_find_views_grid_tolerates_portrait_lock_screen() -> None:
+    """#224-followup: a dozing display returns a PORTRAIT lock-screen
+    frame (1440x3168) that would IndexError the hardcoded probes — the
+    classifier must answer False so the step fails with its own retry
+    note instead of crashing the whole run (run9 crash)."""
+    assert not find_views_grid(_views_grid_png((1440, 3168)))
+    assert not find_views_grid(_views_grid_png((800, 400)))
+
+
 def test_play_button_retries_until_located(tmp_path: Path) -> None:
     """The Movie branch locates the pill and retries when the first attempt
     lands before the detail has rendered (B10 timing race)."""
@@ -1662,8 +1675,8 @@ class _WarmGateHandler(BaseHTTPRequestHandler):
     status; class attributes carry the script between calls."""
 
     #: queue of warm statuses to serve, consumed one per /api/health poll
-    statuses: list[str] = []
-    polls: int = 0
+    statuses: ClassVar[list[str]] = []
+    polls: ClassVar[int] = 0
 
     def do_GET(self) -> None:
         if self.path.startswith("/System/Info/Public"):

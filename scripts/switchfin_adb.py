@@ -86,6 +86,31 @@ class Adb:
             timeout=ADB_SHELL_TIMEOUT_S,
         )
 
+    def wake(self, settle_s: float = 0.5) -> None:
+        """Wake + dismiss the keyguard so screenshots show the live screen.
+
+        The runner idles the phone for minutes at a time (the backend's
+        startup catalog warm, #224) — past the screen timeout the display
+        dozes and every classifier reads a portrait lock-screen frame
+        that crashes the pixel probes (#224-followup). Idempotent and
+        cheap: harmless when the screen is already awake.
+        """
+        try:
+            subprocess.run(
+                [self.binary, "shell", "input", "keyevent", "KEYCODE_WAKEUP"],
+                check=True,
+                timeout=ADB_SHELL_TIMEOUT_S,
+            )
+            subprocess.run(
+                [self.binary, "shell", "wm", "dismiss-keyguard"],
+                check=True,
+                timeout=ADB_SHELL_TIMEOUT_S,
+            )
+        except (OSError, subprocess.CalledProcessError):
+            pass  # best-effort — the step screenshots will report anyway
+        if settle_s:
+            time.sleep(settle_s)
+
     def screenshot_png(self) -> bytes:
         """Capture the screen as PNG bytes (device-driving, B2).
 

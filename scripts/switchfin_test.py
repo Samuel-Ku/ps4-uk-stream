@@ -387,6 +387,14 @@ def find_views_grid(png: bytes) -> bool:
     except (OSError, ValueError, TypeError):
         return False
     w, h = img.size
+    # #224-followup: a dozing/rotated display returns a portrait or
+    # smaller-than-expected frame — the hardcoded probes below (x up to
+    # 3160, y up to ~592) would IndexError. Fail the classifier honestly
+    # (the step's own retry/screenshot flow reports the real state); the
+    # runner's per-step wake() normally prevents this frame from ever
+    # being captured.
+    if w < 3160 or h < 1440:
+        return False
     px: Any = img.load()
 
     # Normalize against idle dimming (the phone drops to ~4% brightness,
@@ -687,6 +695,11 @@ class Runner:
         for index, step in enumerate(self._steps):
             if self._adb_available:
                 self._adb.marker(f"STEP_{index + 1}_{step.name}")
+                # #224-followup: the phone idles for minutes while the
+                # backend's catalog warm runs; past the screen timeout it
+                # dozes and the pixel classifiers crash on the lock-screen
+                # frame. Wake before EVERY step (idempotent, ~0.5s).
+                self._adb.wake()
             if step.phase in ("handshake", "warmup"):
                 result = self._run_handshake(step)
                 results.append(result)
