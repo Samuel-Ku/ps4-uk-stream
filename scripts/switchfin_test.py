@@ -255,21 +255,25 @@ def find_play_pill(png: bytes) -> tuple[int, int] | None:
         )
 
     min_w = max(80, int(w * 0.05))  # the pill is ~270px on a 3168px screen
-    candidates: list[tuple[int, int, int]] = []  # (y, x0, x1), per row
+    # Collect EVERY wide run per row, not just the row's widest: the pill's
+    # white "Play" text splits it into left/right segments, and a poster's
+    # teal column can be the widest run on the same rows — keeping only the
+    # widest shadows the pill entirely (run #16: the poster's blue column
+    # hid the 255px pill segments at y~260).
+    candidates: list[tuple[int, int, int]] = []  # (y, x0, x1)
     for y in range(0, h, 3):
         run_start, run_len = -1, 0
-        max_start, max_len = -1, 0
         for x in range(w):
             if tealish(*px[x, y]):
                 if run_start < 0:
                     run_start = x
                 run_len += 1
-                if run_len > max_len:
-                    max_len, max_start = run_len, run_start
             else:
+                if run_len >= min_w:
+                    candidates.append((y, run_start, run_start + run_len))
                 run_start, run_len = -1, 0
-        if max_len >= min_w:
-            candidates.append((y, max_start, max_start + max_len))
+        if run_len >= min_w:
+            candidates.append((y, run_start, run_start + run_len))
     if not candidates:
         return None
     # Widest run first — but the widest teal run is often poster/hero art
@@ -278,7 +282,14 @@ def find_play_pill(png: bytes) -> tuple[int, int] | None:
     # candidates instead of giving up after the first (run #15: movie
     # "Перша поїздка" poster banner 526px beat the 300px pill -> None).
     candidates.sort(key=lambda c: c[2] - c[1], reverse=True)
+    # The pill lives in the header row (below the title), always in the
+    # top half of the detail screen; poster banners/columns fill the lower
+    # half (runs #15/#16: the movie posters' teal regions at y~900-970
+    # passed every other check).
+    max_y = int(h * 0.55)
     for best_y, x0, x1 in candidates:
+        if best_y > max_y:
+            continue
         mid_x = (x0 + x1) // 2
         # Vertical extent measured at the pill's LEFT edge: the play triangle
         # sits in the center and splits the teal column there, but the edges

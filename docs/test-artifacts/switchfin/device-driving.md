@@ -633,6 +633,25 @@ episodes (`ufdub:dorama-408-…:s1e1…`). Regression test
   green) and confirmed the blank-frame screenshots (`screen-play_newest`
   from #14) are genuinely blank (grid unloaded, not a rendering bug).
 
+## Run #16 (2026-08-11, after the first pill-scan fix) — 6/7 again
+
+- play_movie STILL fails: the pill scan returned the poster again. The
+  movie was different ("Я матюкаюсь", bright-blue poster) and exposed
+  the NEXT hole in `find_play_pill`: the per-row scan kept only the
+  row's WIDEST teal run — the poster's blue column was wider on the
+  pill's rows, so the pill (split by its white "Play" text into two
+  ~250px segments) was never even collected. The returned point
+  (334, 917) was a lower poster region passing every check.
+- Fix: collect EVERY run ≥ min_w per row (multiple per row), keep the
+  green-dominance color filter, band-containing-row, aspect-ratio and
+  position (top 55%) filters. Verified against three real frames:
+  dorama (824, 336) unchanged, movie #1 (824, 297) and movie #2
+  (824, 297) now correct.
+- Note: the docs/ `screen-play_movie.png` reverted to the committed
+  blank frame at teardown (twice — runs #15 and #16) for an unknown
+  reason; the real failure frames are preserved in
+  `.scratch-phone-preview/fail-movie1{5,6}.png`.
+
 ## Open questions (for the next session)
 
 - DONE (2026-08-10): `Adb.back()` + `phase: nav` steps wired into the runner;
