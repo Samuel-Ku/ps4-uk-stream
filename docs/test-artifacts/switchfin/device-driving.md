@@ -668,6 +668,25 @@ with real streaming + nav). The full pass is stable, not luck — runs
 net: any backend regression that breaks a view's open/detail/play will
 show up as a red run.
 
+## Untested-screen probe (2026-08-11) — Home/Search/Suggestions OK, Genres + Resume empty
+
+Walked the app screens the suite does not cover (manual, backend-log
+witnessed):
+
+- **Home** ✅ — Новинки / Популярні зараз rows render with posters.
+- **Search** ✅ — on-screen keyboard (6 rows × 6 keys, step 132px, first
+  key center x=387; rows at y≈500/633/753/873/1005/1122); incremental
+  `searchTerm` requests (AVATA → AVATAR); results populate the Suggest
+  column; backend search works (Latin matches Ukrainian titles, e.g.
+  "avatar" → 80 hits).
+- **Suggestions tab** ✅ — fires Resume + Latest + NextUp; the Latest
+  shelf populates the grid.
+- **Genres tab** ❌ — `GET /Genres` returns `{Items: [], TotalRecordCount: 0}`
+  (deliberate stub; no provider parses genres). Ticket **#213**.
+- **Continue watching / Next up** ❌ — `/Items/Resume` and `/Shows/NextUp`
+  always empty because `Sessions/Playing/Stopped` etc. answer 204 and
+  store nothing (D8). Ticket **#214**.
+
 ## Open questions (for the next session)
 
 - DONE (2026-08-10): `Adb.back()` + `phase: nav` steps wired into the runner;
