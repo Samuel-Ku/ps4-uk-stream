@@ -652,6 +652,14 @@ episodes (`ufdub:dorama-408-…:s1e1…`). Regression test
   reason; the real failure frames are preserved in
   `.scratch-phone-preview/fail-movie1{5,6}.png`.
 
+## Run #17 (2026-08-11, after the collect-all-runs pill fix) — **FULL PASS** ✅
+
+**All 7 views pass completely** — open + detail + play + nav for Новинки,
+Популярні, Фільми, Серіали, Аніме, Мультфільми and Дорами, with real
+streaming on every play. First fully-green run of the campaign (runs
+#4-#16 never exceeded 6/7). play_movie fixed by the collect-all-runs
+pill scan; the B24 dorama fix (60ac255) held again.
+
 ## Open questions (for the next session)
 
 - DONE (2026-08-10): `Adb.back()` + `phase: nav` steps wired into the runner;
