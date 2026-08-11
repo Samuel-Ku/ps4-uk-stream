@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 import cs_uk_api.providers._registry  # noqa: F401
 
+from . import catalog_warm as catalog_warm_mod
 from . import watchdog as watchdog_mod
 from .cache import TtlCache
 from .catalog_state import _GATE_CHECK_TIMEOUT_S, resolve_group
@@ -99,6 +100,14 @@ _WARM_TASK_DRAIN_S: float = 1.0
 #: Handle of the background warm+heartbeat task started by ``lifespan``.
 _warm_task: asyncio.Task[None] | None = None
 
+#: Latest observable state of the startup catalog warm (#204/#210).
+#: None until the task has run at least once; updated in place by
+#: ``_catalog_warm_loop`` so ``/api/health`` can surface it.
+_catalog_warm_state: catalog_warm_mod.CatalogWarmState | None = None
+
+#: Handle of the background catalog-warm task started by ``lifespan``.
+_catalog_warm_task: asyncio.Task[None] | None = None
+
 #: Handle of the background watchdog task started by ``lifespan``
 #: (ticket #215).
 _watchdog_task: asyncio.Task[None] | None = None
@@ -121,6 +130,26 @@ async def _watchdog_loop() -> None:
             await watchdog_mod.WATCHDOG.check_and_reset()
         except Exception:
             log.exception("watchdog tick failed")
+
+
+async def _catalog_warm_loop() -> None:
+    """Background catalog warm (tickets #204/#210).
+
+    Scheduled once by ``lifespan``. Builds the home snapshot, then
+    warms each view's first-card detail chain — so a real client's
+    first ``/UserViews`` / ``/Items`` / card-open after launch finds
+    warm caches instead of a 17-21s cold scrape that blows the app's
+    own request timeout. Best-effort: a provider failure never crashes
+    the process; the outcome is observable via ``/api/health``.
+    """
+    global _catalog_warm_state
+    _catalog_warm_state = await catalog_warm_mod.warm_catalog()
+    log.info(
+        "catalog warm done: home_warmed=%s content_warmed=%d failed=%d",
+        _catalog_warm_state.home_warmed,
+        _catalog_warm_state.content_warmed,
+        _catalog_warm_state.failed,
+    )
 
 
 async def _warm_and_heartbeat() -> None:
@@ -149,7 +178,7 @@ async def _warm_and_heartbeat() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global _warm_task, _watchdog_task
+    global _warm_task, _watchdog_task, _catalog_warm_task
     if os.path.exists(DEFAULT_CHROMIUM):
         # Background warm+heartbeat (issue #193): uakino's browser session
         # is brought up once at startup instead of lazily on first request,
@@ -159,6 +188,13 @@ async def lifespan(_app: FastAPI):
     # ALL outbound connectivity while caches still serve 200s; this loop
     # detects every-provider-down and resets the shared httpx client.
     _watchdog_task = asyncio.create_task(_watchdog_loop())
+    # Background catalog warm (#204/#210): build the home snapshot and
+    # warm the first-card detail chain before a client drives, so the
+    # app's first requests never hit a 17-21s cold scrape. OFF in tests
+    # (conftest sets CS_UK_CATALOG_WARM=0) so a TestClient lifespan
+    # never triggers real provider scrapes.
+    if SETTINGS.catalog_warm_enabled:
+        _catalog_warm_task = asyncio.create_task(_catalog_warm_loop())
     yield
     if _watchdog_task is not None:
         _watchdog_task.cancel()
@@ -167,6 +203,13 @@ async def lifespan(_app: FastAPI):
         except (TimeoutError, asyncio.CancelledError):
             pass
         _watchdog_task = None
+    if _catalog_warm_task is not None:
+        _catalog_warm_task.cancel()
+        try:
+            await asyncio.wait_for(_catalog_warm_task, timeout=1.0)
+        except (TimeoutError, asyncio.CancelledError):
+            pass
+        _catalog_warm_task = None
     if _warm_task is not None:
         _warm_task.cancel()
         try:
@@ -248,6 +291,21 @@ async def health() -> dict[str, object]:
             "last_reset_at": watchdog_mod.WATCHDOG.last_reset_at,
             "cooldown_s": watchdog_mod.WATCHDOG.cooldown_s,
         },
+        "catalog_warm": (
+            {
+                "status": _catalog_warm_state.status,
+                "home_warmed": _catalog_warm_state.home_warmed,
+                "content_warmed": _catalog_warm_state.content_warmed,
+                "failed": _catalog_warm_state.failed,
+            }
+            if _catalog_warm_state is not None
+            else {
+                "status": "pending",
+                "home_warmed": False,
+                "content_warmed": 0,
+                "failed": 0,
+            }
+        ),
     }
 
 

@@ -59,6 +59,12 @@ class Settings:
     providers: tuple[str, ...]
     block_russian: bool
     home_row_limit: int
+    #: Startup catalog warm (tickets #204/#210): build the home snapshot
+    #: and warm each view's first-card detail chain in the background so
+    #: a real client's first requests never hit a cold 17-21s scrape.
+    #: Default ON; tests disable it (``CS_UK_CATALOG_WARM=0``) so no
+    #: TestClient lifespan triggers real provider scrapes.
+    catalog_warm_enabled: bool = True
     # v3 (Jellyfin facade, spec D4/D10): fixed opaque token; the
     # ``load_settings`` env default mirrors this so explicit
     # ``Settings(...)`` constructions (tests) stay valid.
@@ -70,6 +76,7 @@ def load_settings() -> Settings:
     providers = tuple(p.strip() for p in raw.split(",") if p.strip())
     raw_hosts = os.environ.get("CS_UK_POSTER_ALLOWED_HOSTS", "")
     hosts = tuple(h.strip().lower() for h in raw_hosts.split(",") if h.strip())
+    warm = os.environ.get("CS_UK_CATALOG_WARM", "1").strip().lower() not in ("0", "false", "no", "off")
     return Settings(
         host=os.environ.get("CS_UK_HOST", "0.0.0.0"),
         port=int(os.environ.get("CS_UK_PORT", "8000")),
@@ -99,6 +106,7 @@ def load_settings() -> Settings:
         block_russian=os.environ.get("CS_UK_BLOCK_RUSSIAN", "1") == "1",
         # v3 (issue #70): per-row cap for «Новинки» + type rows.
         home_row_limit=int(os.environ.get("CS_UK_HOME_ROW_LIMIT", "20")),
+        catalog_warm_enabled=warm,
         # v3 (Jellyfin facade, spec D4/D10): the fixed opaque Jellyfin
         # token. Accept-any-credentials login (the LAN API stays open),
         # but subsequent facade requests must present this token via
