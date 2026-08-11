@@ -660,6 +660,14 @@ streaming on every play. First fully-green run of the campaign (runs
 #4-#16 never exceeded 6/7). play_movie fixed by the collect-all-runs
 pill scan; the B24 dorama fix (60ac255) held again.
 
+## Run #18 (2026-08-11, stability check) — **FULL PASS AGAIN** ✅
+
+Second consecutive fully-green run (all 7 views: open + detail + play
+with real streaming + nav). The full pass is stable, not luck — runs
+#17 and #18 both complete. The suite can now be trusted as a regression
+net: any backend regression that breaks a view's open/detail/play will
+show up as a red run.
+
 ## Open questions (for the next session)
 
 - DONE (2026-08-10): `Adb.back()` + `phase: nav` steps wired into the runner;
