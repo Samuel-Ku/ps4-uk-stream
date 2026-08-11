@@ -390,6 +390,14 @@ class AnimeONProvider(BaseProvider):
         if not episodes_by_num:
             raise ProviderError("parse_failed", "no episodes resolved")
 
+        # Ticket #223: the upstream ``/api/anime/<slug>/episodes-info``
+        # endpoint carries per-episode real titles (``titleUa``) and air
+        # dates (``aired``) — the player-episode walk only yields "Серія
+        # N". Best-effort: a failure or 404 degrades to the generic
+        # titles (never gates the card).
+        slug = str(info.get("slug") or external_id)
+        episode_info = await self._episode_info(slug, http)
+
         all_translations = sorted(
             {
                 str(entry["translation_name"])
@@ -397,7 +405,10 @@ class AnimeONProvider(BaseProvider):
                 for entry in entries
             }
         )
-        season = self._build_season(anime_id, episodes_by_num, all_translations, self.id)
+        season = self._build_season(
+            anime_id, episodes_by_num, all_translations, self.id,
+            episode_info=episode_info,
+        )
         mb_form, mb_styles = model_b_axes("anime")
         return ContentResponse(
             id=f"{self.id}:{external_id}",
@@ -420,7 +431,10 @@ class AnimeONProvider(BaseProvider):
         episodes_by_num: dict[int, list[dict[str, Any]]],
         all_translations: list[str],
         provider_id: str,
+        *,
+        episode_info: dict[int, dict[str, Any]] | None = None,
     ) -> Season:
+        info = episode_info or {}
         return Season(
             number=1,
             episodes=[
@@ -436,6 +450,7 @@ class AnimeONProvider(BaseProvider):
                     ),
                     translations=all_translations,
                     provider_id=provider_id,
+                    ep_info=info.get(ep_num),
                 )
                 for ep_num, entries in sorted(episodes_by_num.items())
             ],
@@ -511,6 +526,48 @@ class AnimeONProvider(BaseProvider):
             except ValueError:
                 year_int = None
         return info, year_int
+
+    async def _episode_info(
+        self, slug: str, http: httpx.AsyncClient
+    ) -> dict[int, dict[str, Any]]:
+        """Best-effort ``/api/anime/<slug>/episodes-info`` (ticket #223).
+
+        Returns ``{episode_number: {title, titleUa, aired}}`` from the
+        upstream's per-episode metadata endpoint. Any failure — the
+        endpoint missing for a title, an upstream error, a malformed
+        body — degrades to ``{}`` so content() keeps the generic
+        "Серія N" titles; per-episode enrichment must never gate a
+        card that is otherwise playable.
+        """
+        try:
+            raw = await self._get_json(
+                f"{BASE_URL}/api/anime/{slug}/episodes-info", http
+            )
+        except Exception:  # noqa: BLE001
+            # Best-effort by contract: a missing endpoint (some titles
+            # 404 it), an upstream error, OR a test double that rejects
+            # the URL (respx AllMockedAssertionError is not an httpx
+            # error) must never gate a playable card — degrade to the
+            # generic "Серія N" titles instead.
+            return {}
+        if not isinstance(raw, list):
+            return {}
+        out: dict[int, dict[str, Any]] = {}
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                num = int(entry.get("episode") or 0)
+            except (TypeError, ValueError):
+                continue
+            if num < 1:
+                continue
+            out[num] = {
+                "title": str(entry.get("title") or ""),
+                "titleUa": str(entry.get("titleUa") or ""),
+                "aired": entry.get("aired"),
+            }
+        return out
 
     async def _ask_translations(
         self, anime_id: int, http: httpx.AsyncClient
@@ -760,12 +817,22 @@ class AnimeONProvider(BaseProvider):
         entries: list[dict[str, Any]],
         translations: list[str],
         provider_id: str,
+        *,
+        ep_info: dict[str, Any] | None = None,
     ) -> Episode:
         ep_translations = [
             Translation(id=name, label=name)
             for name in translations
             if any(name == e["translation_name"] for e in entries)
         ]
+        # Ticket #223: the ``episodes-info`` row (when the endpoint
+        # answered) carries the real Ukrainian title + air date —
+        # ``titleUa``/``title`` fall back to the generic "Серія N".
+        title = str((ep_info or {}).get("titleUa") or (ep_info or {}).get("title") or "").strip()
+        if not title:
+            title = f"Серія {episode_num}"
+        aired = (ep_info or {}).get("aired")
+        premiere_date = str(aired)[:10] if isinstance(aired, str) and aired else None
         # Encode the per-episode source list in Episode.id so
         # stream() can pick one without re-fetching the JSON. The
         # format is a JSON object — short, opaque, ASCII-safe.
@@ -789,8 +856,9 @@ class AnimeONProvider(BaseProvider):
         return Episode(
             number=episode_num,
             id=f"{provider_id}:{anime_id}:e{episode_num}:{encoded}",
-            title=f"Серія {episode_num}",
+            title=title,
             translations=ep_translations,
+            premiere_date=premiere_date,
         )
 
     async def stream(

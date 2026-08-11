@@ -112,6 +112,14 @@ class BaseItemDto(BaseModel):
     #: when the list is empty, so the rail simply doesn't appear for
     #: providers without cast data.
     People: list[PersonDto] = Field(default_factory=list)
+    #: Rating badge (ticket #222) — 0-10 on Jellyfin's scale, populated
+    #: from the provider's page rating when one exists; omitted (None)
+    #: when absent so Switchfin hides the badge instead of showing 0.
+    CommunityRating: float | None = None
+    #: Episode metadata (ticket #223) — air date and runtime, emitted
+    #: when the provider exposes them. Omitted (None) otherwise.
+    PremiereDate: str | None = None
+    RunTimeTicks: int | None = None
 
 
 class PersonDto(BaseModel):

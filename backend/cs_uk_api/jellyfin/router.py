@@ -407,6 +407,11 @@ def _content_dto(group_key: str, content: ContentResponse, server_id: str) -> Ba
     dto.People = [
         PersonDto(Id=p.id, Name=p.name, Role=p.role) for p in content.people
     ]
+    # Ticket #222: the rating badge renders from CommunityRating — set
+    # when the provider exposed a real score (klontv's JSON-LD
+    # aggregateRating); None stays omitted so the badge hides instead
+    # of showing 0.
+    dto.CommunityRating = content.rating
     parent = _view_id_for_item(group_key)
     if parent is not None:
         dto.ParentId = parent
@@ -476,6 +481,12 @@ def _episode_dto(
         SeriesName=series_name,
         IndexNumber=episode.number,
         ParentIndexNumber=season.number,
+        # Ticket #223: the app asks for these fields explicitly
+        # (``fields=...Overview``) — emit them when the provider's
+        # episode data carries them (animeon's ``aired``); otherwise
+        # omitted by ``response_model_exclude_none``.
+        Overview=episode.description or None,
+        PremiereDate=episode.premiere_date,
     )
 
 

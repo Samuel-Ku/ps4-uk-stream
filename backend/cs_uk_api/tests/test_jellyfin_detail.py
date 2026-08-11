@@ -94,7 +94,14 @@ def _serial() -> ContentResponse:
             Season(
                 number=1,
                 episodes=[
-                    Episode(number=1, id="s1e1", title="Серія 1"),
+                    # Ticket #223: episode 1 carries the metadata a
+                    # provider can expose (animeon's ``aired``); episode
+                    # 2 has none — the DTO must emit the field only on
+                    # the first.
+                    Episode(
+                        number=1, id="s1e1", title="Серія 1",
+                        premiere_date="2002-10-03",
+                    ),
                     Episode(number=2, id="s1e2", title="Серія 2"),
                 ],
             ),
@@ -302,6 +309,36 @@ def test_movie_detail_without_people_omits_rail(client: TestClient) -> None:
     assert dto["People"] == []
 
 
+def test_movie_detail_carries_community_rating(client: TestClient) -> None:
+    """Ticket #222: when the resolved provider's content page exposed a
+    rating (klontv's JSON-LD aggregateRating), the detail DTO carries
+    ``CommunityRating`` so the badge renders the number."""
+    dune = _dune()
+    dune.rating = 8.9
+    stub = _DetailStub(
+        cards=[_card("p1", "dune-1", "Дюна", "movie", poster=_POSTER_MOVIE)],
+        content_by_external={"dune-1": dune},
+    )
+    PROVIDERS["p1"] = stub
+    _auth(client)
+    gk = _movie_gk(client)
+
+    dto = _get(client, f"/Items/{gk}", userId=USER)
+    assert dto["CommunityRating"] == 8.9
+
+
+def test_movie_detail_without_rating_omits_badge(client: TestClient) -> None:
+    """Ticket #222: no rating on the content page → CommunityRating is
+    omitted (not 0) so Switchfin hides the badge instead of showing a
+    bogus zero."""
+    PROVIDERS["p1"] = _seed()
+    _auth(client)
+    gk = _movie_gk(client)
+
+    dto = _get(client, f"/Items/{gk}", userId=USER)
+    assert "CommunityRating" not in dto
+
+
 def test_person_detail_returns_person_dto(client: TestClient) -> None:
     """Ticket #221: tapping a person in the People rail opens
     ``GET /Persons/{id}`` — the facade answers a Person-shaped DTO whose
@@ -406,6 +443,11 @@ def test_season_episode_listing(client: TestClient) -> None:
     # stable wire ids the PlaybackInfo/stream tickets consume directly.
     assert [e["Id"] for e in episodes] == ["p1:s1e1", "p1:s1e2"]
     assert all(e["ImageTags"] == {} for e in episodes)
+    # Ticket #223: PremiereDate renders only where the provider exposed
+    # it — episode 1 has the date, episode 2 has none (omitted, not
+    # null).
+    assert episodes[0]["PremiereDate"] == "2002-10-03"
+    assert "PremiereDate" not in episodes[1]
 
 
 def test_episode_ids_reuse_provider_prefixed_id_without_doubling(

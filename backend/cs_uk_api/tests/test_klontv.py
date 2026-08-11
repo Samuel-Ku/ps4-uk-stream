@@ -178,6 +178,39 @@ async def test_klontv_content_parses_cast():
 
 
 @pytest.mark.asyncio
+async def test_klontv_content_parses_rating():
+    """Ticket #222: the content page's schema.org ``aggregateRating``
+    carries the only real score in the catalog — parse ``ratingValue``
+    (0-10) into ``ContentResponse.rating`` so the detail badge renders."""
+    content_html = _fixture("content_series.html")
+    player_html = _fixture("player_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://klonua.com/serialy/8431-duna.html").respond(
+            200, text=content_html
+        )
+        router.get("https://ashdi.vip/serial/6212").respond(
+            200, text=player_html
+        )
+        async with httpx.AsyncClient() as http:
+            c = await KlonTVProvider().content("series/8431-duna", http)
+    assert c.rating == 6.9
+
+
+@pytest.mark.asyncio
+async def test_klontv_content_movie_rating():
+    """Ticket #222: the movie content page carries its own
+    aggregateRating (8.9)."""
+    content_html = _fixture("content_movie.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://klonua.com/filmy/11719-duna-chastyna-druga.html"
+        ).respond(200, text=content_html)
+        async with httpx.AsyncClient() as http:
+            c = await KlonTVProvider().content("films/11719-duna-chastyna-druga", http)
+    assert c.rating == 8.9
+
+
+@pytest.mark.asyncio
 async def test_klontv_content_follows_section_redirect():
     """Regression (observed live 2026-08-09): a title moved between
     sections answers 301 (`/filmy/...` -> `/serialy/...`). content()

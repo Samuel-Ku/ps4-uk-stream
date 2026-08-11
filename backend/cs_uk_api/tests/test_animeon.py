@@ -250,6 +250,7 @@ async def test_content_parses_title_description_and_translations():
     translations_json = _fixture("translations.json")
     episodes_ashdi_json = _fixture("episodes_ashdi.json")
     episodes_moon_json = _fixture("episodes_moon.json")
+    episodes_info_json = _fixture("episodes_info.json")
     with respx.mock(assert_all_called=True) as router:
         router.get("https://animeon.club/api/anime/913").respond(
             200, text=redirect_json
@@ -257,6 +258,9 @@ async def test_content_parses_title_description_and_translations():
         router.get("https://animeon.club/api/anime/913-naruto").respond(
             200, text=content_json
         )
+        router.get(
+            "https://animeon.club/api/anime/913-naruto/episodes-info"
+        ).respond(200, text=episodes_info_json)
         router.get("https://animeon.club/api/player/913/translations").respond(
             200, text=translations_json
         )
@@ -287,6 +291,11 @@ async def test_content_parses_title_description_and_translations():
     first = c.seasons[0].episodes[0]
     assert first.number == 1
     assert first.id.startswith("animeon:913:e1:")
+    # Ticket #223: episodes-info enriches the generic "Серія N" titles
+    # with the real Ukrainian title + air date.
+    assert first.title == "На сцену: Наруто Узумаки!"
+    assert first.premiere_date == "2002-10-03"
+    assert c.seasons[0].episodes[1].premiere_date == "2002-10-10"
     # The translation list should include all three studios (labels
     # come straight from the JSON `translation.name` field).
     labels = [t.id for t in first.translations or []]

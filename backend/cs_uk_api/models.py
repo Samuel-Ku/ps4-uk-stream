@@ -171,6 +171,12 @@ class Episode(BaseModel):
     # Per-episode translations (v2 spec). When None, fall back to the
     # content-level translations from the parent ContentResponse.
     translations: list[Translation] | None = None
+    # Ticket #223: per-episode metadata the provider exposes (animeon's
+    # ``episodes-info`` carries real titles + air dates). Empty/None =
+    # the provider has no per-episode data; the episode DTO then omits
+    # the field (Switchfin renders a bare row, as before).
+    description: str = ""
+    premiere_date: str | None = None
 
 
 class Season(BaseModel):
@@ -205,6 +211,12 @@ class ContentResponse(BaseModel):
     #: JSON-LD). Empty list = the provider's page carries no cast; the
     #: detail DTO then omits ``People`` and the app hides the rail.
     people: list[Person] = Field(default_factory=list)
+    #: Community rating on the provider's 0-10 scale (ticket #222) —
+    #: klontv's schema.org ``aggregateRating.ratingValue`` is the only
+    #: real score exposed so far (ufdub/kinotron show +/- vote deltas,
+    #: not ratings). None = no rating on the page; the detail DTO then
+    #: omits ``CommunityRating`` and the badge stays hidden.
+    rating: float | None = None
 
     @field_serializer("styles")
     def _ser_styles(self, value: frozenset[MediaStyle]) -> list[str]:

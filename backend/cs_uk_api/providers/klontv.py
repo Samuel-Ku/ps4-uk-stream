@@ -37,6 +37,39 @@ from ..models import (
 from .base import BaseProvider, ProviderError, model_b_axes
 
 
+def _jsonld_doc(soup: BeautifulSoup) -> dict[str, Any] | None:
+    """The page's schema.org JSON-LD as a dict, or None when missing
+    or malformed (shared by the cast and rating parsers)."""
+    script = soup.find("script", type="application/ld+json")
+    if script is None:
+        return None
+    try:
+        data = json.loads(script.string or "")
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _jsonld_rating(soup: BeautifulSoup) -> float | None:
+    """Rating from the page's schema.org ``aggregateRating`` (ticket
+    #222). klonua's JSON-LD carries ``{ratingValue, bestRating,
+    ratingCount}`` on the 0-10 scale — the only real score the catalog
+    exposes (ufdub/kinotron only show +/- vote deltas). Returns None
+    when the block is missing or the value is not a number.
+    """
+    data = _jsonld_doc(soup)
+    if data is None:
+        return None
+    raw = (data.get("aggregateRating") or {}).get("ratingValue")
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value
+
+
 def _jsonld_cast(soup: BeautifulSoup, provider: str) -> list[Person]:
     """Cast from the page's schema.org JSON-LD (ticket #221).
 
@@ -46,12 +79,8 @@ def _jsonld_cast(soup: BeautifulSoup, provider: str) -> list[Person]:
     JSON-LD has names only, so ids are positional within the role.
     Returns [] when the block is missing or malformed.
     """
-    script = soup.find("script", type="application/ld+json")
-    if script is None:
-        return []
-    try:
-        data = json.loads(script.string or "")
-    except (json.JSONDecodeError, TypeError):
+    data = _jsonld_doc(soup)
+    if data is None:
         return []
     people: list[Person] = []
     for role, label in (("actor", "Actor"), ("director", "Director")):
@@ -364,6 +393,7 @@ class KlonTVProvider(BaseProvider):
                 number=1, id=f"{self.id}:{external_id}{MOVIE_SUFFIX}", title="Фільм",
             )])]
         cast = _jsonld_cast(soup, self.id)
+        rating = _jsonld_rating(soup)
         mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"klontv:{external_id}",
@@ -376,6 +406,7 @@ class KlonTVProvider(BaseProvider):
             form=mb_form,
             styles=mb_styles,
             people=cast,
+            rating=rating,
         )
 
     @staticmethod
