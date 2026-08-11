@@ -21,17 +21,17 @@ its display name, open it, then ask for a card's image.
 
 from __future__ import annotations
 
+import importlib
 from collections.abc import Iterator
 from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
 
-import importlib
-
+from cs_uk_api.catalog_state import content_cache
 from cs_uk_api.config import SETTINGS
 from cs_uk_api.main import _home_cache, _home_sources_cache
-from cs_uk_api.models import SearchResult, Section
+from cs_uk_api.models import ContentResponse, SearchResult, Section, Translation
 from cs_uk_api.providers import PROVIDERS
 from cs_uk_api.providers.base import BaseProvider, model_b_axes
 
@@ -126,7 +126,11 @@ def _seed() -> _ViewsStub:
         newest_section="page",
         newest=[
             _item("animeon", "Дюна", "movie", 2021, poster=_POSTER_MOVIE),
-            _item("animeon", "Сокіл", "movie", 2019),
+            # Distinct external id from Дюна's (``animeon:1``): the group
+            # resolution map keys content by ``provider:external``, so a
+            # colliding id would make two groups peek the same content
+            # (#216 re-verification).
+            _item("animeon", "Сокіл", "movie", 2019, n="3"),
         ],
         popular=[_item("animeon", "Сериалал серіал", "series", 2023, poster=_POSTER_SERIES)],
         sections=(
@@ -141,7 +145,7 @@ def _seed() -> _ViewsStub:
         by_section={
             "movie": [
                 _item("animeon", "Дюна", "movie", 2021, n="2", poster=_POSTER_MOVIE),
-                _item("animeon", "Сокіл", "movie", 2019, n="2"),
+                _item("animeon", "Сокіл", "movie", 2019, n="4"),
             ],
             "series": [
                 _item("animeon", "Сериалал серіал", "series", 2023, n="2", poster=_POSTER_SERIES)
@@ -160,6 +164,7 @@ def _isolate() -> Iterator[None]:
     PROVIDERS.clear()
     _home_cache.clear()
     _home_sources_cache.clear()
+    content_cache.clear()
     try:
         yield
     finally:
@@ -167,6 +172,7 @@ def _isolate() -> Iterator[None]:
         PROVIDERS.update(saved_providers)
         _home_cache.clear()
         _home_sources_cache.clear()
+        content_cache.clear()
 
 
 @pytest.fixture()
@@ -321,6 +327,36 @@ def test_items_listing_series_type_mapping(client: TestClient) -> None:
     series_view = _view_id("Серіали", _views(client))
     items = _items(client, series_view)
     assert items and all(i["Type"] == "Series" for i in items)
+
+
+def test_items_listing_card_type_reverified_against_resolved_content(
+    client: TestClient,
+) -> None:
+    """#216: the card Type must match what the detail will show.
+
+    The card parser (section/URL heuristic) is a cheap guess; the
+    resolved content page is the truth. Once «Дюна»'s content is cached
+    (group resolution reads the first-seen source — the «Новинки» card
+    ``animeon:1`` → ``content:animeon:1``) and says series while its
+    card says movie, the grid must re-verify to Series. An unresolved
+    card («Сокіл») keeps the snapshot form.
+    """
+    PROVIDERS["animeon"] = _seed()
+    _auth(client)
+    movie_view = _view_id("Фільми", _views(client))
+    content_cache.set(
+        "content:animeon:1",
+        ContentResponse(
+            id="animeon:1",
+            title="Дюна",
+            year=2021,
+            form="series",
+            translations=[Translation(id="uk", label="Українська")],
+        ),
+    )
+    by_name = {i["Name"]: i for i in _items(client, movie_view)}
+    assert by_name["Дюна"]["Type"] == "Series"  # re-verified vs the resolved content
+    assert by_name["Сокіл"]["Type"] == "Movie"  # unresolved -> snapshot form
 
 
 def test_items_listing_image_tags_only_with_poster(client: TestClient) -> None:

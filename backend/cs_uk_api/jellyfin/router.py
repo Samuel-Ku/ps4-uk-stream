@@ -43,6 +43,7 @@ from ..catalog_state import (
     group_key_for_external,
     load_home,
     merged_search,
+    peek_group_content,
     playback_positions,
     record_playback,
     register_search_groups,
@@ -265,12 +266,21 @@ def _item_dto(row: HomeRow, item: HomeItem, server_id: str) -> BaseItemDto:
     ``ImageTags.Primary`` is set only when the card carries a poster
     (D9). ``year`` is surfaced as ``ProductionYear`` (Jellyfin's field);
     ``ParentId`` is the view the card came from.
+
+    Ticket #216: the card's Type is re-verified against the item's
+    RESOLVED content when one is cached — the section/URL heuristic is a
+    cheap guess, the content page is the truth, and the grid must not
+    promise a Type the detail page will contradict. ``peek_group_content``
+    is a cache-only read (never fetches), so the re-verification is free;
+    an unresolved card keeps the snapshot's own form.
     """
+    resolved = peek_group_content(item.group_key)
+    form = resolved.form if resolved is not None else item.form
     dto = BaseItemDto(
         Name=item.title,
         ServerId=server_id,
         Id=item.group_key,
-        Type=_JF_TYPE_BY_ROW.get(item.form, "Series"),
+        Type=_JF_TYPE_BY_ROW.get(form, "Series"),
         ProductionYear=item.year,
         ParentId=_VIEW_ID_BY_TYPE[row.type],
     )

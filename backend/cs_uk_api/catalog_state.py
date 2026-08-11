@@ -484,6 +484,33 @@ def clear_playback() -> None:
     _playback.clear()
 
 
+def peek_group_content(group_key: str) -> ContentResponse | None:
+    """Cache-only group content read (ticket #216).
+
+    Returns the first-seen provider's ContentResponse when it is already
+    cached — never fetches. The view-card Type is a cheap
+    URL/section-guess while the content page is the truth, and the
+    facade re-verifies a card against this peek; a cold group answers
+    None exactly like ``resolve_group_content`` would on its first
+    cache-miss, so callers degrade identically ("keep the card's own
+    guess") without paying a fetch.
+    """
+    per_provider = resolve_group(group_key)
+    if per_provider is None:
+        return None
+    provider_id, item = next(iter(per_provider.items()))
+    _, _, external_id = item.id.partition(":")
+    cache_key = f"content:{provider_id}:{external_id}"
+    if gated_cache.get(cache_key) is True:
+        return None
+    if blocklist_cache.get(cache_key) is not None:
+        return None
+    cached = content_cache.get(cache_key)
+    if cached is None:
+        return None
+    return cast(ContentResponse, cached)
+
+
 async def resolve_group_content(group_key: str) -> ContentResponse | None:
     """Resolve a ``g2:`` group key to ONE provider's content detail.
 
