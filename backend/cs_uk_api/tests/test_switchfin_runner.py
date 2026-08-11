@@ -991,6 +991,50 @@ def test_find_play_pill_absent_on_plain_frame() -> None:
     assert find_play_pill(_teal_pill_png((1600, 900), (0, 0, 0, 0))) is None
 
 
+def test_find_play_pill_ignores_wider_poster_banner() -> None:
+    """Regression (run #15): the movie poster's wide teal banner below the
+    pill beat the pill on width, failed the solidity check, and made the
+    scan return None (play_button timed out despite a rendered pill). The
+    pill is the widest SOLID, squat run — the scan must skip the banner
+    (band-not-containing-row + aspect ratio) and hit the pill."""
+    import io
+
+    from PIL import Image, ImageDraw  # type: ignore[import-untyped]
+
+    img = Image.new("RGB", (1600, 900), (220, 220, 220))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle((700, 400, 970, 500), fill=(0, 170, 210))  # the pill
+    # A wider flat teal strip BELOW the pill (the poster's bottom banner).
+    draw.rectangle((100, 800, 1500, 830), fill=(0, 170, 210))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    center = find_play_pill(buf.getvalue())
+    assert center is not None
+    assert center[0] == 835  # the pill, not the banner (mid_x=800)
+    assert abs(center[1] - 450) <= 2
+
+
+def test_find_play_pill_rejects_desaturated_poster_art() -> None:
+    """Regression (run #15): poster art reads tealish-blue — e.g.
+    (128, 158, 198), g-r=30 — but the pill's fill always has green
+    clearly dominating red (g-r >= 60). A wide desaturated run must not
+    be returned as the pill."""
+    import io
+
+    from PIL import Image, ImageDraw  # type: ignore[import-untyped]
+
+    img = Image.new("RGB", (1600, 900), (220, 220, 220))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle((700, 400, 970, 500), fill=(0, 170, 210))  # the pill
+    draw.rectangle((100, 750, 1500, 790), fill=(128, 158, 198))  # poster art
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    center = find_play_pill(buf.getvalue())
+    assert center is not None
+    assert center[0] == 835
+    assert abs(center[1] - 450) <= 2
+
+
 def test_find_views_grid_matches_grid_frame() -> None:
     """#209: the visual classifier recognizes the Views grid screenshot."""
     assert find_views_grid(_views_grid_png((3168, 1440)))

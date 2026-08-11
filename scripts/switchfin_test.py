@@ -242,11 +242,20 @@ def find_play_pill(png: bytes) -> tuple[int, int] | None:
 
     def tealish(r: int, g: int, b: int) -> bool:
         # The client's accent family (sampled on-device): cyan-teal such as
-        # (103, 201, 229). Generous bounds; the wide-run filter does the rest.
-        return g >= 140 and b >= 170 and r <= 180 and abs(g - b) <= 90
+        # (103, 201, 229) and the pill fill (2, 176, 183). Green must
+        # clearly dominate red — poster art reads tealish-blue (e.g.
+        # (128, 158, 198), g-r=30) but the pill never does (g-r >= 60);
+        # without this the poster's wide runs steal the scan (run #15).
+        return (
+            g >= 140
+            and b >= 170
+            and r <= 180
+            and g - r >= 60
+            and abs(g - b) <= 90
+        )
 
     min_w = max(80, int(w * 0.05))  # the pill is ~270px on a 3168px screen
-    best: tuple[int, int, int] | None = None  # (y, x0, x1)
+    candidates: list[tuple[int, int, int]] = []  # (y, x0, x1), per row
     for y in range(0, h, 3):
         run_start, run_len = -1, 0
         max_start, max_len = -1, 0
@@ -259,57 +268,74 @@ def find_play_pill(png: bytes) -> tuple[int, int] | None:
                     max_len, max_start = run_len, run_start
             else:
                 run_start, run_len = -1, 0
-        if max_len >= min_w and (best is None or max_len > best[2] - best[1]):
-            best = (y, max_start, max_start + max_len)
-    if best is None:
+        if max_len >= min_w:
+            candidates.append((y, max_start, max_start + max_len))
+    if not candidates:
         return None
-    best_y, x0, x1 = best
-    mid_x = (x0 + x1) // 2
-    # Vertical extent measured at the pill's LEFT edge: the play triangle
-    # sits in the center and splits the teal column there, but the edges are
-    # solid fill for the full height. The lowest contiguous teal band is the
-    # pill — hero/backdrop art above it also reads teal and must not widen
-    # the band.
-    edge_x = x0 + max(20, (x1 - x0) // 6)
-    ys = sorted({yy for yy in range(0, h, 2) if tealish(*px[edge_x, yy])})
-    if not ys:
-        return None
-    bands: list[list[int]] = []
-    band = [ys[0]]
-    for prev, cur in itertools.pairwise(ys):
-        if cur - prev > 6:
-            bands.append(band)
-            band = [cur]
-        else:
-            band.append(cur)
-    bands.append(band)
-    band = bands[-1]  # the pill sits below the hero art
-    y0, y1 = band[0], band[-1]
-    if len(band) < 20:  # the pill is ~100px tall on a 3168px screen
-        return None
-    if y1 - y0 < 40 or y1 - y0 > 220:
-        return None
+    # Widest run first — but the widest teal run is often poster/hero art
+    # (a gradient banner wider than the pill) which then fails the solidity
+    # check below. The pill is the widest SOLID run, so keep trying narrower
+    # candidates instead of giving up after the first (run #15: movie
+    # "Перша поїздка" poster banner 526px beat the 300px pill -> None).
+    candidates.sort(key=lambda c: c[2] - c[1], reverse=True)
+    for best_y, x0, x1 in candidates:
+        mid_x = (x0 + x1) // 2
+        # Vertical extent measured at the pill's LEFT edge: the play triangle
+        # sits in the center and splits the teal column there, but the edges
+        # are solid fill for the full height. The lowest contiguous teal band
+        # is the pill — hero/backdrop art above it also reads teal and must
+        # not widen the band.
+        edge_x = x0 + max(20, (x1 - x0) // 6)
+        ys = sorted({yy for yy in range(0, h, 2) if tealish(*px[edge_x, yy])})
+        if not ys:
+            continue
+        bands: list[list[int]] = []
+        band = [ys[0]]
+        for prev, cur in itertools.pairwise(ys):
+            if cur - prev > 6:
+                bands.append(band)
+                band = [cur]
+            else:
+                band.append(cur)
+        bands.append(band)
+        # The band that CONTAINS this candidate's row is its own body —
+        # ``bands[-1]`` ("the pill sits below the hero art") is wrong when
+        # the poster's own teal regions continue below the pill (run #15).
+        band = next((b for b in bands if b[0] <= best_y <= b[-1]), bands[-1])
+        y0, y1 = band[0], band[-1]
+        if len(band) < 20:  # the pill is ~100px tall on a 3168px screen
+            continue
+        if y1 - y0 < 40 or y1 - y0 > 220:
+            continue
+        # Aspect ratio: the pill is a squat rectangle (~2.5:1), poster
+        # banners are wide flat strips (~10:1) that also pass the solidity
+        # check (run #15: the "Перша поїздка" poster's bottom banner beat
+        # the pill on width and got tapped instead).
+        if (x1 - x0) / max(1, y1 - y0) > 6:
+            continue
 
-    # Solidity: the pill is a UNIFORM teal fill, whereas wide teal runs in
-    # poster art are gradients (a sky, e.g.). Reject anything whose interior
-    # channel spread is large — horizontally along the best row and
-    # vertically down the (solid) left edge.
-    sx = [px[x, best_y] for x in range(x0 + 20, x1 - 20, 8)]
-    sy = [px[edge_x, yy] for yy in range(y0 + 10, y1 - 10, 8)]
-    if not sx or not sy:
-        return None
+        # Solidity: the pill is a UNIFORM teal fill, whereas wide teal runs
+        # in poster art are gradients (a sky, e.g.). Reject anything whose
+        # interior channel spread is large — horizontally along the best row
+        # and vertically down the (solid) left edge.
+        sx = [px[x, best_y] for x in range(x0 + 20, x1 - 20, 8)]
+        sy = [px[edge_x, yy] for yy in range(y0 + 10, y1 - 10, 8)]
+        if not sx or not sy:
+            continue
 
-    def spread(samples: list[tuple[int, int, int]]) -> int:
-        # Per-channel spread across samples: a uniform pill is ~0 in every
-        # channel; a poster gradient varies in at least one.
-        return max(
-            max(s[k] for s in samples) - min(s[k] for s in samples) for k in range(3)
-        )
+        def spread(samples: list[tuple[int, int, int]]) -> int:
+            # Per-channel spread across samples: a uniform pill is ~0 in
+            # every channel; a poster gradient varies in at least one.
+            return max(
+                max(s[k] for s in samples) - min(s[k] for s in samples)
+                for k in range(3)
+            )
 
-    if max(spread(sx), spread(sy)) > 45:
-        return None
+        if max(spread(sx), spread(sy)) > 45:
+            continue
 
-    return (mid_x, (y0 + y1) // 2)
+        return (mid_x, (y0 + y1) // 2)
+    return None
 
 
 def find_views_grid(png: bytes) -> bool:

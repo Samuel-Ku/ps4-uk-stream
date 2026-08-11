@@ -603,6 +603,36 @@ episodes (`ufdub:dorama-408-…:s1e1…`). Regression test
   pill scan found nothing on an unloaded grid) vs `screen-play_dorama`
   (real detail, teal pill, no rail).
 
+## Run #15 (2026-08-11, after B24 ufdub dorama fix) — 6/7 views pass
+
+- **play_dorama FIXED (B24)** — the dorama detail now renders its season
+  rail (Seasons returns Сезон 1 + 50 episodes) and the runner's
+  season/episode taps fire PlaybackInfo. Best run so far: Новинки +
+  Популярні + Серіали + Аніме + Мультфільми + Дорами fully pass
+  (6/7); only play_movie fails.
+- **play_movie ❌ — NEW diagnosis via the failure screenshot.**
+  `screen-play_movie.png` (the screenshot infra added after #205) shows
+  the detail FULLY rendered with the teal pill visible — yet the pill
+  scan returned None and play_button timed out. Debugging
+  `find_play_pill` on the actual frame:
+  - The movie poster ("Перша поїздка") has a WIDE teal banner at the
+    bottom (x=71..597, 526px) that beat the 259px pill on width.
+  - The scan validated only the widest run, and the banner's vertical
+    band was measured at the poster's own (tall) teal column — the
+    "lowest band" heuristic assumed hero art above the pill, which the
+    poster's own content below breaks.
+  - Result: None → runner fell back to the calibrated tap → missed →
+    timeout, despite a perfectly rendered pill.
+  - Fix: candidates tried in width order; the band must CONTAIN the
+    candidate's row (not the lowest band); `tealish` now requires
+    green-dominance (g-r >= 60 — poster art is desaturated blue, the
+    pill is always green-dominant); aspect-ratio filter rejects wide
+    flat strips (>6:1). Verified: movie pill now (824, 297), dorama
+    unchanged (824, 336). Two regression tests.
+- Run #15 also refreshed the capture fixture (contract suite still
+  green) and confirmed the blank-frame screenshots (`screen-play_newest`
+  from #14) are genuinely blank (grid unloaded, not a rendering bug).
+
 ## Open questions (for the next session)
 
 - DONE (2026-08-10): `Adb.back()` + `phase: nav` steps wired into the runner;
