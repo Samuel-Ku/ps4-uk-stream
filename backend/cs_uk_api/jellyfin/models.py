@@ -98,6 +98,7 @@ class BaseItemDto(BaseModel):
     ParentIndexNumber: int | None = None
     SeriesId: str | None = None
     SeriesName: str | None = None
+    PlaybackPositionTicks: int | None = None
 
 
 class BaseItemDtoQueryResult(BaseModel):

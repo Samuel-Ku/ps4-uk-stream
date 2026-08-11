@@ -436,6 +436,54 @@ def resolve_group(group_key: str) -> dict[str, SearchResult] | None:
     return per_provider.get(group_key)
 
 
+def group_key_for_external(composite: str) -> str | None:
+    """Reverse group lookup: ``provider:external`` -> its ``g2:`` key.
+
+    The playback reports carry the item id the client played — for an
+    episode that is the provider-scoped wire id
+    (``ufdub:dorama-408-...:s1e1``), whose ``provider:external`` prefix
+    identifies the merged group (ticket #214). Built from the same
+    ``sources_cache`` map ``resolve_group`` reads.
+    """
+    per_provider: dict[str, dict[str, SearchResult]] = cast(
+        dict[str, dict[str, SearchResult]], sources_cache.get(_SOURCES_KEY) or {}
+    )
+    for group_key, providers in per_provider.items():
+        for result in providers.values():
+            if result.id == composite:
+                return group_key
+    return None
+
+
+#: Per-item playback positions reported by the client (ticket #214):
+#: ``item_id -> position_ticks``. The facade has a single fixed user (D4),
+#: so no per-user dimension. In-memory only (ADR-0003: no persistence).
+_playback: dict[str, int] = {}
+
+
+def record_playback(item_id: str, position_ticks: int) -> None:
+    """Record the client's playback position (``Sessions/Playing/*``).
+
+    Last report wins — the client streams Progress heartbeats while
+    playing and a final Stopped report, so the newest position is the
+    most accurate. Zero/negative positions (a just-started item) are
+    ignored; a later positive report overwrites.
+    """
+    if position_ticks <= 0:
+        return
+    _playback[item_id] = position_ticks
+
+
+def playback_positions() -> dict[str, int]:
+    """item_id -> position_ticks, most-progressed first (ticket #214)."""
+    return dict(sorted(_playback.items(), key=lambda kv: kv[1], reverse=True))
+
+
+def clear_playback() -> None:
+    """Drop all recorded positions (test isolation, #214)."""
+    _playback.clear()
+
+
 async def resolve_group_content(group_key: str) -> ContentResponse | None:
     """Resolve a ``g2:`` group key to ONE provider's content detail.
 

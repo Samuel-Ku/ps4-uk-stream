@@ -40,8 +40,11 @@ from pydantic import BaseModel
 
 from ..catalog_state import (
     get_home,
+    group_key_for_external,
     load_home,
     merged_search,
+    playback_positions,
+    record_playback,
     register_search_groups,
     resolve_group,
     resolve_group_content,
@@ -675,19 +678,85 @@ async def items_listing(
     return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
 
 
+async def _resolve_playback_episode(
+    item_id: str,
+) -> tuple[BaseItemDto | None, BaseItemDto | None]:
+    """Map a played episode id to (its DTO, the next episode's DTO).
+
+    Episode wire ids look like ``ufdub:dorama-408-...:s1e1`` — the
+    ``provider:external`` prefix identifies the merged group (reverse
+    group lookup, #214), whose season hierarchy gives the episode list.
+    Returns ``(None, None)`` for a non-episode id or an unresolvable
+    group (cold cache / gated item).
+    """
+    # Episode wire ids end in ``:s1e1`` (ufdub-style) or ``:e5``
+    # (uakino/kinotron-style); the prefix before the tail is the
+    # ``provider:external`` composite that identifies the merged group.
+    match = re.search(r":(?:s\d+)?e\d+$", item_id)
+    if match is None:
+        return None, None
+    group_key = group_key_for_external(item_id[: match.start()])
+    if group_key is None:
+        return None, None
+    seasons = (await _hierarchy(group_key)).Items
+    for season in seasons:
+        if season.Id is None:
+            continue
+        episodes = (await _hierarchy(season.Id)).Items
+        for idx, episode in enumerate(episodes):
+            if episode.Id == item_id:
+                nxt = episodes[idx + 1] if idx + 1 < len(episodes) else None
+                return episode, nxt
+    return None, None
+
+
+async def _record_playback_from(request: Request) -> None:
+    """Best-effort store of the client's playback report (#214).
+
+    The @jellyfin/sdk posts PlaybackStartInfo/ProgressInfo/StopInfo
+    bodies here; ``ItemId`` + ``PositionTicks`` are what a resume shelf
+    needs. A malformed body is not an error — the report is advisory.
+    """
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — malformed report, keep the 204
+        log.debug("playback report body unreadable, ignoring")
+        return
+    item_id = body.get("ItemId")
+    position = body.get("PositionTicks")
+    if isinstance(item_id, str) and isinstance(position, (int, float)):
+        record_playback(item_id, int(position))
+
+
 @router.get(
     "/Users/{user_id}/Items/Resume",
     response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def items_resume(user_id: str) -> BaseItemDtoQueryResult:
-    """Continue-watching rail — always empty.
+    """Continue-watching rail — items with a recorded position (#214).
 
-    The facade has no playback history (sessions are no-ops, D8), so
-    there is nothing to resume. Real Jellyfin answers an empty result,
-    not a 404; Switchfin renders the rail only when non-empty.
+    Movies report their ``g2:`` key (PlaybackInfo on the movie card);
+    episodes report the provider-scoped wire id, resolved through the
+    group map. Both come back with ``PlaybackPositionTicks`` so the
+    client renders the resume bar. ``user_id`` is not validated — the
+    facade has a single fixed user (D4).
     """
-    return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
+    dtos: list[BaseItemDto] = []
+    for item_id, position in playback_positions().items():
+        if item_id.startswith("g2:"):
+            try:
+                dto = await item_detail(item_id)
+            except HTTPException:
+                continue  # transiently unavailable item — skip, not fail
+            dto.PlaybackPositionTicks = position
+            dtos.append(dto)
+            continue
+        episode_dto, _ = await _resolve_playback_episode(item_id)
+        if episode_dto is not None:
+            episode_dto.PlaybackPositionTicks = position
+            dtos.append(episode_dto)
+    return BaseItemDtoQueryResult(Items=dtos, TotalRecordCount=len(dtos))
 
 
 @router.get(
@@ -696,12 +765,21 @@ async def items_resume(user_id: str) -> BaseItemDtoQueryResult:
     dependencies=[Depends(require_token)],
 )
 async def shows_next_up() -> BaseItemDtoQueryResult:
-    """Next-up shelf ("Continue watching" for series) — always empty.
+    """Next-up shelf: the next episode of each in-progress series (#214).
 
-    Same rationale as ``/Users/{user_id}/Items/Resume``: without
-    playback state there are no in-progress series to queue.
+    One entry per series (the most-progressed episode's next sibling),
+    in the same episode DTO shape the season rail hands out.
     """
-    return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
+    result: list[BaseItemDto] = []
+    seen_series: set[str] = set()
+    for item_id in playback_positions():
+        if item_id.startswith("g2:"):
+            continue  # a movie has no "next"
+        _, next_episode = await _resolve_playback_episode(item_id)
+        if next_episode is not None and next_episode.SeriesId not in seen_series:
+            seen_series.add(next_episode.SeriesId or "")
+            result.append(next_episode)
+    return BaseItemDtoQueryResult(Items=result, TotalRecordCount=len(result))
 
 
 @router.get(
@@ -1563,31 +1641,34 @@ async def video_segment(item_id: str, url: str = Query(...)) -> Response:
 
 
 @router.post("/Sessions/Playing", dependencies=[Depends(require_token)])
-async def sessions_playing() -> Response:
-    """Playback-start report (D8): accept, answer 204, store nothing.
+async def sessions_playing(request: Request) -> Response:
+    """Playback-start report (D8): accept, answer 204, record position.
 
     The @jellyfin/sdk posts a full PlaybackStartInfo body here the moment
-    playback starts (capture row 6). The facade has no session state and
-    keeps none — the response exists so the client's report lands.
+    playback starts (capture row 6); the position seeds the resume shelf
+    (ticket #214, in-memory only).
     """
+    await _record_playback_from(request)
     return Response(status_code=204)
 
 
 @router.post("/Sessions/Progress", dependencies=[Depends(require_token)])
 @router.post("/Sessions/Playing/Progress", dependencies=[Depends(require_token)])
-async def sessions_progress() -> Response:
-    """Playback-progress report (D8): accept, answer 204, store nothing."""
+async def sessions_progress(request: Request) -> Response:
+    """Playback-progress report (D8): accept, answer 204, record position.
+
+    Heartbeats update the stored position; the newest report wins.
+    """
+    await _record_playback_from(request)
     return Response(status_code=204)
 
 
 @router.post("/Sessions/Stopped", dependencies=[Depends(require_token)])
 @router.post("/Sessions/Playing/Stopped", dependencies=[Depends(require_token)])
-async def sessions_stopped() -> Response:
-    """Playback-stop report (D8): accept, answer 204, store nothing.
-
-    Resume/history are out of scope (D8) — this is where a real server
-    would persist the stop position; the facade forgets it on purpose.
-    """
+async def sessions_stopped(request: Request) -> Response:
+    """Playback-stop report (D8): accept, answer 204, record the stop
+    position — the final value the resume shelf shows (ticket #214)."""
+    await _record_playback_from(request)
     return Response(status_code=204)
 
 

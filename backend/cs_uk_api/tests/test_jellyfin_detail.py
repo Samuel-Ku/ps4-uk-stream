@@ -35,14 +35,15 @@ returns canned detail.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 import hashlib
 import importlib
+from collections.abc import Iterator
 from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
 
+from cs_uk_api.catalog_state import clear_playback
 from cs_uk_api.config import SETTINGS
 from cs_uk_api.main import (
     _blocklist_cache,
@@ -190,6 +191,7 @@ def _isolate() -> Iterator[None]:
     real upstream calls or stale state leak into assertions."""
     saved_providers = dict(PROVIDERS)
     PROVIDERS.clear()
+    clear_playback()
     for cache in (_home_cache, _home_sources_cache, _content_cache, _blocklist_cache):
         cache.clear()
     try:
@@ -197,6 +199,7 @@ def _isolate() -> Iterator[None]:
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved_providers)
+        clear_playback()
         for cache in (_home_cache, _home_sources_cache, _content_cache, _blocklist_cache):
             cache.clear()
 
@@ -489,3 +492,125 @@ def test_detail_cached_second_request_no_upstream_call(
 def test_hierarchy_requires_token(client: TestClient) -> None:
     assert client.get("/Items/g1:deadbeefdeadbeef").status_code == 401
     assert client.get("/Items", params={"parentId": "g1:deadbeefdeadbeef"}).status_code == 401
+
+
+# ------------------------------------------------------------ playback shelf (#214)
+
+
+def _post_playback(client: TestClient, item_id: str, position: int) -> None:
+    r = client.post(
+        "/Sessions/Playing/Stopped",
+        json={"ItemId": item_id, "PositionTicks": position},
+        headers={"X-Emby-Token": TOKEN},
+    )
+    assert r.status_code == 204
+
+
+def test_playback_report_seeds_resume_and_nextup(client: TestClient) -> None:
+    """#214: a Stopped report for a played episode lights up Continue
+    watching — Resume returns the episode with PlaybackPositionTicks and
+    NextUp returns its successor in the season. The played id is the
+    provider-prefixed wire id real providers emit
+    (``{provider}:{external}:s1e1``)."""
+    serial = _serial()
+    serial.seasons = [
+        Season(
+            number=1,
+            episodes=[
+                Episode(number=1, id="p1:serial-1:s1e1", title="Серія 1"),
+                Episode(number=2, id="p1:serial-1:s1e2", title="Серія 2"),
+            ],
+        )
+    ]
+    stub = _DetailStub(
+        cards=[_card("p1", "serial-1", "Сериалал серіал", "series", poster=_POSTER_SERIES)],
+        content_by_external={"serial-1": serial},
+    )
+    PROVIDERS["p1"] = stub
+    _auth(client)
+    gk = _serial_gk(client)
+    episodes = _items_of(client, f"{gk}:S1")
+    assert episodes[0]["Id"] == "p1:serial-1:s1e1"
+
+    _post_playback(client, "p1:serial-1:s1e1", 600_000_000)
+
+    resume = _get(client, "/Users/user1/Items/Resume")
+    assert len(resume["Items"]) == 1
+    item = resume["Items"][0]
+    assert item["Id"] == "p1:serial-1:s1e1"
+    assert item["Type"] == "Episode"
+    assert item["SeriesName"] == "Сериалал серіал"
+    assert item["PlaybackPositionTicks"] == 600_000_000
+    assert resume["TotalRecordCount"] == 1
+
+    nextup = _get(client, "/Shows/NextUp")
+    assert len(nextup["Items"]) == 1
+    nxt = nextup["Items"][0]
+    assert nxt["Id"] == "p1:serial-1:s1e2"
+    assert nxt["IndexNumber"] == 2
+    assert nxt["SeriesId"] == gk
+
+
+def test_playback_report_movie_seeds_resume(client: TestClient) -> None:
+    """#214: a movie reports its g2 key, so Resume carries the movie
+    card with its position (no NextUp — a movie has no successor)."""
+    PROVIDERS["p1"] = _seed()
+    _auth(client)
+    gk = _movie_gk(client)
+
+    _post_playback(client, gk, 1_500_000_000)
+
+    resume = _get(client, "/Users/user1/Items/Resume")
+    assert len(resume["Items"]) == 1
+    assert resume["Items"][0]["Id"] == gk
+    assert resume["Items"][0]["Type"] == "Movie"
+    assert resume["Items"][0]["PlaybackPositionTicks"] == 1_500_000_000
+
+    nextup = _get(client, "/Shows/NextUp")
+    assert nextup["Items"] == []
+
+
+def test_playback_report_ignores_zero_position(client: TestClient) -> None:
+    """#214: a just-started report (PositionTicks 0) must not seed the
+    shelf — nothing watched yet."""
+    serial = _serial()
+    serial.seasons = [
+        Season(
+            number=1,
+            episodes=[
+                Episode(number=1, id="p1:serial-1:s1e1", title="Серія 1"),
+                Episode(number=2, id="p1:serial-1:s1e2", title="Серія 2"),
+            ],
+        )
+    ]
+    stub = _DetailStub(
+        cards=[_card("p1", "serial-1", "Сериалал серіал", "series", poster=_POSTER_SERIES)],
+        content_by_external={"serial-1": serial},
+    )
+    PROVIDERS["p1"] = stub
+    _auth(client)
+
+    _post_playback(client, "p1:serial-1:s1e1", 0)
+
+    resume = _get(client, "/Users/user1/Items/Resume")
+    assert resume["Items"] == []
+    # The zero report must not block a later real position.
+    _post_playback(client, "p1:serial-1:s1e1", 700_000_000)
+    resume = _get(client, "/Users/user1/Items/Resume")
+    assert len(resume["Items"]) == 1
+    assert resume["Items"][0]["PlaybackPositionTicks"] == 700_000_000
+
+
+def test_playback_report_for_unknown_item_is_ignored(client: TestClient) -> None:
+    """#214: a report for an item outside the catalog (cold group key,
+    unknown composite) must not break Resume/NextUp — the shelf just
+    skips it."""
+    PROVIDERS["p1"] = _seed()
+    _auth(client)
+
+    _post_playback(client, "p9:unknown-title:s1e7", 1_000_000_000)
+
+    resume = _get(client, "/Users/user1/Items/Resume")
+    assert resume["Items"] == []
+    nextup = _get(client, "/Shows/NextUp")
+    assert nextup["Items"] == []

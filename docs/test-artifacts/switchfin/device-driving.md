@@ -683,9 +683,25 @@ witnessed):
   shelf populates the grid.
 - **Genres tab** ❌ — `GET /Genres` returns `{Items: [], TotalRecordCount: 0}`
   (deliberate stub; no provider parses genres). Ticket **#213**.
-- **Continue watching / Next up** ❌ — `/Items/Resume` and `/Shows/NextUp`
-  always empty because `Sessions/Playing/Stopped` etc. answer 204 and
-  store nothing (D8). Ticket **#214**.
+- **Continue watching / Next up** ❌ (before #214) — `/Items/Resume` and
+  `/Shows/NextUp` always empty because `Sessions/Playing/Stopped` etc.
+  answer 204 and store nothing (D8). Ticket **#214** — FIXED below.
+
+## #214 implemented (2026-08-11) — playback progress → Resume / NextUp
+
+`Sessions/Playing/Stopped` now stores `ItemId → PositionTicks` in a
+process-wide store (`catalog_state.playback_positions`); `/Items/Resume`
+resolves each id to its DTO (g2: movies directly, episode wire ids through
+the group map) and stamps `PlaybackPositionTicks`; `/Shows/NextUp` returns
+the next sibling of the most-progressed episode per series. `clear_playback()`
+keeps tests isolated; a malformed report body still 204s (advisory, D8).
+
+**Live verification (device + API):** POSTed a real episode wire id
+(`ufdub:dorama-…:s1e1`, PositionTicks=900000000) → `Resume` returns the
+episode with the position, `NextUp` returns episode 2 of the series. After an
+app restart, the phone's Home renders **Continue Watching (1)** and **Next Up
+(1)** rails with the Kamen Rider cards — the exact flow that was empty in the
+probe. Tests: 931 pass, ruff/mypy clean (only pre-existing findings).
 
 ## Open questions (for the next session)
 
