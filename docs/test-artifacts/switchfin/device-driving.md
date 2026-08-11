@@ -790,11 +790,22 @@ probe. Tests: 931 pass, ruff/mypy clean (only pre-existing findings).
     (#219) — **FIXED** (`b9f915f`): `_content_dto` falls back to the
     snapshot card's genres; live: [Фільми, Історія, Психологія].
   - `ProductionYear: None` on 5/6 details; 120/130 home cards carry no
-    year — ufdub parses none (#220, OPEN).
-  - `People` rail never renders — detail DTO has no cast (#221, OPEN).
-  - rating badge shows `0` — no `CommunityRating` anywhere (#222, OPEN).
+    year — ufdub parses none (#220) — **FIXED** (`d861adf`): ufdub
+    `content()` parses the `Рік:` block; detail falls back to the card
+    year. Live: Я матюкаюсь→2025, Небесні Створіння→1994, Kamen
+    Rider→2024.
+  - `People` rail never renders — detail DTO has no cast (#221) —
+    **FIXED** (`b5c4e11`): kinotron/uaserialspro actor lists + klontv
+    JSON-LD → `People` + `/Persons/{id}`. Live: Ґранчестер → 23 people.
+  - rating badge shows `0` — no `CommunityRating` anywhere (#222) —
+    **FIXED** (`2d90b63`): klontv JSON-LD `aggregateRating` →
+    `CommunityRating`; absent stays omitted. Live: Ґранчестер → 7.9.
   - episodes carry no Overview/RunTimeTicks/PremiereDate even though the
-    app requests `fields=...Overview` (#223, OPEN).
+    app requests `fields=...Overview` (#223) — **FIXED** (`2d90b63`):
+    animeon now calls the documented-but-unwired `episodes-info`
+    endpoint (best-effort) → real episode titles + PremiereDate. Live:
+    «Ми з тобою — повні протилежності» епізоди 1-2 → Святвечір
+    (2026-07-05), Дилема зимової ночі (2026-07-12).
 
 ## Running the suite (2026-08-10, codified)
 
