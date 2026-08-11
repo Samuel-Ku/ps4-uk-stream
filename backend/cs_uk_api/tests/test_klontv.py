@@ -152,6 +152,32 @@ async def test_klontv_content_series_parses_seasons():
 
 
 @pytest.mark.asyncio
+async def test_klontv_content_parses_cast():
+    """Ticket #221: the content page's schema.org JSON-LD carries an
+    ``actor[]`` (and ``director[]``) of ``{@type: Person, name}`` — parse
+    them into ``ContentResponse.people`` with role labels."""
+    content_html = _fixture("content_series.html")
+    player_html = _fixture("player_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://klonua.com/serialy/8431-duna.html").respond(
+            200, text=content_html
+        )
+        router.get("https://ashdi.vip/serial/6212").respond(
+            200, text=player_html
+        )
+        async with httpx.AsyncClient() as http:
+            c = await KlonTVProvider().content("series/8431-duna", http)
+    actors = [p for p in c.people if p.role == "Actor"]
+    directors = [p for p in c.people if p.role == "Director"]
+    assert len(actors) == 20
+    assert actors[0].name == "Вільям Гарт"
+    assert actors[0].id == "klontv:actor:0"
+    assert directors == [
+        p for p in c.people if p.name == "Джон Гаррісон" and p.role == "Director"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_klontv_content_follows_section_redirect():
     """Regression (observed live 2026-08-09): a title moved between
     sections answers 301 (`/filmy/...` -> `/serialy/...`). content()

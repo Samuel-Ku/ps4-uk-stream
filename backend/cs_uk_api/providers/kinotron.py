@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 from ..country import extract_country
 from ..http_client import safe_get
 from ..models import ContentResponse, Episode, SearchResult, Season, Section, StreamResponse, Translation, TranslationLevel
-from .base import BaseProvider, MediaTypeStr, ProviderError, model_b_axes
+from .base import BaseProvider, MediaTypeStr, ProviderError, model_b_axes, parse_actor_list
 
 BASE_URL = "https://kinotron.tv"
 # Hosts the upstream may legally redirect to: the DLE CMS and the ashdi
@@ -248,11 +248,16 @@ class KinoTronProvider(BaseProvider):
             if not self._files(player.text):
                 raise ProviderError("gated", "no playable files on player page")
         description_el = soup.select_one(".full-text")
+        # Ticket #221: the page's ``В ролях:`` li lists the cast with
+        # one ``/xfsearch/actors/<name>/`` anchor per person.
+        cast = parse_actor_list(
+            soup, "В ролях", self.id, re.compile(r"/actors/([^/]+)/?$")
+        )
         mb_form, mb_styles = model_b_axes(kind)
         return ContentResponse(id=f"{self.id}:{external_id}", title=title_el.get_text(" ", strip=True),
             description=description_el.get_text(" ", strip=True) if description_el else "",
             poster=poster, translations=translations, seasons=seasons, translations_level=translations_level, country=country,
-            form=mb_form, styles=mb_styles)
+            form=mb_form, styles=mb_styles, people=cast)
 
     async def stream(self, content_id: str, translation: str | None, http: httpx.AsyncClient) -> StreamResponse:
         # `content_id` arrives from /api/stream with the `<provider>:`

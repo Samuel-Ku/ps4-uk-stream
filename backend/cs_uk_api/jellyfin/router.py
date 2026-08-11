@@ -23,7 +23,7 @@ import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse
 
 import httpx
 from fastapi import (
@@ -72,6 +72,7 @@ from .models import (
     BaseItemDtoQueryResult,
     DisplayPreferencesDto,
     MediaSourceInfo,
+    PersonDto,
     PlaybackInfoResponse,
     SearchHint,
     SearchHintResult,
@@ -399,6 +400,13 @@ def _content_dto(group_key: str, content: ContentResponse, server_id: str) -> Ba
         # where the data exists.
         Genres=list(content.genres or _genres_for_group(group_key)),
     )
+    # Ticket #221: the People rail renders from BaseItemDto.People —
+    # populated when the resolved provider's content page exposed cast
+    # (kinotron/uaserialspro actor lists, klontv JSON-LD). Empty people
+    # stays an empty list; Switchfin hides the rail then.
+    dto.People = [
+        PersonDto(Id=p.id, Name=p.name, Role=p.role) for p in content.people
+    ]
     parent = _view_id_for_item(group_key)
     if parent is not None:
         dto.ParentId = parent
@@ -1005,6 +1013,32 @@ async def user_item_detail(user_id: str, item_id: str) -> BaseItemDto:
     Switchfin addresses detail pages as ``/Users/{id}/Items/{id}``.
     """
     return await item_detail(item_id)
+
+
+@router.get(
+    "/Persons/{person_id:path}",
+    response_model=BaseItemDto, response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def person_detail(person_id: str) -> BaseItemDto:
+    """Person item — the People rail's tap target (ticket #221).
+
+    The rail's ``Id`` values are provider-scoped person keys that carry
+    the display name in the final path segment (kinotron's
+    ``/xfsearch/actors/<name>/`` and uaserialspro's ``/person/<id>-<slug>/``
+    links, decoded into the wire id; klontv ids are positional). The
+    name is recovered from the id for the DTO — the facade has no
+    per-person pages or portraits, so the DTO is identity-only. A
+    malformed id degrades to the id itself as the name rather than
+    erroring (a person tap must never break the detail page).
+    """
+    name = unquote(person_id.rsplit(":", 1)[-1])
+    return BaseItemDto(
+        Name=name,
+        ServerId=_server_id(),
+        Id=person_id,
+        Type="Person",
+    )
 
 
 @router.get(

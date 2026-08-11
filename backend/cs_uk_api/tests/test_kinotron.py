@@ -190,6 +190,26 @@ async def test_kinotron_series_parses_seasons_and_type():
 
 
 @pytest.mark.asyncio
+async def test_kinotron_content_parses_cast():
+    """Ticket #221: the content page's ``В ролях:`` li lists the cast
+    with one ``/xfsearch/actors/<name>/`` anchor per person — parse it
+    into ``ContentResponse.people`` so the detail DTO's People rail has
+    data."""
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://kinotron.tv/3663-pervorodn-pradavn-pershonarodzhenn.html").respond(200, text=_fixture("content_series.html"))
+        router.get("https://ashdi.vip/serial/3329").respond(200, text=_fixture("player_series.html"))
+        async with httpx.AsyncClient() as http:
+            content = await KinoTronProvider().content("3663-pervorodn-pradavn-pershonarodzhenn", http)
+    assert len(content.people) == 10
+    first = content.people[0]
+    assert first.name == "Джозеф Морґан"
+    assert first.role == "Actor"
+    # The person key is the decoded ``/xfsearch/actors/<name>/`` slug —
+    # stable and round-trippable through /Persons/{id}.
+    assert first.id == "kinotron:Джозеф Морґан"
+
+
+@pytest.mark.asyncio
 async def test_kinotron_stream_rebuilds_url_from_external_id():
     with respx.mock(assert_all_called=True) as router:
         router.get("https://kinotron.tv/3663-pervorodn-pradavn-pershonarodzhenn.html").respond(200, text=_fixture("content_series.html"))

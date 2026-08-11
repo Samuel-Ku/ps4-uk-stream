@@ -53,7 +53,7 @@ from ..models import (
 )
 from ._crypto_uaserialspro import decrypt_player_data
 from ._tortuga import decode as _tortuga_decode
-from .base import BaseProvider, ProviderError, model_b_axes
+from .base import BaseProvider, ProviderError, model_b_axes, parse_actor_list
 
 BASE_URL = "https://uaserials.com"
 # Hosts the upstream may legally redirect to: the DLE CMS and the
@@ -371,6 +371,11 @@ class UASerialsProProvider(BaseProvider):
         # Decode the `file:` field — Tortuga-encoded for movies, or a
         # JSON playlist for series.
         seasons = self._build_seasons_from_player(player_resp.text, external_id, self.id)
+        # Ticket #221: the page's ``Актори:`` li lists the cast with
+        # one ``/person/<id>-<slug>/`` anchor per person.
+        cast = parse_actor_list(
+            soup, "Актори", self.id, re.compile(r"/person/([^/]+)/?$")
+        )
         mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"uaserialspro:{external_id}",
@@ -383,6 +388,7 @@ class UASerialsProProvider(BaseProvider):
             country=country,
             form=mb_form,
             styles=mb_styles,
+            people=cast,
         )
 
     @staticmethod

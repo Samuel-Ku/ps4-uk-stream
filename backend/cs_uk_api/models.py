@@ -149,6 +149,21 @@ class Translation(BaseModel):
     label: str
 
 
+class Person(BaseModel):
+    """One cast member on a content page (ticket #221).
+
+    ``id`` is provider-scoped and stable — the person's own page slug
+    when the site exposes one (uaserialspro ``/person/<id>-<slug>/``,
+    kinotron ``/xfsearch/actors/<name>/``), else a name-based key
+    (klontv's JSON-LD has names only) — so the Jellyfin People rail can
+    round-trip it through ``/Persons/{id}`` without a second lookup.
+    """
+
+    id: str
+    name: str
+    role: str = "Actor"
+
+
 class Episode(BaseModel):
     number: int
     id: str
@@ -185,6 +200,11 @@ class ContentResponse(BaseModel):
     #: Genre labels (ticket #213) — mirrors ``SearchResult.genres`` so
     #: the detail surface and the genre shelf share one source.
     genres: list[str] = Field(default_factory=list)
+    #: Cast (ticket #221) — parsed from the provider's content page
+    #: where it exposes one (kinotron/uaserialspro actor lists, klontv
+    #: JSON-LD). Empty list = the provider's page carries no cast; the
+    #: detail DTO then omits ``People`` and the app hides the rail.
+    people: list[Person] = Field(default_factory=list)
 
     @field_serializer("styles")
     def _ser_styles(self, value: frozenset[MediaStyle]) -> list[str]:

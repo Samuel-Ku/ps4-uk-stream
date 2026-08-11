@@ -54,6 +54,7 @@ from cs_uk_api.main import (
 from cs_uk_api.models import (
     ContentResponse,
     Episode,
+    Person,
     SearchResult,
     Season,
     Translation,
@@ -264,6 +265,55 @@ def test_movie_detail_full_view(client: TestClient) -> None:
     assert set(dto["ImageTags"].keys()) == {"Primary"}
     # Translations stay server-side (hidden on the wire).
     assert "translations" not in dto
+
+
+def test_movie_detail_carries_people(client: TestClient) -> None:
+    """Ticket #221: when the resolved provider's content page exposes
+    cast, the detail DTO carries ``People`` (Jellyfin's wire shape
+    ``{Id, Name, Role}``) so Switchfin renders the rail."""
+    dune = _dune()
+    dune.people = [
+        Person(id="p1:actors:Тімоті Шаламе", name="Тімоті Шаламе"),
+        Person(id="p1:actors:Зендея", name="Зендея", role="Actor"),
+    ]
+    stub = _DetailStub(
+        cards=[_card("p1", "dune-1", "Дюна", "movie", poster=_POSTER_MOVIE)],
+        content_by_external={"dune-1": dune},
+    )
+    PROVIDERS["p1"] = stub
+    _auth(client)
+    gk = _movie_gk(client)
+
+    dto = _get(client, f"/Items/{gk}", userId=USER)
+    assert dto["People"] == [
+        {"Id": "p1:actors:Тімоті Шаламе", "Name": "Тімоті Шаламе", "Role": "Actor"},
+        {"Id": "p1:actors:Зендея", "Name": "Зендея", "Role": "Actor"},
+    ]
+
+
+def test_movie_detail_without_people_omits_rail(client: TestClient) -> None:
+    """Ticket #221: no cast on the content page → an empty People list;
+    Switchfin hides the rail rather than rendering an empty header."""
+    PROVIDERS["p1"] = _seed()
+    _auth(client)
+    gk = _movie_gk(client)
+
+    dto = _get(client, f"/Items/{gk}", userId=USER)
+    assert dto["People"] == []
+
+
+def test_person_detail_returns_person_dto(client: TestClient) -> None:
+    """Ticket #221: tapping a person in the People rail opens
+    ``GET /Persons/{id}`` — the facade answers a Person-shaped DTO whose
+    Name is decoded from the provider-scoped id (the id's final segment
+    carries the display name)."""
+    _auth(client)
+
+    dto = _get(client, "/Persons/p1:actors:Джозеф Морґан")
+    assert dto["Type"] == "Person"
+    assert dto["Id"] == "p1:actors:Джозеф Морґан"
+    assert dto["Name"] == "Джозеф Морґан"
+
 
 
 def test_series_detail_full_view(client: TestClient) -> None:

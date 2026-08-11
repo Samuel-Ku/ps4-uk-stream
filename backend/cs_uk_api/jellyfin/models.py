@@ -107,6 +107,26 @@ class BaseItemDto(BaseModel):
     #: surface renders them (``media_movie``/``media_series`` show a
     #: ``labelGenres`` row when non-empty).
     Genres: list[str] = Field(default_factory=list)
+    #: Cast rail (ticket #221) — present iff the resolved provider's
+    #: content page exposed cast; Switchfin hides the People header
+    #: when the list is empty, so the rail simply doesn't appear for
+    #: providers without cast data.
+    People: list[PersonDto] = Field(default_factory=list)
+
+
+class PersonDto(BaseModel):
+    """One entry of ``BaseItemDto.People`` (ticket #221).
+
+    Jellyfin's wire shape is ``{Id, Name, PrimaryImageTag, Role}``;
+    Switchfin's ``media_series``/``media_movie`` populate the People
+    rail from this list and only render it when non-empty. ``Id`` is
+    the provider-scoped person key that round-trips through
+    ``/Persons/{id}``.
+    """
+
+    Id: str
+    Name: str
+    Role: str = "Actor"
 
 
 class BaseItemDtoQueryResult(BaseModel):

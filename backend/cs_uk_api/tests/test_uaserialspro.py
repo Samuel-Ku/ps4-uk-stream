@@ -225,6 +225,29 @@ async def test_content_movie_parses_title_year_poster():
 
 
 @pytest.mark.asyncio
+async def test_content_parses_cast():
+    """Ticket #221: the content page's ``Актори:`` li lists the cast
+    with one ``/person/<id>-<slug>/`` anchor per person — parse it into
+    ``ContentResponse.people``."""
+    content_html = _fixture("content.html")
+    player_html = _fixture("player.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://uaserials.com/12588-shopen-shopen.html").respond(
+            200, text=content_html
+        )
+        router.get("https://tortuga.tw/vod/129316").respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            c = await UASerialsProProvider().content("12588-shopen-shopen", http)
+    assert len(c.people) == 7
+    first = c.people[0]
+    assert first.name == "Ерік Кульм"
+    assert first.role == "Actor"
+    # The person key is the ``/person/<id>-<slug>/`` path — the numeric
+    # id is the site's stable person identifier.
+    assert first.id == "uaserialspro:4954-eryk-kulm"
+
+
+@pytest.mark.asyncio
 async def test_content_series_parses_seasons():
     """The Енн Дройід content page (a series) returns at least one
     season with episodes, sourced from the Tortuga-decoded JSON

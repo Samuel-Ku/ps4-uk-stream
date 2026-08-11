@@ -27,6 +27,7 @@ from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
+    Person,
     SearchResult,
     Season,
     Section,
@@ -34,6 +35,33 @@ from ..models import (
     Translation,
 )
 from .base import BaseProvider, ProviderError, model_b_axes
+
+
+def _jsonld_cast(soup: BeautifulSoup, provider: str) -> list[Person]:
+    """Cast from the page's schema.org JSON-LD (ticket #221).
+
+    klonua's content pages embed ``application/ld+json`` with an
+    ``actor[]`` (and ``director[]``) of ``{@type: Person, name}`` — the
+    only cast source on the site (there is no per-person page to link).
+    JSON-LD has names only, so ids are positional within the role.
+    Returns [] when the block is missing or malformed.
+    """
+    script = soup.find("script", type="application/ld+json")
+    if script is None:
+        return []
+    try:
+        data = json.loads(script.string or "")
+    except (json.JSONDecodeError, TypeError):
+        return []
+    people: list[Person] = []
+    for role, label in (("actor", "Actor"), ("director", "Director")):
+        for i, entry in enumerate(data.get(role, []) or []):
+            name = entry.get("name") if isinstance(entry, dict) else None
+            if isinstance(name, str) and name.strip():
+                people.append(
+                    Person(id=f"{provider}:{role}:{i}", name=name.strip(), role=label)
+                )
+    return people
 
 BASE_URL = "https://klonua.com"
 # ashdi.vip hosts the HLS manifest for every title. The upstream
@@ -335,6 +363,7 @@ class KlonTVProvider(BaseProvider):
             seasons = [Season(number=1, episodes=[Episode(
                 number=1, id=f"{self.id}:{external_id}{MOVIE_SUFFIX}", title="Фільм",
             )])]
+        cast = _jsonld_cast(soup, self.id)
         mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"klontv:{external_id}",
@@ -346,6 +375,7 @@ class KlonTVProvider(BaseProvider):
             country=country,
             form=mb_form,
             styles=mb_styles,
+            people=cast,
         )
 
     @staticmethod
