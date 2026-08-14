@@ -141,6 +141,10 @@ async def test_uakino_content_parses_director_and_cast():
     assert len(actors) == 15
     assert actors[0].name == "Ребекка Ферґюсон"
     assert all(p.id.startswith("uakino:") for p in c.people)
+    # The Жанр fi-item row is parsed into tags — it must surface as
+    # genres (the data is on the page but was dropped).
+    assert c.genres
+    assert "Фантастика" in c.genres or "фантастика" in c.genres
     assert [(t.id, t.label) for t in c.translations] == [
         ("Postmodern", "Postmodern"),
         ("DniproFilm", "DniproFilm"),

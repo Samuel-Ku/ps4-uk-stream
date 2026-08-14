@@ -56,6 +56,7 @@ def _parse_fmeta(soup: BeautifulSoup) -> tuple[int | None, list[Person]]:
     #227).
     """
     year: int | None = None
+    genres: list[str] = []
     people: list[Person] = []
     for li in soup.select("ul.flist li"):
         label_el = li.select_one("span")
@@ -66,6 +67,8 @@ def _parse_fmeta(soup: BeautifulSoup) -> tuple[int | None, list[Person]]:
             m = re.search(r"(20\d{2})", li.get_text(" ", strip=True))
             if m:
                 year = int(m.group(1))
+        elif label == "Жанр":
+            genres = [g for g in (a.get_text(strip=True) for a in li.select("a")) if g]
         elif label in ("Режисер", "В ролях"):
             role = "Director" if label == "Режисер" else "Actor"
             for a in li.select("a"):
@@ -76,7 +79,7 @@ def _parse_fmeta(soup: BeautifulSoup) -> tuple[int | None, list[Person]]:
                 # display name must be the final segment so /Persons/
                 # round-trips (kinotron convention).
                 people.append(Person(id=f"serialno:{name}", name=name, role=role))
-    return year, people
+    return year, genres, people
 # Hosts the upstream may legally redirect to: the DLE CMS and the
 # tortuga player. A hostile CMS response must not be able to pivot
 # either hop to an attacker-controlled host.
@@ -294,7 +297,7 @@ class SerialnoProvider(BaseProvider):
         # we accept the whole block and surface its text.
         desc_el = soup.select_one(".fdesc")
         description = desc_el.get_text(" ", strip=True) if desc_el else ""
-        year_int, people = _parse_fmeta(soup)
+        year_int, genres, people = _parse_fmeta(soup)
         country: str | None = extract_country(soup)
         # Player URL: the first `<iframe>` inside `.fplayer` is the
         # series player (`tortuga.tw/embed/<id>`); the second is a
@@ -311,6 +314,7 @@ class SerialnoProvider(BaseProvider):
             description=description,
             year=year_int,
             poster=poster,
+            genres=genres,
             people=people,
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,

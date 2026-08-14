@@ -172,6 +172,9 @@ async def test_serialno_content_parses_year_and_people():
     assert actors[0].name == "Бартломей Топа"
     assert directors[0].name == "Мацей Бухвальд"
     assert all(p.id.startswith("serialno:") for p in c.people)
+    # The Жанр row is parsed but dropped — it must surface as genres.
+    assert c.genres
+    assert "Комедія" in c.genres
 
 
 @pytest.mark.asyncio
