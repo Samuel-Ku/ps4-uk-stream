@@ -146,6 +146,35 @@ async def test_serialno_content_description_and_translation():
 
 
 @pytest.mark.asyncio
+async def test_serialno_content_parses_year_and_people():
+    """The `.flist` block carries `Рік:` and `В ролях:`/`Режисер:`
+    rows with the data present — the provider must surface them.
+    Regression: year was always None and people always [] even
+    though the live-captured fixture has Рік: 2023, 6 actors and
+    2 directors (Ticket #227)."""
+    content_html = _fixture("content_series.html")
+    player_html = _fixture("player_embed.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://serialno.tv/2075-1670.html").respond(
+            200, text=content_html
+        )
+        router.get("https://tortuga.tw/embed/2083").respond(
+            200, text=player_html
+        )
+        async with httpx.AsyncClient() as http:
+            c = await SerialnoProvider().content("2075-1670", http)
+    assert c.year == 2023
+    assert len(c.people) == 8
+    actors = [p for p in c.people if p.role == "Actor"]
+    directors = [p for p in c.people if p.role == "Director"]
+    assert len(actors) == 6
+    assert len(directors) == 2
+    assert actors[0].name == "Бартломей Топа"
+    assert directors[0].name == "Мацей Бухвальд"
+    assert all(p.id.startswith("serialno:") for p in c.people)
+
+
+@pytest.mark.asyncio
 async def test_serialno_stream_series_resolves_episode_m3u8():
     """Two-hop stream for a series episode: content page -> player
     page (`tortuga.tw/embed/<id>`) -> obfuscated `file:` payload ->

@@ -32,6 +32,7 @@ from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
+    Person,
     SearchResult,
     Season,
     Section,
@@ -42,6 +43,40 @@ from ._tortuga import decode as _tor_decrypt
 from .base import BaseProvider, ProviderError, model_b_axes
 
 BASE_URL = "https://serialno.tv"
+
+
+def _parse_fmeta(soup: BeautifulSoup) -> tuple[int | None, list[Person]]:
+    """Year + people from the `.flist` info rows.
+
+    The DLE template renders `<li><span>Рік:</span> <a>2023</a> …`,
+    `<li><span>Режисер:</span> <a>…</a>, <a>…</a>`, and
+    `<li><span>В ролях:</span> <a>…</a>, …`. The parser ignored the
+    block entirely, so every serialno title showed no year and an
+    empty People rail even though the data is on the page (ticket
+    #227).
+    """
+    year: int | None = None
+    people: list[Person] = []
+    for li in soup.select("ul.flist li"):
+        label_el = li.select_one("span")
+        if label_el is None:
+            continue
+        label = label_el.get_text(strip=True).rstrip(":")
+        if label == "Рік":
+            m = re.search(r"(20\d{2})", li.get_text(" ", strip=True))
+            if m:
+                year = int(m.group(1))
+        elif label in ("Режисер", "В ролях"):
+            role = "Director" if label == "Режисер" else "Actor"
+            for a in li.select("a"):
+                name = a.get_text(strip=True)
+                if not name:
+                    continue
+                # The xfsearch href ends with the person's name; the
+                # display name must be the final segment so /Persons/
+                # round-trips (kinotron convention).
+                people.append(Person(id=f"serialno:{name}", name=name, role=role))
+    return year, people
 # Hosts the upstream may legally redirect to: the DLE CMS and the
 # tortuga player. A hostile CMS response must not be able to pivot
 # either hop to an attacker-controlled host.
@@ -259,6 +294,7 @@ class SerialnoProvider(BaseProvider):
         # we accept the whole block and surface its text.
         desc_el = soup.select_one(".fdesc")
         description = desc_el.get_text(" ", strip=True) if desc_el else ""
+        year_int, people = _parse_fmeta(soup)
         country: str | None = extract_country(soup)
         # Player URL: the first `<iframe>` inside `.fplayer` is the
         # series player (`tortuga.tw/embed/<id>`); the second is a
@@ -273,7 +309,9 @@ class SerialnoProvider(BaseProvider):
             id=f"serialno:{external_id}",
             title=title_el.get_text(strip=True),
             description=description,
+            year=year_int,
             poster=poster,
+            people=people,
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
             country=country,
