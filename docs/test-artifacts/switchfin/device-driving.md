@@ -1012,6 +1012,23 @@ parsed — each fixed via TDD + live-verified:
   the first 4-digit year and map nameUa. Live: «Ми з тобою» year=2026
   genres=4, «Військова історія» year=2026 genres=4. Commit `e2e80cd`.
 
+## Field-coverage sweep round 4 (2026-08-14, wire level)
+
+- **detail loses year/genres for search-found groups (FIXED, #233)**.
+  The `_content_dto` fallbacks #219/#220 (`_year_for_group` /
+  `_genres_for_group`) only read the HOME SNAPSHOT cards — but a
+  search-found group usually lives only in the shared resolution map
+  (`register_search_groups`), so its detail dropped the year/genres
+  its own search card surfaced. Wire repro: search «тихий» → «Тихий
+  притулок» card year=2016, but its detail showed Year=None/Genres=[]
+  (uakino is the group winner; its content page lacks the meta block
+  while its search card carries year+genres). Fix: the fallbacks now
+  also read the group's resolution-map cards (`resolve_group`), first
+  non-empty wins. Live: detail `g2:59c2427fc3a49420` → Year 2016 +
+  Genres [Детективи, Трилери, Жахи]. TDD red→green
+  (`test_search_detail_falls_back_to_group_card_metadata`), 1014
+  passed. Commit `d0f9043`.
+
 ## Running the suite (2026-08-10, codified)
 
 ```bash
