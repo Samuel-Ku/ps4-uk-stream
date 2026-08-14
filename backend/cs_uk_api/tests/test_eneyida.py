@@ -53,7 +53,12 @@ async def test_eneyida_search_parses_results():
             results = await EneyidaProvider().search("дюна", http)
     assert len(results) == 7
     assert all(r.provider == "eneyida" for r in results)
-    assert {r.form for r in results} == {"movie"}
+    # Bare-URL cards are classified by the season/episode label: «Діти
+    # Дюни» and one «Дюна» card carry «N сезон M серія» and are series;
+    # the rest are films (2026-08-14 upstream drift fix).
+    assert [r.form for r in results] == [
+        "movie", "movie", "movie", "series", "series", "movie", "movie",
+    ]
 
 
 @pytest.mark.asyncio
@@ -115,6 +120,7 @@ async def test_eneyida_search_season_label_classifies_series():
     <article class="short"><div class="short_in">
       <a class="short_img" href="https://eneyida.tv/8550-taiemnycia-bunkera.html">x</a>
       <a class="short_title" href="https://eneyida.tv/8550-taiemnycia-bunkera.html">Таємниця бункера</a>
+      <div class="meta label_quel-hd">FHD 1080p</div>
       <div class="metaBottom label_quel-camrip">3 сезон 6 серія</div>
     </div></article>
     """

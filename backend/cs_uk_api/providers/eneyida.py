@@ -74,13 +74,13 @@ def _card_kind(card: Tag, href: str) -> str | None:
     film). Series cards carry a season/episode label
     (``<div class="metaBottom label_quel-camrip">3 сезон 6 серія</div>``);
     films don't. Returns ``"movie"`` or ``"series"`` or ``None`` when the
-    card carries no signal."""
-    label = ""
-    el = card.select_one(".metaBottom, [class*=label_quel]")
-    if el is not None:
+    card carries no signal. ALL labels are scanned — the quality label
+    (``label_quel-hd`` «FHD 1080p») comes before the season label
+    (``label_quel-camrip`` «3 сезон 6 серія») in document order."""
+    for el in card.select(".metaBottom, [class*=label_quel]"):
         label = el.get_text(" ", strip=True)
-    if re.search(r"\bсезон\b|\bсерія\b", label, re.IGNORECASE):
-        return "series"
+        if re.search(r"\bсезон\b|\bсерія\b", label, re.IGNORECASE):
+            return "series"
     if "/films/" in href:
         return "movie"
     if "/series/" in href or "/serials/" in href:
