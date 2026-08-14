@@ -155,6 +155,36 @@ async def test_uakino_content_parses_director_and_cast():
 
 
 @pytest.mark.asyncio
+async def test_uakino_content_parses_metadata_from_suffixed_fi_item_rows():
+    """The upstream template renamed the metadata rows from
+    ``fi-item clearfix`` to ``fi-item-s clearfix`` (seen live on
+    anime-series pages). The parser's ``div.fi-item`` selector matched
+    nothing, so year/genres/rating/people silently went empty on every
+    page using the new class. Both spellings must parse."""
+    html = _fixture("content_movie.html").replace(
+        'class="fi-item clearfix"', 'class="fi-item-s clearfix"'
+    )
+    session = FakeSession(
+        **{
+            "/filmy/12567-dyuna.html": (200, html),
+            "/engine/ajax/playlists.php": (200, _fixture("playlists_movie.json")),
+        }
+    )
+    async with httpx.AsyncClient() as http:
+        c = await _provider(session).content("filmy:12567-dyuna", http)
+
+    assert c.year == 2021
+    assert c.rating == 8.0
+    assert c.genres
+    assert "Фантастика" in c.genres or "фантастика" in c.genres
+    actors = [p for p in c.people if p.role == "Actor"]
+    directors = [p for p in c.people if p.role == "Director"]
+    assert len(directors) == 1
+    assert directors[0].name == "Денні Вільньов"
+    assert len(actors) == 15
+
+
+@pytest.mark.asyncio
 async def test_uakino_content_movie_without_voice_uses_default_translation():
     """Regression (issue #123, D2): a movie whose playlist rows carry no
     `data-voice` used to produce an empty translations list, which the

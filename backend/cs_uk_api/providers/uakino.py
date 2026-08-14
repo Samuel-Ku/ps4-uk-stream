@@ -321,7 +321,11 @@ class UakinoProvider(BaseProvider):
         country: str | None = None
         rating: float | None = None
         people: list[Person] = []
-        for item in soup.select("div.fi-item"):
+        # The upstream template renamed these rows from ``fi-item`` to
+        # ``fi-item-s`` (seen live on anime-series pages, August 2026);
+        # match both spellings so year/genres/rating/people keep parsing
+        # on either template version.
+        for item in soup.select("div.fi-item, div.fi-item-s"):
             label = item.select_one("div.fi-label")
             value = item.select_one("div.fi-desc")
             if label is None or value is None:
