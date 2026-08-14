@@ -1118,6 +1118,57 @@ def test_recommendation_excludes_any_recorded_position(client: TestClient) -> No
         catalog_state._profiles = {}
 
 
+def test_home_recommended_row_signal_and_no_fetch(client: TestClient) -> None:
+    """#254 AC1/AC3/AC6: the NATIVE /api/home carries
+    «Рекомендовано для тебе» once there is signal (watched + query),
+    omits it with none, and the row computation never fetches — it runs
+    off the in-memory profiles only (AC6: recompute without blocking)."""
+    action = _movie_content("action-1", "Боєвик", ["Бойовик"], 2021)
+    drama = _movie_content("drama-1", "Драма", ["Драма"], 1990)
+    stub = _DetailStub(
+        cards=[
+            _card("p1", "action-1", "Боєвик", "movie", poster=_POSTER_MOVIE),
+            _card("p1", "drama-1", "Драма", "movie", poster=_POSTER_MOVIE),
+        ],
+        content_by_external={"action-1": action, "drama-1": drama},
+    )
+    PROVIDERS["p1"] = stub
+    _auth(client)
+
+    def _row_types() -> list[str]:
+        home = _get(client, "/api/home")
+        return [r["type"] for r in home["rows"]]
+
+    # AC3: no watch history, no queries → row omitted.
+    assert "recommended" not in _row_types()
+
+    # Warm the profiles the same shape the background builder would.
+    home = _get(client, "/api/home")
+    gk = {item["title"]: item["group_key"] for row in home["rows"] for item in row["items"]}
+    catalog_state._profiles = {
+        gk["Боєвик"]: profile_from_content(action),
+        gk["Драма"]: profile_from_content(drama),
+    }
+    try:
+        record_playback(gk["Боєвик"], 1_000_000_000)
+        catalog_state.record_search_query("Драма")
+        _home_cache.clear()
+
+        # AC1: home includes the row once there is signal, ranked with
+        # the watched item excluded.
+        home = _get(client, "/api/home")
+        rec = next(r for r in home["rows"] if r["type"] == "recommended")
+        titles = [it["title"] for it in rec["items"]]
+        assert titles == ["Драма"]
+
+        # AC6: the row computation ran off cached profiles — the provider
+        # saw NO content() call from the rebuild (the warm is disabled in
+        # tests, and the row itself never fetches).
+        assert stub.content_calls == []
+    finally:
+        catalog_state._profiles = {}
+
+
 def test_search_records_query_for_taste(client: TestClient) -> None:
     """#252: a facade search records the query as taste signal (both
     surfaces feed the shared ``merged_search``)."""
@@ -1125,3 +1176,15 @@ def test_search_records_query_for_taste(client: TestClient) -> None:
     _auth(client)
     _get(client, "/Search/Hints", searchTerm="Дюна")
     assert catalog_state.recent_search_queries() == ["Дюна"]
+
+
+def test_native_search_records_query_for_taste(client: TestClient) -> None:
+    """#254 AC2: the NATIVE ``/api/search`` surface records the query
+    too — not just the facade (spec says "native/facade search queries").
+    ``merged_search`` records before the fan-out, so even an empty
+    provider result still feeds the taste signal."""
+    PROVIDERS["p1"] = _seed()
+    _auth(client)
+    r = client.get("/api/search?q=Наруто")
+    assert r.status_code == 200
+    assert catalog_state.recent_search_queries() == ["Наруто"]
