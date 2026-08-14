@@ -20,6 +20,7 @@ from .catalog_state import await_uakino_ready as _await_uakino_ready
 from .catalog_state import blocklist_cache as _catalog_blocklist_cache
 from .catalog_state import content_cache as _catalog_content_cache
 from .catalog_state import filter_gated_items as _filter_gated_items
+from .catalog_state import flush_playback as _flush_playback
 from .catalog_state import gated_cache as _catalog_gated_cache
 from .catalog_state import get_home as _catalog_get_home
 from .catalog_state import home_cache as _catalog_home_cache
@@ -218,6 +219,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         except (TimeoutError, asyncio.CancelledError):
             pass
         _warm_task = None
+    # Persist any debounced playback-progress state (ticket #248): the
+    # Stopped report already flushed, but heartbeat positions may still
+    # be pending a debounce when the process is told to stop.
+    _flush_playback()
     # The uakino browser session is lazily created on first request and
     # runs a headless Chromium; close it on shutdown so SIGTERM doesn't
     # orphan the browser process. `close()` is a no-op when the session

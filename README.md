@@ -46,8 +46,8 @@ journalctl -u cs-uk-api -f   # warm-up: uakino reports "warming" until its
 The service is LAN-only by design (ADR-0003: one host, one uvicorn
 process, no auth). Tunable knobs: `CS_UK_CACHE_SEARCH`,
 `CS_UK_CACHE_CONTENT`, `CS_UK_CACHE_POSTER`,
-`CS_UK_POSTER_DISK_TTL`, `UAKINO_CHROMIUM` — see `CONTEXT.md` §Cache
-contract.
+`CS_UK_POSTER_DISK_TTL`, `CS_UK_RESUME_PATH`, `UAKINO_CHROMIUM` — see
+`CONTEXT.md` §Cache contract.
 
 ## Release gate
 

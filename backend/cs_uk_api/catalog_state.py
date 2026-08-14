@@ -45,6 +45,7 @@ from .models import (
 )
 from .providers import PROVIDERS
 from .providers.base import BaseProvider, ProviderError
+from .resume_store import ResumeStore
 from .uakino_browser import get_session
 
 log = logging.getLogger("cs_uk_api.catalog_state")
@@ -477,33 +478,52 @@ def group_key_for_external(composite: str) -> str | None:
     return None
 
 
-#: Per-item playback positions reported by the client (ticket #214):
-#: ``item_id -> position_ticks``. The facade has a single fixed user (D4),
-#: so no per-user dimension. In-memory only (ADR-0003: no persistence).
-_playback: dict[str, int] = {}
+#: Per-item playback positions reported by the client (ticket #214, then
+#: persisted per spec #247 / ticket #248). The facade has a single fixed
+#: user (D4), so no per-user dimension. The store is disk-backed — a
+#: versioned JSON file next to the poster disk cache — and survives
+#: restarts (ADR-0003 note, spec #247). ``SETTINGS.resume_path`` is None
+#: in the test suite (conftest), keeping the pre-#248 memory-only
+#: semantics there.
+_resume_store: ResumeStore = ResumeStore(_config.SETTINGS.resume_path)
 
 
-def record_playback(item_id: str, position_ticks: int) -> None:
+def _store() -> ResumeStore:
+    return _resume_store
+
+
+def record_playback(
+    item_id: str,
+    position_ticks: int,
+    *,
+    runtime_ticks: int | None = None,
+    flush: bool = False,
+) -> None:
     """Record the client's playback position (``Sessions/Playing/*``).
 
     Last report wins — the client streams Progress heartbeats while
     playing and a final Stopped report, so the newest position is the
     most accurate. Zero/negative positions (a just-started item) are
-    ignored; a later positive report overwrites.
+    ignored; a later positive report overwrites. ``flush=True`` (the
+    Stopped path, ticket #248) writes the state file synchronously;
+    heartbeat reports are debounced by the store.
     """
-    if position_ticks <= 0:
-        return
-    _playback[item_id] = position_ticks
+    _store().record(item_id, position_ticks, runtime_ticks=runtime_ticks, flush=flush)
 
 
 def playback_positions() -> dict[str, int]:
     """item_id -> position_ticks, most-progressed first (ticket #214)."""
-    return dict(sorted(_playback.items(), key=lambda kv: kv[1], reverse=True))
+    return _store().positions()
 
 
 def clear_playback() -> None:
     """Drop all recorded positions (test isolation, #214)."""
-    _playback.clear()
+    _store().clear()
+
+
+def flush_playback() -> None:
+    """Flush pending playback state to disk (lifespan shutdown, #248)."""
+    _store().flush()
 
 
 def peek_group_content(group_key: str) -> ContentResponse | None:

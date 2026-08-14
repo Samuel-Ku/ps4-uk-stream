@@ -59,6 +59,14 @@ class Settings:
     providers: tuple[str, ...]
     block_russian: bool
     home_row_limit: int
+    #: Path of the persisted playback resume state (spec #247 / ticket
+    #: #248). Default: next to the poster disk cache (``playback.json``
+    #: in the parent of ``CS_UK_POSTER_CACHE_DIR``). Override via
+    #: ``CS_UK_RESUME_PATH``; an explicit empty string disables the disk
+    #: layer (memory-only — the test-suite default via conftest).
+    #: Defaulted so explicit ``Settings(...)`` constructions (tests) stay
+    #: valid without naming the new knob.
+    resume_path: str | None = None
     #: Startup catalog warm (tickets #204/#210): build the home snapshot
     #: and warm each view's first-card detail chain in the background so
     #: a real client's first requests never hit a cold 17-21s scrape.
@@ -69,6 +77,22 @@ class Settings:
     # ``load_settings`` env default mirrors this so explicit
     # ``Settings(...)`` constructions (tests) stay valid.
     jellyfin_token: str = "jellyfin-dev-token"
+
+
+def _load_resume_path() -> str | None:
+    """Resolve the resume state file path (ticket #248).
+
+    ``CS_UK_RESUME_PATH`` unset → next to the poster disk cache;
+    explicit empty string → memory-only (no disk layer); otherwise the
+    given path.
+    """
+    raw = os.environ.get("CS_UK_RESUME_PATH")
+    if raw is None:
+        base = os.environ.get("CS_UK_POSTER_CACHE_DIR", "") or os.path.expanduser("~/.cache/cs-uk-api/posters")
+        return os.path.join(os.path.dirname(base), "playback.json")
+    if raw == "":
+        return None
+    return raw
 
 
 def load_settings() -> Settings:
@@ -102,6 +126,7 @@ def load_settings() -> Settings:
             "CS_UK_POSTER_CACHE_DIR", os.path.expanduser("~/.cache/cs-uk-api/posters")
         ) or None,
         poster_disk_ttl_s=int(os.environ.get("CS_UK_POSTER_DISK_TTL", str(7 * 24 * 3600))),
+        resume_path=_load_resume_path(),
         providers=providers or ("uakino",),
         block_russian=os.environ.get("CS_UK_BLOCK_RUSSIAN", "1") == "1",
         # v3 (issue #70): per-row cap for «Новинки» + type rows.

@@ -917,12 +917,15 @@ async def _resolve_playback_episode(
     return None, None
 
 
-async def _record_playback_from(request: Request) -> None:
-    """Best-effort store of the client's playback report (#214).
+async def _record_playback_from(request: Request, *, flush: bool) -> None:
+    """Best-effort store of the client's playback report (#214/#248).
 
     The @jellyfin/sdk posts PlaybackStartInfo/ProgressInfo/StopInfo
     bodies here; ``ItemId`` + ``PositionTicks`` are what a resume shelf
-    needs. A malformed body is not an error — the report is advisory.
+    needs, and ``RunTimeTicks`` rides along so a later tranche can mark
+    finished items (spec #247). A malformed body is not an error — the
+    report is advisory. ``flush=True`` (the Stopped path) persists the
+    state file synchronously; heartbeat reports are debounced.
     """
     try:
         body = await request.json()
@@ -932,7 +935,9 @@ async def _record_playback_from(request: Request) -> None:
     item_id = body.get("ItemId")
     position = body.get("PositionTicks")
     if isinstance(item_id, str) and isinstance(position, (int, float)):
-        record_playback(item_id, int(position))
+        runtime = body.get("RunTimeTicks")
+        runtime_ticks = int(runtime) if isinstance(runtime, (int, float)) else None
+        record_playback(item_id, int(position), runtime_ticks=runtime_ticks, flush=flush)
 
 
 @router.get(
@@ -1971,9 +1976,9 @@ async def sessions_playing(request: Request) -> Response:
 
     The @jellyfin/sdk posts a full PlaybackStartInfo body here the moment
     playback starts (capture row 6); the position seeds the resume shelf
-    (ticket #214, in-memory only).
+    (ticket #214; persisted per #248).
     """
-    await _record_playback_from(request)
+    await _record_playback_from(request, flush=False)
     return Response(status_code=204)
 
 
@@ -1982,9 +1987,10 @@ async def sessions_playing(request: Request) -> Response:
 async def sessions_progress(request: Request) -> Response:
     """Playback-progress report (D8): accept, answer 204, record position.
 
-    Heartbeats update the stored position; the newest report wins.
+    Heartbeats update the stored position (debounced write, #248); the
+    newest report wins.
     """
-    await _record_playback_from(request)
+    await _record_playback_from(request, flush=False)
     return Response(status_code=204)
 
 
@@ -1992,8 +1998,11 @@ async def sessions_progress(request: Request) -> Response:
 @router.post("/Sessions/Playing/Stopped", dependencies=[Depends(require_token)])
 async def sessions_stopped(request: Request) -> Response:
     """Playback-stop report (D8): accept, answer 204, record the stop
-    position — the final value the resume shelf shows (ticket #214)."""
-    await _record_playback_from(request)
+    position — the final value the resume shelf shows (ticket #214).
+    Flushed to the state file immediately (#248), so the position
+    survives a restart.
+    """
+    await _record_playback_from(request, flush=True)
     return Response(status_code=204)
 
 

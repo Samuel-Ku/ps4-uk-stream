@@ -229,6 +229,23 @@ Deployment assumption that drives most of it: **one host, one uvicorn process, L
 | `/api/sections` | **not cached** | — | — | A list comprehension over a static in-process registry. A cache in front of a dict lookup is pure overhead. |
 | `/api/stream/{id}` | **not cached** | — | — | See "What is not cached" below. |
 
+### Resume state (ticket #248, spec #247)
+
+Playback positions are NOT a cache: they are persisted domain state —
+the deliberate exception to the in-memory invariant below (ADR-0003
+note). One versioned JSON file, `{"v": 1, "items": {item_id:
+{"position_ticks", "runtime_ticks"?, "updated_at"}}}`, written
+atomically (temp + rename), flushed immediately on a Stopped report and
+debounced on Progress heartbeats, flushed again on shutdown.
+
+| Aspect | Value |
+| --- | --- |
+| Location | next to the poster disk cache (`~/.cache/cs-uk-api/playback.json`) |
+| Env knob | `CS_UK_RESUME_PATH` (explicit empty string → memory-only) |
+| Corruption / version mismatch | warn + empty resume, API keeps serving |
+| Restart | survives (the whole point — «Продовжити перегляд» persists) |
+| Wipe | `rm <path>` — clean state, documented operator story |
+
 ### Cache key format
 
 Flat, colon-joined `{namespace}:{discriminants…}` strings, one store per namespace:
@@ -254,7 +271,7 @@ Rules:
 
 - A **process restart is the global flush**, and it is free because every store is in-memory.
 - Providers are scraped websites — there are no webhooks and no push channel, so event-driven invalidation is not merely undesirable, it is unavailable.
-- The poster **disk** layers are the only state that survives a restart; `rm -rf ~/.cache/cs-uk-api/posters` is their flush, and they never need one for correctness because they hold opaque bytes.
+- The poster **disk** layers and the resume state file are the only state that survives a restart; `rm -rf ~/.cache/cs-uk-api/posters` flushes the posters (opaque bytes, never need one for correctness), and `rm ~/.cache/cs-uk-api/playback.json` (or `CS_UK_RESUME_PATH`) wipes the resume shelf.
 
 ### Versioning
 
@@ -263,6 +280,8 @@ Rules:
 > No value carrying a domain schema is ever persisted beyond process lifetime.
 
 A schema change is a code change is a restart is an empty cache — so a version prefix could never differ from the one that wrote the entry. The poster disk caches satisfy the invariant by storing opaque image bytes under a content-addressed key. **Persisting any domain object (offline catalog, warm-start snapshot, disk-backed `content:` layer) breaks this invariant and makes a version token mandatory** — ADR-0003 must be revisited first.
+
+The resume state file is exactly that exception: it persists a domain schema, so it carries a **mandatory version token** (`v` field, see above) and a mismatched file is ignored (warn + empty) — the remedy ADR-0003's consequences section prescribes. See the ADR note.
 
 ### Stampede protection
 
