@@ -13,6 +13,7 @@ from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
+    Person,
     SearchResult,
     Season,
     Section,
@@ -318,6 +319,7 @@ class UakinoProvider(BaseProvider):
         year: int | None = None
         tags: list[str] = []
         country: str | None = None
+        people: list[Person] = []
         for item in soup.select("div.fi-item"):
             label = item.select_one("div.fi-label")
             value = item.select_one("div.fi-desc")
@@ -332,6 +334,20 @@ class UakinoProvider(BaseProvider):
                 links = value.select("a")
                 raw = links[0].get_text(strip=True) if links else value.get_text(strip=True)
                 country = " ".join(raw.lower().split()) if raw else None
+            elif label_text.startswith("Режисер"):
+                for a in value.select("a"):
+                    name = a.get_text(strip=True)
+                    if name:
+                        people.append(
+                            Person(id=f"uakino:{name}", name=name, role="Director")
+                        )
+            elif label_text.startswith("Актори"):
+                for a in value.select("a"):
+                    name = a.get_text(strip=True)
+                    if name:
+                        people.append(
+                            Person(id=f"uakino:{name}", name=name, role="Actor")
+                        )
 
         ajax_el = soup.select_one("div.playlists-ajax")
         news_id = (
@@ -381,6 +397,7 @@ class UakinoProvider(BaseProvider):
                 year=year,
                 description=description,
                 poster=poster,
+                people=people,
                 translations=translations,
                 seasons=seasons,
                 translations_level="episode",
@@ -417,6 +434,7 @@ class UakinoProvider(BaseProvider):
             year=year,
             description=description,
             poster=poster,
+            people=people,
             translations=translations,
             seasons=None,
             country=country,

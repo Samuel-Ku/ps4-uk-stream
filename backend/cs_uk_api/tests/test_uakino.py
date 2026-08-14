@@ -119,6 +119,28 @@ async def test_uakino_content_movie_parses_metadata_and_voices():
     assert c.description
     assert c.poster is not None and c.poster.startswith("https://uakino.best/")
     assert c.seasons is None
+
+
+@pytest.mark.asyncio
+async def test_uakino_content_parses_director_and_cast():
+    """The `.fi-item` rows carry Режисер and Актори with real links,
+    but the parser only read Рік/Жанр/Країна — every uakino detail
+    showed an empty People rail (Ticket #229)."""
+    session = FakeSession(
+        **{
+            "/filmy/12567-dyuna.html": (200, _fixture("content_movie.html")),
+            "/engine/ajax/playlists.php": (200, _fixture("playlists_movie.json")),
+        }
+    )
+    async with httpx.AsyncClient() as http:
+        c = await _provider(session).content("filmy:12567-dyuna", http)
+    actors = [p for p in c.people if p.role == "Actor"]
+    directors = [p for p in c.people if p.role == "Director"]
+    assert len(directors) == 1
+    assert directors[0].name == "Денні Вільньов"
+    assert len(actors) == 15
+    assert actors[0].name == "Ребекка Ферґюсон"
+    assert all(p.id.startswith("uakino:") for p in c.people)
     assert [(t.id, t.label) for t in c.translations] == [
         ("Postmodern", "Postmodern"),
         ("DniproFilm", "DniproFilm"),
