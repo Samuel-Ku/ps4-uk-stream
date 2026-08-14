@@ -88,6 +88,46 @@ async def test_eneyida_browse_films_last_page():
 
 
 @pytest.mark.asyncio
+async def test_eneyida_browse_series_forces_series_form_on_bare_urls():
+    """Upstream drift regression (2026-08-14): the site serves BARE card
+    urls (``/8550-....html``) on BOTH listings, so the URL no longer
+    carries the kind and every series card was classified as a film —
+    the junk movie cards then leaked into the home «Серіали» row. The
+    browse SECTION is authoritative: the series listing must yield
+    ``form=series`` and ``series/<slug>`` ids."""
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://eneyida.tv/series/").respond(200, text=_fixture("films_listing.html"))
+        async with httpx.AsyncClient() as http:
+            results, has_next = await EneyidaProvider().browse("series", 1, http)
+    assert len(results) == 24
+    assert has_next is True
+    assert {r.form for r in results} == {"series"}
+    assert all(r.id.startswith("eneyida:series/") for r in results)
+
+
+@pytest.mark.asyncio
+async def test_eneyida_search_season_label_classifies_series():
+    """Search cards carry no kind in the URL, but series cards carry a
+    season/episode label (``<div class="metaBottom label_quel-camrip">1
+    сезон 3 серія</div>``) — that is the series signal on the bare-url
+    search page."""
+    html = """
+    <article class="short"><div class="short_in">
+      <a class="short_img" href="https://eneyida.tv/8550-taiemnycia-bunkera.html">x</a>
+      <a class="short_title" href="https://eneyida.tv/8550-taiemnycia-bunkera.html">Таємниця бункера</a>
+      <div class="metaBottom label_quel-camrip">3 сезон 6 серія</div>
+    </div></article>
+    """
+    with respx.mock(assert_all_called=True) as router:
+        router.post("https://eneyida.tv/index.php?do=search").respond(200, text=html)
+        async with httpx.AsyncClient() as http:
+            results = await EneyidaProvider().search("бункер", http)
+    assert len(results) == 1
+    assert results[0].form == "series"
+    assert results[0].id == "eneyida:series/8550-taiemnycia-bunkera"
+
+
+@pytest.mark.asyncio
 async def test_eneyida_content_movie_parses_title_poster_player():
     with respx.mock(assert_all_called=True) as router:
         router.get("https://eneyida.tv/films/9366-duna-chastyna-druga.html").respond(

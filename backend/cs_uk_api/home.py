@@ -201,6 +201,23 @@ def section_row_type(section: Section) -> str | None:
     return None
 
 
+def _item_matches_row(type_key: str, item: SearchResult) -> bool:
+    """True when a listing item belongs in the row of the given kind.
+
+    The by-type rows are populated from provider sections whose DECLARED
+    axes key the row — but the items inside are what the upstream site
+    actually filed there. A mis-filed card (e.g. a series whose bare URL
+    an adapter classified as a film, 2026-08-14 eneyida drift) must not
+    leak into the row as a junk card. Form rows check ``item.form``;
+    style rows check the style set (an item without the style tag is
+    still legitimate content from a style section — the row filter only
+    guards against contradictory FORM on form rows).
+    """
+    if type_key in ("movie", "series"):
+        return item.form == type_key
+    return True
+
+
 def build_home_rows(
     *,
     newest: Mapping[str, Sequence[SearchResult]],
@@ -260,6 +277,12 @@ def build_home_rows(
         per_pid = by_type.get(type_key, {})
         if not any(per_pid.values()):
             continue
+        # Drop items whose FORM contradicts the row (upstream mis-filed
+        # cards must not surface as junk in the wrong row).
+        per_pid = {
+            pid: [it for it in items if _item_matches_row(type_key, it)]
+            for pid, items in per_pid.items()
+        }
         deduped = round_robin_dedup(per_pid, newest_limit)
         if not deduped:
             continue
