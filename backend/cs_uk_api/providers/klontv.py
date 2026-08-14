@@ -92,6 +92,47 @@ def _jsonld_cast(soup: BeautifulSoup, provider: str) -> list[Person]:
                 )
     return people
 
+# The genre row's first link is the section (Фільми/Серіали/…) —
+# a section is not a genre, so those link texts must be excluded
+# when parsing the Жанр row (the section slugs match the section
+# ids on klonua.com).
+_SECTION_SLUGS: frozenset[str] = frozenset(
+    {"films", "filmy", "series", "serialy", "multfilmy", "multserialy", "anime"}
+)
+
+
+def _table_info_year_genres(soup: BeautifulSoup) -> tuple[int | None, list[str]]:
+    """Year and genres from the page's ``table-info__item`` rows.
+
+    The content page carries a ``table-info__item`` block per fact
+    (Рік, Країна, Жанр, Тривалість, …). Рік is a link like
+    ``/year/2000/``, Жанр a row of links like ``/dramy/``. The first
+    Жанр link is the section (Фільми/Серіали) and is not a genre.
+    Returns (None, []) when the rows are missing.
+    """
+    year: int | None = None
+    genres: list[str] = []
+    for item in soup.select("div.table-info__item"):
+        label_el = item.select_one("div.table__category")
+        if label_el is None:
+            continue
+        label = label_el.get_text(strip=True)
+        if label == "Рік:":
+            link = item.select_one("a.table-info__link")
+            if link is not None:
+                text = link.get_text(strip=True)
+                if text.isdigit():
+                    year = int(text)
+        elif label == "Жанр:":
+            for link in item.select("a.table-info__link"):
+                text = link.get_text(strip=True)
+                href = str(link.get("href") or "")
+                slug = href.rstrip("/").rsplit("/", 1)[-1]
+                if text and slug not in _SECTION_SLUGS:
+                    genres.append(text)
+    return year, genres
+
+
 BASE_URL = "https://klonua.com"
 # ashdi.vip hosts the HLS manifest for every title. The upstream
 # Kotlin sets the Referer to "https://tortuga.wtf/" so that the CDN
@@ -394,6 +435,7 @@ class KlonTVProvider(BaseProvider):
             )])]
         cast = _jsonld_cast(soup, self.id)
         rating = _jsonld_rating(soup)
+        year, genres = _table_info_year_genres(soup)
         mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"klontv:{external_id}",
@@ -407,6 +449,8 @@ class KlonTVProvider(BaseProvider):
             styles=mb_styles,
             people=cast,
             rating=rating,
+            year=year,
+            genres=genres,
         )
 
     @staticmethod

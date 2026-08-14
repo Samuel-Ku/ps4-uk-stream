@@ -211,6 +211,27 @@ async def test_klontv_content_movie_rating():
 
 
 @pytest.mark.asyncio
+async def test_klontv_content_parses_year_and_genres():
+    """The content page's ``table-info__item`` rows carry Рік (a link
+    like ``/year/2000/``) and Жанр (links like ``/dramy/``) — parse
+    them so the detail view renders year and the genre row instead of
+    leaving them blank when klontv wins the group resolution. The
+    section link (Серіали/Фільми) is a section, not a genre, and must
+    be excluded."""
+    content_html = _fixture("content_series.html")
+    player_html = _fixture("player_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://klonua.com/serialy/8431-duna.html").respond(
+            200, text=content_html
+        )
+        router.get("https://ashdi.vip/serial/6212").respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            c = await KlonTVProvider().content("series/8431-duna", http)
+    assert c.year == 2000
+    assert c.genres == ["Драми", "Бойовики", "Пригоди", "Фантастика", "Фентезі"]
+
+
+@pytest.mark.asyncio
 async def test_klontv_content_follows_section_redirect():
     """Regression (observed live 2026-08-09): a title moved between
     sections answers 301 (`/filmy/...` -> `/serialy/...`). content()
