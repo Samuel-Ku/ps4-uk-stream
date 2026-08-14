@@ -72,9 +72,17 @@ steps:
         status: 200
 
   # ---- warm the per-view /Items cache (B1) -----------------------------
-  - name: warmup_newest
+  # spec #263 retired «Новинки» in favour of the form-split rows.
+  - name: warmup_recent_movie
     phase: warmup
-    view_id: ac357d43a6e459568e061ae4368543d5
+    view_id: ef3d481fa3085dcfb9c593e06df02a14
+    use_token: true
+    expect:
+      - request: "GET (/Users/[^ ]+)?/Items -> 200"
+        status: 200
+  - name: warmup_recent_series
+    phase: warmup
+    view_id: 774bd345e74658a2a7af84e5990e93dc
     use_token: true
     expect:
       - request: "GET (/Users/[^ ]+)?/Items -> 200"
@@ -123,27 +131,27 @@ steps:
         status: 200
 
   # ---- open each library view + its first card (#145) ------------------
-  - name: open_view_newest
+  - name: open_view_recent_movie
     phase: open
-    view: newest
-    view_id: ac357d43a6e459568e061ae4368543d5
-    tap: view_newest_x
+    view: recent_movie
+    view_id: ef3d481fa3085dcfb9c593e06df02a14
+    tap: view_recent_movie_x
     expect:
       - request: "GET (/Users/[^ ]+)?/Items -> 200"
         status: 200
 
-  - name: open_first_card_newest
+  - name: open_first_card_recent_movie
     phase: detail
-    view: newest
+    view: recent_movie
     tap: first_card
     expect:
       - request: *gk_request
         status: 200
         capture: gk
 
-  - name: play_newest
+  - name: play_recent_movie
     phase: play
-    view: newest
+    view: recent_movie
     branches:
       movie:
         - tap: play_button
@@ -169,7 +177,56 @@ steps:
             - request: "POST /Sessions/Playing -> 204"
               status: 204
 
-  - name: back_to_grid_after_newest
+  - name: back_to_grid_after_recent_movie
+    phase: nav
+    nav: 4
+  - name: open_view_recent_series
+    phase: open
+    view: recent_series
+    view_id: 774bd345e74658a2a7af84e5990e93dc
+    tap: view_recent_series_x
+    expect:
+      - request: "GET (/Users/[^ ]+)?/Items -> 200"
+        status: 200
+
+  - name: open_first_card_recent_series
+    phase: detail
+    view: recent_series
+    tap: first_card
+    expect:
+      - request: *gk_request
+        status: 200
+        capture: gk
+
+  - name: play_recent_series
+    phase: play
+    view: recent_series
+    branches:
+      movie:
+        - tap: play_button
+          expect:
+            - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
+              status: 200
+            - request: "GET /Videos/[^ ]+/stream -> (200|206|302)"
+              status: [200, 206, 302]
+            - request: "POST /Sessions/Playing -> 204"
+              status: 204
+      series:
+        - tap: first_season
+          scroll_before: [1584, 1100, 1584, 400, 500]
+          expect:
+            - request: "GET /Shows/[^ ]+/Episodes -> 200"
+              status: 200
+        - tap: first_episode
+          expect:
+            - request: "POST /Items/[^ ]+/PlaybackInfo -> 200"
+              status: 200
+            - request: "GET /Videos/[^ ]+/stream -> (200|206|302)"
+              status: [200, 206, 302]
+            - request: "POST /Sessions/Playing -> 204"
+              status: 204
+
+  - name: back_to_grid_after_recent_series
     phase: nav
     nav: 4
   - name: open_view_popular

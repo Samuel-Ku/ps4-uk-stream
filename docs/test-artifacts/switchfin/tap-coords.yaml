@@ -12,6 +12,14 @@
 #                           device-driving B21)
 #   view_<name>_x         — the home-screen row for a library view
 #   first_card            — the first card in an opened library
+#
+# RE-LAYOUT 2026-08-14 (spec #263): «Новинки» was retired in favour of
+# the two form-split rows «Нещодавно додані: Фільми» / «: Серіали», so
+# view_newest_x became view_recent_movie_x (same first-row slot) and the
+# new view_recent_series_x targets the second row of the grid. The two
+# recent rows' coordinates below are ESTIMATES (first/second grid rows)
+# and must be re-verified on-device before the next sweep run — see
+# device-driving.md B8.
 #   play_button           — the play action on the detail screen
 #   first_season / first_episode — series playback sequence (B7: the
 #   episode-row tap auto-plays, so no seasons_tab / post-play button)
@@ -30,8 +38,9 @@
 # re-verified on the live episodes screen (PlaybackInfo + stream 206).
 login_button: {x: 0, y: 0}
 sidebar_folders: {x: 141, y: 285}
-view_newest_x: {x: 756, y: 310}
-view_popular_x: {x: 1688, y: 310}
+view_recent_movie_x: {x: 756, y: 310}
+view_recent_series_x: {x: 1688, y: 310}
+view_popular_x: {x: 2620, y: 310}
 view_movie_x: {x: 2620, y: 310}
 view_series_x: {x: 756, y: 792}
 view_anime_x: {x: 1688, y: 792}

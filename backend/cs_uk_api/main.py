@@ -477,10 +477,11 @@ async def home() -> HomeResponse:
 
     Composition:
 
-      - «Новинки» — round-robin across providers that opt into
-        ``newest_section`` (animeon, animeua, anitubeinua, unimay,
-        simpsonsuatv at time of writing), deduped by groupKey, capped
-        at 20.
+      - «Нещодавно додані: Фільми» / «: Серіали» (spec #263) — the
+        form-split rows that replaced the retired «Новинки» rail:
+        providers' newest listings filtered by form, round-robin
+        deduped, topped up from the form-section page-1 items when
+        under the cap.
       - «Популярні зараз» — only when animeon's ``popular`` section
         returns at least one item (spec AC: present iff animeon
         provides it).
@@ -488,6 +489,9 @@ async def home() -> HomeResponse:
         aggregates every provider section whose Model B axes
         (``form``/``styles``) map to that kind (``section_row_type``).
         Empty types are omitted.
+      - The personalized rows (#252) and the genre rails (#263) are
+        computed at build time from the warm content profiles; with no
+        profile signal they are omitted.
 
     Cached for ``SETTINGS.cache_home_s`` (30 minutes by default). On a
     cache hit the providers are not re-invoked.

@@ -284,10 +284,38 @@ cache; in-memory, keyed by group). Taste anchors are the ≤3 most recent
 watched items (from the persisted resume store) plus the ≤50 recent
 search queries (persisted beside the playback state, resume-file schema
 v2). Watched items are excluded; rows are omitted when there is no
-signal. Placement: after «Популярні зараз» (or «Новинки» when popular
-is absent), before the type rows — each row is just another home-row
-kind (`recommended` / `similar`), so the facade serves them through the
-existing view mechanism with zero client changes.
+signal. Placement: after «Популярні зараз» (or the form-split recent
+rows when popular is absent), before the type rows — each row is just
+another home-row kind (`recommended` / `similar`), so the facade serves
+them through the existing view mechanism with zero client changes.
+
+### Home composition (spec #263)
+
+«Новинки» was retired (2026-08-14) in favour of a Netflix-style home:
+
+- **Form-split recent rows** — «Нещодавно додані: Фільми» and
+  «Нещодавно додані: Серіали» (`recent_movie` / `recent_series`).
+  Each row is the providers' newest listings filtered by form,
+  round-robin-deduped, and **topped up** from the form-section page-1
+  items (the same data the type rows use) when under the cap — overlap
+  between a recent row and its type row is accepted, Netflix-style. A
+  row is omitted when its form has no data anywhere.
+- **Genre rails** — the top-6 genres by profile-store coverage across
+  the snapshot become rows (`genre:<slug>` view kinds, Ukrainian
+  labels, ≤20 items each, recency-ranked, deduped by group key);
+  genres below the 3-member threshold are skipped. Pure builder
+  `build_genre_rows` in `cs_uk_api/home.py`, fed by the same warm
+  content profiles the recommendation rows use.
+- **View ids** — a row kind's `Id` is `uuid5("cs-uk-api-view:{kind}")`,
+  so every kind (including the new `recent_*` / `genre:*`) resolves
+  through one formula; the reverse lookup scans the snapshot and
+  re-resolves against a fresh load when the cached home is
+  mid-invalidation (the profile-warm clear).
+
+Trade-off of the retirement: the old «Новинки» view id
+(`ac357d43…`) no longer resolves — a client that cached it gets the
+tolerant empty library until it refreshes its view list. Accepted: the
+client re-lists views on every cold launch.
 
 ### Cache key format
 

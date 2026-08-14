@@ -63,6 +63,7 @@ from ..models import (
     ContentResponse,
     Episode,
     HomeItem,
+    HomeResponse,
     HomeRow,
     SearchGroup,
     SearchResult,
@@ -146,6 +147,7 @@ def normalize_jellyfin_path(path: str) -> str | None:
         canonical = canonical.replace("{" + name + "}", value)
     return canonical
 
+
 #: What the server tells the client it is. The official Jellyfin apps
 #: validate the server's product/version on connect and refuse anything
 #: that doesn't look like a real Jellyfin ("unsupported version or
@@ -177,7 +179,10 @@ def _server_id() -> str:
 #: The home-row routing keys that can exist in a snapshot (v3 spec §3.1).
 #: A view's ``Id`` is a deterministic uuid5 of one of these keys, so the
 #: mapping is reversible (``_view_type_by_id``) and stable across
-#: restarts — a client's cached library list keeps working.
+#: restarts — a client's cached library list keeps working. The
+#: form-split ``recent_*`` rows and the ``genre:<slug>`` rails (spec
+#: #263) are NOT pinned here — they resolve through the same uuid5
+#: formula (``_view_id_for``) and the snapshot-scan reverse lookup.
 _VIEW_TYPES = (
     "newest",
     "popular",
@@ -197,6 +202,73 @@ _VIEW_ID_BY_TYPE = {
 }
 _VIEW_TYPE_BY_ID = {vid: t for t, vid in _VIEW_ID_BY_TYPE.items()}
 
+
+def _view_id_for(row_type: str) -> str:
+    """Deterministic view id for ANY home-row kind (spec #263).
+
+    The legacy ``_VIEW_TYPES`` mapping is exactly the uuid5 of
+    ``cs-uk-api-view:{type}``; the form-split ``recent_movie``/
+    ``recent_series`` rows and the ``genre:<slug>`` rails are NEW kinds
+    (spec #263) that must resolve the same way. The uuid5 formula is
+    deterministic and stable, so a client's cached library list keeps
+    working across the retirement of «Новинки» — and the reverse
+    ``_view_type_by_id`` recovers the row kind from any of these ids.
+    """
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"cs-uk-api-view:{row_type}").hex
+
+
+def _view_type_by_id(parent_id: str, home: HomeResponse | None = None) -> str | None:
+    """Reverse of ``_view_id_for``: a view id → its home-row kind.
+
+    The legacy kinds are pinned in ``_VIEW_TYPE_BY_ID``; the snapshot
+    rows (``recent_*``, ``genre:*``) resolve against a home snapshot —
+    the caller's freshly-``load_home()``-ed one, else the cached
+    snapshot. None for an unknown id or a cold cache (the caller then
+    falls through to the tolerant empty answer).
+    """
+    t = _VIEW_TYPE_BY_ID.get(parent_id)
+    if t is not None:
+        return t
+    if home is None:
+        home = get_home()
+    if home is None:
+        return None
+    for row in home.rows:
+        if _view_id_for(row.type) == parent_id:
+            return row.type
+    return None
+
+
+#: View ids are deterministic 32-hex uuid5s (D5) — the shape that
+#: distinguishes a view id from a ``g2:`` group key or an episode id on
+#: the wire, so the snapshot-only resolution below can stay lazy.
+_VIEW_ID_RE = re.compile(r"[0-9a-f]{32}")
+
+
+async def _resolve_view_row_type(
+    parent_id: str,
+) -> tuple[str | None, HomeResponse | None]:
+    """(row kind, loaded home) for a view id, without a hierarchy build.
+
+    The legacy kinds resolve from the pinned mapping; the snapshot-only
+    kinds (``recent_*``, ``genre:*``, spec #263) recover the row type
+    from the cached home. When the cached home is mid-invalidation (the
+    background profile-warm clears it), a 32-hex view id is re-resolved
+    against a freshly ``load_home()``-ed snapshot so a view the client
+    JUST listed never races into an empty grid. Non-view parents (a
+    ``g2:`` group key, an episode id) return ``(None, None)`` — the
+    caller's hierarchy path runs untouched, no home build.
+    """
+    row_type = _view_type_by_id(parent_id)
+    if row_type is not None:
+        return row_type, None
+    if not _VIEW_ID_RE.fullmatch(parent_id):
+        return None, None
+    home = await load_home()
+    row_type = _view_type_by_id(parent_id, home)
+    return row_type, home
+
+
 #: Jellyfin ``CollectionType`` per home-row routing key (D5). The movie
 #: row maps to the standard ``movies``; every other row is episodic-ish
 #: and maps to ``tvshows``. No client we target branches deeper than
@@ -211,6 +283,11 @@ _COLLECTION_TYPE_BY_ROW = {
     "popular": "tvshows",
     "recommended": "tvshows",
     "similar": "tvshows",
+    # spec #263: the form-split rows and the genre rails follow the same
+    # rule — a movie-form recent row is a movie library, everything
+    # else (series-form recent, mixed genre rails) is episodic-ish.
+    "recent_movie": "movies",
+    "recent_series": "tvshows",
 }
 
 #: Home-row kind → Jellyfin item Type. Only Movie/Series are expressible
@@ -303,7 +380,7 @@ def _row_dto(row: HomeRow, server_id: str) -> BaseItemDto:
     return BaseItemDto(
         Name=row.title,
         ServerId=server_id,
-        Id=_VIEW_ID_BY_TYPE[row.type],
+        Id=_view_id_for(row.type),
         Type="CollectionFolder",
         CollectionType=_COLLECTION_TYPE_BY_ROW.get(row.type),
     )
@@ -331,7 +408,7 @@ def _item_dto(row: HomeRow, item: HomeItem, server_id: str) -> BaseItemDto:
         Id=item.group_key,
         Type=_JF_TYPE_BY_ROW.get(form, "Series"),
         ProductionYear=item.year,
-        ParentId=_VIEW_ID_BY_TYPE[row.type],
+        ParentId=_view_id_for(row.type),
         # Spec #257: hearts/played checkmarks/progress render from UserData.
         UserData=_user_data(item.group_key),
     )
@@ -484,7 +561,7 @@ def _view_id_for_item(item_id: str) -> str | None:
         return None
     for row in home.rows:
         if any(it.group_key == item_id for it in row.items):
-            return _VIEW_ID_BY_TYPE[row.type]
+            return _view_id_for(row.type)
     return None
 
 
@@ -509,9 +586,7 @@ def _content_dto(group_key: str, content: ContentResponse, server_id: str) -> Ba
         # provider exposes one (ufdub's ``Рік:`` block); otherwise fall
         # back to the snapshot card's year so the badge renders where
         # either source has the data.
-        ProductionYear=content.year
-        if content.year is not None
-        else _year_for_group(group_key),
+        ProductionYear=content.year if content.year is not None else _year_for_group(group_key),
         Overview=content.description,
         # Ticket #213: the detail page renders a genre row when present
         # (Switchfin ``media_movie``/``media_series`` show labelGenres
@@ -525,9 +600,7 @@ def _content_dto(group_key: str, content: ContentResponse, server_id: str) -> Ba
     # populated when the resolved provider's content page exposed cast
     # (kinotron/uaserialspro actor lists, klontv JSON-LD). Empty people
     # stays an empty list; Switchfin hides the rail then.
-    dto.People = [
-        PersonDto(Id=p.id, Name=p.name, Role=p.role) for p in content.people
-    ]
+    dto.People = [PersonDto(Id=p.id, Name=p.name, Role=p.role) for p in content.people]
     # Ticket #222: the rating badge renders from CommunityRating — set
     # when the provider exposed a real score (klontv's JSON-LD
     # aggregateRating); None stays omitted so the badge hides instead
@@ -707,7 +780,9 @@ class AuthenticateByNameRequest(BaseModel):
     Pw: str = ""
 
 
-@router.get("/System/Info/Public", response_model=SystemInfoPublic, response_model_exclude_none=True)
+@router.get(
+    "/System/Info/Public", response_model=SystemInfoPublic, response_model_exclude_none=True
+)
 async def system_info_public() -> SystemInfoPublic:
     """Server discovery: what a client hits first when adding the server.
 
@@ -724,7 +799,12 @@ async def system_info_public() -> SystemInfoPublic:
     )
 
 
-@router.get("/System/Info", response_model=SystemInfoPublic, response_model_exclude_none=True, dependencies=[Depends(require_token)])
+@router.get(
+    "/System/Info",
+    response_model=SystemInfoPublic,
+    response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
 async def system_info(
     _token: str = Depends(require_token),
 ) -> SystemInfoPublic:
@@ -757,7 +837,9 @@ async def quickconnect_enabled() -> bool:
     return False
 
 
-@router.get("/Branding/Configuration", response_model=dict[str, object], response_model_exclude_none=True)
+@router.get(
+    "/Branding/Configuration", response_model=dict[str, object], response_model_exclude_none=True
+)
 async def branding_configuration() -> dict[str, object]:
     """Empty branding block — the client falls back to defaults.
 
@@ -772,7 +854,8 @@ async def branding_configuration() -> dict[str, object]:
 
 @router.get(
     "/Plugins",
-    response_model=list[object], response_model_exclude_none=True,
+    response_model=list[object],
+    response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def plugins() -> list[object]:
@@ -789,7 +872,8 @@ async def plugins() -> list[object]:
 
 @router.get(
     "/Users/{user_id}",
-    response_model=UserDto, response_model_exclude_none=True,
+    response_model=UserDto,
+    response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def user_info(user_id: str) -> UserDto:
@@ -810,7 +894,11 @@ async def user_info(user_id: str) -> UserDto:
     )
 
 
-@router.post("/Users/AuthenticateByName", response_model=AuthenticationResult, response_model_exclude_none=True)
+@router.post(
+    "/Users/AuthenticateByName",
+    response_model=AuthenticationResult,
+    response_model_exclude_none=True,
+)
 async def authenticate_by_name(
     body: AuthenticateByNameRequest,
 ) -> AuthenticationResult:
@@ -837,7 +925,8 @@ async def authenticate_by_name(
 
 @router.get(
     "/UserViews",
-    response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
+    response_model=BaseItemDtoQueryResult,
+    response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def user_views_sdk(
@@ -856,7 +945,8 @@ async def user_views_sdk(
 
 @router.get(
     "/Users/{user_id}/Views",
-    response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
+    response_model=BaseItemDtoQueryResult,
+    response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def user_views_server(user_id: str) -> BaseItemDtoQueryResult:
@@ -866,7 +956,8 @@ async def user_views_server(user_id: str) -> BaseItemDtoQueryResult:
 
 @router.get(
     "/Items",
-    response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
+    response_model=BaseItemDtoQueryResult,
+    response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def items_listing(
@@ -898,10 +989,11 @@ async def items_listing(
     """
     if search_term:
         return await _jf_search(search_term)
-    row_type = _VIEW_TYPE_BY_ID.get(parent_id or "")
+    row_type, home = await _resolve_view_row_type(parent_id or "")
     if row_type is None:
         return await _hierarchy(parent_id)
-    home = await load_home()
+    if home is None:
+        home = await load_home()
     server_id = _server_id()
     wanted_genres = _parse_genre_ids(genre_ids)
     for row in home.rows:
@@ -912,9 +1004,7 @@ async def items_listing(
                 # ``genreIds=<id>`` — filter the view's cards to those
                 # carrying at least one requested genre (genre ids ARE
                 # the names).
-                items = [
-                    it for it in items if wanted_genres & set(it.genres)
-                ]
+                items = [it for it in items if wanted_genres & set(it.genres)]
             dtos = [_item_dto(row, it, server_id) for it in items]
             total = len(dtos)
             end = None if limit is None else start_index + limit
@@ -987,7 +1077,8 @@ async def _record_playback_from(request: Request, *, flush: bool) -> None:
 
 @router.get(
     "/Users/{user_id}/Items/Resume",
-    response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
+    response_model=BaseItemDtoQueryResult,
+    response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def items_resume(user_id: str) -> BaseItemDtoQueryResult:
@@ -1024,7 +1115,8 @@ async def items_resume(user_id: str) -> BaseItemDtoQueryResult:
 
 @router.get(
     "/Shows/NextUp",
-    response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
+    response_model=BaseItemDtoQueryResult,
+    response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def shows_next_up() -> BaseItemDtoQueryResult:
@@ -1049,7 +1141,8 @@ async def shows_next_up() -> BaseItemDtoQueryResult:
 
 @router.get(
     "/Shows/{series_id}/Seasons",
-    response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
+    response_model=BaseItemDtoQueryResult,
+    response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def shows_seasons(series_id: str) -> BaseItemDtoQueryResult:
@@ -1066,7 +1159,8 @@ async def shows_seasons(series_id: str) -> BaseItemDtoQueryResult:
 
 @router.get(
     "/Shows/{series_id}/Episodes",
-    response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
+    response_model=BaseItemDtoQueryResult,
+    response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def shows_episodes(
@@ -1084,7 +1178,8 @@ async def shows_episodes(
 
 @router.get(
     "/Users/{user_id}/Items/Latest",
-    response_model=list[BaseItemDto], response_model_exclude_none=True,
+    response_model=list[BaseItemDto],
+    response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def items_latest(
@@ -1116,7 +1211,8 @@ async def items_latest(
 
 @router.get(
     "/Users/{user_id}/Items",
-    response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
+    response_model=BaseItemDtoQueryResult,
+    response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def user_items_listing(
@@ -1149,7 +1245,8 @@ async def user_items_listing(
 
 @router.get(
     "/Users/{user_id}/Items/{item_id}",
-    response_model=BaseItemDto, response_model_exclude_none=True,
+    response_model=BaseItemDto,
+    response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def user_item_detail(user_id: str, item_id: str) -> BaseItemDto:
@@ -1163,7 +1260,8 @@ async def user_item_detail(user_id: str, item_id: str) -> BaseItemDto:
 
 @router.get(
     "/Persons/{person_id:path}",
-    response_model=BaseItemDto, response_model_exclude_none=True,
+    response_model=BaseItemDto,
+    response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def person_detail(person_id: str) -> BaseItemDto:
@@ -1189,7 +1287,8 @@ async def person_detail(person_id: str) -> BaseItemDto:
 
 @router.get(
     "/Genres",
-    response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
+    response_model=BaseItemDtoQueryResult,
+    response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def genres(
@@ -1211,10 +1310,11 @@ async def genres(
     convention (genre ids are the names) so the id round-trips as the
     ``genreIds`` filter when the user taps a genre.
     """
-    row_type = _VIEW_TYPE_BY_ID.get(parent_id or "")
+    row_type, home = await _resolve_view_row_type(parent_id or "")
     if row_type is None:
         return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
-    home = await load_home()
+    if home is None:
+        home = await load_home()
     server_id = _server_id()
     want_type = _parse_include_types(include_item_types)
     counts: dict[str, int] = {}
@@ -1240,7 +1340,8 @@ async def genres(
 
 @router.get(
     "/DisplayPreferences/usersettings",
-    response_model=DisplayPreferencesDto, response_model_exclude_none=True,
+    response_model=DisplayPreferencesDto,
+    response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def display_preferences() -> DisplayPreferencesDto:
@@ -1254,7 +1355,8 @@ async def display_preferences() -> DisplayPreferencesDto:
 
 @router.get(
     "/Search/Hints",
-    response_model=SearchHintResult, response_model_exclude_none=True,
+    response_model=SearchHintResult,
+    response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def search_hints(
@@ -1323,7 +1425,8 @@ async def _hierarchy(parent_id: str | None) -> BaseItemDtoQueryResult:
 
 @router.get(
     "/Items/{item_id}",
-    response_model=BaseItemDto, response_model_exclude_none=True,
+    response_model=BaseItemDto,
+    response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def item_detail(item_id: str) -> BaseItemDto:
@@ -1587,13 +1690,15 @@ async def _resolve_stream(item_id: str) -> StreamResponse | None:
         if e.code == "gated":
             log.info("jellyfin playback gated provider=%s id=%s", provider_id, item_id)
             return None
-        log.warning("jellyfin playback stream failed provider=%s id=%s err=%s",
-                    provider_id, item_id, e)
+        log.warning(
+            "jellyfin playback stream failed provider=%s id=%s err=%s", provider_id, item_id, e
+        )
         TRACKER.record(provider_id, ok=False)
         return None
     except Exception as e:  # noqa: BLE001
-        log.warning("jellyfin playback stream failed provider=%s id=%s err=%s",
-                    provider_id, item_id, e)
+        log.warning(
+            "jellyfin playback stream failed provider=%s id=%s err=%s", provider_id, item_id, e
+        )
         TRACKER.record(provider_id, ok=False)
         return None
 
@@ -1610,12 +1715,14 @@ def _container_from_type(stream_type: str) -> str:
 
 @router.get(
     "/Items/{item_id:path}/PlaybackInfo",
-    response_model=PlaybackInfoResponse, response_model_exclude_none=True,
+    response_model=PlaybackInfoResponse,
+    response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 @router.post(
     "/Items/{item_id:path}/PlaybackInfo",
-    response_model=PlaybackInfoResponse, response_model_exclude_none=True,
+    response_model=PlaybackInfoResponse,
+    response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def playback_info(item_id: str) -> PlaybackInfoResponse:
@@ -1644,7 +1751,8 @@ async def playback_info(item_id: str) -> PlaybackInfoResponse:
 
 @router.get(
     "/Items/{item_id:path}/Similar",
-    response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
+    response_model=BaseItemDtoQueryResult,
+    response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def item_similar(
@@ -1762,7 +1870,10 @@ def _stream_target_allowed(url: str, cdn_host: str, allowed: frozenset[str] = fr
     if parsed.scheme not in ("http", "https") or parsed.hostname is None:
         return False
     host = parsed.hostname.lower()
-    return _registrable_domain(host) == _registrable_domain(cdn_host) or _registrable_domain(host) in allowed
+    return (
+        _registrable_domain(host) == _registrable_domain(cdn_host)
+        or _registrable_domain(host) in allowed
+    )
 
 
 def _is_hls_stream(stream: StreamResponse) -> bool:
@@ -2011,9 +2122,7 @@ async def video_segment(item_id: str, url: str = Query(...)) -> Response:
         manifest = await _fetch_manifest(http, url, headers, cdn_host, allowed=allowed)
         if manifest is None:
             raise HTTPException(status_code=404, detail="item_unavailable")
-        body = _rewrite_m3u8(
-            manifest.content.decode("utf-8", errors="replace"), url, item_id
-        )
+        body = _rewrite_m3u8(manifest.content.decode("utf-8", errors="replace"), url, item_id)
         return Response(content=body, media_type=_STREAM_CTYPE["m3u8"])
 
     opened = await _open_upstream(http, url, headers, None, cdn_host, allowed=allowed)
@@ -2028,7 +2137,8 @@ async def video_segment(item_id: str, url: str = Query(...)) -> Response:
 
 @router.post(
     "/Users/{user_id}/FavoriteItems/{item_id}",
-    response_model=UserDataResult, response_model_exclude_none=True,
+    response_model=UserDataResult,
+    response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def favorite_add(user_id: str, item_id: str) -> UserDataResult:
@@ -2045,7 +2155,8 @@ async def favorite_add(user_id: str, item_id: str) -> UserDataResult:
 
 @router.delete(
     "/Users/{user_id}/FavoriteItems/{item_id}",
-    response_model=UserDataResult, response_model_exclude_none=True,
+    response_model=UserDataResult,
+    response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def favorite_remove(user_id: str, item_id: str) -> UserDataResult:
@@ -2056,7 +2167,8 @@ async def favorite_remove(user_id: str, item_id: str) -> UserDataResult:
 
 @router.post(
     "/Users/{user_id}/PlayedItems/{item_id}",
-    response_model=UserDataResult, response_model_exclude_none=True,
+    response_model=UserDataResult,
+    response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def played_add(user_id: str, item_id: str) -> UserDataResult:
@@ -2067,7 +2179,8 @@ async def played_add(user_id: str, item_id: str) -> UserDataResult:
 
 @router.delete(
     "/Users/{user_id}/PlayedItems/{item_id}",
-    response_model=UserDataResult, response_model_exclude_none=True,
+    response_model=UserDataResult,
+    response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def played_remove(user_id: str, item_id: str) -> UserDataResult:
@@ -2089,7 +2202,8 @@ async def sessions_list() -> list[dict[str, object]]:
 
 @router.get(
     "/LiveTv/Channels",
-    response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
+    response_model=BaseItemDtoQueryResult,
+    response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
 async def live_tv_channels() -> BaseItemDtoQueryResult:

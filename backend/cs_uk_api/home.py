@@ -1,10 +1,10 @@
-"""Cross-provider Home aggregation (issue #70).
+"""Cross-provider Home aggregation (issue #70, spec #263).
 
 Pure functions — no I/O. The route layer in ``main.py`` is responsible
 for fetching per-provider listings and calling these helpers with the
 pre-collected data; this module never touches ``PROVIDERS`` or HTTP.
 
-The three observable contracts:
+The observable contracts:
 
   - ``round_robin_dedup`` — interleave provider listings one item at a
     time (P1[0], P2[0], P1[1], P2[1], ...) and dedup via the shared
@@ -24,13 +24,21 @@ The three observable contracts:
 
   - ``build_home_rows`` — the orchestrator. Takes three pre-collected
     mappings (``newest``, ``popular``, ``by_type``) and produces the
-    ordered list of ``HomeRow``: «Новинки» → «Популярні зараз» → five
+    ordered list of ``HomeRow``: «Нещодавно додані: Фільми» →
+    «Нещодавно додані: Серіали» (the form-split rows that REPLACE the
+    retired «Новинки» rail, spec #263) → «Популярні зараз» → five
     type rows in the spec-mandated order. Rows that no provider
     contributed to are omitted.
 
+  - ``build_genre_rows`` — the Netflix-style genre rails (spec #263):
+    the top-N genres by profile-store coverage across the home
+    snapshot become rows with Ukrainian labels, recency-ranked, ≤20
+    each; genres below a coverage threshold are skipped.
+
 Spec ordering invariant for the five type rows: ``movie, series,
 anime, cartoon, dorama`` — the spec calls out five specific rows, in
-that order. «Новинки» and «Популярні зараз» come first when present.
+that order. The split rows and «Популярні зараз» come first when
+present.
 """
 
 from __future__ import annotations
@@ -39,6 +47,7 @@ from collections.abc import Mapping, Sequence
 
 from .merge import item_group_key, merge_results
 from .models import HomeItem, HomeRow, SearchResult, Section
+from .recommend import ItemProfile
 
 #: Five-row type-row order, per the issue #70 spec. Anything else in
 #: ``by_type`` is ignored (defensive — the route layer only buckets
@@ -68,6 +77,22 @@ _TYPE_ORDER: tuple[tuple[str, str], ...] = (
 #: under ``limit * N`` unique items per row), the bound is loose enough
 #: that it never bites in practice.
 _WALK_BUDGET_MULTIPLIER = 4
+
+#: The form-split «Нещодавно додані» rows (spec #263) that replace the
+#: retired «Новинки» rail: one row per form, round-robin across the
+#: providers' newest listings, topped up from the form-section page-1
+#: items (the same data the type rows use) when under the cap.
+_RECENT_ROWS: tuple[tuple[str, str, str], ...] = (
+    ("movie", "Нещодавно додані: Фільми", "recent_movie"),
+    ("series", "Нещодавно додані: Серіали", "recent_series"),
+)
+
+#: Genre rails (spec #263): the top-N genres by profile-store coverage
+#: across the home snapshot; genres with fewer than ``GENRE_RAILS_MIN_ITEMS``
+#: members are skipped; each row is capped at ``GENRE_RAILS_LIMIT``.
+GENRE_RAILS_TOP_N = 6
+GENRE_RAILS_MIN_ITEMS = 3
+GENRE_RAILS_LIMIT = 20
 
 
 def round_robin_dedup(
@@ -237,22 +262,54 @@ def build_home_rows(
     against future ``Section.type`` additions that don't map to a home
     row.
 
+    The first two rows are the form-split «Нещодавно додані» rows
+    (spec #263): providers' newest listings are filtered by form and
+    round-robin-deduped; a row under the cap is topped up from the
+    form-section page-1 items (Netflix-style overlap accepted).
+
     Within each row, items are round-robin-deduped and capped at
-    ``newest_limit`` (the spec's «Новинки» ceiling). The five type rows
-    and «Новинки» all use the same cap.
+    ``newest_limit`` (the spec's «Новинки» ceiling, reused for the
+    split rows). The five type rows and the split rows all use the same
+    cap.
     """
     rows: list[HomeRow] = []
 
-    # «Новинки» — emitted iff at least one provider contributed items.
-    if any(newest.values()):
-        deduped = round_robin_dedup(newest, newest_limit)
-        rows.append(
-            HomeRow(
-                title="Новинки",
-                type="newest",
-                items=aggregate_by_group_key(deduped),
+    # «Нещодавно додані: Фільми» / «: Серіали» — the form-split rows
+    # (spec #263) that REPLACE the retired «Новинки» rail. A row is
+    # emitted iff at least one provider contributed a matching-form
+    # item; items are round-robin-deduped and capped at ``newest_limit``.
+    for form, label, row_type in _RECENT_ROWS:
+        form_per_pid = {
+            pid: [it for it in items if it.form == form] for pid, items in newest.items()
+        }
+        items_row = round_robin_dedup(form_per_pid, newest_limit)
+        if len(items_row) < newest_limit:
+            # Top up from the providers' form-section page-1 items (the
+            # same data the type rows use) — overlap is accepted,
+            # Netflix-style (spec #263). Round-robin across providers,
+            # deduped by group key within the row.
+            section_per_pid = by_type.get(form, {})
+            filtered_per_pid = {
+                pid: [it for it in items if _item_matches_row(form, it)]
+                for pid, items in section_per_pid.items()
+            }
+            topup = round_robin_dedup(filtered_per_pid, newest_limit)
+            existing = {it.group_key for it in items_row}
+            for it in topup:
+                if it.group_key in existing:
+                    continue
+                items_row.append(it)
+                existing.add(it.group_key)
+                if len(items_row) >= newest_limit:
+                    break
+        if items_row:
+            rows.append(
+                HomeRow(
+                    title=label,
+                    type=row_type,
+                    items=aggregate_by_group_key(items_row),
+                )
             )
-        )
 
     # «Популярні зараз» — emitted iff animeon (or whatever provider
     # holds the "popular" role) returned at least one item. Empty list
@@ -297,8 +354,93 @@ def build_home_rows(
     return rows
 
 
+def _genre_slug(genre: str) -> str:
+    """ASCII-stable view-id slug for a genre label (spec #263).
+
+    ``genre:<slug>`` must be deterministic and stable for a fixed
+    catalog vocabulary — the slug is the lowercased label with
+    non-alphanumeric runs collapsed to ``-`` (Cyrillic letters are
+    alphanumeric and survive, so «Драми» → ``драми``).
+    """
+    out = "".join(c if c.isalnum() else "-" for c in genre.strip().lower())
+    return "-".join(part for part in out.split("-") if part)
+
+
+def build_genre_rows(
+    *,
+    home_items: Sequence[HomeItem],
+    profiles: Mapping[str, ItemProfile],
+    top_n: int = GENRE_RAILS_TOP_N,
+    min_items: int = GENRE_RAILS_MIN_ITEMS,
+    limit: int = GENRE_RAILS_LIMIT,
+) -> list[HomeRow]:
+    """The Netflix-style genre rails (spec #263), from the profile store.
+
+    Coverage is counted per home-snapshot group carrying a warm content
+    profile (spec #252); the top ``top_n`` genres by coverage become
+    rows, tied counts broken lexicographically for determinism. Genres
+    with fewer than ``min_items`` members are skipped, and each row is
+    capped at ``limit`` items.
+
+    Within a row, members are the home groups whose profile carries the
+    genre, recency-ranked: snapshot order IS the recency proxy (the
+    form-split rows — fed by the providers' newest listings — come
+    first), deduped by group key (a group can surface in several
+    snapshot rows, Netflix-style overlap).
+
+    Rail labels are Ukrainian — the content-page genre name, falling
+    back to the listing card's original casing when the content page
+    and the card disagree (``profile_from_content`` lowercases).
+    """
+    by_key = {it.group_key: it for it in home_items}
+    coverage: dict[str, int] = {}
+    label_by_genre: dict[str, str] = {}
+    for it in home_items:
+        prof = profiles.get(it.group_key)
+        if prof is None:
+            continue
+        for genre in prof.genres:
+            coverage[genre] = coverage.get(genre, 0) + 1
+            label_by_genre.setdefault(genre, genre)
+        # Prefer the listing card's original casing for the rail title.
+        for raw in it.genres:
+            norm = raw.strip().lower()
+            if norm and norm in coverage:
+                label_by_genre[norm] = raw.strip()
+
+    top = sorted(coverage.items(), key=lambda kv: (-kv[1], kv[0]))[:top_n]
+    rows: list[HomeRow] = []
+    for genre, count in top:
+        if count < min_items:
+            continue
+        members: list[HomeItem] = []
+        seen: set[str] = set()
+        for it in home_items:
+            if len(members) >= limit:
+                break
+            prof = profiles.get(it.group_key)
+            if prof is None or genre not in prof.genres:
+                continue
+            if it.group_key in seen:
+                continue
+            seen.add(it.group_key)
+            members.append(by_key[it.group_key])
+        rows.append(
+            HomeRow(
+                title=label_by_genre.get(genre, genre),
+                type=f"genre:{_genre_slug(genre)}",
+                items=members,
+            )
+        )
+    return rows
+
+
 __all__ = [
+    "GENRE_RAILS_LIMIT",
+    "GENRE_RAILS_MIN_ITEMS",
+    "GENRE_RAILS_TOP_N",
     "aggregate_by_group_key",
+    "build_genre_rows",
     "build_home_rows",
     "round_robin_dedup",
     "section_row_type",

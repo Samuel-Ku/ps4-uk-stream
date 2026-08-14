@@ -1349,13 +1349,17 @@ def test_userdata_on_card_dto(client: TestClient) -> None:
     _played(client, gk)
 
     views = _get(client, "/Users/user1/Views")["Items"]
-    vid = next(v["Id"] for v in views if v["Name"] == "Новинки")
+    vid = next(v["Id"] for v in views if v["Name"] == "Нещодавно додані: Фільми")
     items = _get(client, "/Items", parentId=vid, userId=USER)["Items"]
     card = next(i for i in items if i["Id"] == gk)
     assert card["UserData"]["IsFavorite"] is True
     assert card["UserData"]["Played"] is True
 
-    other = next(i for i in items if i["Id"] != gk)
+    # The other card lives in the series recent view now (the form
+    # split, spec #263) — it must show the untouched state.
+    series_vid = next(v["Id"] for v in views if v["Name"] == "Нещодавно додані: Серіали")
+    series_items = _get(client, "/Items", parentId=series_vid, userId=USER)["Items"]
+    other = series_items[0]
     assert other["UserData"]["IsFavorite"] is False
     assert other["UserData"]["Played"] is False
 
@@ -1437,7 +1441,7 @@ def test_userdata_card_carries_position_and_percentage(client: TestClient) -> No
     _played(client, gk)
 
     views = _get(client, "/Users/user1/Views")["Items"]
-    vid = next(v["Id"] for v in views if v["Name"] == "Новинки")
+    vid = next(v["Id"] for v in views if v["Name"] == "Нещодавно додані: Фільми")
     items = _get(client, "/Items", parentId=vid, userId=USER)["Items"]
     card = next(i for i in items if i["Id"] == gk)
     ud = card["UserData"]
@@ -1458,7 +1462,7 @@ def test_userdata_card_percentage_100_when_played_no_runtime(client: TestClient)
     _played(client, gk)
 
     views = _get(client, "/Users/user1/Views")["Items"]
-    vid = next(v["Id"] for v in views if v["Name"] == "Новинки")
+    vid = next(v["Id"] for v in views if v["Name"] == "Нещодавно додані: Фільми")
     items = _get(client, "/Items", parentId=vid, userId=USER)["Items"]
     card = next(i for i in items if i["Id"] == gk)
     ud = card["UserData"]

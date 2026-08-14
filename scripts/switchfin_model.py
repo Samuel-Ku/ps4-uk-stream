@@ -34,8 +34,11 @@ LOGCAT_ERROR_PATTERNS = (
 )
 
 #: Home-row label per view routing key (mirrors ``home.py`` row titles).
+#: spec #263 retired the «Новинки» rail in favour of the form-split
+#: «Нещодавно додані» rows — the sweep now drives those two views.
 VIEW_LABELS = {
-    "newest": "Новинки",
+    "recent_movie": "Нещодавно додані: Фільми",
+    "recent_series": "Нещодавно додані: Серіали",
     "popular": "Популярні зараз",
     "movie": "Фільми",
     "series": "Серіали",
@@ -48,7 +51,8 @@ VIEW_LABELS = {
 CALIBRATION_ELEMENTS = (
     "login_button",
     "sidebar_folders",
-    "view_newest_x",
+    "view_recent_movie_x",
+    "view_recent_series_x",
     "view_popular_x",
     "view_movie_x",
     "view_series_x",

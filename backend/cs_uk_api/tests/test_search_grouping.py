@@ -585,7 +585,8 @@ def test_search_group_key_matches_home_group_key_on_year_soft(
 
     # Register stubs that serve BOTH routes: ``search()`` is called by
     # /api/search, ``browse("page")`` is called by /api/home's
-    # «Новинки» row (the provider declares ``newest_section = "page"``).
+    # «Нещодавно додані: Фільми» row (the provider declares
+    # ``newest_section = "page"``).
     class _DualStub(_StubBase):
         def __init__(self, pid: str, items: list[SearchResult]) -> None:
             self.id = pid
@@ -612,7 +613,9 @@ def test_search_group_key_matches_home_group_key_on_year_soft(
 
     # /api/home must surface the SAME key for the same year-soft pair.
     home_body = client.get("/api/home").json()
-    newest_row = next(row for row in home_body["rows"] if row["title"] == "Новинки")
+    newest_row = next(
+        row for row in home_body["rows"] if row["title"] == "Нещодавно додані: Фільми"
+    )
     assert len(newest_row["items"]) == 1, (
         "home must collapse the yearful + yearless pair into one row "
         "(H1 contract)"

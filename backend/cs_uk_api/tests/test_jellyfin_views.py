@@ -120,9 +120,10 @@ class _ViewsStub(BaseProvider):
 
 
 def _seed() -> _ViewsStub:
-    """The 5-row snapshot: «Новинки», «Популярні зараз», Фільми,
-    Серіали, Аніме — with a poster-bearing movie, a poster-less movie,
-    and a poster-bearing series."""
+    """The 6-row snapshot (spec #263): «Нещодавно додані: Фільми»,
+    «Нещодавно додані: Серіали» (topped up from the series section),
+    «Популярні зараз», Фільми, Серіали, Аніме — with a poster-bearing
+    movie, a poster-less movie, and a poster-bearing series."""
     return _ViewsStub(
         "animeon",
         newest_section="page",
@@ -231,7 +232,8 @@ def test_user_views_lists_home_rows_in_order(client: TestClient) -> None:
     _auth(client)
     views = _views(client)
     assert [v["Name"] for v in views] == [
-        "Новинки",
+        "Нещодавно додані: Фільми",
+        "Нещодавно додані: Серіали",
         "Популярні зараз",
         "Фільми",
         "Серіали",
@@ -338,10 +340,10 @@ def test_items_listing_card_type_reverified_against_resolved_content(
 
     The card parser (section/URL heuristic) is a cheap guess; the
     resolved content page is the truth. Once «Дюна»'s content is cached
-    (group resolution reads the first-seen source — the «Новинки» card
-    ``animeon:1`` → ``content:animeon:1``) and says series while its
-    card says movie, the grid must re-verify to Series. An unresolved
-    card («Сокіл») keeps the snapshot form.
+    (group resolution reads the first-seen source — the
+    «Нещодавно додані» card ``animeon:1`` → ``content:animeon:1``) and
+    says series while its card says movie, the grid must re-verify to
+    Series. An unresolved card («Сокіл») keeps the snapshot form.
     """
     PROVIDERS["animeon"] = _seed()
     _auth(client)
@@ -390,19 +392,30 @@ def _genres_seed() -> _ViewsStub:
         "animeon",
         newest_section="page",
         newest=[
-            _item("animeon", "Дюна", "movie", 2021, n="1",
-                  genres=["Екшн", "Фантастика"], poster=_POSTER_MOVIE),
+            _item(
+                "animeon",
+                "Дюна",
+                "movie",
+                2021,
+                n="1",
+                genres=["Екшн", "Фантастика"],
+                poster=_POSTER_MOVIE,
+            ),
             _item("animeon", "Війна", "movie", 2019, n="2", genres=["Екшн"]),
         ],
-        sections=(
-            Section(id="movie", title="Фільми", form="movie"),
-        ),
+        sections=(Section(id="movie", title="Фільми", form="movie"),),
         by_section={
             "movie": [
-                _item("animeon", "Дюна", "movie", 2021, n="1",
-                      genres=["Екшн", "Фантастика"], poster=_POSTER_MOVIE),
-                _item("animeon", "Інтерстеллар", "movie", 2014, n="2",
-                      genres=["Фантастика"]),
+                _item(
+                    "animeon",
+                    "Дюна",
+                    "movie",
+                    2021,
+                    n="1",
+                    genres=["Екшн", "Фантастика"],
+                    poster=_POSTER_MOVIE,
+                ),
+                _item("animeon", "Інтерстеллар", "movie", 2014, n="2", genres=["Фантастика"]),
                 _item("animeon", "Сокіл", "movie", 2019, n="3"),
             ],
         },
@@ -619,7 +632,9 @@ def _stub_poster_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(jf_router, "fetch_poster_bytes", _fake)
 
 
-def test_poster_primary_serves_poster_inline(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_poster_primary_serves_poster_inline(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _stub_poster_fetch(monkeypatch)
     PROVIDERS["animeon"] = _seed()
     _auth(client)
@@ -636,7 +651,9 @@ def test_poster_primary_serves_poster_inline(client: TestClient, monkeypatch: py
     assert r.headers["content-type"] == _POSTER_RESP[1]
 
 
-def test_poster_primary_ignores_max_width(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_poster_primary_ignores_max_width(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _stub_poster_fetch(monkeypatch)
     PROVIDERS["animeon"] = _seed()
     _auth(client)
@@ -698,14 +715,24 @@ def test_poster_primary_missing_poster_is_404(client: TestClient) -> None:
     _auth(client)
     movie_view = _view_id("Фільми", _views(client))
     falcon_id = next(i["Id"] for i in _items(client, movie_view) if i["Name"] == "Сокіл")
-    assert client.get(f"/Items/{falcon_id}/Images/Primary", headers={"X-Emby-Token": TOKEN}).status_code == 404
+    assert (
+        client.get(
+            f"/Items/{falcon_id}/Images/Primary", headers={"X-Emby-Token": TOKEN}
+        ).status_code
+        == 404
+    )
 
 
 def test_poster_primary_unknown_item_is_404(client: TestClient) -> None:
-    assert client.get("/Items/g1:unknown/Images/Primary", headers={"X-Emby-Token": TOKEN}).status_code == 404
+    assert (
+        client.get("/Items/g1:unknown/Images/Primary", headers={"X-Emby-Token": TOKEN}).status_code
+        == 404
+    )
 
 
-def test_poster_primary_query_is_single_encoded(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_poster_primary_query_is_single_encoded(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A poster URL that already carries ``%`` escapes must reach
     ``fetch_poster_bytes`` without a second decode.
 
@@ -750,7 +777,9 @@ def test_poster_primary_query_is_single_encoded(client: TestClient, monkeypatch:
     assert captured == [escaped]
 
 
-def test_poster_primary_is_public_without_token(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_poster_primary_is_public_without_token(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Image endpoints stay open: Jellyfin clients load images without
     the ``X-Emby-Token`` header (media is addressable by URL), so the
     route must serve art to an anonymous request."""
@@ -759,7 +788,90 @@ def test_poster_primary_is_public_without_token(client: TestClient, monkeypatch:
     _auth(client)
     movie_view = _view_id("Фільми", _views(client))
     dune_id = next(i["Id"] for i in _items(client, movie_view) if i["Name"] == "Дюна")
-
     r = client.get(f"/Items/{dune_id}/Images/Primary", follow_redirects=False)
     assert r.status_code == 200
     assert r.content == _POSTER_RESP[0]
+
+
+# ---------------------------------------------------------------------------
+# spec #263: the genre rails are views too — their grids must list cards
+# ---------------------------------------------------------------------------
+
+
+def _genre_stub() -> _ViewsStub:
+    """One provider whose movie cards all carry the «Пригоди» genre."""
+    return _ViewsStub(
+        "animeon",
+        newest_section="page",
+        newest=[
+            _item("animeon", "Фільм А", "movie", 2021, n="1", genres=["Пригоди"]),
+            _item("animeon", "Фільм Б", "movie", 2022, n="2", genres=["Пригоди"]),
+        ],
+        sections=(Section(id="movie", title="Фільми", form="movie"),),
+        by_section={
+            "movie": [
+                _item("animeon", "Фільм А", "movie", 2021, n="1", genres=["Пригоди"]),
+                _item("animeon", "Фільм Б", "movie", 2022, n="2", genres=["Пригоди"]),
+            ],
+        },
+    )
+
+
+def _seed_genre_profiles(client: TestClient) -> None:
+    """Warm content profiles for the snapshot groups so the genre rails
+    appear (spec #263: rails build from the profile store), then rebuild
+    the snapshot with them."""
+    import cs_uk_api.catalog_state as cs
+    from cs_uk_api.recommend import ItemProfile
+
+    _home_cache.clear()
+    _auth(client)
+    home = cs.get_home()
+    assert home is not None
+    cs._profiles.clear()
+    for row in home.rows:
+        for it in row.items:
+            cs._profiles[it.group_key] = ItemProfile(
+                genres=frozenset(["пригоди"]),
+                people=frozenset(),
+                year=it.year,
+                form=it.form,
+                styles=frozenset(it.styles or ()),
+            )
+    _home_cache.clear()
+    _auth(client)
+
+
+def test_genre_view_id_lists_its_cards(client: TestClient) -> None:
+    """#263 T2 / #265 AC1+AC5: the genre rails close /api/home (after
+    the type rows), are labeled in Ukrainian, and each is a view —
+    opening its grid returns the rail's cards, not an empty library."""
+    PROVIDERS["animeon"] = _genre_stub()
+    _seed_genre_profiles(client)
+    home = client.get("/api/home").json()
+    assert home["rows"][-1]["type"] == "genre:пригоди"
+    assert home["rows"][-1]["title"] == "Пригоди"
+    assert len([r for r in home["rows"] if r["type"].startswith("genre:")]) <= 6
+
+    views = _views(client)
+    genre_view = next(v for v in views if v["Name"] == "Пригоди")
+    items = _items(client, genre_view["Id"])
+    assert {i["Name"] for i in items} == {"Фільм А", "Фільм Б"}
+    assert all(i["ParentId"] == genre_view["Id"] for i in items)
+
+
+def test_genre_view_id_survives_home_cache_invalidation(client: TestClient) -> None:
+    """#263 T2 regression: the background profile-warm clears the home
+    cache mid-session. A genre view id the client JUST listed must still
+    resolve and list its cards on the next /Items — the route resolves
+    snapshot view types against the freshly loaded home, not a stale
+    ``get_home()`` that the invalidation just emptied."""
+    PROVIDERS["animeon"] = _genre_stub()
+    _seed_genre_profiles(client)
+    genre_view = next(v for v in _views(client) if v["Name"] == "Пригоди")
+
+    # Simulate the profile-warm invalidation: cache cleared, snapshot gone.
+    _home_cache.clear()
+    _home_sources_cache.clear()
+    items = _items(client, genre_view["Id"])
+    assert {i["Name"] for i in items} == {"Фільм А", "Фільм Б"}

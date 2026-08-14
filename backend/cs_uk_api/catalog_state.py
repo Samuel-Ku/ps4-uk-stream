@@ -28,7 +28,7 @@ from .cache import TtlCache
 from .country import is_blocked_country
 from .filters import matches_axes, style_key
 from .health import TRACKER
-from .home import build_home_rows, section_row_type
+from .home import build_genre_rows, build_home_rows, section_row_type
 from .http_client import get_client
 from .merge import group_key_from, item_group_key, merge_results
 from .models import (
@@ -465,18 +465,27 @@ def _recommendation_rows(rows: Sequence[HomeRow]) -> list[HomeRow]:
 
 
 def _with_recommendation_rows(rows: list[HomeRow]) -> list[HomeRow]:
-    """Insert the recommendation rows after «Популярні зараз» (or
-    «Новинки» when popular is absent), before the type rows (#252).
+    """Insert the recommendation rows after «Популярні зараз» (or the
+    form-split recent rows when popular is absent), before the type
+    rows (#252) — and append the genre rails (spec #263) at the end.
+
+    Both personalized families need warm content profiles; with none
+    they are simply omitted (no signal → no rows).
     """
     rec = _recommendation_rows(rows)
-    if not rec:
-        return rows
     out = list(rows)
-    insert_at = 0
-    for i, row in enumerate(out):
-        if row.type in ("newest", "popular"):
-            insert_at = i + 1
-    out[insert_at:insert_at] = rec
+    if rec:
+        insert_at = 0
+        for i, row in enumerate(out):
+            if row.type in ("newest", "recent_movie", "recent_series", "popular"):
+                insert_at = i + 1
+        out[insert_at:insert_at] = rec
+    genre = build_genre_rows(
+        home_items=[it for row in out for it in row.items],
+        profiles=_profiles,
+    )
+    if genre:
+        out.extend(genre)
     return out
 
 

@@ -120,6 +120,19 @@ boundary validation is `fullmatch` everywhere; uakino movies without a
   writes, corrupt file → empty). The Remote and Live TV tabs answer
   graceful empties instead of 404s. Test counts: 1096 passing (was
   1090 at ship; +6 from the Gap T1–T4 verification passes #258–#261).
+- **Home composition (spec #263, 2026-08-14).** «Новинки» retired in
+  favour of a Netflix-style home: two form-split recent rows
+  («Нещодавно додані: Фільми» / «: Серіали» — newest listings
+  filtered by form, round-robin deduped, topped up from the
+  form-section items under the cap) and up to six genre rails (top
+  genres by profile-store coverage, Ukrainian labels, `genre:<slug>`
+  view kinds). Row kinds resolve through one uuid5 view-id formula, so
+  the new views ride the existing facade mechanism; the snapshot-only
+  kinds re-resolve against a fresh home load when the cached snapshot
+  is mid-invalidation. The runner sweep now drives `recent_movie` /
+  `recent_series` (tap-coords re-calibration pending on-device). Test
+  counts: 1109 passing (was 1096; +13 — form-split/genre-rail unit
+  tests, genre-view wire tests, the invalidation-race regression).
 
 Run the backend:
 

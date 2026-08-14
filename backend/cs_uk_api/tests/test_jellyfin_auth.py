@@ -49,7 +49,7 @@ class _AuthStub(BaseProvider):
     id = "auth-stub"
     name = "AuthStub"
     types = ("movie", "series")
-    # The home build's «Новинки» fan-out asks each provider for its
+    # The home build's recent-rows fan-out asks each provider for its
     # newest-section id; answering "page" feeds the one stub card into
     # the first view, keeping these tests airtight without upstream.
     newest_section = "page"
@@ -112,7 +112,7 @@ def seeded_home(client: TestClient) -> None:
     PROVIDERS["auth-stub"] = _AuthStub()
     r = client.get("/api/home")
     assert r.status_code == 200
-    assert r.json()["rows"], "stub must contribute a «Новинки» row"
+    assert r.json()["rows"], "stub must contribute a recent row"
 
 
 @pytest.fixture()

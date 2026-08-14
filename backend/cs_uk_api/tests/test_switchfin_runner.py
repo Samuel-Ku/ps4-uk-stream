@@ -178,31 +178,31 @@ steps:
     expect:
       - request: "GET /UserViews -> 200"
         status: 200
-  - name: warmup_newest
+  - name: warmup_recent_movie
     phase: warmup
-    view_id: v_newest
+    view_id: v_recent_movie
     use_token: true
     expect:
       - request: "GET (/Users/[^ ]+)?/Items -> 200"
         status: 200
-  - name: open_view_newest
+  - name: open_view_recent_movie
     phase: open
-    view: newest
-    tap: view_newest_x
+    view: recent_movie
+    tap: view_recent_movie_x
     expect:
       - request: "GET (/Users/[^ ]+)?/Items -> 200"
         status: 200
-  - name: open_first_card_newest
+  - name: open_first_card_recent_movie
     phase: detail
-    view: newest
+    view: recent_movie
     tap: first_card
     expect:
       - request: __GK_REQUEST__
         status: 200
         capture: gk
-  - name: play_newest
+  - name: play_recent_movie
     phase: play
-    view: newest
+    view: recent_movie
     branches:
       movie:
         - tap: play_button
@@ -276,7 +276,7 @@ STEPS_YAML = _STEPS_YAML_TEMPLATE.replace("__GK_REQUEST__", GK_REQUEST)
 
 TAPS: dict[str, tuple[int, int]] = {
     "sidebar_folders": (80, 100),
-    "view_newest_x": (100, 200),
+    "view_recent_movie_x": (100, 200),
     "view_movie_x": (400, 200),
     "first_card": (500, 300),
     "play_button": (500, 400),
@@ -311,6 +311,23 @@ FULL_TAP_LINES: dict[tuple[int, int], list[str]] = {
 
 def _write_yaml(path: Path, data: dict[str, object]) -> None:
     path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+
+@pytest.fixture(autouse=True)
+def _no_repo_artifact_pollution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the runner's play-failure screenshots out of the repo.
+
+    ``Runner._save_screenshot`` writes ``ARTIFACTS_DIR/screen-<step>.png``
+    on a play step that fires nothing; without a redirect every run of
+    this suite drops ``screen-play_*.png`` into
+    ``docs/test-artifacts/switchfin/`` (pollution observed 2026-08-14,
+    recreated on each suite run). Redirect the module-level dir per
+    test; the shipped-data parse tests read the real files by
+    ``REPO_ROOT`` path and are unaffected.
+    """
+    import scripts.switchfin_test as sf_test
+
+    monkeypatch.setattr(sf_test, "ARTIFACTS_DIR", tmp_path / "artifacts")
 
 
 def make_harness(
@@ -407,7 +424,7 @@ def test_every_step_gets_verdict_in_report(tmp_path: Path) -> None:
             assert result.name in report
     # …and every open/detail/play step lands in its view's table row
     assert "View sweep" in report
-    assert "| Новинки | ✅ | ✅ | ✅ |" in report
+    assert "| Нещодавно додані: Фільми | ✅ | ✅ | ✅ |" in report
     assert "| Фільми | ✅ | ✅ | ✅ |" in report
     assert "PASS ✅" in report
     assert run_exit_code(results) == 0
@@ -466,10 +483,10 @@ def test_logcat_error_flips_step_to_fail(tmp_path: Path) -> None:
     results = runner.run()
     assert all(r.ok for r in results)
 
-    # Script a logcat dump whose open_view_newest window (after its own
-    # STEP_<n> marker, before the next) carries a decode error.
+    # Script a logcat dump whose open_view_recent_movie window (after
+    # its own STEP_<n> marker, before the next) carries a decode error.
     names = [r.name for r in results]
-    error_step = names.index("open_view_newest") + 1
+    error_step = names.index("open_view_recent_movie") + 1
     dump: list[str] = []
     for index, result in enumerate(results, start=1):
         dump.append(f"08-08 10:00:00.000 I SWITCHFIN_TEST: STEP_{index}_{result.name}")
@@ -478,11 +495,11 @@ def test_logcat_error_flips_step_to_fail(tmp_path: Path) -> None:
 
     filtered = apply_logcat_filter(results, dump)
     by_name = {r.name: r for r in filtered}
-    assert by_name["open_view_newest"].ok is False
-    assert by_name["open_view_newest"].logcat_hits
+    assert by_name["open_view_recent_movie"].ok is False
+    assert by_name["open_view_recent_movie"].logcat_hits
     assert by_name["login"].ok
     assert by_name["views"].ok
-    assert by_name["open_first_card_newest"].ok
+    assert by_name["open_first_card_recent_movie"].ok
 
 
 # --------------------------------------------------------------------------
@@ -500,8 +517,8 @@ def test_timeout_skips_remaining_steps_of_the_view(tmp_path: Path) -> None:
     results = runner.run()
     by_name = {r.name: r for r in results}
 
-    assert by_name["open_view_newest"].ok
-    assert by_name["open_first_card_newest"].ok
+    assert by_name["open_view_recent_movie"].ok
+    assert by_name["open_first_card_recent_movie"].ok
 
     # the movie view's first step times out…
     assert by_name["open_view_movie"].ok is False
@@ -557,8 +574,8 @@ def test_warmup_failure_keeps_the_run_going(tmp_path: Path) -> None:
     the ``continue`` (vs handshake's ``break``) in Runner.run.
     """
     steps_yaml = STEPS_YAML.replace(
-        '  - name: warmup_newest\n    phase: warmup\n    view_id: v_newest\n    use_token: true\n    expect:\n      - request: "GET (/Users/[^ ]+)?/Items -> 200"\n        status: 200\n',
-        '  - name: warmup_newest\n    phase: warmup\n    view_id: v_newest\n    use_token: true\n    expect:\n      - request: "GET /NEVER -> 200"\n        status: 200\n',
+        '  - name: warmup_recent_movie\n    phase: warmup\n    view_id: v_recent_movie\n    use_token: true\n    expect:\n      - request: "GET (/Users/[^ ]+)?/Items -> 200"\n        status: 200\n',
+        '  - name: warmup_recent_movie\n    phase: warmup\n    view_id: v_recent_movie\n    use_token: true\n    expect:\n      - request: "GET /NEVER -> 200"\n        status: 200\n',
     )
     assert "GET /NEVER" in steps_yaml  # the replace actually landed
 
@@ -566,9 +583,9 @@ def test_warmup_failure_keeps_the_run_going(tmp_path: Path) -> None:
     results = runner.run()
     by_name = {r.name: r for r in results}
 
-    assert by_name["warmup_newest"].ok is False
-    assert by_name["warmup_newest"].timed_out is True
-    assert by_name["open_view_newest"].ok is True  # the run continued
+    assert by_name["warmup_recent_movie"].ok is False
+    assert by_name["warmup_recent_movie"].timed_out is True
+    assert by_name["open_view_recent_movie"].ok is True  # the run continued
     assert run_exit_code(results) == 1  # the failed warmup marks the verdict
 
 
@@ -606,9 +623,9 @@ def test_splice_restart_step_inserts_after_last_warmup() -> None:
 def test_restart_phase_relaunches_app_and_runs_open_after(tmp_path: Path) -> None:
     """Runner.run relaunches the app on the restart step and keeps driving."""
     steps_yaml = STEPS_YAML.replace(
-        "  - name: open_view_newest\n",
+        "  - name: open_view_recent_movie\n",
         "  - name: restart_app\n    phase: restart\n"
-        "  - name: open_view_newest\n",
+        "  - name: open_view_recent_movie\n",
     )
     assert "phase: restart" in steps_yaml
 
@@ -618,15 +635,15 @@ def test_restart_phase_relaunches_app_and_runs_open_after(tmp_path: Path) -> Non
 
     assert adb.restarts == 1
     assert by_name["restart_app"].ok is True
-    assert by_name["open_view_newest"].ok is True  # drove after the relaunch
+    assert by_name["open_view_recent_movie"].ok is True  # drove after the relaunch
 
 
 def test_restart_skipped_without_device(tmp_path: Path) -> None:
     """No device -> the restart step is skipped, not failed."""
     steps_yaml = STEPS_YAML.replace(
-        "  - name: open_view_newest\n",
+        "  - name: open_view_recent_movie\n",
         "  - name: restart_app\n    phase: restart\n"
-        "  - name: open_view_newest\n",
+        "  - name: open_view_recent_movie\n",
     )
     adb = FakeAdb(lines=[], tap_lines={})
     adb._available = False
@@ -648,7 +665,7 @@ def test_restart_skipped_without_device(tmp_path: Path) -> None:
 def test_play_step_tolerates_delayed_sessions_playing(tmp_path: Path) -> None:
     """Sessions/Playing arrives seconds after the tap — the play step must
     keep its expect window open long enough to catch it (device-driving B22:
-    play_newest fired PlaybackInfo + stream + segments but its
+    play_recent_movie fired PlaybackInfo + stream + segments but its
     Sessions/Playing landed just past the 8s step deadline).
     """
     tap_lines = {k: list(v) for k, v in FULL_TAP_LINES.items()}
@@ -679,7 +696,7 @@ def test_play_step_tolerates_delayed_sessions_playing(tmp_path: Path) -> None:
     by_name = {r.name: r for r in results}
     # both movie play steps land all three expects: PlaybackInfo + stream
     # immediately on tap, Sessions/Playing up to a second later
-    assert by_name["play_newest"].ok is True
+    assert by_name["play_recent_movie"].ok is True
     assert by_name["play_movie"].ok is True
 
 
@@ -719,12 +736,12 @@ def test_play_step_does_not_retap_after_landing(tmp_path: Path) -> None:
         stop.set()
         feeder.join(timeout=2)
 
-    play = next(r for r in results if r.name == "play_newest")
+    play = next(r for r in results if r.name == "play_recent_movie")
     assert play.ok, play.note
     # one tap per movie play step — the second expect is slow, but the
     # runner never re-taps once PlaybackInfo/stream proved the tap landed
     play_taps = [t for t in adb.taps if t == TAPS["play_button"]]
-    assert len(play_taps) == 2  # play_newest + play_movie, one each
+    assert len(play_taps) == 2  # play_recent_movie + play_movie, one each
 
 
 # --------------------------------------------------------------------------
@@ -916,7 +933,7 @@ def test_series_play_taps_two_in_order(tmp_path: Path) -> None:
     runner, _, adb = make_harness(tmp_path, probe="Series")
     results = runner.run()
 
-    play = next(r for r in results if r.name == "play_newest")
+    play = next(r for r in results if r.name == "play_recent_movie")
     assert play.ok, play.note
 
     # device-driving B7: the episode-row tap auto-plays on the real client,
@@ -965,9 +982,9 @@ def test_play_failure_saves_screenshot(tmp_path: Path, monkeypatch) -> None:
     runner, _, adb = make_harness(tmp_path, adb=adb)
     results = runner.run()
 
-    play = next(r for r in results if r.name == "play_newest")
+    play = next(r for r in results if r.name == "play_recent_movie")
     assert not play.ok
-    assert (tmp_path / "screen-play_newest.png").exists()
+    assert (tmp_path / "screen-play_recent_movie.png").exists()
 
 
 def test_series_play_retries_season_tap_when_detail_not_ready(
@@ -989,7 +1006,7 @@ def test_series_play_retries_season_tap_when_detail_not_ready(
     )
     results = runner.run()
 
-    play = next(r for r in results if r.name == "play_newest")
+    play = next(r for r in results if r.name == "play_recent_movie")
     assert play.ok, play.note
     assert adb.season_taps >= 2  # retried after the silent first tap
 
@@ -998,7 +1015,7 @@ def test_movie_play_taps_once(tmp_path: Path) -> None:
     runner, _, adb = make_harness(tmp_path, probe="Movie")
     results = runner.run()
 
-    play = next(r for r in results if r.name == "play_newest")
+    play = next(r for r in results if r.name == "play_recent_movie")
     assert play.ok, play.note
     assert adb.taps[-1:] == [TAPS["play_button"]]
 
@@ -1134,7 +1151,7 @@ def test_play_button_retries_until_located(tmp_path: Path) -> None:
     )
     results = runner.run()
 
-    play = next(r for r in results if r.name == "play_newest")
+    play = next(r for r in results if r.name == "play_recent_movie")
     assert play.ok, play.note
     assert len(attempts) >= 2, "the locator must be retried"
     assert (825, 470) in adb.taps
@@ -1155,7 +1172,7 @@ def test_play_button_fails_cleanly_when_pill_never_found(tmp_path: Path) -> None
     )
     results = runner.run()
 
-    play = next(r for r in results if r.name == "play_newest")
+    play = next(r for r in results if r.name == "play_recent_movie")
     assert play.ok is False
     assert "play_button" in play.note
     movie_open = next(r for r in results if r.name == "open_view_movie")
@@ -1245,14 +1262,14 @@ def test_shipped_steps_yaml_parses() -> None:
     timeout_s, steps = load_steps(steps_path)
 
     assert timeout_s == 8
-    # 2 handshake + 7 warmup + 7 × (open + detail + play + back_to_grid nav)
-    assert len(steps) == 37
+    # 2 handshake + 8 warmup + 8 × (open + detail + play + back_to_grid nav)
+    assert len(steps) == 42
     assert sum(1 for s in steps if s.phase == "handshake") == 2
-    assert sum(1 for s in steps if s.phase == "warmup") == 7
-    assert sum(1 for s in steps if s.phase == "open") == 7
-    assert sum(1 for s in steps if s.phase == "detail") == 7
-    assert sum(1 for s in steps if s.phase == "play") == 7
-    assert sum(1 for s in steps if s.phase == "nav") == 7
+    assert sum(1 for s in steps if s.phase == "warmup") == 8
+    assert sum(1 for s in steps if s.phase == "open") == 8
+    assert sum(1 for s in steps if s.phase == "detail") == 8
+    assert sum(1 for s in steps if s.phase == "play") == 8
+    assert sum(1 for s in steps if s.phase == "nav") == 8
     for step in steps:
         if step.phase == "play":
             assert {branch.key for branch in step.branches} == {"movie", "series"}
@@ -1264,7 +1281,7 @@ def test_shipped_steps_yaml_parses() -> None:
     # because `load_steps` intentionally drops the unknown field.
     raw = yaml.safe_load(steps_path.read_text(encoding="utf-8")) or {}
     open_steps = [s for s in raw["steps"] if s["phase"] == "open"]
-    assert len(open_steps) == 7
+    assert len(open_steps) == 8
     for step in open_steps:
         view_id = step.get("view_id")
         assert isinstance(view_id, str) and len(view_id) == 32, (
@@ -1290,7 +1307,8 @@ def test_calibration_element_order_matches_definition() -> None:
     assert CALIBRATION_ELEMENTS == (
         "login_button",
         "sidebar_folders",
-        "view_newest_x",
+        "view_recent_movie_x",
+        "view_recent_series_x",
         "view_popular_x",
         "view_movie_x",
         "view_series_x",
@@ -1406,11 +1424,11 @@ def test_missing_marker_does_not_cascade_windows(tmp_path: Path) -> None:
     assert all(r.ok for r in results)
 
     names = [r.name for r in results]
-    missing_step = names.index("open_view_newest") + 1
-    error_step = names.index("open_first_card_newest") + 1
+    missing_step = names.index("open_view_recent_movie") + 1
+    error_step = names.index("open_first_card_recent_movie") + 1
     dump: list[str] = []
     for index, result in enumerate(results, start=1):
-        if index == missing_step:  # open_view_newest's marker is evicted
+        if index == missing_step:  # open_view_recent_movie's marker is evicted
             continue
         dump.append(f"08-08 10:00:00.000 I SWITCHFIN_TEST: STEP_{index}_{result.name}")
         if index == error_step:
@@ -1418,12 +1436,12 @@ def test_missing_marker_does_not_cascade_windows(tmp_path: Path) -> None:
 
     filtered = apply_logcat_filter(results, dump)
     by_name = {r.name: r for r in filtered}
-    # open_view_newest has no marker -> verdict untouched, no whole-dump attribution
-    assert by_name["open_view_newest"].ok
-    assert not by_name["open_view_newest"].logcat_hits
-    # open_first_card_newest's own window still catches its error
-    assert by_name["open_first_card_newest"].ok is False
-    assert by_name["open_first_card_newest"].logcat_hits
+    # open_view_recent_movie has no marker -> verdict untouched, no whole-dump attribution
+    assert by_name["open_view_recent_movie"].ok
+    assert not by_name["open_view_recent_movie"].logcat_hits
+    # open_first_card_recent_movie's own window still catches its error
+    assert by_name["open_first_card_recent_movie"].ok is False
+    assert by_name["open_first_card_recent_movie"].logcat_hits
 
 
 # --------------------------------------------------------------------------
@@ -1523,11 +1541,11 @@ def test_tap_failure_records_fail_instead_of_crashing(tmp_path: Path) -> None:
     results = runner.run()
     by_name = {r.name: r for r in results}
 
-    assert by_name["open_view_newest"].ok is False
-    assert "adb tap failed" in by_name["open_view_newest"].note
+    assert by_name["open_view_recent_movie"].ok is False
+    assert "adb tap failed" in by_name["open_view_recent_movie"].note
     # the rest of the failed view is skipped, other views still run
-    assert by_name["open_first_card_newest"].skipped
-    assert by_name["play_newest"].skipped
+    assert by_name["open_first_card_recent_movie"].skipped
+    assert by_name["play_recent_movie"].skipped
     assert by_name["open_view_movie"].ok
     assert run_exit_code(results) == 1
 

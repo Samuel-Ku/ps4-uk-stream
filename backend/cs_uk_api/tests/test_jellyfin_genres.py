@@ -138,19 +138,18 @@ def _auth(client: TestClient) -> None:
     assert r.status_code == 200
 
 
-def _newest_view_id(client: TestClient) -> str:
-    """The «Новинки» view id, as /UserViews echoes.
+def _view_id_by_name(client: TestClient, name: str) -> str:
+    """The view id of a named home row, as /UserViews echoes.
 
-    The stub's ``newest_section = "page"`` feeds every card into the
-    «Новинки» row (the other type rows have no contributing section),
-    so the genre shelf is exercised through the one view the seed
-    populates.
+    spec #263: the stub's ``newest_section = "page"`` feeds every card
+    into the form-split «Нещодавно додані» rows, so the shelf is
+    exercised per view.
     """
     body = _get(client, "/UserViews", userId=USER)
     for dto in body["Items"]:
-        if dto["Name"] == "Новинки":
+        if dto["Name"] == name:
             return cast(str, dto["Id"])
-    raise AssertionError("Новинки view not found")
+    raise AssertionError(f"view {name!r} not found")
 
 
 def _get(client: TestClient, path: str, **params: Any) -> dict[str, Any]:
@@ -164,15 +163,26 @@ def _get(client: TestClient, path: str, **params: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def test_genres_aggregates_all_view_genres(client: TestClient) -> None:
+    """Each form-split recent view aggregates its own cards' genres; the
+    union across the two views covers every genre of the seed."""
     PROVIDERS["g1"] = _seed()
     _auth(client)
-    vid = _newest_view_id(client)
-    body = _get(client, "/Genres", parentId=vid)
-    genres = {it["Name"]: it for it in body["Items"]}
-    # All four cards: Дюна (Фантастика, Екшн), Прибуття (Фантастика,
-    # Драма), Серіал А (Детектив, Екшн), Серіал Б (Драма).
-    assert set(genres) == {"Фантастика", "Екшн", "Драма", "Детектив"}
-    assert body["TotalRecordCount"] == 4
+    movie_vid = _view_id_by_name(client, "Нещодавно додані: Фільми")
+    series_vid = _view_id_by_name(client, "Нещодавно додані: Серіали")
+
+    body = _get(client, "/Genres", parentId=movie_vid)
+    movie_genres = {it["Name"]: it for it in body["Items"]}
+    # Movie cards: Дюна (Фантастика, Екшн) + Прибуття (Фантастика, Драма).
+    assert set(movie_genres) == {"Фантастика", "Екшн", "Драма"}
+    assert body["TotalRecordCount"] == 3
+
+    series_body = _get(client, "/Genres", parentId=series_vid)
+    series_genres = {it["Name"] for it in series_body["Items"]}
+    # Series cards: Серіал А (Детектив, Екшн) + Серіал Б (Драма).
+    assert series_genres == {"Детектив", "Екшн", "Драма"}
+    assert set(movie_genres) | series_genres == {
+        "Фантастика", "Екшн", "Драма", "Детектив",
+    }
     # The genre id round-trips as the filter the client sends back.
     assert all(it["Id"] == it["Name"] for it in body["Items"])
 
@@ -180,25 +190,27 @@ def test_genres_aggregates_all_view_genres(client: TestClient) -> None:
 def test_genres_honors_include_item_types(client: TestClient) -> None:
     PROVIDERS["g1"] = _seed()
     _auth(client)
-    vid = _newest_view_id(client)
-    body = _get(client, "/Genres", parentId=vid, includeItemTypes="Series")
-    genres = {it["Name"] for it in body["Items"]}
-    # Series cards only: Серіал А (Детектив, Екшн) + Серіал Б (Драма).
-    assert genres == {"Детектив", "Екшн", "Драма"}
-    body_movie = _get(client, "/Genres", parentId=vid, includeItemTypes="Movie")
-    movie_genres = {it["Name"] for it in body_movie["Items"]}
-    assert movie_genres == {"Фантастика", "Екшн", "Драма"}
+    movie_vid = _view_id_by_name(client, "Нещодавно додані: Фільми")
+    series_vid = _view_id_by_name(client, "Нещодавно додані: Серіали")
+    # The movie view has no series cards — the filter empties it.
+    body = _get(client, "/Genres", parentId=movie_vid, includeItemTypes="Series")
+    assert {it["Name"] for it in body["Items"]} == set()
+    body_movie = _get(client, "/Genres", parentId=movie_vid, includeItemTypes="Movie")
+    assert {it["Name"] for it in body_movie["Items"]} == {"Фантастика", "Екшн", "Драма"}
+    body_series = _get(client, "/Genres", parentId=series_vid, includeItemTypes="Series")
+    assert {it["Name"] for it in body_series["Items"]} == {"Детектив", "Екшн", "Драма"}
 
 
 def test_genres_child_count_counts_cards(client: TestClient) -> None:
     PROVIDERS["g1"] = _seed()
     _auth(client)
-    vid = _newest_view_id(client)
+    vid = _view_id_by_name(client, "Нещодавно додані: Фільми")
     body = _get(client, "/Genres", parentId=vid)
     by_name = {it["Name"]: it for it in body["Items"]}
-    # Фантастика appears on both movie cards; Екшн on one movie + one series.
+    # Фантастика appears on both movie cards; Екшн on one movie (the
+    # series carrying Екшн lives in the series view now).
     assert by_name["Фантастика"]["ChildCount"] == 2
-    assert by_name["Екшн"]["ChildCount"] == 2
+    assert by_name["Екшн"]["ChildCount"] == 1
 
 
 def test_genres_empty_view_returns_empty(client: TestClient) -> None:
@@ -217,17 +229,20 @@ def test_genres_empty_view_returns_empty(client: TestClient) -> None:
 def test_items_filter_by_genre(client: TestClient) -> None:
     PROVIDERS["g1"] = _seed()
     _auth(client)
-    vid = _newest_view_id(client)
-    body = _get(client, "/Items", parentId=vid, userId=USER, genreIds="Екшн")
-    titles = {it["Name"] for it in body["Items"]}
-    # Only the cards carrying Екшн (Дюна + Серіал А).
-    assert titles == {"Дюна", "Серіал А"}
+    movie_vid = _view_id_by_name(client, "Нещодавно додані: Фільми")
+    series_vid = _view_id_by_name(client, "Нещодавно додані: Серіали")
+    # Only the movie-view cards carrying Фантастика.
+    body = _get(client, "/Items", parentId=movie_vid, userId=USER, genreIds="Фантастика")
+    assert {it["Name"] for it in body["Items"]} == {"Дюна", "Прибуття"}
+    # And the series view's Екшн card (Серіал А) — the per-view split.
+    body = _get(client, "/Items", parentId=series_vid, userId=USER, genreIds="Екшн")
+    assert {it["Name"] for it in body["Items"]} == {"Серіал А"}
 
 
 def test_items_genre_filter_is_intersection_safe(client: TestClient) -> None:
     PROVIDERS["g1"] = _seed()
     _auth(client)
-    vid = _newest_view_id(client)
+    vid = _view_id_by_name(client, "Нещодавно додані: Фільми")
     body = _get(client, "/Items", parentId=vid, userId=USER, genreIds="Фантастика")
     titles = {it["Name"] for it in body["Items"]}
     assert titles == {"Дюна", "Прибуття"}

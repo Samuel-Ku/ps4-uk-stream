@@ -226,8 +226,9 @@ screen state, verified by the requests they fire:
 
 | Element | Coords | Verified request |
 |---|---|---|
-| view_newest_x | (756, 310) | `/Items?parentId=ac357…` |
-| view_popular_x | (1688, 310) | `/Items?parentId=ddb2b…` |
+| view_recent_movie_x | (756, 310) | `/Items?parentId=ef3d4…` (ESTIMATE — re-verify, #263 re-layout) |
+| view_recent_series_x | (1688, 310) | `/Items?parentId=774bd…` (ESTIMATE — re-verify, #263 re-layout) |
+| view_popular_x | (2620, 310) | `/Items?parentId=ddb2b…` (ESTIMATE — moved to the third grid slot, #263) |
 | view_movie_x | (2620, 310) | `/Items?parentId=94fd7…` |
 | view_series_x | (756, 792) | `/Items?parentId=11004…` |
 | view_anime_x | (1688, 792) | `/Items?parentId=a67dd…` |
@@ -1181,6 +1182,17 @@ One manual checklist line for the on-device pass — deliberately NOT a
       after «Популярні зараз», and opening a card works like any other
       row. They are just new home-row kinds served through the existing
       view mechanism (zero client changes).
+
+- [ ] Home composition (spec #263): the sidebar's Views grid now shows
+      «Нещодавно додані: Фільми» and «Нещодавно додані: Серіали»
+      (replacing «Новинки»), plus up to six genre rails (Пригоди,
+      Фентезі, …). Open a card from each of the two recent rows and
+      from one genre rail — it resolves like any other card (wire
+      -verified live 2026-08-14; `steps.yaml` drives `recent_movie` /
+      `recent_series`). **Tap coordinates for the two recent rows and
+      the shifted grid (B8) are ESTIMATES — re-calibrate on-device
+      before the next sweep run** (`view_recent_series_x` at the
+      second grid slot; `view_popular_x` moved to the third).
 
 - [x] User state (spec #257, verified 2026-08-14): on a detail screen tap
       the heart — it lights and stays lit after an app relaunch (toggle

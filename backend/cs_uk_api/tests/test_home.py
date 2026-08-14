@@ -4,9 +4,15 @@ Seams under test:
 
   - ``cs_uk_api.home.build_home_rows`` — the pure orchestrator that turns
     pre-collected per-provider listings into the HomeResponse rows
-    («Новинки», «Популярні зараз», and the five type rows). Dedup by
-    groupKey, round-robin ordering, present-only-when-provider-supplies
-    semantics for «Популярні зараз».
+    («Нещодавно додані: Фільми» / «: Серіали» — the form-split rows that
+    replaced «Новинки», «Популярні зараз», and the five type rows, spec
+    #263). Dedup by groupKey, round-robin ordering, top-up under the cap,
+    present-only-when-provider-supplies semantics for «Популярні зараз».
+
+  - ``cs_uk_api.home.build_genre_rows`` — the Netflix-style genre rails
+    (spec #263): top genres by profile-store coverage become rows with
+    Ukrainian labels, recency-ranked, capped; genres below a coverage
+    threshold are skipped.
 
   - ``GET /api/home`` — the route that calls each provider's
     ``newest_section`` / ``popular`` browse() / type sections, fans out
@@ -33,6 +39,7 @@ from fastapi.testclient import TestClient
 from cs_uk_api import health
 from cs_uk_api.home import (
     aggregate_by_group_key,
+    build_genre_rows,
     build_home_rows,
     round_robin_dedup,
 )
@@ -45,6 +52,7 @@ from cs_uk_api.models import (
 )
 from cs_uk_api.providers import PROVIDERS
 from cs_uk_api.providers.base import BaseProvider, model_b_axes
+from cs_uk_api.recommend import ItemProfile
 
 # ---------------------------------------------------------------------------
 # Helpers + fixtures
@@ -359,7 +367,9 @@ def test_aggregate_by_group_key_combines_providers_in_first_seen_order() -> None
 # ---------------------------------------------------------------------------
 
 
-def test_build_home_rows_emits_newest_row_when_any_provider_has_newest() -> None:
+def test_build_home_rows_emits_recent_movie_row_when_any_provider_has_newest() -> None:
+    """#263 T1: a movie-form newest item lands in the «Нещодавно додані:
+    Фільми» row (the form-split rail that replaced «Новинки»)."""
     rows = build_home_rows(
         newest={"p1": [item("p1", "A")]},
         popular={},
@@ -367,20 +377,114 @@ def test_build_home_rows_emits_newest_row_when_any_provider_has_newest() -> None
         newest_limit=20,
     )
     assert len(rows) == 1
-    assert rows[0].title == "Новинки"
-    assert rows[0].type == "newest"
+    assert rows[0].title == "Нещодавно додані: Фільми"
+    assert rows[0].type == "recent_movie"
     assert rows[0].items[0].title == "A"
 
 
-def test_build_home_rows_omits_newest_row_when_no_provider_has_newest() -> None:
+def test_build_home_rows_splits_newest_by_form_into_two_rows() -> None:
+    """#263 T1: movies and series each get their OWN recent row — the
+    whole point of the form split."""
+    rows = build_home_rows(
+        newest={
+            "p1": [
+                item("p1", "Фільм А", media_type="movie"),
+                item("p1", "Серіал Б", media_type="series"),
+            ]
+        },
+        popular={},
+        by_type={},
+        newest_limit=20,
+    )
+    assert [r.type for r in rows] == ["recent_movie", "recent_series"]
+    assert rows[0].title == "Нещодавно додані: Фільми"
+    assert [it.title for it in rows[0].items] == ["Фільм А"]
+    assert rows[1].title == "Нещодавно додані: Серіали"
+    assert [it.title for it in rows[1].items] == ["Серіал Б"]
+
+
+def test_build_home_rows_omits_recent_rows_when_no_matching_form() -> None:
+    """#263 T1: a row whose form has no newest items is omitted — empty
+    rows don't ship (a series-only catalog shows only the series rail)."""
+    rows = build_home_rows(
+        newest={"p1": [item("p1", "Серіал Б", media_type="series")]},
+        popular={},
+        by_type={},
+        newest_limit=20,
+    )
+    assert [r.type for r in rows] == ["recent_series"]
+
+
+def test_build_home_rows_recent_row_topped_up_from_type_section() -> None:
+    """#263 T1: a recent row under the cap is topped up from the
+    form-section page-1 items (the same data the type rows use) —
+    Netflix-style overlap accepted, deduped within the row."""
+    rows = build_home_rows(
+        newest={"p1": [item("p1", "Новий фільм")]},
+        popular={},
+        by_type={
+            "movie": {
+                "p1": [
+                    item("p1", "Новий фільм", n="dup"),  # same group as newest
+                    item("p1", "Старий фільм", n="2"),
+                ]
+            }
+        },
+        newest_limit=20,
+    )
+    recent = next(r for r in rows if r.type == "recent_movie")
+    titles = [it.title for it in recent.items]
+    # The dup collapses; the section-only film tops the row up.
+    assert titles == ["Новий фільм", "Старий фільм"]
+
+
+def test_build_home_rows_recent_row_respects_form_topup_filter() -> None:
+    """#263 T1: the top-up only takes FORM-matching section items — a
+    series mis-filed in the movie section must not leak into the movie
+    recent row."""
+    rows = build_home_rows(
+        newest={},
+        popular={},
+        by_type={
+            "movie": {
+                "p1": [
+                    item("p1", "Фільм"),
+                    item("p1", "Серіал-в-секції", media_type="series", n="2"),
+                ]
+            }
+        },
+        newest_limit=20,
+    )
+    recent = next(r for r in rows if r.type == "recent_movie")
+    assert [it.title for it in recent.items] == ["Фільм"]
+
+
+def test_build_home_rows_omits_recent_rows_when_no_form_data_anywhere() -> None:
+    """#263 T1: with no newest items AND no form-section items for a
+    form, its recent row is omitted (empty rows don't ship)."""
+    rows = build_home_rows(
+        newest={},
+        popular={},
+        by_type={"series": {"p1": [item("p1", "S", media_type="series")]}},
+        newest_limit=20,
+    )
+    types_seen = [r.type for r in rows]
+    assert "recent_movie" not in types_seen  # no movie data at all
+    assert "recent_series" in types_seen  # topped up from the series section
+
+
+def test_build_home_rows_recent_row_emitted_solely_from_section_topup() -> None:
+    """#263 T1: a provider with NO newest section still gets its recent
+    row when its form section has items — the top-up fills the whole
+    row (Netflix-style overlap with the type row is accepted)."""
     rows = build_home_rows(
         newest={},
         popular={},
         by_type={"movie": {"p1": [item("p1", "M")]}},
         newest_limit=20,
     )
-    types_seen = [r.type for r in rows]
-    assert "newest" not in types_seen
+    recent = next(r for r in rows if r.type == "recent_movie")
+    assert [it.title for it in recent.items] == ["M"]
 
 
 def test_build_home_rows_emits_popular_only_when_animeon_returns_data() -> None:
@@ -424,7 +528,9 @@ def test_build_home_rows_emits_five_type_rows_when_all_have_data() -> None:
         newest_limit=20,
     )
     types_seen = {r.type for r in rows}
-    assert types_seen == {"movie", "series", "anime", "cartoon", "dorama"}
+    # spec #263: the form-split recent rows ALSO surface (topped up from
+    # the same sections) — assert the five type rows are all present.
+    assert {"movie", "series", "anime", "cartoon", "dorama"} <= types_seen
 
 
 def test_build_home_rows_omits_empty_type_rows() -> None:
@@ -475,11 +581,12 @@ def test_build_home_rows_newest_row_caps_at_limit() -> None:
     assert len(rows[0].items) == 20
 
 
-def test_build_home_rows_orders_rows_newest_popular_then_types() -> None:
-    """Row ordering: «Новинки» → «Популярні зараз» → movie → series → anime → cartoon → dorama.
+def test_build_home_rows_orders_rows_recent_popular_then_types() -> None:
+    """Row ordering: «Нещодавно додані: Фільми» → «Популярні зараз» →
+    movie → series → anime → cartoon → dorama (spec #263).
 
-    Only the five spec types that have provider contributions are emitted
-    (issue #70 AC: empty types omitted). The remaining types must keep the
+    Only the rows that have provider contributions are emitted (issue
+    #70 AC: empty rows omitted). The remaining types must keep the
     spec's mandated order — a ``dorama`` provider contributes BEFORE
     ``movie`` in the mapping, but ``movie`` must still come first in the
     output.
@@ -495,7 +602,7 @@ def test_build_home_rows_orders_rows_newest_popular_then_types() -> None:
         newest_limit=20,
     )
     assert [r.title for r in rows] == [
-        "Новинки",
+        "Нещодавно додані: Фільми",
         "Популярні зараз",
         "Фільми",
         "Аніме",
@@ -534,9 +641,63 @@ def test_home_route_returns_200_with_expected_rows_shape(
     body = r.json()
     assert "rows" in body
     types_seen = [row["type"] for row in body["rows"]]
-    assert "newest" in types_seen
-    items = next(row["items"] for row in body["rows"] if row["type"] == "newest")
+    assert "recent_movie" in types_seen
+    items = next(
+        row["items"] for row in body["rows"] if row["type"] == "recent_movie"
+    )
     assert items[0]["group_key"].startswith("g2:")
+
+
+def test_home_route_splits_newest_into_form_pure_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#264 AC1: /api/home starts with the two form-split rows — each
+    carrying ONLY its own form's items, ≤20 each (wire-level)."""
+    _register(
+        _HomeStub(
+            "stub-home",
+            newest=[
+                item("stub-home", "Фільм А", media_type="movie"),
+                item("stub-home", "Серіал Б", media_type="series"),
+                item("stub-home", "Фільм В", media_type="movie", n="2"),
+            ],
+            popular=[],
+            sections=(),
+            newest_section="page",
+        ),
+        monkeypatch,
+    )
+    client = TestClient(app)
+    rows = client.get("/api/home").json()["rows"]
+    assert [r["type"] for r in rows[:2]] == ["recent_movie", "recent_series"]
+    movie_items = rows[0]["items"]
+    series_items = rows[1]["items"]
+    assert all(it["form"] == "movie" for it in movie_items)
+    assert all(it["form"] == "series" for it in series_items)
+    assert len(movie_items) <= 20
+    assert len(series_items) <= 20
+    assert [it["title"] for it in movie_items] == ["Фільм А", "Фільм В"]
+    assert [it["title"] for it in series_items] == ["Серіал Б"]
+
+
+def test_home_route_omits_empty_form_row_on_wire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#264 AC3: a series-only catalog emits only the series recent row —
+    the empty movie row never ships (wire-level)."""
+    _register(
+        _HomeStub(
+            "stub-home",
+            newest=[item("stub-home", "Серіал Б", media_type="series")],
+            popular=[],
+            sections=(),
+            newest_section="page",
+        ),
+        monkeypatch,
+    )
+    client = TestClient(app)
+    rows = client.get("/api/home").json()["rows"]
+    assert [r["type"] for r in rows] == ["recent_series"]
 
 
 def test_home_route_omits_popular_row_when_animeon_returns_no_items(
@@ -807,7 +968,7 @@ def test_content_by_group_key_returns_merged_item_with_providers(
     )
     client = TestClient(app)
     home = client.get("/api/home").json()
-    newest = next(row for row in home["rows"] if row["type"] == "newest")
+    newest = next(row for row in home["rows"] if row["type"] == "recent_movie")
     gk = newest["items"][0]["group_key"]
 
     r = client.get(f"/api/content/{gk}")
@@ -906,7 +1067,7 @@ def test_content_by_group_key_round_trips_merged_providers(
     monkeypatch.setitem(PROVIDERS, "p2", _P2())
     client = TestClient(app)
     home = client.get("/api/home").json()
-    newest = next(row for row in home["rows"] if row["type"] == "newest")
+    newest = next(row for row in home["rows"] if row["type"] == "recent_movie")
     assert len(newest["items"]) == 1
     gk = newest["items"][0]["group_key"]
 
@@ -915,3 +1076,109 @@ def test_content_by_group_key_round_trips_merged_providers(
     body = r.json()
     assert set(body["providers"]) == {"p1", "p2"}
     assert body["item"]["title"] == "Дюна"
+
+
+# ---------------------------------------------------------------------------
+# build_genre_rows — the genre rails (spec #263 T2)
+# ---------------------------------------------------------------------------
+
+
+def _home_item(key: str, title: str, genres: list[str]) -> HomeItem:
+    return HomeItem(
+        group_key=key,
+        title=title,
+        year=2021,
+        form="movie",
+        poster=None,
+        genres=genres,
+        providers=["p1"],
+    )
+
+
+def _profile(genres: list[str]) -> ItemProfile:
+    return ItemProfile(
+        genres=frozenset(genres),
+        people=frozenset(),
+        year=2021,
+        form="movie",
+        styles=frozenset(),
+    )
+
+
+def test_genre_rows_rank_by_profile_coverage() -> None:
+    """#263 T2: the top-N genres by coverage across the home snapshot
+    become rows; ties break lexicographically for determinism."""
+    items = [
+        _home_item("g2:a", "A", ["Драми"]),
+        _home_item("g2:b", "B", ["Драми", "Екшн"]),
+        _home_item("g2:c", "C", ["Екшн"]),
+        _home_item("g2:d", "D", ["Комедії"]),
+    ]
+    profiles = {
+        it.group_key: _profile(it.genres) for it in items
+    }
+    # min_items=2: «Комедії» (one member) is below the threshold, so the
+    # ranked rails are Драми and Екшн — both with two members.
+    rows = build_genre_rows(home_items=items, profiles=profiles, min_items=2)
+    assert [r.type for r in rows] == ["genre:драми", "genre:екшн"]
+    assert rows[0].title == "Драми"
+    # members are the groups whose profile carries the genre, in
+    # snapshot order (recency proxy — newest rows come first).
+    assert [it.group_key for it in rows[0].items] == ["g2:a", "g2:b"]
+    assert [it.group_key for it in rows[1].items] == ["g2:b", "g2:c"]
+
+
+def test_genre_rows_skip_below_threshold() -> None:
+    """#263 T2: genres with fewer than ``min_items`` members are skipped
+    entirely — a one-item genre doesn't get a rail."""
+    items = [
+        _home_item("g2:a", "A", ["Драми"]),
+        _home_item("g2:b", "B", ["Драми"]),
+        _home_item("g2:c", "C", ["Комедії"]),  # only one member
+    ]
+    profiles = {it.group_key: _profile(it.genres) for it in items}
+    rows = build_genre_rows(home_items=items, profiles=profiles, min_items=2)
+    assert [r.type for r in rows] == ["genre:драми"]
+
+
+def test_genre_rows_cap_members_per_row() -> None:
+    items = [
+        _home_item(f"g2:{i}", f"T{i}", ["Драми"]) for i in range(30)
+    ]
+    profiles = {it.group_key: _profile(it.genres) for it in items}
+    rows = build_genre_rows(home_items=items, profiles=profiles, min_items=1, limit=5)
+    assert len(rows) == 1
+    assert len(rows[0].items) == 5
+
+
+def test_genre_rows_omit_when_no_warm_profiles() -> None:
+    """#263 T2: no profile signal → no rails (the cold-snapshot case)."""
+    items = [_home_item("g2:a", "A", ["Драми"])]
+    assert build_genre_rows(home_items=items, profiles={}) == []
+
+
+def test_genre_rows_dedupe_overlap_within_row() -> None:
+    """#263 T2: a group surfacing in several snapshot rows appears once
+    per rail (deduped by group key, Netflix-style overlap)."""
+    items = [
+        _home_item("g2:a", "A", ["Драми"]),
+        _home_item("g2:b", "B", ["Драми"]),
+        _home_item("g2:b", "B", ["Драми"]),  # same group twice in the walk
+    ]
+    profiles = {it.group_key: _profile(it.genres) for it in items}
+    rows = build_genre_rows(home_items=items, profiles=profiles, min_items=1)
+    assert [it.group_key for it in rows[0].items] == ["g2:a", "g2:b"]
+
+
+def test_genre_rows_ukrainian_label_prefers_card_casing() -> None:
+    """#263 T2: the rail label is the card's original casing, not the
+    lowercased profile key (content pages lowercase; cards keep the
+    upstream's title case)."""
+    items = [
+        _home_item("g2:a", "A", ["Драми"]),
+        _home_item("g2:b", "B", ["Драми"]),
+    ]
+    profiles = {"g2:a": _profile(["драми"]), "g2:b": _profile(["драми"])}
+    rows = build_genre_rows(home_items=items, profiles=profiles, min_items=1)
+    assert rows[0].title == "Драми"
+    assert rows[0].type == "genre:драми"
