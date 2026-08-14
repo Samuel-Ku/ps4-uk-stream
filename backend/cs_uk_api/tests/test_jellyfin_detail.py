@@ -1404,6 +1404,26 @@ def test_userdata_played_percentage_from_position(client: TestClient) -> None:
     assert body["PlayedPercentage"] == 40.0
 
 
+def test_userdata_percentage_100_when_played_no_runtime(client: TestClient) -> None:
+    """#258 AC3: played without any recorded position/runtime answers
+    PlayedPercentage 100; unplayed answers 0 — the spec's fallback when
+    no runtime is known."""
+    PROVIDERS["p1"] = _seed()
+    _auth(client)
+    gk = _movie_gk(client)
+
+    body = _played(client, gk)
+    assert body["Played"] is True
+    assert body["PlayedPercentage"] == 100.0
+    # No position recorded → 0 on the wire, never a missing key (real
+    # Jellyfin always emits the field).
+    assert body["PlaybackPositionTicks"] == 0
+
+    body = _played(client, gk, delete=True)
+    assert body["Played"] is False
+    assert body["PlayedPercentage"] == 0.0
+
+
 def test_sessions_listing_is_graceful_empty(client: TestClient) -> None:
     """#257: the Remote tab's ``GET /Sessions`` answers an empty list —
     not a 404 — so the tab renders without errors."""

@@ -156,7 +156,10 @@ class UserDataResult(BaseModel):
 
     IsFavorite: bool = False
     PlayCount: int = 0
-    PlaybackPositionTicks: int | None = None
+    #: 0 when no position is known — always emitted, mirroring real
+    #: Jellyfin's UserData (Switchfin parses the shape strictly; a
+    #: missing key is riskier than a zero).
+    PlaybackPositionTicks: int = 0
     PlayedPercentage: float = 0.0
     Played: bool = False
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 
+from cs_uk_api.config import _load_user_state_path
 from cs_uk_api.user_state import USER_STATE_VERSION, UserStateStore
 
 
@@ -112,3 +113,30 @@ def test_store_bounded_lists_dedup(tmp_path) -> None:
     favs = store.favorites()
     assert favs.count("g2:abc") == 1
     assert len(favs) <= 256
+
+
+def test_env_knob_resolves_path(monkeypatch, tmp_path) -> None:
+    """#258 AC6: the file location is configurable via the env knob —
+    a custom path is honored, and an explicit empty string disables the
+    disk layer (memory-only)."""
+    custom = str(tmp_path / "custom" / "state.json")
+    monkeypatch.setenv("CS_UK_USER_STATE_PATH", custom)
+    monkeypatch.setenv("CS_UK_RESUME_PATH", "")
+    assert _load_user_state_path() == custom
+
+    monkeypatch.setenv("CS_UK_USER_STATE_PATH", "")
+    assert _load_user_state_path() is None
+
+    # Unset → default next to the poster disk cache parent.
+    monkeypatch.delenv("CS_UK_USER_STATE_PATH")
+    monkeypatch.setenv("CS_UK_POSTER_CACHE_DIR", str(tmp_path / "posters"))
+    resolved = _load_user_state_path()
+    assert resolved is not None and resolved.endswith("user-state.json")
+
+
+def test_env_knob_unset_defaults_next_to_resume(monkeypatch, tmp_path) -> None:
+    """#258 AC6: with the knob unset the file lands next to the resume
+    file (which itself defaults next to the poster disk cache)."""
+    monkeypatch.delenv("CS_UK_USER_STATE_PATH")
+    monkeypatch.setenv("CS_UK_RESUME_PATH", str(tmp_path / "state" / "playback.json"))
+    assert _load_user_state_path() == str(tmp_path / "state" / "user-state.json")
