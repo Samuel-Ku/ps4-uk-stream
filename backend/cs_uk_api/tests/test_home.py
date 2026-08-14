@@ -87,6 +87,14 @@ def _group_key(pid: str, title: str) -> str:
     return item_group_key(item(pid, title, media_type="series", n="1"))
 
 
+def _item_key(it: SearchResult) -> str:
+    """The group key of an actual seeded item (spec #272) — for history
+    groups the key must match the item that will resolve it."""
+    from cs_uk_api.merge import item_group_key
+
+    return item_group_key(it)
+
+
 @pytest.fixture(autouse=True)
 def reset_state() -> Iterator[None]:
     # /api/home fans out to every provider in ``PROVIDERS``; tests that
@@ -716,6 +724,82 @@ def test_build_home_rows_watched_series_deduped_by_group_key() -> None:
     )
     new_ep = next(r for r in rows if r.type == "new_episodes")
     assert [it.title for it in new_ep.items] == ["Спільний серіал"]
+
+
+def test_build_home_rows_recently_watched_row_position_4() -> None:
+    """#272: the «Нещодавно переглянуто» row sits at position 4 — after
+    the two form-split recent rows and «Нові серії», before «Популярні
+    зараз» — listing the history groups in recency order."""
+    watched = item("p1", "Переглянутий фільм")
+    rows = build_home_rows(
+        newest={"p1": [watched]},
+        popular={"animeon": [item("animeon", "P", media_type="anime")]},
+        by_type={"movie": {"p1": [watched]}},
+        newest_limit=20,
+        watched_series=set(),
+        history_groups=[_item_key(watched)],
+    )
+    types = [r.type for r in rows]
+    assert "recently_watched" in types
+    assert types.index("recently_watched") == types.index("popular") - 1
+    row = next(r for r in rows if r.type == "recently_watched")
+    assert row.title == "Нещодавно переглянуто"
+    assert [it.title for it in row.items] == ["Переглянутий фільм"]
+
+
+def test_build_home_rows_recently_watched_order_and_cap() -> None:
+    """#272: history groups keep their recency order and the row is
+    capped at ``newest_limit``."""
+    newest = {"p1": [item("p1", f"Фільм {i}", n=str(i)) for i in range(1, 6)]}
+    rows = build_home_rows(
+        newest=newest,
+        popular={},
+        by_type={},
+        newest_limit=3,
+        history_groups=[
+            _item_key(item("p1", f"Фільм {i}", n=str(i))) for i in (5, 3, 1, 4, 2)
+        ],
+    )
+    row = next(r for r in rows if r.type == "recently_watched")
+    assert [it.title for it in row.items] == ["Фільм 5", "Фільм 3", "Фільм 1"]
+
+
+def test_build_home_rows_recently_watched_resolves_from_type_section() -> None:
+    """#272: a finished item is often NOT in the newest page anymore —
+    the row resolves history groups against every collected listing
+    (type sections included), so a finished movie still appears."""
+    old = item("p1", "Старий фільм")
+    rows = build_home_rows(
+        newest={},
+        popular={},
+        by_type={"movie": {"p1": [old]}},
+        newest_limit=20,
+        history_groups=[_item_key(old)],
+    )
+    row = next(r for r in rows if r.type == "recently_watched")
+    assert [it.title for it in row.items] == ["Старий фільм"]
+
+
+def test_build_home_rows_recently_watched_omitted_when_empty() -> None:
+    """#272: the row is omitted with no history groups — and NEVER
+    appears when ``history_groups`` is None (the pure builder's default
+    keeps every existing caller's output unchanged)."""
+    rows = build_home_rows(
+        newest={"p1": [item("p1", "Фільм")]},
+        popular={},
+        by_type={},
+        newest_limit=20,
+        history_groups=[_group_key("p1", "Невідомий")],
+    )
+    assert "recently_watched" not in [r.type for r in rows]
+
+    rows_default = build_home_rows(
+        newest={"p1": [item("p1", "Фільм")]},
+        popular={},
+        by_type={},
+        newest_limit=20,
+    )
+    assert "recently_watched" not in [r.type for r in rows_default]
 
 
 # ---------------------------------------------------------------------------

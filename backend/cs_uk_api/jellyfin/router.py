@@ -292,6 +292,9 @@ _COLLECTION_TYPE_BY_ROW = {
     "recent_series": "tvshows",
     # spec #267: «Нові серії» is a series-form recent row.
     "new_episodes": "tvshows",
+    # spec #272: «Нещодавно переглянуто» is mixed-form history — the
+    # episodic-ish default is fine (the client renders it as a shelf).
+    "recently_watched": "tvshows",
 }
 
 #: Home-row kind → Jellyfin item Type. Only Movie/Series are expressible
@@ -971,6 +974,8 @@ async def items_listing(
     start_index: int = Query(default=0, alias="startIndex"),
     limit: int | None = Query(default=None),
     genre_ids: str | None = Query(default=None, alias="genreIds"),
+    person_ids: str | None = Query(default=None, alias="PersonIds"),
+    include_item_types: str | None = Query(default=None, alias="includeItemTypes"),
 ) -> BaseItemDtoQueryResult:
     """Library listing for one view, children of a series/season
     (ticket #105 hierarchy, D3), OR a merged-catalog search
@@ -986,6 +991,14 @@ async def items_listing(
         (``Type: Season``). ``parentId`` = a ``<group_key>:S<n>`` season
         id → the season's episodes (``Type: Episode``).
 
+    A third mode (spec #272): when ``PersonIds`` is present the listing
+    is the person's filmography — the home-snapshot groups whose warm
+    content profile carries that person, filtered by
+    ``IncludeItemTypes`` the way the client's person page asks
+    (``Movie|Series``). No new scraping: the #252 profiles already hold
+    people per title. An unknown person or a cold profile store is an
+    empty result (never an error).
+
     Unknown or absent view → empty result (Jellyfin's tolerant answer
     for a stale parent, D5). Cold resolution cache or a movie parent →
     empty (a movie has no children, D3; episodes survive only under a
@@ -993,6 +1006,8 @@ async def items_listing(
     """
     if search_term:
         return await _jf_search(search_term)
+    if person_ids:
+        return _person_filmography(person_ids, include_item_types, limit, start_index)
     row_type, home = await _resolve_view_row_type(parent_id or "")
     if row_type is None:
         return await _hierarchy(parent_id)
@@ -1025,6 +1040,62 @@ async def items_listing(
     # зараз» when no provider carries it) is an empty library, not an
     # error — same tolerant answer as an unknown parent.
     return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
+
+
+def _person_filmography(
+    person_ids: str,
+    include_item_types: str | None,
+    limit: int | None,
+    start_index: int,
+) -> BaseItemDtoQueryResult:
+    """The person page's filmography (spec #272).
+
+    ``PersonIds`` is comma-separated (the client's person page sends a
+    single id); each is a provider-scoped person key whose FINAL path
+    segment carries the display name (kinotron's
+    ``/xfsearch/actors/<name>/`` → ``name``, uaserialspro's
+    ``/person/<id>-<slug>/`` → ``<slug>`` — the same recovery the
+    ``/Persons/{id}`` DTO uses). The name is matched
+    case-insensitively against the profile store's people (the #252
+    profiles hold ``people`` per title), and every home-snapshot group
+    whose profile carries the person is returned as a card.
+
+    ``IncludeItemTypes`` filters by form the same way the native catalog
+    does (the client asks ``Movie|Series`` and renders two sections);
+    a cold profile store or an unknown person yields the tolerant empty
+    result — never an error.
+    """
+    wanted = {
+        unquote(pid.rsplit(":", 1)[-1]).strip().lower()
+        for pid in person_ids.split(",")
+        if pid.strip()
+    }
+    if not wanted:
+        return BaseItemDtoQueryResult()
+    forms = {t.lower() for t in include_item_types.split("|")} if include_item_types else None
+    profiles = get_profiles()
+    server_id = _server_id()
+    dtos = []
+    seen: set[str] = set()
+    for row, it in _home_items():
+        if it.group_key in seen:
+            continue
+        profile = profiles.get(it.group_key)
+        if profile is None:
+            continue
+        if not (wanted & profile.people):
+            continue
+        if forms is not None and it.form not in forms:
+            continue
+        seen.add(it.group_key)
+        dtos.append(_item_dto(row, it, server_id))
+    total = len(dtos)
+    end = None if limit is None else start_index + limit
+    return BaseItemDtoQueryResult(
+        Items=dtos[start_index:end],
+        TotalRecordCount=total,
+        StartIndex=start_index,
+    )
 
 
 async def _resolve_playback_episode(
@@ -1209,6 +1280,8 @@ async def items_latest(
         start_index=0,
         limit=None,
         genre_ids=None,
+        person_ids=None,
+        include_item_types=None,
     )
     return result.Items
 
@@ -1226,6 +1299,8 @@ async def user_items_listing(
     start_index: int = Query(default=0, alias="startIndex"),
     limit: int | None = Query(default=None),
     genre_ids: str | None = Query(default=None, alias="genreIds"),
+    person_ids: str | None = Query(default=None, alias="PersonIds"),
+    include_item_types: str | None = Query(default=None, alias="includeItemTypes"),
 ) -> BaseItemDtoQueryResult:
     """Server-style spelling of the library listing (Switchfin).
 
@@ -1234,7 +1309,8 @@ async def user_items_listing(
     ``/Items`` the SDK would use. Same wire dto, same row/hierarchy
     lookup as ``items_listing`` — including the ``searchTerm`` search
     surface (ticket #106: the SDK's ``getItems({searchTerm})`` spells
-    exactly this URL); registered after ``Resume``/``Latest`` so those
+    exactly this URL) and the person-page ``PersonIds`` filmography
+    (spec #272); registered after ``Resume``/``Latest`` so those
     literal segments win over this parameterized route.
     """
     return await items_listing(
@@ -1244,6 +1320,8 @@ async def user_items_listing(
         start_index=start_index,
         limit=limit,
         genre_ids=genre_ids,
+        person_ids=person_ids,
+        include_item_types=include_item_types,
     )
 
 

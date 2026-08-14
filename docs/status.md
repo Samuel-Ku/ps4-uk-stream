@@ -146,6 +146,19 @@ boundary validation is `fullmatch` everywhere; uakino movies without a
   viewer's playback history. Test counts: 1129 passing (was 1109;
   +20 — Similar profile tests, «Нові серії» builder/view tests,
   SnapshotStore unit + cold-start wire tests).
+- **Netflix parity round 3 (spec #272, 2026-08-14).** (1) The person
+  page works: the Items route honors `PersonIds` and matches against
+  the #252 profile store's people, returning the person's movies and
+  series from the home snapshot (filtered by `includeItemTypes`, the
+  client splits films/series) — no new scraping, unknown person or
+  cold store is a tolerant empty. (2) «Нещодавно переглянуто» sits at
+  position 4 of home (after «Нові серії», before «Популярні зараз»):
+  the most recently seen items, active AND finished — finished titles
+  leave the resume shelf but stay browsable here, via a new finished-
+  history section in the resume state file. Test counts: 1142 passing
+  (was 1129; +13 — PersonIds filmography wire tests, «Нещодавно
+  переглянуто» builder + view + finished-included tests, finished-
+  history store tests).
 
 Run the backend:
 

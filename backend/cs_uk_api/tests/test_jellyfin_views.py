@@ -632,6 +632,132 @@ def test_items_similar_cold_profiles_fall_back_to_genres(client: TestClient) -> 
     names = {i["Name"] for i in r.json()["Items"]}
     assert names == {"Війна", "Інтерстеллар"}
 
+
+def _filmography_seed() -> _ViewsStub:
+    """Movies + series whose profiles carry people (spec #272)."""
+    return _ViewsStub(
+        "animeon",
+        newest_section="page",
+        newest=[
+            _item("animeon", "Фільм А", "movie", 2021, n="1", poster=_POSTER_MOVIE),
+            _item("animeon", "Серіал Б", "series", 2022, n="2", poster=_POSTER_SERIES),
+            _item("animeon", "Фільм В", "movie", 2019, n="3", poster=_POSTER_MOVIE),
+        ],
+        sections=(
+            Section(id="movie", title="Фільми", form="movie"),
+            Section(id="series", title="Серіали", form="series"),
+        ),
+        by_section={
+            "movie": [_item("animeon", "Фільм А", "movie", 2021, n="1", poster=_POSTER_MOVIE)],
+            "series": [_item("animeon", "Серіал Б", "series", 2022, n="2", poster=_POSTER_SERIES)],
+        },
+    )
+
+
+def test_items_person_ids_returns_filmography(client: TestClient) -> None:
+    """#272: the person page's ``PersonIds`` query returns every
+    home-snapshot group whose warm profile carries the person — the
+    filmography, as Movie/Series cards."""
+    import cs_uk_api.catalog_state as cs
+    from cs_uk_api.recommend import ItemProfile
+
+    PROVIDERS["animeon"] = _filmography_seed()
+    _auth(client)
+    home = client.get("/api/home").json()
+    gk = {i["title"]: i["group_key"] for r in home["rows"] for i in r["items"]}
+    cs._profiles.clear()
+    cs._profiles[gk["Фільм А"]] = ItemProfile(
+        genres=frozenset(), people=frozenset(["денис вілленів"]), year=2021, form="movie", styles=frozenset()
+    )
+    cs._profiles[gk["Серіал Б"]] = ItemProfile(
+        genres=frozenset(), people=frozenset(["денис вілленів"]), year=2022, form="series", styles=frozenset()
+    )
+    try:
+        r = client.get(
+            "/Items",
+            params={"PersonIds": "animeon:actor:Денис Вілленів"},
+            headers={"X-Emby-Token": TOKEN},
+        )
+        assert r.status_code == 200
+        names = {i["Name"] for i in r.json()["Items"]}
+        assert names == {"Фільм А", "Серіал Б"}
+        assert all(i["Type"] in ("Movie", "Series") for i in r.json()["Items"])
+    finally:
+        cs._profiles.clear()
+
+
+def test_items_person_ids_respects_include_item_types(client: TestClient) -> None:
+    """#272: the client's person page splits films and series via
+    ``IncludeItemTypes`` — each section returns only its form."""
+    import cs_uk_api.catalog_state as cs
+    from cs_uk_api.recommend import ItemProfile
+
+    PROVIDERS["animeon"] = _filmography_seed()
+    _auth(client)
+    home = client.get("/api/home").json()
+    gk = {i["title"]: i["group_key"] for r in home["rows"] for i in r["items"]}
+    cs._profiles.clear()
+    cs._profiles[gk["Фільм А"]] = ItemProfile(
+        genres=frozenset(), people=frozenset(["денис вілленів"]), year=2021, form="movie", styles=frozenset()
+    )
+    cs._profiles[gk["Серіал Б"]] = ItemProfile(
+        genres=frozenset(), people=frozenset(["денис вілленів"]), year=2022, form="series", styles=frozenset()
+    )
+    try:
+        movies = client.get(
+            "/Items",
+            params={"PersonIds": "animeon:actor:Денис Вілленів", "includeItemTypes": "Movie"},
+            headers={"X-Emby-Token": TOKEN},
+        ).json()
+        assert [i["Name"] for i in movies["Items"]] == ["Фільм А"]
+
+        series = client.get(
+            "/Items",
+            params={"PersonIds": "animeon:actor:Денис Вілленів", "includeItemTypes": "Series"},
+            headers={"X-Emby-Token": TOKEN},
+        ).json()
+        assert [i["Name"] for i in series["Items"]] == ["Серіал Б"]
+    finally:
+        cs._profiles.clear()
+
+
+def test_items_person_ids_unknown_or_cold_is_empty(client: TestClient) -> None:
+    """#272: an unknown person OR a cold profile store is the tolerant
+    empty result, never an error."""
+    import cs_uk_api.catalog_state as cs
+
+    PROVIDERS["animeon"] = _filmography_seed()
+    _auth(client)
+    cs._profiles.clear()
+
+    # Cold store (no profiles at all).
+    cold = client.get(
+        "/Items",
+        params={"PersonIds": "animeon:actor:Денис Вілленів"},
+        headers={"X-Emby-Token": TOKEN},
+    )
+    assert cold.status_code == 200
+    assert cold.json() == {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
+
+    # Unknown person with warm profiles for other people.
+    from cs_uk_api.recommend import ItemProfile
+
+    home = client.get("/api/home").json()
+    gk = {i["title"]: i["group_key"] for r in home["rows"] for i in r["items"]}
+    cs._profiles[gk["Фільм А"]] = ItemProfile(
+        genres=frozenset(), people=frozenset(["хтось інший"]), year=2021, form="movie", styles=frozenset()
+    )
+    try:
+        unknown = client.get(
+            "/Items",
+            params={"PersonIds": "animeon:actor:Ніхто"},
+            headers={"X-Emby-Token": TOKEN},
+        )
+        assert unknown.status_code == 200
+        assert unknown.json() == {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
+    finally:
+        cs._profiles.clear()
+
 def test_detail_genres_fall_back_to_snapshot_card(client: TestClient) -> None:
     """#219: the detail DTO's Genres fall back to the snapshot card's
     genres when the resolved content page carries none — the genre row
@@ -1030,6 +1156,98 @@ def test_new_episodes_row_is_a_view(client: TestClient) -> None:
         items = _items(client, view["Id"])
         assert {i["Name"] for i in items} == {"Серіал А"}
         assert all(i["Type"] == "Series" for i in items)
+    finally:
+        clear_playback()
+
+
+def test_recently_watched_row_is_a_view(client: TestClient) -> None:
+    """#272 AC: a recorded playback item forms the «Нещодавно
+    переглянуто» row at position 4 and its card opens through the
+    existing view/items route."""
+
+    from cs_uk_api.catalog_state import clear_playback, record_playback
+
+    PROVIDERS["animeon"] = _ViewsStub(
+        "animeon",
+        newest_section="page",
+        newest=[
+            _item("animeon", "Фільм А", "movie", 2021, n="1", poster=_POSTER_MOVIE),
+            _item("animeon", "Фільм Б", "movie", 2022, n="2", poster=_POSTER_MOVIE),
+        ],
+        sections=(Section(id="movie", title="Фільми", form="movie"),),
+        by_section={
+            "movie": [
+                _item("animeon", "Фільм А", "movie", 2021, n="1", poster=_POSTER_MOVIE),
+                _item("animeon", "Фільм Б", "movie", 2022, n="2", poster=_POSTER_MOVIE),
+            ]
+        },
+    )
+    _auth(client)
+    clear_playback()
+    try:
+        # The viewer watches Фільм Б (its g2: group key is the wire id).
+        home = client.get("/api/home").json()
+        gk = {i["title"]: i["group_key"] for r in home["rows"] for i in r["items"]}
+        record_playback(gk["Фільм Б"], 1_000)
+        _home_cache.clear()
+
+        home = client.get("/api/home").json()
+        row_types = [r["type"] for r in home["rows"]]
+        assert "recently_watched" in row_types
+        # Position 4 in the decided order: after the form-split recent
+        # rows (and «Нові серії»/«Популярні зараз» when present), before
+        # the type rows — this movie-only seed has no series/popular, so
+        # it sits right after the movie recent row.
+        assert row_types.index("recently_watched") == row_types.index("recent_movie") + 1
+        rw = next(r for r in home["rows"] if r["type"] == "recently_watched")
+        assert rw["title"] == "Нещодавно переглянуто"
+        assert [i["title"] for i in rw["items"]] == ["Фільм Б"]
+
+        views = _views(client)
+        view = next(v for v in views if v["Name"] == "Нещодавно переглянуто")
+        items = _items(client, view["Id"])
+        assert {i["Name"] for i in items} == {"Фільм Б"}
+    finally:
+        clear_playback()
+
+
+def test_recently_watched_row_includes_finished(client: TestClient) -> None:
+    """#272: a FINISHED item (>=95% of runtime, gone from the resume
+    shelf) still appears in «Нещодавно переглянуто» — the row is the
+    browsable history, not the continue-watching shelf."""
+
+    from cs_uk_api.catalog_state import clear_playback, record_playback
+
+    PROVIDERS["animeon"] = _ViewsStub(
+        "animeon",
+        newest_section="page",
+        newest=[
+            _item("animeon", "Фільм А", "movie", 2021, n="1", poster=_POSTER_MOVIE),
+        ],
+        sections=(Section(id="movie", title="Фільми", form="movie"),),
+        by_section={
+            "movie": [
+                _item("animeon", "Фільм А", "movie", 2021, n="1", poster=_POSTER_MOVIE),
+            ]
+        },
+    )
+    _auth(client)
+    clear_playback()
+    try:
+        home = client.get("/api/home").json()
+        gk = {i["title"]: i["group_key"] for r in home["rows"] for i in r["items"]}
+        # Finished: position at >=95% of the runtime.
+        record_playback(gk["Фільм А"], 950, runtime_ticks=1000)
+        _home_cache.clear()
+
+        # Gone from Resume, present in «Нещодавно переглянуто».
+        resume = client.get(
+            "/Users/user1/Items/Resume", headers={"X-Emby-Token": TOKEN}
+        ).json()
+        assert [i["Name"] for i in resume["Items"]] == []
+        home = client.get("/api/home").json()
+        rw = next(r for r in home["rows"] if r["type"] == "recently_watched")
+        assert [i["title"] for i in rw["items"]] == ["Фільм А"]
     finally:
         clear_playback()
 

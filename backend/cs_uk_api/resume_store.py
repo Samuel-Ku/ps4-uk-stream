@@ -85,6 +85,10 @@ class ResumeStore:
         self._now = now
         self._items: dict[str, dict[str, int | float]] = {}
         self._queries: list[str] = []
+        # Finished-history (spec #272): item_id -> finished_at, the items
+        # that crossed the >=95% threshold. They leave the shelves but
+        # stay browsable in «Нещодавно переглянуто».
+        self._finished: dict[str, float] = {}
         self._timer: asyncio.TimerHandle | None = None
         self._load()
 
@@ -137,6 +141,15 @@ class ResumeStore:
             queries = payload.get("queries", [])
             if isinstance(queries, list):
                 self._queries = [q for q in queries if isinstance(q, str)][:MAX_QUERIES]
+            # v2 finished-history section (spec #272) — same additive
+            # rule: a v1/v2 file without it just has no finished items.
+            finished = payload.get("finished")
+            if isinstance(finished, dict):
+                self._finished = {
+                    k: float(v)
+                    for k, v in finished.items()
+                    if isinstance(k, str) and isinstance(v, (int, float))
+                }
         except Exception:  # a bad file must never crash startup
             log.warning("resume state unreadable, starting empty: %s", self._path, exc_info=True)
 
@@ -155,7 +168,12 @@ class ResumeStore:
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as fh:
                     json.dump(
-                        {"v": RESUME_VERSION, "items": self._items, "queries": self._queries},
+                        {
+                            "v": RESUME_VERSION,
+                            "items": self._items,
+                            "queries": self._queries,
+                            "finished": self._finished,
+                        },
                         fh,
                         ensure_ascii=False,
                     )
@@ -197,7 +215,10 @@ class ResumeStore:
         # auto-finished.
         runtime = runtime_ticks if runtime_ticks is not None else existing.get("runtime_ticks")
         if runtime is not None and position_ticks >= FINISHED_FRACTION * runtime:
+            # Finished (#249): leaves the shelves — but the finished
+            # history (spec #272) keeps it browsable.
             self._items.pop(item_id, None)
+            self._finished[item_id] = self._now()
             self._schedule_write(immediate=flush)
             return
         entry = dict(existing)
@@ -306,6 +327,18 @@ class ResumeStore:
         )
         return {key: self._pos_runtime(entry) for key, entry in ordered[:limit]}
 
+    def history(self, limit: int = 20) -> list[str]:
+        """item_ids in most-recently-seen order, active AND finished
+        (spec #272 «Нещодавно переглянуто»): the union of the resume
+        entries (by ``updated_at``) and the finished history (by
+        ``finished_at``), newest first, capped at ``limit``."""
+        timed: list[tuple[float, str]] = [
+            (float(entry.get("updated_at", 0.0)), key) for key, entry in self._items.items()
+        ]
+        timed += [(stamp, key) for key, stamp in self._finished.items()]
+        timed.sort(key=lambda kv: (kv[0], kv[1]), reverse=True)
+        return [key for _stamp, key in timed[:limit]]
+
     def record_query(self, query: str) -> None:
         """Record a search query (spec #252): newest first, deduped (a
         repeat moves to the front), bounded at ``MAX_QUERIES``. Blank
@@ -324,9 +357,11 @@ class ResumeStore:
         return list(self._queries)
 
     def clear(self) -> None:
-        """Drop all recorded positions + queries (test isolation, #214)."""
+        """Drop all recorded positions + queries + finished history (test
+        isolation, #214)."""
         if self._timer is not None:
             self._timer.cancel()
             self._timer = None
         self._items.clear()
         self._queries.clear()
+        self._finished.clear()

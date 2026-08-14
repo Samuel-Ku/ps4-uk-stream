@@ -297,6 +297,58 @@ def test_stopped_report_flushed_immediately(client: TestClient, tmp_path, monkey
         catalog_state._resume_store = original
 
 
+# -------------------------------------------------- finished history (#272)
+
+
+def test_store_finished_lands_in_history(tmp_path) -> None:
+    """#272: a report at >=95% of the runtime leaves the shelves BUT is
+    recorded in the finished history — the «Нещодавно переглянуто»
+    signal the resume shelf deliberately drops."""
+    store = _fresh(str(tmp_path / "playback.json"))
+    store.record("g2:abc", 950, runtime_ticks=1000)
+    assert store.positions() == {}
+    assert "g2:abc" in store.history()
+
+
+def test_store_history_merges_active_and_finished_most_recent_first(
+    tmp_path,
+) -> None:
+    """#272: history() is the UNION of the active resume entries and the
+    finished history, ordered by recency — the row lists everything the
+    viewer recently watched, finished titles included."""
+    state = {"t": 100.0}
+
+    def now() -> float:
+        state["t"] += 1.0
+        return state["t"]
+
+    store = ResumeStore(str(tmp_path / "playback.json"), now=now)
+    store.record("e1", 100)  # active, t=101
+    store.record("e2", 950, runtime_ticks=1000)  # finished, t=102
+    store.record("e3", 200)  # active, t=103
+    assert store.history() == ["e3", "e2", "e1"]
+
+
+def test_store_history_round_trips_across_restart(tmp_path) -> None:
+    """#272: the finished history persists — a fresh store over the same
+    file (restart) still reports it."""
+    path = str(tmp_path / "playback.json")
+    first = _fresh(path)
+    first.record("g2:abc", 950, runtime_ticks=1000)
+    first.flush()
+    second = _fresh(path)
+    assert "g2:abc" in second.history()
+
+
+def test_store_history_capped_at_limit(tmp_path) -> None:
+    """#272: history() honors the caller's limit (the row asks for 20)."""
+    store = _fresh(str(tmp_path / "playback.json"))
+    for i in range(25):
+        store.record(f"g2:{i}", 100 + i)
+    assert len(store.history(limit=20)) == 20
+    assert len(store.history()) == 20
+
+
 @pytest.fixture()
 def client() -> TestClient:
     from cs_uk_api import main as main_mod

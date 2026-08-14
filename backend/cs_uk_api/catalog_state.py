@@ -342,6 +342,21 @@ def _watched_group_keys() -> set[str]:
     }
 
 
+def _history_group_keys(limit: int = 20) -> list[str]:
+    """Ordered group keys of the playback history (spec #272), most
+    recent first, active AND finished — the «Нещодавно переглянуто»
+    row's input."""
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for item_id in recent_history_entries(limit):
+        gk = episode_group_key(item_id)
+        if gk is None or gk in seen:
+            continue
+        seen.add(gk)
+        resolved.append(gk)
+    return resolved
+
+
 def _cache_home(
     newest: Mapping[str, Sequence[SearchResult]],
     popular: Mapping[str, Sequence[SearchResult]],
@@ -362,6 +377,7 @@ def _cache_home(
             by_type=type_lists,
             newest_limit=_config.SETTINGS.home_row_limit,
             watched_series=_watched_group_keys(),
+            history_groups=_history_group_keys(),
         )
     )
     resp = HomeResponse(rows=rows)
@@ -777,6 +793,12 @@ def recent_playback_entries(limit: int = 20) -> dict[str, tuple[int, int | None]
     updated first, capped at ``limit`` — the resume row (ticket #249),
     with the runtime for the wire bar (#250)."""
     return _store().recent_entries(limit)
+
+
+def recent_history_entries(limit: int = 20) -> list[str]:
+    """item_ids in most-recently-seen order, active AND finished
+    (spec #272 «Нещодавно переглянуто»)."""
+    return _store().history(limit)
 
 
 def clear_playback() -> None:

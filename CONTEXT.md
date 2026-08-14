@@ -297,6 +297,17 @@ whose content page carries signal is no longer stuck with an empty
 shelf. A cold profile store falls back to the pre-#267
 genre-matching shelf.
 
+The person page's filmography (spec #272): the Items route honors
+`PersonIds` (comma-separated; the client's person page sends a single
+provider-scoped person key whose final path segment is the name),
+matching case-insensitively against the profile store's people and
+returning the matching home-snapshot groups as Movie/Series cards,
+filtered by `includeItemTypes` the way the client asks (Movie|Series),
+deduped by group key. An unknown person or a cold profile store is the
+tolerant empty result. No new scraping — the #252 profiles already
+carry people per title. Person portraits stay placeholder (accepted,
+no upstream data).
+
 ### Home composition (spec #263)
 
 «Новинки» was retired (2026-08-14) in favour of a Netflix-style home:
@@ -314,6 +325,14 @@ genre-matching shelf.
   history, ranked by listing position, ≤20, omitted when empty. Fed
   `watched_series` = the episode wire ids' merged groups from the
   persisted resume store (`_watched_group_keys`).
+- **«Нещодавно переглянуто»** (`recently_watched`, spec #272) —
+  position 4, after «Нові серії», before «Популярні зараз»: the most
+  recently seen items, active AND finished (the resume shelf drops
+  finished titles; this row keeps them browsable), most recent first,
+  ≤20, omitted when empty. Fed by the playback store's finished
+  history (`ResumeStore._finished`, spec #272) plus the active
+  entries, resolved against every collected listing (a finished item
+  is usually off the newest page by then).
 - **Genre rails** — the top-6 genres by profile-store coverage across
   the snapshot become rows (`genre:<slug>` view kinds, Ukrainian
   labels, ≤20 items each, recency-ranked, deduped by group key);

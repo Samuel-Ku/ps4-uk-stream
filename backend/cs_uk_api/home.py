@@ -102,6 +102,12 @@ GENRE_RAILS_LIMIT = 20
 #: form-split recent rows, before «Популярні зараз»).
 _NEW_EPISODES_ROW = ("Нові серії", "new_episodes")
 
+#: «Нещодавно переглянуто» (spec #272): the most recently seen items —
+#: active AND finished playback-history groups, most recent first,
+#: capped at the standard row cap, omitted when there is no history.
+#: Position 4 (after «Нові серії», before «Популярні зараз»).
+_RECENTLY_WATCHED_ROW = ("Нещодавно переглянуто", "recently_watched")
+
 
 def round_robin_dedup(
     by_provider: Mapping[str, Sequence[SearchResult]],
@@ -258,6 +264,7 @@ def build_home_rows(
     by_type: Mapping[str, Mapping[str, Sequence[SearchResult]]],
     newest_limit: int = 20,
     watched_series: AbstractSet[str] | None = None,
+    history_groups: Sequence[str] | None = None,
 ) -> list[HomeRow]:
     """Assemble the HomeResponse rows from pre-collected per-provider data.
 
@@ -282,6 +289,12 @@ def build_home_rows(
     dedicated row ranked by listing position, omitted when empty. With
     ``watched_series=None`` the row never appears (the pure builder's
     default keeps every existing caller's output unchanged).
+
+    Position 4 is «Нещодавно переглянуто» (spec #272): when
+    ``history_groups`` (ordered group keys, most recent first — active
+    AND finished, from the playback store) is provided, the matching
+    groups become a row in that order, capped, omitted when empty. With
+    ``history_groups=None`` the row never appears.
 
     Within each row, items are round-robin-deduped and capped at
     ``newest_limit`` (the spec's «Новинки» ceiling, reused for the
@@ -349,6 +362,45 @@ def build_home_rows(
                     title=label,
                     type=row_type,
                     items=aggregate_by_group_key(watched_items),
+                )
+            )
+
+    # «Нещодавно переглянуто» (spec #272) — position 4: the history
+    # groups (most recent first) resolved against EVERY collected
+    # listing (newest + type sections — a finished item is likely NOT
+    # in the newest page anymore), deduped, capped, omitted when empty
+    # or when no history was provided.
+    if history_groups is not None and history_groups:
+        known: dict[str, SearchResult] = {}
+        for listing in list(newest.values()) + [
+            items_src for per_type in by_type.values() for items_src in per_type.values()
+        ]:
+            for cand in listing:
+                known.setdefault(item_group_key(cand), cand)
+        picked = [known[gk] for gk in history_groups if gk in known][:newest_limit]
+        if picked:
+            # Project SearchResult → HomeItem in the history's recency
+            # order (NOT round-robin — the row IS the recency order).
+            history_items = [
+                HomeItem(
+                    group_key=item_group_key(it),
+                    title=it.title,
+                    year=it.year,
+                    poster=it.poster,
+                    form=it.form,
+                    styles=it.styles,
+                    genres=list(it.genres),
+                    providers=[it.provider],
+                    member_keys=[item_group_key(it)],
+                )
+                for it in picked
+            ]
+            label, row_type = _RECENTLY_WATCHED_ROW
+            rows.append(
+                HomeRow(
+                    title=label,
+                    type=row_type,
+                    items=aggregate_by_group_key(history_items),
                 )
             )
 

@@ -1208,6 +1208,17 @@ One manual checklist line for the on-device pass — deliberately NOT a
       «Популярні зараз») and its card opens like any other row (#270,
       `new_episodes` view; wire-verified).
 
+- [ ] Netflix parity round 3 (spec #272): on a detail screen, tap an
+      actor on the People rail — the person page lists their movies and
+      series (split by the client's `includeItemTypes`; the facade
+      matches `PersonIds` against the profile store, wire-verified on
+      the backend). Portraits stay placeholder (accepted).
+- [ ] Watch any item to the end (≥95% of runtime): it leaves
+      «Продовжити перегляд» but «Нещодавно переглянуто» still shows it
+      at home position 4 (after «Нові серії», before «Популярні
+      зараз»), and tapping the card opens the item (#272; wire-
+      verified finished-included row + view).
+
 - [x] User state (spec #257, verified 2026-08-14): on a detail screen tap
       the heart — it lights and stays lit after an app relaunch (toggle
       answers UserDataResult, mark persists in `user-state.json`, and the
