@@ -104,6 +104,7 @@ class FakeAdb:
         #: a sidebar-folders tap makes the next screenshot the Views grid
         self._views_after_folder_tap = views_after_folder_tap
         self._folder_tapped = False
+        self.swipes: list[tuple[int, int, int, int, int]] = []
 
     def available(self) -> bool:
         return self._available
@@ -116,6 +117,9 @@ class FakeAdb:
 
     def back(self) -> None:
         self.backs += 1
+
+    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int) -> None:
+        self.swipes.append((x1, y1, x2, y2, duration_ms))
 
     def restart_app(self) -> None:
         self.restarts += 1
@@ -971,12 +975,17 @@ def test_series_play_retries_season_tap_when_detail_not_ready(
 ) -> None:
     """#205/B13: a series-branch tap that lands while the detail is still
     cold-scraping fires nothing; the runner re-taps until the request
-    fires instead of timing out after a single attempt."""
+    fires instead of timing out after a single attempt.
+
+    The per-attempt observation window is 10 s (sized for the real
+    tap -> PlaybackInfo -> stream -> Playing chain, ~2.3 s on device), so
+    the play timeout here must exceed one window for the retap to occur
+    inside the deadline."""
     tap_lines = {k: list(v) for k, v in FULL_TAP_LINES.items()}
     tap_lines[TAPS["first_season"]] = []  # the fake controls the line
     adb = _DelayedSeriesAdb(lines=[], tap_lines=tap_lines)
     runner, _, adb = make_harness(
-        tmp_path, probe="Series", adb=adb, play_timeout_s=3.0
+        tmp_path, probe="Series", adb=adb, play_timeout_s=12.0
     )
     results = runner.run()
 

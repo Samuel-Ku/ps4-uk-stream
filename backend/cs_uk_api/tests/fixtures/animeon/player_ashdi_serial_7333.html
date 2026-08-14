@@ -1,0 +1,451 @@
+<html>
+	<head>
+<!-- Global site tag (gtag.js) - Google Analytics -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-7L6XV4FCMY"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-7L6XV4FCMY');
+</script>
+
+		<style>
+		  html {height: 100%; overflow: hidden;} body {height: 100%; margin: 0; padding: 0; overflow: hidden; background: black;}
+		  .invisible {display:none !important}
+		</style>
+		<script src="https://ashdi.vip/player/playerjs.js?v=2.5" type="text/javascript"></script>
+	</head>
+	<body>
+		<div id="videoplayer1477" style="width:100%;height:100%"></div></div>
+		<script type="text/javascript">
+            var player = null;
+            var playerjs_vast_status = '';
+            var playerjs_vast_num = 0;
+            var ashdi_session_id = Date.now() + '_' + Math.random().toString(36).slice(2);
+            var ashdi_ad_seq = 0;
+            var ashdi_player_init_sent = false;
+            var ashdi_video_play_sent = false;
+            var ashdi_vast_error_count = 0;
+            var ashdi_vast_error_seen = {};
+            var ashdi_vast_context = {};
+            var ashdi_video_error_sent = false;
+            var ashdi_modads_debug = window.location.search.indexOf('modads_debug=1') !== -1;
+            var ashdi_ad_plan = {"preroll_1":[{"slot":"preroll_1","campaign_id":5,"campaign_name":"Adwise ASHDI Preroll 1","partner_name":"Adwise","configured_vast_id":"adwise7271","base_vast_id":"adwise7271"},{"slot":"preroll_1","campaign_id":44,"campaign_name":"KINGS ASHDI PREROLL","partner_name":"KINGS ADS","configured_vast_id":"vast7260","base_vast_id":"vast7260"},{"slot":"preroll_1","campaign_id":12,"campaign_name":"ViewTraff ASHDI Preroll","partner_name":"ViewTraff","configured_vast_id":"vast7252","base_vast_id":"vast7252"},{"slot":"preroll_1","campaign_id":7,"campaign_name":"Adwise ASHDI Extra 1","partner_name":"Adwise","configured_vast_id":"adwise12050","base_vast_id":"adwise12050"},{"slot":"preroll_1","campaign_id":45,"campaign_name":"VADIDEO NOT UA PREROLL","partner_name":"VADIDEO","configured_vast_id":"vadideo12220","base_vast_id":"vadideo12220"},{"slot":"preroll_1","campaign_id":15,"campaign_name":"WIZARDS ASHDI Preroll","partner_name":"WIZARDS","configured_vast_id":"vast12054","base_vast_id":"vast12054"}],"preroll_2":[{"slot":"preroll_2","campaign_id":6,"campaign_name":"Adwise ASHDI Preroll 2","partner_name":"Adwise","configured_vast_id":"adwise7272","base_vast_id":"adwise7272"},{"slot":"preroll_2","campaign_id":44,"campaign_name":"KINGS ASHDI PREROLL","partner_name":"KINGS ADS","configured_vast_id":"vast7260","base_vast_id":"vast7260"},{"slot":"preroll_2","campaign_id":12,"campaign_name":"ViewTraff ASHDI Preroll","partner_name":"ViewTraff","configured_vast_id":"vast7252","base_vast_id":"vast7252"},{"slot":"preroll_2","campaign_id":8,"campaign_name":"Adwise ASHDI Extra 2","partner_name":"Adwise","configured_vast_id":"adwise12051","base_vast_id":"adwise12051"},{"slot":"preroll_2","campaign_id":45,"campaign_name":"VADIDEO NOT UA PREROLL","partner_name":"VADIDEO","configured_vast_id":"vadideo12220","base_vast_id":"vadideo12220"},{"slot":"preroll_2","campaign_id":15,"campaign_name":"WIZARDS ASHDI Preroll","partner_name":"WIZARDS","configured_vast_id":"vast12054","base_vast_id":"vast12054"}],"midroll":[{"slot":"midroll","campaign_id":11,"campaign_name":"Adwise ASHDI Midroll","partner_name":"Adwise","configured_vast_id":"adwise11705","base_vast_id":"adwise11705"}]};
+
+            function AshdiAdblockValue() {
+                try {
+                    if (player && player.api) {
+                        return player.api("adblock") ? 1 : 0;
+                    }
+                } catch(e) {}
+                return 0;
+            }
+
+            function AshdiNormalizeVastId(value) {
+                value = value || '';
+                value = String(value).trim();
+                return value.replace(/^id:\s*/i, '');
+            }
+
+            function AshdiResolveAdMeta(adType, adSeq, reportedVastId) {
+                var slot = '';
+                var vastId = AshdiNormalizeVastId(reportedVastId);
+
+                if (adType === 'preroll') {
+                    slot = adSeq === 2 ? 'preroll_2' : 'preroll_1';
+                } else if (adType === 'midroll') {
+                    slot = 'midroll';
+                }
+
+                var list = slot && ashdi_ad_plan && ashdi_ad_plan[slot] ? ashdi_ad_plan[slot] : [];
+                var fallback = list && list.length === 1 ? list[0] : null;
+
+                for (var i = 0; i < list.length; i++) {
+                    if (AshdiNormalizeVastId(list[i].configured_vast_id) === vastId || AshdiNormalizeVastId(list[i].base_vast_id) === vastId) {
+                        fallback = list[i];
+                        break;
+                    }
+                }
+
+                return {
+                    slot: slot,
+                    campaign_id: fallback ? (parseInt(fallback.campaign_id || 0, 10) || 0) : 0,
+                    campaign_name: fallback ? (fallback.campaign_name || '') : '',
+                    partner_name: fallback ? (fallback.partner_name || '') : '',
+                    configured_vast_id: fallback ? (fallback.configured_vast_id || '') : ''
+                };
+            }
+
+            function AshdiParseVastInfo(info) {
+                if (!info || typeof info !== 'string') {
+                    return null;
+                }
+
+                try {
+                    return JSON.parse(info);
+                } catch(e) {}
+
+                return null;
+            }
+
+            function AshdiVastAdTypeFromString(value) {
+                value = (value === undefined || value === null) ? '' : String(value).toLowerCase();
+
+                if (value.indexOf('midroll') !== -1) {
+                    return 'midroll';
+                }
+
+                if (value.indexOf('preroll') !== -1) {
+                    return 'preroll';
+                }
+
+                if (value.indexOf('postroll') !== -1) {
+                    return 'postroll';
+                }
+
+                return '';
+            }
+
+            function AshdiUrlHost(value) {
+                value = (value === undefined || value === null) ? '' : String(value).trim();
+
+                if (value === '') {
+                    return '';
+                }
+
+                try {
+                    return (new URL(value, document.location.href)).host || '';
+                } catch(e) {}
+
+                var match = value.match(/^https?:\/\/([^\/?#]+)/i);
+                return match ? match[1] : '';
+            }
+
+            function AshdiVastIdFromInfo(infoObj) {
+                if (!infoObj || !infoObj.id) {
+                    return '';
+                }
+
+                var rawAdId = String(infoObj.id).trim();
+                var parts = rawAdId.split('->');
+
+                if (parts.length > 1) {
+                    return (parts[0] || '').trim();
+                }
+
+                if (/^(pre|mid|post|pause)roll_\d+/i.test(rawAdId)) {
+                    return '';
+                }
+
+                if (rawAdId === 'null') {
+                    return '';
+                }
+
+                return rawAdId;
+            }
+
+            function AshdiRememberVastLoad(info) {
+                var adType = AshdiVastAdTypeFromString(info);
+
+                if (!adType) {
+                    return;
+                }
+
+                ashdi_vast_context = {
+                    ad_type: adType,
+                    error_text: 'load:' + String(info)
+                };
+            }
+
+            function AshdiRememberVastUrl(info, type) {
+                var value = (info === undefined || info === null) ? '' : String(info).trim();
+
+                if (value === '') {
+                    return;
+                }
+
+                if (!ashdi_vast_context || typeof ashdi_vast_context !== 'object') {
+                    ashdi_vast_context = {};
+                }
+
+                var host = AshdiUrlHost(value);
+                var key = type === 'wrapper' ? 'wrapper_url' : 'vast_url';
+                var hostKey = type === 'wrapper' ? 'wrapper_host' : 'vast_url_host';
+
+                ashdi_vast_context[key] = value;
+                ashdi_vast_context[hostKey] = host;
+
+                if (!ashdi_vast_context.error_text) {
+                    ashdi_vast_context.error_text = type + ':' + value;
+                }
+            }
+
+            function AshdiRememberVastContext(info) {
+                var infoObj = AshdiParseVastInfo(info);
+
+                if (!infoObj) {
+                    return;
+                }
+
+                var adType = infoObj.is || '';
+                var vastId = AshdiVastIdFromInfo(infoObj);
+
+                ashdi_vast_context = {
+                    ad_type: adType,
+                    vast_id: vastId,
+                    ad_system: infoObj.system || '',
+                    vast_url: infoObj.url || ashdi_vast_context.vast_url || '',
+                    vast_url_host: AshdiUrlHost(infoObj.url || ashdi_vast_context.vast_url || ''),
+                    wrapper_url: ashdi_vast_context.wrapper_url || '',
+                    wrapper_host: ashdi_vast_context.wrapper_host || '',
+                    error_code: ashdi_vast_context.error_code || '',
+                    error_text: info || ''
+                };
+            }
+
+            function AshdiRememberVastErrorCode(info) {
+                if (info !== undefined && info !== null && String(info).trim() !== '') {
+                    ashdi_vast_context.error_code = String(info).trim();
+                }
+            }
+
+            function AshdiSendVastError(info) {
+                if (ashdi_vast_error_count >= 20) {
+                    return;
+                }
+
+                var adType = ashdi_vast_context.ad_type || (typeof info === 'string' ? info : '') || 'unknown';
+                var vastId = ashdi_vast_context.vast_id || '';
+                var sourceHost = ashdi_vast_context.wrapper_host || ashdi_vast_context.vast_url_host || '';
+                var adSystem = ashdi_vast_context.ad_system || (sourceHost ? ('host:' + sourceHost).substring(0, 80) : '');
+                var adMeta = AshdiResolveAdMeta(adType, 0, vastId);
+                var errorCode = ashdi_vast_context.error_code || '';
+                var key = [adType, vastId, adSystem, errorCode, adMeta.slot, ashdi_vast_context.vast_url || '', ashdi_vast_context.wrapper_url || ''].join('|');
+
+                if (ashdi_vast_error_seen[key]) {
+                    return;
+                }
+
+                ashdi_vast_error_seen[key] = true;
+                ashdi_vast_error_count++;
+
+                AshdiStatsSend('vast_error', {
+                    ad_type: adType || 'unknown',
+                    slot: adMeta.slot,
+                    campaign_id: adMeta.campaign_id,
+                    campaign_name: adMeta.campaign_name,
+                    partner_name: adMeta.partner_name,
+                    configured_vast_id: adMeta.configured_vast_id,
+                    vast_id: vastId,
+                    ad_system: adSystem,
+                    error_text: [
+                        errorCode ? ('code:' + errorCode) : '',
+                        ashdi_vast_context.error_text || info || '',
+                        ashdi_vast_context.vast_url ? ('vast_url:' + ashdi_vast_context.vast_url) : '',
+                        ashdi_vast_context.wrapper_url ? ('wrapper:' + ashdi_vast_context.wrapper_url) : ''
+                    ].filter(Boolean).join(' | ')
+                });
+            }
+
+            function AshdiStatsSend(eventName, extra) {
+                try {
+                    var payload = Object.assign({
+                        event: eventName,
+                        time: Date.now(),
+                        session_id: ashdi_session_id,
+                        referrer: document.referrer || 'direct',
+                        parent_domain: "",
+                        player: document.location.href,
+                        content_id: 1477,
+                        content_type: "serial",
+                        server: 0,
+                        country: "PL",
+                        asn: 5617,
+                        adblock: AshdiAdblockValue()
+                    }, extra || {});
+
+                    fetch('/player/vod-mod/stats_collect.php', {
+                        method: 'POST',
+                        keepalive: true,
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(payload)
+                    }).catch(function(){});
+                } catch(e) {}
+            }
+
+            function PlayerjsEvents(event, id, info) {
+                if (ashdi_modads_debug && (event === 'error' || event === 'loaderror' || (event && event.indexOf('vast_') === 0))) {
+                    console.log('[ASHDI PLAYER EVENT]', event, id, info);
+                }
+
+                if (event === 'init' && !ashdi_player_init_sent) {
+                    ashdi_player_init_sent = true;
+
+                    setTimeout(function() {
+                        AshdiStatsSend('player_init', {
+                            adblock: AshdiAdblockValue()
+                        });
+                    }, 500);
+                }
+
+								if (event === 'play' && !ashdi_video_play_sent) {
+					ashdi_video_play_sent = true;
+
+					setTimeout(function() {
+						AshdiStatsSend('video_play', {
+							adblock: AshdiAdblockValue()
+						});
+
+						if (ashdi_modads_debug) {
+							console.log('[ASHDI ADBLOCK video_play]', {
+								adblock: AshdiAdblockValue(),
+								api_available: !!(player && player.api)
+							});
+						}
+					}, 1800);
+				}
+
+                if ((event === 'loaderror' || event === 'error') && !ashdi_video_error_sent) {
+                    ashdi_video_error_sent = true;
+                    AshdiStatsSend('video_error', {
+                        error_text: info || ''
+                    });
+                }
+
+                if (!event || event.indexOf('vast_') !== 0) {
+                    return;
+                }
+
+                if (event === 'vast_load') {
+                    AshdiRememberVastLoad(info);
+                    return;
+                }
+
+                if (event === 'vast_url') {
+                    AshdiRememberVastUrl(info, 'url');
+                    return;
+                }
+
+                if (event === 'vast_wrapper') {
+                    AshdiRememberVastUrl(info, 'wrapper');
+                    return;
+                }
+
+                if (event === 'vast_empty') {
+                    AshdiRememberVastContext(info);
+                    return;
+                }
+
+                if (event === 'vast_Error') {
+                    AshdiRememberVastErrorCode(info);
+                    return;
+                }
+
+                if (event === 'vast_error') {
+                    AshdiSendVastError(info);
+                    return;
+                }
+
+                if (event == 'vast_complete' || event == 'vast_skip') {
+                    var atype = 'wtf';
+                    var infoObj = null;
+
+                    if (info && typeof info === 'string') {
+                        try {
+                            infoObj = JSON.parse(info);
+                            if (infoObj && infoObj.is) {
+                                atype = infoObj.is;
+                            }
+                        } catch(e) {}
+                    }
+
+                    var shouldsend = false;
+
+                    if (atype === 'preroll' && playerjs_vast_num < 2) {
+                        shouldsend = true;
+                        playerjs_vast_num++;
+                    }
+
+                    if (atype === 'midroll') {
+                        shouldsend = true;
+                    }
+
+                    if (shouldsend) {
+                        ashdi_ad_seq++;
+
+                        var vastId = '';
+                        var creativeId = '';
+                        var adSystem = '';
+                        var adDuration = 0;
+
+                        if (infoObj) {
+                            adSystem = infoObj.system || '';
+                            adDuration = parseInt(infoObj.duration || 0);
+
+                            if (infoObj.id) {
+                                var rawAdId = String(infoObj.id).trim();
+                                var parts = rawAdId.split('->');
+
+                                if (parts.length > 1) {
+                                    vastId = (parts[0] || '').trim();
+                                    creativeId = (parts[1] || '').trim();
+                                } else if (/^(pre|mid|post|pause)roll_\d+/i.test(rawAdId)) {
+                                    creativeId = rawAdId;
+                                    vastId = '';
+                                } else {
+                                    vastId = rawAdId;
+                                }
+                            }
+                        }
+
+                        var adMeta = AshdiResolveAdMeta(atype, ashdi_ad_seq, vastId);
+
+                        AshdiStatsSend('vast_show', {
+                            ad_type: atype,
+                            ad_seq: ashdi_ad_seq,
+                            slot: adMeta.slot,
+                            campaign_id: adMeta.campaign_id,
+                            campaign_name: adMeta.campaign_name,
+                            partner_name: adMeta.partner_name,
+                            configured_vast_id: adMeta.configured_vast_id,
+                            vast_id: vastId,
+                            creative_id: creativeId,
+                            ad_system: adSystem,
+                            ad_duration: adDuration
+                        });
+
+                        try {
+                            fetch('https://base.ashdi.vip/stats/stats_vast.php', {
+                                method: 'POST',
+                                body: JSON.stringify({
+                                    time: Date.now(),
+                                    referrer: document.referrer || 'direct',
+                                    sform: atype,
+                                    player: document.location.href
+                                })
+                            }).catch(function(){});
+                        } catch(e) {}
+                    }
+                }
+            }
+
+
+            player = new Playerjs({
+				id:"videoplayer1477",
+				file:'[{"title":" субтитри | Робота Голосом","folder":[{"title":" Сезон 3","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video14/2/new/rh_sub_mushoku_tensei_s03e01_268024/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/rh_sub_mushoku_tensei_s03e01_268024/screen.jpg", "subtitle": "", "id": "268024", "vid": "268024"},{"title":"Серія 2","file":"https://ashdi.vip/video14/2/new/rh_sub_mushoku_tensei_s03e02_268025/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/rh_sub_mushoku_tensei_s03e02_268025/screen.jpg", "subtitle": "", "id": "268025", "vid": "268025"},{"title":"Серія 3","file":"https://ashdi.vip/video14/2/new/rh_sub_mushoku_tensei_s03e03_269523/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/rh_sub_mushoku_tensei_s03e03_269523/screen.jpg", "subtitle": "", "id": "269523", "vid": "269523"},{"title":"Серія 4","file":"https://ashdi.vip/video14/2/new/rh_sub_mushoku_tensei_s03e04_271772/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/rh_sub_mushoku_tensei_s03e04_271772/screen.jpg", "subtitle": "", "id": "271772", "vid": "271772"},{"title":"Серія 5","file":"https://ashdi.vip/video14/3/new/rh_sub_mushoku_tensei_s03e05_273484/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/new/rh_sub_mushoku_tensei_s03e05_273484/screen.jpg", "subtitle": "", "id": "273484", "vid": "273484"},{"title":"Серія 6","file":"https://ashdi.vip/video14/3/new/rh_sub_mushoku_tensei_s03e06_275125/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/new/rh_sub_mushoku_tensei_s03e06_275125/screen.jpg", "subtitle": "", "id": "275125", "vid": "275125"},{"title":"Серія 7","file":"https://ashdi.vip/video14/3/new/rh_sub_mushoku_tensei_s03e07_277393/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/new/rh_sub_mushoku_tensei_s03e07_277393/screen.jpg", "subtitle": "", "id": "277393", "vid": "277393"}]}]},{"title":" Робота Голосом","folder":[{"title":" Сезон 3","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video14/2/new/rh_mvo_mushoku_tensei_iii_isekai_ittara_honki_dasu_s03e01__268032/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/rh_mvo_mushoku_tensei_iii_isekai_ittara_honki_dasu_s03e01__268032/screen.jpg", "subtitle": "", "id": "268032", "vid": "268032"},{"title":"Серія 2","file":"https://ashdi.vip/video14/2/new/rh_mvo_mushoku_tensei_iii_isekai_ittara_honki_dasu_s03e02__268060/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/rh_mvo_mushoku_tensei_iii_isekai_ittara_honki_dasu_s03e02__268060/screen.jpg", "subtitle": "", "id": "268060", "vid": "268060"},{"title":"Серія 3","file":"https://ashdi.vip/video14/2/new/rh_mvo_mushoku_tensei_s03e03_269565/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/rh_mvo_mushoku_tensei_s03e03_269565/screen.jpg", "subtitle": "", "id": "269565", "vid": "269565"},{"title":"Серія 4","file":"https://ashdi.vip/video14/2/new/rh_mvo_mushoku_tensei_s03e04_271840/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/new/rh_mvo_mushoku_tensei_s03e04_271840/screen.jpg", "subtitle": "", "id": "271840", "vid": "271840"},{"title":"Серія 5","file":"https://ashdi.vip/video14/3/new/rh_mvo_mushoku_tensei_s03e05_273509/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/new/rh_mvo_mushoku_tensei_s03e05_273509/screen.jpg", "subtitle": "", "id": "273509", "vid": "273509"},{"title":"Серія 6","file":"https://ashdi.vip/video14/3/new/rh_mvo_mushoku_tensei_s03e06_275144/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/new/rh_mvo_mushoku_tensei_s03e06_275144/screen.jpg", "subtitle": "", "id": "275144", "vid": "275144"},{"title":"Серія 7","file":"https://ashdi.vip/video14/3/new/rh_mvo_mushoku_tensei_s03e07_277403/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/new/rh_mvo_mushoku_tensei_s03e07_277403/screen.jpg", "subtitle": "", "id": "277403", "vid": "277403"}]}]},{"title":" FanVoxUA","folder":[{"title":" Сезон 3","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video14/2/serials/renkarnaczya_bezrobtnogo_3__01_268206/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/renkarnaczya_bezrobtnogo_3__01_268206/screen.jpg", "subtitle": "", "id": "268206", "vid": "268206"},{"title":"Серія 2","file":"https://ashdi.vip/video14/2/serials/renkarnaczya_bezrobtnogo_3__02_268207/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/renkarnaczya_bezrobtnogo_3__02_268207/screen.jpg", "subtitle": "", "id": "268207", "vid": "268207"},{"title":"Серія 3","file":"https://ashdi.vip/video14/2/serials/renkarnaczya_bezrobtnogo_3__03_269563/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/renkarnaczya_bezrobtnogo_3__03_269563/screen.jpg", "subtitle": "", "id": "269563", "vid": "269563"},{"title":"Серія 4","file":"https://ashdi.vip/video14/2/serials/renkarnaczya_bezrobtnogo_3__04_271811/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/renkarnaczya_bezrobtnogo_3__04_271811/screen.jpg", "subtitle": "", "id": "271811", "vid": "271811"},{"title":"Серія 5","file":"https://ashdi.vip/video14/3/serials/renkarnaczya_bezrobtnogo_3__05_273615/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/renkarnaczya_bezrobtnogo_3__05_273615/screen.jpg", "subtitle": "", "id": "273615", "vid": "273615"},{"title":"Серія 6","file":"https://ashdi.vip/video14/3/serials/renkarnaczya_bezrobtnogo_3__06_275135/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/renkarnaczya_bezrobtnogo_3__06_275135/screen.jpg", "subtitle": "", "id": "275135", "vid": "275135"},{"title":"Серія 7","file":"https://ashdi.vip/video14/3/serials/renkarnaczya_bezrobtnogo_3__07_277400/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/renkarnaczya_bezrobtnogo_3__07_277400/screen.jpg", "subtitle": "", "id": "277400", "vid": "277400"}]}]},{"title":" Glass Moon","folder":[{"title":" Сезон 3","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video14/2/serials/01_renkarnaczya_bezrobtnogo_sezon_3_dub_268847/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/01_renkarnaczya_bezrobtnogo_sezon_3_dub_268847/screen.jpg", "subtitle": "", "id": "268847", "vid": "268847"},{"title":"Серія 2","file":"https://ashdi.vip/video14/2/serials/02_renkarnaczya_bezrobtnogo_sezon_3_dub_269527/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/02_renkarnaczya_bezrobtnogo_sezon_3_dub_269527/screen.jpg", "subtitle": "", "id": "269527", "vid": "269527"},{"title":"Серія 3","file":"https://ashdi.vip/video14/2/serials/03_renkarnaczya_bezrobtnogo_sezon_3_dub_270038/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/03_renkarnaczya_bezrobtnogo_sezon_3_dub_270038/screen.jpg", "subtitle": "", "id": "270038", "vid": "270038"},{"title":"Серія 4","file":"https://ashdi.vip/video14/3/serials/04_renkarnaczya_bezrobtnogo_sezon_3_dub_273548/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/04_renkarnaczya_bezrobtnogo_sezon_3_dub_273548/screen.jpg", "subtitle": "", "id": "273548", "vid": "273548"},{"title":"Серія 5","file":"https://ashdi.vip/video14/3/serials/05_renkarnaczya_bezrobtnogo_sezon_3_dub_273662/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/05_renkarnaczya_bezrobtnogo_sezon_3_dub_273662/screen.jpg", "subtitle": "", "id": "273662", "vid": "273662"},{"title":"Серія 6","file":"https://ashdi.vip/video14/3/serials/06_renkarnaczya_bezrobtnogo_sezon_3_dub_276126/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/06_renkarnaczya_bezrobtnogo_sezon_3_dub_276126/screen.jpg", "subtitle": "", "id": "276126", "vid": "276126"},{"title":"Серія 7","file":"https://ashdi.vip/video14/3/serials/07_renkarnaczya_bezrobtnogo_sezon_3_dub_277591/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/07_renkarnaczya_bezrobtnogo_sezon_3_dub_277591/screen.jpg", "subtitle": "", "id": "277591", "vid": "277591"}]}]},{"title":" Glass Moon SUB","folder":[{"title":" Сезон 3","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video14/2/serials/01_renkarnaczya_bezrobtnogo_sezon_3_sub_268848/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/01_renkarnaczya_bezrobtnogo_sezon_3_sub_268848/screen.jpg", "subtitle": "", "id": "268848", "vid": "268848"},{"title":"Серія 2","file":"https://ashdi.vip/video14/2/serials/02_renkarnaczya_bezrobtnogo_sezon_3_sub_269528/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/02_renkarnaczya_bezrobtnogo_sezon_3_sub_269528/screen.jpg", "subtitle": "", "id": "269528", "vid": "269528"},{"title":"Серія 3","file":"https://ashdi.vip/video14/2/serials/03_renkarnaczya_bezrobtnogo_sezon_3_sub_270065/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/03_renkarnaczya_bezrobtnogo_sezon_3_sub_270065/screen.jpg", "subtitle": "", "id": "270065", "vid": "270065"},{"title":"Серія 4","file":"https://ashdi.vip/video14/3/serials/04_renkarnaczya_bezrobtnogo_sezon_3_sub_273664/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/04_renkarnaczya_bezrobtnogo_sezon_3_sub_273664/screen.jpg", "subtitle": "", "id": "273664", "vid": "273664"},{"title":"Серія 5","file":"https://ashdi.vip/video14/3/serials/05_renkarnaczya_bezrobtnogo_sezon_3_sub_273663/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/05_renkarnaczya_bezrobtnogo_sezon_3_sub_273663/screen.jpg", "subtitle": "", "id": "273663", "vid": "273663"},{"title":"Серія 6","file":"https://ashdi.vip/video14/3/serials/06_renkarnaczya_bezrobtnogo_sezon_3_sub_276127/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/06_renkarnaczya_bezrobtnogo_sezon_3_sub_276127/screen.jpg", "subtitle": "", "id": "276127", "vid": "276127"},{"title":"Серія 7","file":"https://ashdi.vip/video14/3/serials/07_renkarnaczya_bezrobtnogo_sezon_3_sub_277592/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/07_renkarnaczya_bezrobtnogo_sezon_3_sub_277592/screen.jpg", "subtitle": "", "id": "277592", "vid": "277592"}]}]},{"title":" Далі Буде","folder":[{"title":" Сезон 3","folder":[{"title":"Серія 1","file":"https://ashdi.vip/video14/2/serials/mushoku_tensei_s03e01_1080p_dal_bude_269601/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/mushoku_tensei_s03e01_1080p_dal_bude_269601/screen.jpg", "subtitle": "", "id": "269601", "vid": "269601"},{"title":"Серія 2","file":"https://ashdi.vip/video14/2/serials/mushoku_tensei_s03e02_1080p_dal_bude_270532/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk29ocmje0yql3tj.ashdi.vip/content/stream/serials/mushoku_tensei_s03e02_1080p_dal_bude_270532/screen.jpg", "subtitle": "", "id": "270532", "vid": "270532"},{"title":"Серія 3","file":"https://ashdi.vip/video14/3/serials/mushoku_tensei_s03e03_1080p_dal_bude_273560/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/mushoku_tensei_s03e03_1080p_dal_bude_273560/screen.jpg", "subtitle": "", "id": "273560", "vid": "273560"},{"title":"Серія 4","file":"https://ashdi.vip/video14/3/serials/mushoku_tensei_s03e04_1080p_dal_bude_273655/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/mushoku_tensei_s03e04_1080p_dal_bude_273655/screen.jpg", "subtitle": "", "id": "273655", "vid": "273655"},{"title":"Серія 5","file":"https://ashdi.vip/video14/3/serials/mushoku_tensei_s03e05_1080p_dal_bude_274961/hls/Da+Xjn6RkudchA39BQ==/index.m3u8", "poster": "https://jk39ocmje0yql3tj.ashdi.vip/content/stream/serials/mushoku_tensei_s03e05_1080p_dal_bude_274961/screen.jpg", "subtitle": "", "id": "274961", "vid": "274961"}]}]}]',
+				plstart: '277393',
+				forbidden_quality:"Авто",
+				default_quality:"480p",
+preroll:"id:adwise7271 or id:vast7260 or id:vast7252 or id:adwise12050 or id:vadideo12220 or id:vast12054 and id:adwise7272 or id:vast7260 or id:vast7252 or id:adwise12051 or id:vadideo12220 or id:vast12054",
+prerollnew:1			});
+var container = document.querySelector("#oframevideoplayer1477");
+var list = container.querySelectorAll('pjsdiv');
+for (i=0; i<list.length; i++) {
+  if (list[i].style.position=='absolute' && (list[i].innerText.includes('Сезон')   )) {
+    list[i].className = "invisible";
+  }
+}
+		</script>
+	</body>
+</html>

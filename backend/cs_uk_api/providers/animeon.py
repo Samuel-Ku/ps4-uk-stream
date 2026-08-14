@@ -1034,6 +1034,16 @@ class AnimeONProvider(BaseProvider):
                 return str(file_url)
             if video_url:
                 return await self._resolve_ashdi_iframe(video_url, http)
+            # Upstream drift (2026-08-14): the episodes endpoint stopped
+            # embedding videoUrl/fileUrl in its rows. The direct endpoint
+            # `/api/player/<playerId>/<translationId>` still serves the
+            # player page (an ashdi serial page whose Playerjs playlist
+            # carries every episode's m3u8) — resolve through it.
+            fallback = await self._ashdi_playlist_fallback(
+                anime_id, episode_num, source, http
+            )
+            if fallback is not None:
+                return fallback
             raise ProviderError("parse_failed", "ashdi source without urls")
         # Unknown player: prefer fileUrl if it is an m3u8, otherwise
         # try the iframe page's `file:` regex.
@@ -1042,6 +1052,89 @@ class AnimeONProvider(BaseProvider):
         if video_url:
             return await self._resolve_ashdi_iframe(video_url, http)
         raise ProviderError("parse_failed", "no usable url in source")
+
+    async def _ashdi_playlist_fallback(
+        self,
+        anime_id: int,
+        episode_num: int,
+        source: dict[str, Any],
+        http: httpx.AsyncClient,
+    ) -> str | None:
+        """Resolve an episode through the direct player endpoint when the
+        episode row carries no urls (upstream drift, 2026-08-14).
+
+        ``/api/player/<playerId>/<translationId>`` answers
+        ``{"videoUrl": "https://ashdi.vip/serial/<id>?..."}`` — the ashdi
+        serial page whose Playerjs ``file:'[...]'`` value is a JSON
+        playlist: translation folders -> season folders -> episode
+        entries (``{"title": "Серія N", "file": "...m3u8"}``). Select the
+        requested translation's folder (case-insensitive; first folder
+        when no name matches, mirroring the upstream's pick-first
+        behavior) and the ``Серія <episode_num>`` entry inside it."""
+        trans_name = str(source.get("translation_name") or "").strip().casefold()
+        player_name = str(source.get("player_name") or "").strip().casefold()
+        doc = await self._ask_translations(anime_id, http)
+        direct_url: str | None = None
+        for trans in _classify_translations(doc or {}):
+            t = trans.get("translation") or {}
+            if str(t.get("name") or "").strip().casefold() != trans_name:
+                continue
+            trans_id = t.get("id")
+            for player in trans.get("player") or []:
+                if str(player.get("name") or "").strip().casefold() != player_name:
+                    continue
+                player_id = player.get("id")
+                if trans_id is None or player_id is None:
+                    continue
+                direct = await self._get_json(
+                    f"{BASE_URL}/api/player/{player_id}/{trans_id}", http
+                )
+                if isinstance(direct, dict):
+                    value = direct.get("videoUrl")
+                    if isinstance(value, str) and value:
+                        direct_url = value
+        if direct_url is None:
+            return None
+        page = await self._get_text(
+            direct_url,
+            http,
+            headers={"Referer": f"{BASE_URL}/", **_DEFAULT_HEADERS},
+        )
+        match = re.search(r"file:'((?:[^'\\]|\\.)*)'", page)
+        if not match:
+            return None
+        try:
+            raw = re.sub(r"\\'", "'", match.group(1))
+            playlist = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(playlist, list):
+            return None
+        folders = [f for f in playlist if isinstance(f, dict)]
+        target = next(
+            (
+                f
+                for f in folders
+                if str(f.get("title") or "").strip().casefold() == trans_name
+            ),
+            None,
+        )
+        if target is None and folders:
+            target = folders[0]
+        if target is None:
+            return None
+        want = f"Серія {episode_num}"
+        for season in target.get("folder") or []:
+            if not isinstance(season, dict):
+                continue
+            for entry in season.get("folder") or []:
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("title") or "").strip() == want:
+                    file_url = entry.get("file")
+                    if isinstance(file_url, str) and file_url.endswith(".m3u8"):
+                        return file_url
+        return None
 
     async def _resolve_ashdi_iframe(
         self, iframe_url: str, http: httpx.AsyncClient

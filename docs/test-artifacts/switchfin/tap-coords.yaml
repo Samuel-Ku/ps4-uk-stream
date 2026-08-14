@@ -20,6 +20,14 @@
 # Switchfin 0.9.3, 2026-08-10 — every value verified by the request it
 # fires (see docs/test-artifacts/switchfin/device-driving.md, B8 table).
 # Coordinates are for the DEFAULT (unscrolled) screen state.
+#
+# RE-CALIBRATED 2026-08-14: the detail screen's seasons row moved below
+# the fold (richer detail data — People/Genres rails, tickets #224-#238).
+# first_season now targets the season card AFTER the series-branch
+# `scroll_before` drag (steps.yaml), measured on-device (X-placeholder
+# band y=596-972 at the one-700px-drag state, tap verified by the
+# Episodes request it fired, 2026-08-14). first_episode (995,135) was
+# re-verified on the live episodes screen (PlaybackInfo + stream 206).
 login_button: {x: 0, y: 0}
 sidebar_folders: {x: 141, y: 285}
 view_newest_x: {x: 756, y: 310}
@@ -31,5 +39,5 @@ view_cartoon_x: {x: 2620, y: 792}
 view_dorama_x: {x: 756, y: 1126}
 first_card: {x: 294, y: 448}
 play_button: {x: 825, y: 470}
-first_season: {x: 266, y: 1200}
+first_season: {x: 350, y: 784}
 first_episode: {x: 995, y: 135}

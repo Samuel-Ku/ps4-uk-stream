@@ -89,6 +89,30 @@ class Adb:
             timeout=ADB_SHELL_TIMEOUT_S,
         )
 
+    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int) -> None:
+        """Hold-drag (scroll) gesture.
+
+        A short fling is dropped by the SDL client's per-frame touch poll
+        exactly like a plain tap (device-driving input table); a held drag
+        of ~400+ ms registers as a scroll.
+        """
+        subprocess.run(
+            [
+                self.binary,
+                "shell",
+                "input",
+                "touchscreen",
+                "swipe",
+                str(x1),
+                str(y1),
+                str(x2),
+                str(y2),
+                str(duration_ms),
+            ],
+            check=True,
+            timeout=ADB_SHELL_TIMEOUT_S,
+        )
+
     def wake(self, settle_s: float = 0.5) -> None:
         """Wake + dismiss the keyguard so screenshots show the live screen.
 

@@ -67,6 +67,27 @@ def _type_from_url(href: str) -> MediaTypeStr:
     return "series" if "/serials/" in href or "/series/" in href else "movie"
 
 
+def _card_kind(card: Tag, href: str) -> str | None:
+    """Film/series kind from the card itself (2026-08-14 upstream drift:
+    the site serves BARE urls everywhere — ``/8550-....html`` — so the
+    URL no longer carries the kind and every card was classified as a
+    film). Series cards carry a season/episode label
+    (``<div class="metaBottom label_quel-camrip">3 сезон 6 серія</div>``);
+    films don't. Returns ``"movie"`` or ``"series"`` or ``None`` when the
+    card carries no signal. ALL labels are scanned — the quality label
+    (``label_quel-hd`` «FHD 1080p») comes before the season label
+    (``label_quel-camrip`` «3 сезон 6 серія») in document order."""
+    for el in card.select(".metaBottom, [class*=label_quel]"):
+        label = el.get_text(" ", strip=True)
+        if re.search(r"\bсезон\b|\bсерія\b", label, re.IGNORECASE):
+            return "series"
+    if "/films/" in href:
+        return "movie"
+    if "/series/" in href or "/serials/" in href:
+        return "series"
+    return None
+
+
 def _section_url(section: str, page: int) -> str:
     if section not in {"films", "series"}:
         raise ProviderError("not_found", f"unknown section: {section}")
@@ -74,7 +95,13 @@ def _section_url(section: str, page: int) -> str:
     return root if page <= 1 else f"{root}page/{page}/"
 
 
-def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
+#: Section id -> MediaForm kind (the browse override).
+_SECTION_KIND: dict[str, str] = {"films": "movie", "series": "series"}
+
+
+def _parse_card(
+    card: Tag, provider_id: str, kind: str | None = None
+) -> SearchResult | None:
     a = card.select_one("a.short_title") or card.select_one("a.short_img")
     if not a or not a.get("href"):
         return None
@@ -84,9 +111,12 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
     title = a.get_text(" ", strip=True)
     img = card.select_one("img")
     poster_src = (img.get("data-src") or img.get("src")) if img else None
-    mb_form, mb_styles = model_b_axes(_type_from_url(str(a["href"])))
+    resolved_kind = kind or _card_kind(card, str(a["href"])) or "movie"
+    mb_form, mb_styles = model_b_axes(cast(MediaTypeStr, resolved_kind))
+    _, _, slug = ext.partition("/")
+    id_kind = "series" if resolved_kind == "series" else "films"
     return SearchResult(
-        id=f"{provider_id}:{ext}",
+        id=f"{provider_id}:{id_kind}/{slug}",
         provider=provider_id,
         title=title,
         poster=urljoin(BASE_URL, str(poster_src)) if poster_src else None,
@@ -192,7 +222,15 @@ class EneyidaProvider(BaseProvider):
         if r.status_code != 200:
             raise ProviderError("not_found", f"status {r.status_code}")
         soup = BeautifulSoup(r.text, "lxml")
-        results = [x for c in soup.select("article.short") if (x := _parse_card(c, self.id))]
+        # Section-kind override: the listing URL carries the section, but
+        # the CARDS use bare URLs (upstream drift) — the section is the
+        # authoritative kind here, same as kinovezha's browse.
+        kind = _SECTION_KIND.get(section)
+        results = [
+            x
+            for c in soup.select("article.short")
+            if (x := _parse_card(c, self.id, kind=kind))
+        ]
         return results, any(
             _page_number(str(a.get("href"))) > page for a in soup.select(".navigation a[href]")
         )
