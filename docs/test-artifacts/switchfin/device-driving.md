@@ -40,6 +40,7 @@ discover something new; the opposite (rediscovering this) costs hours.
 | Method | Works? | Notes |
 |---|---|---|
 | `input keyevent KEYCODE_DPAD_* / CENTER / BACK` | ✅ | Controller-style navigation works fine |
+| `input keyevent KEYCODE_MENU` (82) | ✅ | **Opens the card context menu** (Played / Favorite / Download) on the focused card — measured 2026-08-14. `BUTTON_Y`/`BUTTON_X`/`ENTER` do NOT open it |
 | `input tap X Y` | ❌ | **Too fast.** The app polls `SDL_GetNumTouchFingers` once per frame; a DOWN+UP in ~50 ms is missed entirely between polls → no click |
 | `input touchscreen swipe X Y X Y 350` | ✅ | **The working tap.** A press held ≥ ~300 ms registers as a click. This is what the runner must use |
 | `input mouse tap X Y` | ⚠️ | SDL does handle mouse events (`onNativeMouse`), but unreliable here — prefer the hold-tap |
@@ -74,11 +75,20 @@ instead of `input tap X Y`. (Implementation: `scripts/switchfin_adb.py`.)
 
 ## Screen map (landscape 3168×1440)
 
-- **Sidebar** (left, scrollable, 5 icons): home y≈143, media-folders y≈284,
-  search y≈422, remote y≈566, settings y≈711; x≈138–170.
+- **Sidebar** (left, 5 icons, NOT scrollable — measured 2026-08-14): home
+  y≈143, media-folders y≈284, search y≈422, **Downloads y≈567** (the cloud
+  icon — NOT Remote; earlier run mislabeled it), settings y≈711; x≈138–170.
+  **There is no Remote tab and no Live TV entry in the reachable UI of
+  Switchfin 0.9.3** — the `RemoteTab`/`LiveTV` classes exist in
+  `libSwitchfin.so` but are not wired into any reachable screen, so
+  `GET /Sessions` / `GET /LiveTv/Channels` are never called by the client.
 - **Home tab**: vertical rows «Continue Watching», «Next Up», then one row per
   library view (Новинки, Популярні зараз, Фільми, …). Row title ≈y104 first
-  row; poster cards ≈y250–850; card pitch ≈464 px, first card center ≈(546,450).
+  row; poster cards ≈y250–850; card pitch ≈464 px. **Measured 2026-08-14:**
+  the Continue-Watching card centers are ≈(930, 450) for card 1 (Аанг),
+  ≈(1786, 450) for card 2, ≈(2640, 450) for card 3 — a tap at (546–680, 400)
+  misses card 1 (hits the left gutter) or lands on another card after a
+  relaunch, so always verify which item the detail fetch returns in the log.
 - **Media folders grid** (video-camera tab): the 7 library views as text cells.
   Measured precisely 2026-08-10 by pixel analysis (card = white region on
   #EFEFEF background):
@@ -134,6 +144,19 @@ before the suite starts, or (b) the first open step gets a longer timeout and
 the runner dismisses the dialog, or (c) pre-warm via a curl loop right after
 `wait_for_backend`. The dialog itself must be dismissed (BACK or Refresh tap)
 before the next tap lands.
+
+**Re-confirmed 2026-08-14 (still open):** an app **relaunch** (force-stop +
+start) also triggers it — the home `GET /Users/{id}/Views` took 20511 ms and
+poped the same dialog; the Retry button at ≈(1130, 885) (dialog buttons ≈y885,
+Retry left / Cancel right) reloads instantly from the now-warm snapshot.
+
+### B4. Download button 404s — `GET /Items/{id}/Download` route missing
+
+(2026-08-14) The detail screen's Download button calls
+`GET /Items/{id}/Download?api_key=…` → **404** — the backend only has
+`/Videos/{id}/stream`. The app records the failure in
+`/sdcard/Android/data/fun.dragonfly.switchfin/files/downloads/index.json`
+as `status: Failed / http status 404`. Follow-up: **ticket #296**.
 
 ### B2. `input tap` is dropped by the app (polling, not event-driven)
 
@@ -1159,17 +1182,22 @@ One manual checklist line for the on-device pass — deliberately NOT a
       row. They are just new home-row kinds served through the existing
       view mechanism (zero client changes).
 
-- [ ] User state (spec #257): on a detail screen tap the heart — it
-      lights and stays lit after an app relaunch (the toggle answers
-      UserDataResult and the mark persists in `user-state.json`); from
-      a card's context menu mark an item played/unplayed — the
-      checkmark appears on the card; the Remote and Live TV tabs open
-      without errors (graceful empties).
-- [ ] User state (spec #257, AC4): on one detail screen tap
-      Download — expect a `GET /Videos/{id}/stream` request in the
-      backend log and a file landing in the app's Download folder;
-      record the outcome in the report (pass, or a follow-up ticket
-      for the route work — verification only, no fix here).
+- [x] User state (spec #257, verified 2026-08-14): on a detail screen tap
+      the heart — it lights and stays lit after an app relaunch (toggle
+      answers UserDataResult, mark persists in `user-state.json`, and the
+      detail DTO re-reads it on refetch → button shows «Remove favorites»);
+      from a card's context menu (KEYCODE_MENU) mark an item played — the
+      checkmark badge appears in the card's top-right corner. **The Remote
+      and Live TV tabs could NOT be verified: Switchfin 0.9.3 exposes no
+      entry point for them** (sidebar has Downloads where the old doc said
+      Remote; no Live TV anywhere reachable). The graceful-empty routes are
+      wire-tested; the client has never called them in any session.
+- [x] User state (spec #257, AC4, verified 2026-08-14): the Download button
+      **FAILS** — it calls `GET /Items/{id}/Download?api_key=…` → **404**
+      (no such route; only `/Videos/{id}/stream` exists, which answers 200).
+      The app records `status: Failed / http status 404` in
+      `downloads/index.json`. Follow-up: **ticket #296** (add the
+      `/Items/{id}/Download` route).
 
 Backend-side verification of the same behaviour (no device needed):
 `POST /Sessions/Playing/Stopped` with `PositionTicks`+`RunTimeTicks`
