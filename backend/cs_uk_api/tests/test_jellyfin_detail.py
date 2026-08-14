@@ -1424,6 +1424,49 @@ def test_userdata_percentage_100_when_played_no_runtime(client: TestClient) -> N
     assert body["PlayedPercentage"] == 0.0
 
 
+def test_userdata_card_carries_position_and_percentage(client: TestClient) -> None:
+    """#259 AC2+AC5: the *card* DTO carries the recorded playback
+    position and the derived percentage — the progress bar on the
+    catalog grid feeds from the playback store, not just the toggle
+    response."""
+    PROVIDERS["p1"] = _seed()
+    _auth(client)
+    gk = _movie_gk(client)
+    _post_playback_full(client, gk, 25_000_000_000, runtime=100_000_000_000)
+    _favorite(client, gk)
+    _played(client, gk)
+
+    views = _get(client, "/Users/user1/Views")["Items"]
+    vid = next(v["Id"] for v in views if v["Name"] == "Новинки")
+    items = _get(client, "/Items", parentId=vid, userId=USER)["Items"]
+    card = next(i for i in items if i["Id"] == gk)
+    ud = card["UserData"]
+    assert ud["IsFavorite"] is True
+    assert ud["Played"] is True
+    # AC5: the position on the card comes from the playback store.
+    assert ud["PlaybackPositionTicks"] == 25_000_000_000
+    assert ud["PlayedPercentage"] == 25.0
+
+
+def test_userdata_card_percentage_100_when_played_no_runtime(client: TestClient) -> None:
+    """#259 AC2: a played item with no recorded position/runtime shows
+    PlayedPercentage 100 (and position 0) on its card — the fallback
+    renders a full progress bar instead of an empty one."""
+    PROVIDERS["p1"] = _seed()
+    _auth(client)
+    gk = _movie_gk(client)
+    _played(client, gk)
+
+    views = _get(client, "/Users/user1/Views")["Items"]
+    vid = next(v["Id"] for v in views if v["Name"] == "Новинки")
+    items = _get(client, "/Items", parentId=vid, userId=USER)["Items"]
+    card = next(i for i in items if i["Id"] == gk)
+    ud = card["UserData"]
+    assert ud["Played"] is True
+    assert ud["PlayedPercentage"] == 100.0
+    assert ud["PlaybackPositionTicks"] == 0
+
+
 def test_sessions_listing_is_graceful_empty(client: TestClient) -> None:
     """#257: the Remote tab's ``GET /Sessions`` answers an empty list —
     not a 404 — so the tab renders without errors."""
