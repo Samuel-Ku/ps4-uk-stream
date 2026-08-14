@@ -426,7 +426,14 @@ def _recommendation_rows(rows: Sequence[HomeRow]) -> list[HomeRow]:
     if not home_items or not _profiles:
         return []
     home_by_key = {it.group_key: it for it in home_items}
-    watched: set[str] = set()
+    # Excluded set (#253 AC4): EVERY group behind a recorded playback
+    # position is off the recommendation shelves — not just the few that
+    # also anchor the taste profile.
+    watched = {
+        gk
+        for item_id in playback_entries()
+        if (gk := episode_group_key(item_id)) is not None
+    }
     anchors: list[tuple[ItemProfile, float]] = []
     similar: tuple[ItemProfile, str] | None = None
     recency = 0
@@ -434,7 +441,6 @@ def _recommendation_rows(rows: Sequence[HomeRow]) -> list[HomeRow]:
         group_key = episode_group_key(item_id)
         if group_key is None:
             continue
-        watched.add(group_key)
         prof = _profiles.get(group_key)
         if prof is None:
             continue
@@ -709,6 +715,20 @@ def record_search_query(query: str) -> None:
 def recent_search_queries() -> list[str]:
     """Search queries, newest first (spec #252)."""
     return _store().recent_queries()
+
+
+def recommendation_stats() -> dict[str, int]:
+    """Profile-store counts for the health surface (#253 AC5).
+
+    Profiles warmed, search queries recorded, groups with a recorded
+    playback position (the recommendation exclusion set) — all
+    debuggable from the existing ``/api/health``, no new endpoint.
+    """
+    return {
+        "profiles": len(_profiles),
+        "queries": len(recent_search_queries()),
+        "watched": len(playback_entries()),
+    }
 
 
 def peek_group_content(group_key: str) -> ContentResponse | None:

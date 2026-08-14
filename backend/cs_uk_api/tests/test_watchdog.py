@@ -231,3 +231,28 @@ def test_health_all_down_flag_reflects_tracker(monkeypatch: pytest.MonkeyPatch) 
     r = client.get("/api/health")
     assert r.status_code == 200
     assert r.json()["all_down"] is True
+
+
+def test_health_exposes_recommendation_profile_counts() -> None:
+    """#253 AC5: the existing /api/health surface exposes profile-store
+    counts (profiles / queries / watched) — debuggable without a new
+    endpoint."""
+    from cs_uk_api import catalog_state
+
+    # Other test modules share the process-wide store — start from a
+    # clean slate so the counts are exact.
+    catalog_state.clear_playback()
+    catalog_state._profiles = {"g2:a": object(), "g2:b": object()}  # type: ignore[assignment]
+    catalog_state.record_search_query("Дюна")
+    catalog_state.record_search_query("Наруто")
+    catalog_state.record_playback("g2:a", 1_000_000_000)
+    try:
+        r = client.get("/api/health")
+        assert r.status_code == 200
+        rec = r.json()["recommendations"]
+        assert rec["profiles"] == 2
+        assert rec["queries"] == 2
+        assert rec["watched"] == 1
+    finally:
+        catalog_state._profiles = {}
+        catalog_state.clear_playback()

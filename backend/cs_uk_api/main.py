@@ -26,6 +26,7 @@ from .catalog_state import get_home as _catalog_get_home
 from .catalog_state import home_cache as _catalog_home_cache
 from .catalog_state import load_home as _catalog_load_home
 from .catalog_state import merged_search as _catalog_merged_search
+from .catalog_state import recommendation_stats as _catalog_recommendation_stats
 from .catalog_state import search_cache as _catalog_search_cache
 from .catalog_state import sources_cache as _catalog_sources_cache
 from .config import SETTINGS
@@ -297,6 +298,7 @@ async def health() -> dict[str, object]:
             "last_reset_at": watchdog_mod.WATCHDOG.last_reset_at,
             "cooldown_s": watchdog_mod.WATCHDOG.cooldown_s,
         },
+        "recommendations": _catalog_recommendation_stats(),
         "catalog_warm": (
             {
                 "status": _catalog_warm_state.status,

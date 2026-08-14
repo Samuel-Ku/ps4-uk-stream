@@ -1075,6 +1075,49 @@ def test_recommendation_views_serve_rows(client: TestClient) -> None:
         catalog_state._profiles = {}
 
 
+def test_recommendation_excludes_any_recorded_position(client: TestClient) -> None:
+    """#253 AC4: the scorer excludes items with ANY recorded playback
+    position — not just the top-3 recency anchors. Four movies are
+    watched; the oldest one (outside the anchor window) must still be
+    missing from the recommended row."""
+    movies = [
+        _movie_content(f"m{i}", f"Бойовик {i}", ["Бойовик"], 2021)
+        for i in range(1, 6)
+    ]
+    stub = _DetailStub(
+        cards=[
+            _card("p1", f"m{i}", f"Бойовик {i}", "movie", poster=_POSTER_MOVIE)
+            for i in range(1, 6)
+        ],
+        content_by_external={f"m{i}": movies[i - 1] for i in range(1, 6)},
+    )
+    PROVIDERS["p1"] = stub
+    _auth(client)
+
+    home = _get(client, "/api/home")
+    gk = {item["title"]: item["group_key"] for row in home["rows"] for item in row["items"]}
+    catalog_state._profiles = {
+        gk[f"Бойовик {i}"]: profile_from_content(movies[i - 1]) for i in range(1, 6)
+    }
+    try:
+        # All five movies share the «Бойовик» genre; four are watched.
+        # Record in ascending order so Бойовик 4 is the most recent
+        # anchor and Бойовик 1 falls OUTSIDE the top-3 anchor window.
+        for i in range(1, 5):
+            record_playback(gk[f"Бойовик {i}"], 1_000_000_000)
+        _home_cache.clear()
+
+        views = _get(client, "/Users/user1/Views")["Items"]
+        rec = next(v for v in views if v["Name"] == "Рекомендовано для тебе")
+        items = _get(client, "/Items", parentId=rec["Id"], userId=USER)["Items"]
+        names = {i["Name"] for i in items}
+        # Only the unwatched movie may appear — every recorded position
+        # excludes its group, including the oldest one.
+        assert names == {"Бойовик 5"}
+    finally:
+        catalog_state._profiles = {}
+
+
 def test_search_records_query_for_taste(client: TestClient) -> None:
     """#252: a facade search records the query as taste signal (both
     surfaces feed the shared ``merged_search``)."""
