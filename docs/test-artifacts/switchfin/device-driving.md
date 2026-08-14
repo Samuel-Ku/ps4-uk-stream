@@ -918,6 +918,37 @@ Two consecutive full passes satisfy #224's acceptance criterion
 (2+ consecutive runs); the flake that took down run7 (37s cold
 seasons) and run8 (502 → 404 detail) is closed.
 
+### Run #12 (2026-08-14) — **FULL PASS ✅** (3 consecutive)
+
+All 7 views green a third time, confirming the runner + #224 stack is
+stable before the hunt for remaining unfilled fields began.
+
+## Field-coverage sweep (2026-08-14, wire level)
+
+Bulk scan of detail responses across 18 providers for unfilled fields
+(Overview/Year/Genres/People). Findings and their disposition:
+
+- **bambooua — description blank for EVERY title (FIXED, #226)**. The
+  upstream emits standard JSON-LD keys (`@context`/`@graph`);
+  `_JSONModel` had plain `graph`/`context` fields with no alias, so
+  pydantic silently ignored them → `graph=[]` → description (and
+  JSON-LD title) lost. Fixtures already carried `@graph` but no test
+  asserted the description, so the whole-provider regression went
+  unnoticed. Fix: `ConfigDict(populate_by_name=True)` + `Field(alias=
+  "@graph")`/`Field(alias="@context")`. Live: desc_len 294-295 (was 0).
+  Commits `6ec897f`, `5516a49`.
+- **bambooua — year None for every title (FIXED, #226)**. Same JSON-LD
+  carries `datePublished`; the model never parsed it. Now surfaced via
+  the first 4 digits. Live: «Ти - моє серденько» year=2025.
+- **animeon `{moved, redirectTo}` — NOT a bug.** The bare-id redirect
+  IS handled (`_load_content_info` resolves the slug, covered by
+  existing redirect fixtures). The empty description on «Зоряні Війни:
+  Видіння» is an upstream data gap: the canonical API object has
+  `description: None` and the page carries only the generic site
+  description.
+- **hentaiukr `#about` empty — expected.** Only an 18+ stub exists on
+  those pages; nothing to parse.
+
 ## Running the suite (2026-08-10, codified)
 
 ```bash
