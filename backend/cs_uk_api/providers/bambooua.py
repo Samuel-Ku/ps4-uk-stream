@@ -1,5 +1,5 @@
 """BambooUA provider (https://bambooua.com) — Ukrainian-dubbed anime,
-doramas, lakorns, TV-shows, cinema and LGBTQ BL. Issue #17, Group 1.
+doramas, lakorns, TV-shows and cinema. Issue #17, Group 1.
 
 The upstream Kotlin parses a JSON-LD block (``JSONModel.kt``) for the
 content metadata and a ``const playlist = [...]`` inline script for
@@ -14,7 +14,7 @@ from urllib.parse import quote, urljoin
 
 import httpx
 from bs4 import BeautifulSoup, Tag
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..country import extract_country
 from ..models import (
@@ -27,30 +27,31 @@ from ..models import (
     StreamType,
     Translation,
 )
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, model_b_axes
 
 BASE_URL = "https://bambooua.com"
 
-# The upstream `mainPage = mainPageOf(...)` declares nine sections.
+# The upstream `mainPage = mainPageOf(...)` declares nine sections, but
+# the dead `world-bl` listing (301 -> homepage, verified live 2026-08-09)
+# is retired from the exposed set.
 BAMBOUA_SECTIONS: tuple[Section, ...] = (
-    Section(id="cinema", title="Фільми", type="movie"),
-    Section(id="dorama", title="Дорами", type="series"),
-    Section(id="anime", title="Аніме", type="anime"),
-    Section(id="lakorn", title="Лакорн", type="series"),
-    Section(id="voice", title="Озвучення", type="series"),
-    Section(id="tv-show", title="ТВ-шоу", type="series"),
-    Section(id="done", title="Завершені", type="series"),
-    Section(id="world-bl", title="Світ ЛГБТ", type="series"),
-    Section(id="now", title="Поточні", type="series"),
+    Section(id="cinema", title="Фільми", form="movie"),
+    Section(id="dorama", title="Дорами", form="series"),
+    Section(id="anime", title="Аніме", styles=frozenset({"anime"})),
+    Section(id="lakorn", title="Лакорн", form="series"),
+    Section(id="voice", title="Озвучення", form="series"),
+    Section(id="tv-show", title="ТВ-шоу", form="series"),
+    Section(id="done", title="Завершені", form="series"),
+    Section(id="now", title="Поточні", form="series"),
 )
 
-# URL path segment -> MediaType. Longest prefixes first so `world-bl`
-# beats `world`, and `now` (single-segment) wins over any future
-# longer prefix. The upstream maps: dorama -> AsianDrama, anime -> Anime,
-# else -> Movie; but here we classify per-card so a `/cinema/` URL is
-# movie and a `/dorama/` URL is series/dorama.
+# URL path segment -> MediaType. Longest prefixes first so a longer
+# needle (`tv-show`) wins over any future bare prefix, and `now`
+# (single-segment) wins over any future longer prefix. The upstream
+# maps: dorama -> AsianDrama, anime -> Anime, else -> Movie; but here
+# we classify per-card so a `/cinema/` URL is movie and a `/dorama/`
+# URL is series/dorama.
 _PATH_TYPE: tuple[tuple[str, str], ...] = (
-    ("world-bl", "series"),
     ("tv-show", "series"),
     ("cinema", "movie"),
     ("dorama", "dorama"),
@@ -77,44 +78,91 @@ def _is_sponsor_file(path: str) -> bool:
     return _SPONSOR_MARKER in path.lower()
 
 
+def _has_playable_files(groups: list[_PlaylistGroup]) -> bool:
+    """True when the playlist exposes at least one file (a group-level
+    ``file`` for movies, or an episode ``file`` inside a ``folder``).
+
+    A playlist with non-empty groups but empty folders/no group.file —
+    a third gated variant the audit #139 did not originally spec — is
+    still "nothing playable", so this returns False for it."""
+    if any(g.file for g in groups):
+        return True
+    return any(ep.file for g in groups for ep in g.folder)
+
+
+def _require_playable_files(groups: list[_PlaylistGroup]) -> None:
+    """Raise ``gated`` when a content page's playlist has no playable
+    files at all.
+
+    Sits between ``_require_playlist`` (catches the empty-groups shape:
+    no ``const playlist`` block, or ``[]``) and ``_playlist_fully_gated``
+    (catches the all-sponsor-placeholder shape). The third gated shape
+    — non-empty groups whose every ``folder`` is empty and no group
+    has a ``file`` — would otherwise fall through both guards:
+    ``_require_playlist`` sees non-empty ``groups``, and
+    ``_playlist_fully_gated`` returns ``False`` on the ``not files``
+    branch. ``_build_seasons`` then returns ``None`` and content()
+    surfaces a zero-season ``ContentResponse`` — the exact #139 break
+    the gate is meant to prevent. Without this guard, an upstream
+    variant like ``[{title:"Сезон 1",folder:[]}]`` would silently
+    re-introduce it. Same verdict as ``_require_playlist``: deliberate
+    upstream unavailability → ``gated`` (ADR-0002), so the can_gate
+    catalog sweep drops the card during ``load_home`` instead of
+    surfacing a zero-season series (#139)."""
+    if not _has_playable_files(groups):
+        raise ProviderError("gated", "playlist has no playable files")
+
+
 def _playlist_fully_gated(groups: list[_PlaylistGroup]) -> bool:
     """True when EVERY playable file in the playlist is the gate placeholder.
 
     A series with some real episodes is NOT gated as a whole — its
     free episodes stay playable; only the placeholder ones are refused
-    by ``stream()``."""
+    by ``stream()``. A playlist with no playable files at all is
+    vacuously fully-gated — ``_require_playable_files`` raises before
+    the caller reaches here, but the vacuous-True return keeps this
+    helper correct if it is ever called without that pre-check."""
     files: list[str] = [g.file for g in groups if g.file]
     for g in groups:
         files.extend(ep.file for ep in g.folder)
     if not files:
-        return False
+        return True
     return all(_is_sponsor_file(f) for f in files)
 
 # The upstream `playlistRegex` extracts the inline JSON manifest.
 _PLAYLIST_RE = re.compile(r"const playlist\s*=\s*(\[.*?\]);", re.DOTALL)
 
-# external_id is "<category>/<numeric-slug>" (e.g. "cinema/1159-aichaku").
-# Gate content()/stream() against values that could escape the URL path;
-# without this the caller could interpolate "../" segments upstream's
-# http client would happily follow.
-_SLUG_RE = re.compile(r"[a-z][a-z-]+/\d+-[a-z0-9_-]+")
+# external_id is "<category>/<numeric-slug>" — single-segment
+# ("cinema/1159-aichaku") or multi-segment for /zhanr/ cards
+# ("zhanr/drama/1156-personasulli"). Gate content()/stream() against
+# values that could escape the URL path; without this the caller could
+# interpolate "../" segments upstream's http client would happily
+# follow. Segments are restricted to lowercase letters + hyphens, so
+# the only separators are literal slashes.
+_SEGMENT = r"[a-z][a-z-]+"  # one path-segment prefix (min 2 chars)
+_SLUG_RE = re.compile(rf"(?:{_SEGMENT}/)+\d+-[a-z0-9_-]+")
 
 
 def _external_id_from_url(href: str) -> str:
     """Return an opaque id encoding the URL path. Content URLs have the
-    form ``/kind/N-slug.html``; we collapse that to ``kind/N-slug`` so
-    ``content()`` can rebuild ``f"{BASE_URL}/{external_id}.html"``.
-    Multi-segment paths (e.g. ``/zhanr/romantyka/N-slug``) keep only
-    the last two segments — the rebuild drops the category prefix.
-    No captured upstream card has used one yet, but if it does, the
-    id stays stable and the rebuild is the best-effort guess."""
-    # Match the last two segments (the kind + slug) so the URL can be
-    # rebuilt with `f"{BASE_URL}/{external_id}.html"` regardless of any
-    # upstream category prefix.
-    m = re.search(r"/([a-z][a-z-]*?)/(\d+-[a-z0-9_-]+?)(?:\.html)?/?$", href)
+    form ``/kind/N-slug.html``; we keep the FULL path — every segment
+    prefix, e.g. ``zhanr/drama/N-slug`` — so ``content()`` can rebuild
+    ``f"{BASE_URL}/{external_id}.html"`` verbatim. Collapsing to the
+    last two segments drops the category prefix and yields a URL the
+    site 301-redirects (live 2026-08-08: ``/zhanr/drama/N-slug``
+    collapses to ``drama/N-slug`` -> 301; only the full path is a 200)."""
+    # Match the full URL — an optional scheme+host, then one or more
+    # `segment/` prefixes + the numeric slug — and rebuild it verbatim,
+    # regardless of any upstream category prefix. `re.match` anchors the
+    # start so a bare relative href (`zhanr/drama/1156.html`, no leading
+    # slash) is rejected instead of silently collapsing to `drama/...`.
+    m = re.match(
+        rf"(?:https?://[^/]+)?/((?:{_SEGMENT}/)+)(\d+-[a-z0-9_-]+?)(?:\.html)?/?$",
+        href,
+    )
     if not m:
         raise ProviderError("parse_failed", f"unrecognized url: {href}")
-    return f"{m.group(1)}/{m.group(2)}"
+    return f"{m.group(1)}{m.group(2)}"
 
 
 def _type_from_url(href: str) -> str:
@@ -157,13 +205,15 @@ def _parse_card(slide: Tag, provider_id: str) -> SearchResult | None:
         ext = _external_id_from_url(href)
     except ProviderError:
         return None
+    mb_form, mb_styles = model_b_axes(_type_from_url(href))  # type: ignore[arg-type]
     return SearchResult(
         id=f"{provider_id}:{ext}",
         provider=provider_id,
-        type=_type_from_url(href),  # type: ignore[arg-type]
         title=title_el.get_text(strip=True),
         poster=poster,
         url=urljoin(BASE_URL, href),
+        form=mb_form,
+        styles=mb_styles,
     )
 
 
@@ -191,6 +241,7 @@ class _GraphNode(BaseModel):
     name: str | None = None
     headline: str | None = None
     description: str | None = None
+    datePublished: str | None = None
     image: list[str] | None = None
     publisher: _Publisher | None = None
     mainEntityOfPage: _MainEntity | None = None
@@ -198,8 +249,16 @@ class _GraphNode(BaseModel):
 
 
 class _JSONModel(BaseModel):
-    context: str | None = None
-    graph: list[_GraphNode] = []
+    """JSON-LD document model.
+
+    The upstream emits standard JSON-LD keys (`@context`/`@graph`);
+    without aliases pydantic ignored them and `graph` stayed [] — every
+    bambooua detail rendered a blank description (Ticket #226)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    context: str | None = Field(default=None, alias="@context")
+    graph: list[_GraphNode] = Field(default_factory=list, alias="@graph")
 
 
 class _PlaylistEpisode(BaseModel):
@@ -219,16 +278,22 @@ class _PlaylistGroup(BaseModel):
 
 def _extract_playlist(html: str) -> list[_PlaylistGroup]:
     """Pull the `const playlist = [...]` array out of the page HTML.
-    Mirrors the upstream `playlistRegex` extraction."""
+
+    Mirrors the upstream `playlistRegex` extraction. Returns ``[]`` only
+    when the page has NO ``const playlist`` block — an empty array block
+    (``[]``) is returned as-is. A block that exists but won't parse
+    (invalid JSON, or not an array) raises ``parse_failed``: that is a
+    genuine parse gap (upstream shape change) which the health tracker
+    must see, not something to swallow into an empty-season 200 (#139)."""
     m = _PLAYLIST_RE.search(html)
     if not m:
         return []
     try:
         raw = json.loads(m.group(1))
-    except json.JSONDecodeError:
-        return []
+    except json.JSONDecodeError as e:
+        raise ProviderError("parse_failed", "playlist json invalid") from e
     if not isinstance(raw, list):
-        return []
+        raise ProviderError("parse_failed", "playlist not a list")
     out: list[_PlaylistGroup] = []
     for item in raw:
         if not isinstance(item, dict):
@@ -236,6 +301,22 @@ def _extract_playlist(html: str) -> list[_PlaylistGroup]:
         groups = _PlaylistGroup.model_validate(item)
         out.append(groups)
     return out
+
+
+def _require_playlist(groups: list[_PlaylistGroup]) -> None:
+    """Raise ``gated`` when a content page carries no playable manifest.
+
+    After ``_extract_playlist`` (which raises ``parse_failed`` on a
+    malformed block), an empty result means the page genuinely has no
+    manifest: the site serves subscription-gated titles («Для
+    підписників») to non-subscribers with an empty/missing
+    ``const playlist`` (live 2026-08-08: dorama/262-legenda-pro-nok-tu,
+    lakorn/1035-khemjira, tv-show/652-his-man-season-1). Deliberate
+    upstream unavailability → ``gated`` (ADR-0002), so the can_gate
+    catalog sweep drops the card during ``load_home`` instead of
+    surfacing a zero-season series (#139)."""
+    if not groups:
+        raise ProviderError("gated", "no playlist on content page")
 
 
 def _parse_jsonld(html: str) -> _JSONModel | None:
@@ -350,28 +431,36 @@ class BambooUAProvider(BaseProvider):
         description = (
             (meta.graph[0].description or "") if meta and meta.graph else ""
         )
+        year_int: int | None = None
+        if meta and meta.graph and meta.graph[0].datePublished:
+            yyyy = meta.graph[0].datePublished[:4]
+            if yyyy.isdigit():
+                year_int = int(yyyy)
         country: str | None = extract_country(soup)
         groups = _extract_playlist(resp.text)
+        _require_playlist(groups)
+        _require_playable_files(groups)
         if _playlist_fully_gated(groups):
             raise ProviderError("gated", "subscription required")
         media_type = _type_from_url(url)
-        seasons: list[Season] | None = None
-        if groups:
-            seasons = self._build_seasons(groups, external_id, media_type)
+        seasons = self._build_seasons(groups, external_id, media_type, self.id)
+        mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"bambooua:{external_id}",
-            type=media_type,  # type: ignore[arg-type]
             title=title.strip(),
             description=description,
+            year=year_int,
             poster=poster,
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
+            form=mb_form,
+            styles=mb_styles,
             country=country,
         )
 
     @staticmethod
     def _build_seasons(
-        groups: list[_PlaylistGroup], external_id: str, media_type: str
+        groups: list[_PlaylistGroup], external_id: str, media_type: str, provider_id: str
     ) -> list[Season] | None:
         """Convert the upstream playlist into our `Season[]`.
 
@@ -387,7 +476,7 @@ class BambooUAProvider(BaseProvider):
                     episodes=[
                         Episode(
                             number=1,
-                            id=f"{external_id}{MOVIE_SUFFIX}",
+                            id=f"{provider_id}:{external_id}{MOVIE_SUFFIX}",
                             title=groups[0].folder[0].title,
                         )
                     ],
@@ -398,7 +487,7 @@ class BambooUAProvider(BaseProvider):
             episodes = [
                 Episode(
                     number=e_idx,
-                    id=f"{external_id}:s{s_idx}e{e_idx}",
+                    id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
                     title=ep.title,
                 )
                 for e_idx, ep in enumerate(group.folder, start=1)
@@ -431,8 +520,8 @@ class BambooUAProvider(BaseProvider):
         if resp.status_code != 200:
             raise ProviderError("not_found", f"status {resp.status_code}")
         groups = _extract_playlist(resp.text)
-        if not groups:
-            raise ProviderError("parse_failed", "no playlist on content page")
+        _require_playlist(groups)
+        _require_playable_files(groups)
         media_url = self._select_file(groups, ep_suffix)
         if media_url is None:
             raise ProviderError("not_found", f"no file for {ep_suffix!r}")
@@ -444,7 +533,7 @@ class BambooUAProvider(BaseProvider):
         return StreamResponse(
             url=urljoin(BASE_URL, media_url),
             type=stream_type,
-            headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/0.1"},
+            headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/1.0"},
         )
 
     @staticmethod

@@ -53,7 +53,7 @@ async def test_cikavaideya_search_classifies_by_subtitle_tags():
             results = await CikavaIdeyaProvider().search("всесв", http)
     by_title = {r.title: r for r in results}
     # First card is "Як влаштований Всесвіт" → Серіали → series.
-    assert by_title["Як влаштований Всесвіт"].type == "series"
+    assert by_title["Як влаштований Всесвіт"].form == "series"
 
 
 @pytest.mark.asyncio
@@ -66,7 +66,7 @@ async def test_cikavaideya_browse_filmy_section_parses_results():
     # Per the captured filmy listing: 18 .th-item cards.
     assert len(results) == 18
     # Each card carries the "Фільми" subtitle tag → all are movies.
-    assert all(r.type == "movie" for r in results)
+    assert all(r.form == "movie" for r in results)
     # All IDs begin with the provider id prefix.
     assert all(r.id.startswith("cikavaideya:") for r in results)
     # Pagination links exist (`<div class="navigation">` containing
@@ -83,7 +83,7 @@ async def test_cikavaideya_browse_serialy_classifies_as_series():
         async with httpx.AsyncClient() as http:
             results, has_next = await CikavaIdeyaProvider().browse("serialy", 1, http)
     assert len(results) == 18
-    assert all(r.type == "series" for r in results)
+    assert all(r.form == "series" for r in results)
     assert has_next is True
 
 
@@ -101,7 +101,7 @@ async def test_cikavaideya_browse_cartoon_section_classifies_by_subtitle():
         async with httpx.AsyncClient() as http:
             results, has_next = await CikavaIdeyaProvider().browse("cartoon", 1, http)
     assert len(results) == 18
-    type_counts = {t: sum(1 for r in results if r.type == t) for t in {"movie", "series"}}
+    type_counts = {t: sum(1 for r in results if r.form == t) for t in ("movie", "series")}
     # Regression: longest-prefix-first classification must put "Фільми"
     # ahead of "Анімаційні" — at least one card in this section is
     # tagged "Фільми / Анімаційні" and should classify as `movie`.
@@ -127,14 +127,19 @@ async def test_cikavaideya_browse_filmy_last_page_has_next_false():
 @pytest.mark.asyncio
 async def test_cikavaideya_content_movie_parses_title_poster():
     content_html = _fixture("content_movie.html")
+    ashdi_html = _fixture("ashdi_movie.html")
     with respx.mock(assert_all_called=True) as router:
         router.get("https://cikava-ideya.top/281-duelianty.html").respond(
             200, text=content_html
         )
+        # content()-time ashdi probe (#185): the movie's single Player1
+        # URL is the representative player page, fetched for the
+        # dead-VOD marker check.
+        router.get("https://ashdi.vip/vod/228698").respond(200, text=ashdi_html)
         async with httpx.AsyncClient() as http:
             c = await CikavaIdeyaProvider().content("281-duelianty", http)
     assert "Дуелянти" in c.title
-    assert c.type == "movie"
+    assert c.form == "movie"
     assert c.poster is not None
     assert c.poster.startswith("https://cikava-ideya.top/uploads/")
     # Movie content pages expose a single Player1 URL; the parser
@@ -144,20 +149,24 @@ async def test_cikavaideya_content_movie_parses_title_poster():
     assert c.seasons is not None
     assert len(c.seasons) == 1
     assert len(c.seasons[0].episodes) == 1
-    assert c.seasons[0].episodes[0].id.endswith(":__movie__")
+    assert c.seasons[0].episodes[0].id == "cikavaideya:281-duelianty:__movie__"
 
 
 @pytest.mark.asyncio
 async def test_cikavaideya_content_series_parses_seasons():
     content_html = _fixture("content_series.html")
+    ashdi_html = _fixture("ashdi_movie.html")
     with respx.mock(assert_all_called=True) as router:
         router.get("https://cikava-ideya.top/226-jak-vlashtovanij-vsesvit.html").respond(
             200, text=content_html
         )
+        # content()-time ashdi probe (#185): s1e1's ashdi URL is the
+        # representative player page for the dead-VOD marker check.
+        router.get("https://ashdi.vip/vod/127413").respond(200, text=ashdi_html)
         async with httpx.AsyncClient() as http:
             c = await CikavaIdeyaProvider().content("226-jak-vlashtovanij-vsesvit", http)
     assert "Всесвіт" in c.title
-    assert c.type == "series"
+    assert c.form == "series"
     # Captured page exposes 5 seasons with episode counts: [8, 8, 9, 8, 2].
     assert c.seasons is not None
     assert [s.number for s in c.seasons] == [1, 2, 3, 4, 5]
@@ -197,8 +206,36 @@ async def test_cikavaideya_stream_resolves_to_m3u8():
     assert s.url.endswith(".m3u8")
     assert s.type == "m3u8"
     # ashdi.vip requires a Referer to serve the manifest; the upstream
-    # Kotlin sets `referer = "https://tortuga.wtf/"`.
-    assert s.headers.get("Referer") == "https://tortuga.wtf/"
+    # Kotlin sets `referer = "https://tortuga.wtf/"`.    assert s.headers.get("Referer") == "https://tortuga.wtf/"
+
+
+@pytest.mark.asyncio
+async def test_cikavaideya_stream_rejects_player_redirect_to_disallowed_host():
+    """The player URL comes from upstream HTML, so it must go through
+    the SSRF redirect allowlist (issue #126): a player page that
+    redirects to an attacker-controlled host fails closed with
+    `not_found` instead of being followed."""
+    from cs_uk_api.providers.base import ProviderError
+
+    content_html = _fixture("content_movie.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://cikava-ideya.top/281-duelianty.html").respond(
+            200, text=content_html
+        )
+        router.get("https://ashdi.vip/vod/228698").respond(
+            302, headers={"Location": "https://evil.example.com/pivot"}
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await CikavaIdeyaProvider().stream(
+                    "281-duelianty:__movie__", None, http
+                )
+    assert exc_info.value.code == "not_found"
+    assert "disallowed host" in exc_info.value.message
+
+
+
+
 
 
 @pytest.mark.asyncio
@@ -259,9 +296,8 @@ async def test_cikavaideya_sections_lists_four():
 async def test_cikavaideya_browse_unknown_section_raises():
     from cs_uk_api.providers.base import ProviderError
 
-    with respx.mock(assert_all_called=False):
-        with pytest.raises(ProviderError):
-            await CikavaIdeyaProvider().browse("nonexistent", 1, httpx.AsyncClient())
+    with respx.mock(assert_all_called=False), pytest.raises(ProviderError):
+        await CikavaIdeyaProvider().browse("nonexistent", 1, httpx.AsyncClient())
 
 
 @pytest.mark.asyncio
@@ -362,3 +398,134 @@ async def test_cikavaideya_stream_bad_slug_raises():
                     "../admin:__movie__", None, http
                 )
     assert exc_info.value.code == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_cikavaideya_content_removed_title_raises_gated():
+    """Regression (#139): a content page whose Player1 is a trailer-only
+    map (``{"Трейлер": "https://www.youtube.com/embed/..."}``) under the
+    upstream-removed marker «Видалено на прохання правовласника» used to
+    CRASH ``_build_seasons`` with ``AttributeError: 'str' object has no
+    attribute 'keys'`` — the fundaciya title the #136 sweep surfaced as
+    no_episodes with provider health-down. The right verdict is ``gated``
+    (ADR-0002: deliberate unavailability, not an upstream-health signal),
+    mirroring eneyida's «Контент недоступний» (#137)."""
+    from cs_uk_api.providers.base import ProviderError
+
+    content_html = _fixture("content_fundaciya.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://cikava-ideya.top/104-fundaciya-2021c.html").respond(
+            200, text=content_html
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await CikavaIdeyaProvider().content("104-fundaciya-2021c", http)
+    assert exc_info.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_cikavaideya_content_no_player_raises_gated():
+    """Regression (#139): a content page with an EMPTY
+    ``switches = Object({})`` (no Player1 at all — the folaut title the
+    #136 sweep flagged as no_episodes) is deliberate unavailability, not
+    a parse success with zero seasons. ``content()`` must raise ``gated``
+    so the ADR-0002 catalog sweep (``filter_gated_items``, cikavaideya is
+    now ``can_gate``) drops the card instead of surfacing a dead
+    episode-rail."""
+    from cs_uk_api.providers.base import ProviderError
+
+    content_html = _fixture("content_folaut.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://cikava-ideya.top/239-folaut.html").respond(
+            200, text=content_html
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await CikavaIdeyaProvider().content("239-folaut", http)
+    assert exc_info.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_cikavaideya_stream_dead_ashdi_raises_gated():
+    """Regression (#139): ashdi.vip answers a removed VOD with the 33-byte
+    ``<center>Файл не знайдено</center>`` page (captured live for vsesvit
+    s1e1, ashdi/vod/127413). ``stream()`` must raise ``gated``
+    (upstream-removed content, ADR-0002 — no health impact), not
+    ``parse_failed`` — which the #136 sweep saw as PlaybackInfo
+    ``item_unavailable`` + provider health-down.
+
+    Production-form id: bare external_id + ``:s1e1`` (no ``cikavaideya:``
+    prefix handed to ``stream()``)."""
+    from cs_uk_api.providers.base import ProviderError
+
+    content_html = _fixture("content_series.html")
+    ashdi_html = _fixture("ashdi_vod_127413.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://cikava-ideya.top/226-jak-vlashtovanij-vsesvit.html"
+        ).respond(200, text=content_html)
+        router.get("https://ashdi.vip/vod/127413").respond(200, text=ashdi_html)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await CikavaIdeyaProvider().stream(
+                    "226-jak-vlashtovanij-vsesvit:s1e1", None, http
+                )
+    assert exc_info.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_cikavaideya_content_dead_ashdi_raises_gated():
+    """Regression (#185): ashdi.vip answers a removed VOD with
+    ``<center>Файл не знайдено</center>`` (ashdi_vod_127413.html).
+    Until now content() built seasons from Player1 WITHOUT probing the
+    ashdi page, so a dead title passed the ADR-0002 catalog sweep
+    (``filter_gated_items``) and only 404'd at play time. content() must
+    now probe the representative player URL and raise ``gated`` —
+    mirroring eneyida's content()-time gating (#139) — so the sweep drops
+    the dead card."""
+    from cs_uk_api.providers.base import ProviderError
+
+    content_html = _fixture("content_series.html")
+    ashdi_html = _fixture("ashdi_vod_127413.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://cikava-ideya.top/226-jak-vlashtovanij-vsesvit.html"
+        ).respond(200, text=content_html)
+        router.get("https://ashdi.vip/vod/127413").respond(200, text=ashdi_html)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await CikavaIdeyaProvider().content(
+                    "226-jak-vlashtovanij-vsesvit", http
+                )
+    assert exc_info.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_cikavaideya_content_live_ashdi_probe_returns_seasons():
+    """The content()-time ashdi probe (#185) must not disturb a LIVE
+    title: probing the representative player URL (s1e1 → vod/127413)
+    without the dead marker returns normally, and seasons are still
+    built from Player1. ``assert_all_called`` pins that the probe fired."""
+    content_html = _fixture("content_series.html")
+    ashdi_html = _fixture("ashdi_movie.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://cikava-ideya.top/226-jak-vlashtovanij-vsesvit.html"
+        ).respond(200, text=content_html)
+        router.get("https://ashdi.vip/vod/127413").respond(200, text=ashdi_html)
+        async with httpx.AsyncClient() as http:
+            c = await CikavaIdeyaProvider().content(
+                "226-jak-vlashtovanij-vsesvit", http
+            )
+    assert [s.number for s in c.seasons] == [1, 2, 3, 4, 5]
+    assert [len(s.episodes) for s in c.seasons] == [8, 8, 9, 8, 2]
+
+
+def test_cikavaideya_can_gate_true():
+    """Regression (#139): cikavaideya's ``gated`` verdicts must flow
+    through ``filter_gated_items`` during ``load_home`` (ADR-0002 catalog
+    sweep) so a removed/trailer-only/no-player title is dropped from the
+    catalog instead of surfacing a dead episode-rail — and so the verdict
+    lands in ``gated_cache`` BEFORE ``resolve_group_content`` would
+    otherwise record a health-down on the group-content path."""
+    assert CikavaIdeyaProvider.can_gate is True

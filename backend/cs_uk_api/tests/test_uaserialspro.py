@@ -91,7 +91,7 @@ async def test_search_classifies_films_as_movie():
     # Our v2 spec maps them to a sensible default — for search results
     # we accept "movie" / "series" / "anime" (anything reasonable; the
     # content() endpoint refines the type).
-    assert all(r.type in {"movie", "series", "anime"} for r in results)
+    assert all(r.form in {"movie", "series"} for r in results)
 
 
 @pytest.mark.asyncio
@@ -121,7 +121,7 @@ async def test_browse_films_parses_results():
             results, has_next = await UASerialsProProvider().browse("films", 1, http)
     assert len(results) == 18
     # Films section cards all classify as movie.
-    assert all(r.type == "movie" for r in results)
+    assert all(r.form == "movie" for r in results)
     # All IDs begin with the provider prefix.
     assert all(r.id.startswith("uaserialspro:") for r in results)
     # Captured home page has pagination links (page/2/, page/3/, …).
@@ -137,7 +137,7 @@ async def test_browse_page2_uses_dle_pagination():
         async with httpx.AsyncClient() as http:
             results, _ = await UASerialsProProvider().browse("films", 2, http)
     assert len(results) == 18
-    assert all(r.type == "movie" for r in results)
+    assert all(r.form == "movie" for r in results)
 
 
 @pytest.mark.asyncio
@@ -176,7 +176,7 @@ async def test_browse_series_classifies_as_series():
         async with httpx.AsyncClient() as http:
             results, _ = await UASerialsProProvider().browse("series", 1, http)
     assert len(results) == 18
-    assert all(r.type == "series" for r in results)
+    assert all(r.form == "series" for r in results)
 
 
 @pytest.mark.asyncio
@@ -209,7 +209,7 @@ async def test_content_movie_parses_title_year_poster():
     # Title is the visible `.short-title` text.
     assert "Шопен" in c.title
     # Жанр row contains "Фільм" → Movie.
-    assert c.type == "movie"
+    assert c.form == "movie"
     # Year from `/year/2025/`.
     assert c.year == 2025
     # Poster from `div.fimg img-wide img`.
@@ -220,8 +220,31 @@ async def test_content_movie_parses_title_year_poster():
     assert c.seasons is not None
     assert len(c.seasons) == 1
     assert len(c.seasons[0].episodes) == 1
-    assert c.seasons[0].episodes[0].id.endswith(":__movie__")
+    assert c.seasons[0].episodes[0].id == "uaserialspro:12588-shopen-shopen:__movie__"
     assert len(c.translations) >= 1
+
+
+@pytest.mark.asyncio
+async def test_content_parses_cast():
+    """Ticket #221: the content page's ``Актори:`` li lists the cast
+    with one ``/person/<id>-<slug>/`` anchor per person — parse it into
+    ``ContentResponse.people``."""
+    content_html = _fixture("content.html")
+    player_html = _fixture("player.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://uaserials.com/12588-shopen-shopen.html").respond(
+            200, text=content_html
+        )
+        router.get("https://tortuga.tw/vod/129316").respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            c = await UASerialsProProvider().content("12588-shopen-shopen", http)
+    assert len(c.people) == 7
+    first = c.people[0]
+    assert first.name == "Ерік Кульм"
+    assert first.role == "Actor"
+    # The person key is the ``/person/<id>-<slug>/`` path — the numeric
+    # id is the site's stable person identifier.
+    assert first.id == "uaserialspro:4954-eryk-kulm"
 
 
 @pytest.mark.asyncio
@@ -239,7 +262,7 @@ async def test_content_series_parses_seasons():
         async with httpx.AsyncClient() as http:
             c = await UASerialsProProvider().content("12585-enn-droyid", http)
     assert "Енн" in c.title or "Дройід" in c.title
-    assert c.type == "series"
+    assert c.form == "series"
     assert c.seasons is not None
     assert len(c.seasons) >= 1
     # Each season has at least one episode with the s{N}e{M} suffix.
@@ -298,6 +321,31 @@ async def test_stream_movie_resolves_to_m3u8():
     # tortuga.tw serves the HLS manifest via Referer (upstream uses
     # `referer = "https://tortuga.tw/"`).
     assert s.headers.get("Referer") == "https://tortuga.tw/"
+
+
+@pytest.mark.asyncio
+async def test_stream_rejects_player_redirect_to_disallowed_host():
+    """The player URL comes from decrypted upstream HTML, so it must
+    go through the SSRF redirect allowlist (issue #126): a player page
+    that redirects to an attacker-controlled host fails closed with
+    `not_found` instead of being followed."""
+    from cs_uk_api.providers.base import ProviderError
+
+    content_html = _fixture("content.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://uaserials.com/12588-shopen-shopen.html").respond(
+            200, text=content_html
+        )
+        router.get("https://tortuga.tw/vod/129316").respond(
+            302, headers={"Location": "https://evil.example.com/pivot"}
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await UASerialsProProvider().stream(
+                    "12588-shopen-shopen:__movie__", None, http
+                )
+    assert exc_info.value.code == "not_found"
+    assert "disallowed host" in exc_info.value.message
 
 
 @pytest.mark.asyncio

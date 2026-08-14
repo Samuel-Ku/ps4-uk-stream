@@ -23,8 +23,9 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 from pydantic import BaseModel, ValidationError
 
-from ..extractors import RegexExtractor
 from ..country import extract_country
+from ..extractors import RegexExtractor
+from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -34,19 +35,23 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, model_b_axes
 
 BASE_URL = "https://doramy.world"
 # ashdi.vip hosts the HLS manifest for each episode; the upstream Kotlin
 # uses the same Referer.
 ASHDI_REFERER = "https://ashdi.vip/"
+# Hosts the upstream may legally redirect to: the WordPress CMS and
+# the ashdi player CDN. A hostile CMS response must not be able to
+# pivot the player hop to an attacker-controlled host.
+_ALLOWED_HOSTS: frozenset[str] = frozenset({"doramy.world", "ashdi.vip"})
 
 # Sections exposed by DoramyWorld's main navigation. Per the upstream
 # `mainPage = mainPageOf(...)` declaration in DoramyWorldProvider.kt.
 DORAMYWORLD_SECTIONS: tuple[Section, ...] = (
-    Section(id="film", title="Фільми", type="movie"),
-    Section(id="dorama", title="Дорами", type="dorama"),
-    Section(id="show", title="Розважальні шоу", type="series"),
+    Section(id="film", title="Фільми", form="movie"),
+    Section(id="dorama", title="Дорами", styles=frozenset({"dorama"})),
+    Section(id="show", title="Розважальні шоу", form="series"),
 )
 
 # URL path segment -> MediaType. Longest prefixes first; we only need
@@ -181,8 +186,9 @@ def _section_url(section: str, page: int) -> str:
     if section not in paths:
         raise ProviderError("not_found", f"unknown section: {section}")
     # The upstream Kotlin always appends /page/N/, even for page 1.
-    # WordPress resolves both `/dorama/` and `/dorama/page/1/` to the
-    # same listing; mirroring the upstream keeps the test URLs exact.
+    # WordPress 301-redirects `/page/1/` to the canonical section URL
+    # (`/film/page/1/` -> `/film/`); browse() fetches through safe_get
+    # (#171) so the same-host redirect is followed. Pages > 1 return 200.
     return f"{BASE_URL}{paths[section]}page/{page}/"
 
 
@@ -232,13 +238,15 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
         ext = _external_id_from_url(href)
     except ProviderError:
         return None
+    mb_form, mb_styles = model_b_axes(_type_from_url(href))  # type: ignore[arg-type]
     return SearchResult(
         id=f"{provider_id}:{ext}",
         provider=provider_id,
-        type=_type_from_url(href),  # type: ignore[arg-type]
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
+        form=mb_form,
+        styles=mb_styles,
     )
 
 
@@ -250,6 +258,11 @@ class DoramyWorldProvider(BaseProvider):
     name = "DoramyWorld"
     types = ("movie", "series", "dorama")
     sections = DORAMYWORLD_SECTIONS
+    #: Issue #188: a content page without a player (no ``data-player``
+    #: at all) is an unplayable dead card — content() raises ``gated``
+    #: and the catalog sweep (``filter_gated_items``) drops it from
+    #: home/search instead of surfacing an unplayable movie.
+    can_gate = True
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         # WordPress search uses `?s=...` with spaces encoded as `+`. We
@@ -275,7 +288,7 @@ class DoramyWorldProvider(BaseProvider):
     ) -> tuple[list[SearchResult], bool]:
         url = _section_url(section, page)
         try:
-            resp = await http.get(url)
+            resp = await safe_get(http, url, allowed_hosts=set(_ALLOWED_HOSTS))
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
@@ -324,6 +337,14 @@ class DoramyWorldProvider(BaseProvider):
         country: str | None = extract_country(soup)
         media_type = _type_from_url(url)
         translations_models = _parse_player(resp.text)
+        if not translations_models:
+            # Issue #188: a page without a ``data-player`` has no
+            # playable source at all (observed live on «У шкірі моєї
+            # матері» — no data-player, no player iframe). Surface the
+            # dead card as ``gated`` (ADR-0002) so the catalog sweep
+            # drops it from home/search instead of showing an
+            # unplayable movie with a fake «Українська» track.
+            raise ProviderError("gated", "no player on content page")
         translations: list[Translation] = [
             Translation(
                 id=_translation_id(t.label),
@@ -335,10 +356,10 @@ class DoramyWorldProvider(BaseProvider):
             translations = [Translation(id="uk", label="Українська")]
         seasons: list[Season] | None = None
         if translations_models:
-            seasons = self._build_seasons(translations_models, external_id)
+            seasons = self._build_seasons(translations_models, external_id, self.id)
+        mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"doramyworld:{external_id}",
-            type=media_type,  # type: ignore[arg-type]
             title=title,
             year=year,
             description=description,
@@ -346,11 +367,13 @@ class DoramyWorldProvider(BaseProvider):
             translations=translations,
             seasons=seasons,
             country=country,
+            form=mb_form,
+            styles=mb_styles,
         )
 
     @staticmethod
     def _build_seasons(
-        translations: list[_PlayerTranslation], external_id: str
+        translations: list[_PlayerTranslation], external_id: str, provider_id: str
     ) -> list[Season]:
         """Flatten the data-player translations into one Season[].
 
@@ -368,7 +391,7 @@ class DoramyWorldProvider(BaseProvider):
             episodes = [
                 Episode(
                     number=e_idx,
-                    id=f"{external_id}:s{s_idx}e{e_idx}",
+                    id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
                     title=f"Серія {e_idx}",
                 )
                 for e_idx, _ in enumerate(season.episodes, start=1)
@@ -406,10 +429,15 @@ class DoramyWorldProvider(BaseProvider):
         if ashdi_url is None:
             raise ProviderError("not_found", f"no player url for {ep_suffix!r}")
         # ashdi.vip serves a page with `file:'...m3u8...'`. The shared
-        # RegexExtractor picks that pattern up cleanly.
+        # RegexExtractor picks that pattern up cleanly. The URL came
+        # from upstream HTML, so it goes through the redirect
+        # allowlist (#126).
         try:
-            ashdi_resp = await http.get(
-                ashdi_url, headers={"Referer": ASHDI_REFERER}
+            ashdi_resp = await safe_get(
+                http,
+                ashdi_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+                headers={"Referer": ASHDI_REFERER},
             )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
@@ -421,7 +449,7 @@ class DoramyWorldProvider(BaseProvider):
         return StreamResponse(
             url=extracted.url,
             type=extracted.type,
-            headers={"Referer": ASHDI_REFERER, "User-Agent": "cs-uk-api/0.1"},
+            headers={"Referer": ASHDI_REFERER, "User-Agent": "cs-uk-api/1.0"},
         )
 
     @staticmethod

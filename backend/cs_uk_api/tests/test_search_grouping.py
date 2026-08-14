@@ -27,7 +27,9 @@ from typing import Any, cast
 import pytest
 from fastapi.testclient import TestClient
 
-from cs_uk_api.main import _search_cache, _home_cache, app
+import cs_uk_api.catalog_state as catalog_state_mod
+from cs_uk_api import main as main_mod
+from cs_uk_api.main import _home_cache, _search_cache, app
 from cs_uk_api.merge import item_group_key, merge_results
 from cs_uk_api.models import (
     SearchGroup,
@@ -35,7 +37,6 @@ from cs_uk_api.models import (
 )
 from cs_uk_api.providers import PROVIDERS
 from cs_uk_api.providers.base import BaseProvider
-
 
 # ---------------------------------------------------------------------------
 # Helpers + fixtures
@@ -54,7 +55,7 @@ def _result(
     return SearchResult(
         id=f"{pid}:{n}",
         provider=pid,
-        type=cast(Any, media_type),
+        form=cast(Any, media_type),
         title=title,
         year=year,
         poster=poster or f"https://{pid}.example/{n}.jpg",
@@ -78,6 +79,53 @@ def isolate() -> Iterator[None]:
         PROVIDERS.update(saved_providers)
         _search_cache.clear()
         _home_cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def _ready_uakino_session() -> Iterator[None]:
+    """Treat uakino's browser session as already ready (issue #193).
+
+    These tests register uakino as a healthy working provider to exercise
+    merge behaviour. The fan-out skip (issue #193) drops uakino from
+    ``provider=all`` searches while its session has not finished warming —
+    and the explicit ``?provider=uakino`` route bounded-waits on
+    ``ready_event`` — so the module stubs the session main.py reads to a
+    ready one. uakino's startup marker is cleared too, so a host without
+    the browser binary cannot flake the merge assertions.
+
+    The session is restored manually (not via ``monkeypatch``): this module
+    is full of ``monkeypatch.setitem(PROVIDERS, ...)`` tests whose teardown
+    must run before ``isolate`` re-populates the registry — taking a
+    ``monkeypatch`` here reorders fixture finalization and lets
+    ``monkeypatch.undo()`` delete real providers that ``isolate`` just
+    restored (pytest-randomly exposed this as registry corruption).
+    """
+    import asyncio
+
+    class _ReadySession:
+        def __init__(self) -> None:
+            self.ready_event = asyncio.Event()
+            self.ready_event.set()
+
+        async def fetch(self, path, method="GET", data=None):  # type: ignore[no-untyped-def]
+            raise AssertionError("unused: uakino providers are stubbed in this module")
+
+        async def close(self) -> None:
+            pass
+
+    saved_get_session = main_mod.get_session
+    main_mod.get_session = lambda: _ReadySession()  # type: ignore[assignment]
+    # The shared merged search now lives in catalog_state (ticket #106);
+    # its fan-out skip reads the SAME session seam, so both bindings are
+    # stubbed to the ready session.
+    saved_catalog_get_session = catalog_state_mod.get_session
+    catalog_state_mod.get_session = main_mod.get_session  # type: ignore[assignment]
+    main_mod.TRACKER.reset()
+    try:
+        yield
+    finally:
+        main_mod.get_session = saved_get_session
+        catalog_state_mod.get_session = saved_catalog_get_session
 
 
 class _StubBase(BaseProvider):
@@ -128,14 +176,14 @@ def test_search_group_has_group_key_title_year_type_poster_sources() -> None:
         group_key=mg.key,
         title=mg.sources[0].title,
         year=mg.sources[0].year,
-        type=mg.sources[0].type,  # type: ignore[arg-type]
+        form=mg.sources[0].form,
         poster=mg.sources[0].poster,
         sources=list(mg.sources),
     )
-    assert sg.group_key.startswith("g1:")
+    assert sg.group_key.startswith("g2:")
     assert sg.title == "Дюна"
     assert sg.year == 2021
-    assert sg.type == "movie"
+    assert sg.form == "movie"
     assert sg.poster == "https://uakino.example/1.jpg"
     assert len(sg.sources) == 2
     assert {s.provider for s in sg.sources} == {"uakino", "eneyida"}
@@ -170,7 +218,7 @@ def test_search_group_member_keys_includes_all_member_group_keys() -> None:
         group_key=mg.key,
         title=mg.sources[0].title,
         year=mg.sources[0].year,
-        type=mg.sources[0].type,  # type: ignore[arg-type]
+        form=mg.sources[0].form,
         poster=mg.sources[0].poster,
         sources=list(mg.sources),
         member_keys=list(dict.fromkeys(member_keys)),
@@ -199,7 +247,7 @@ def test_search_response_groups_field_replaces_results(monkeypatch: pytest.Monke
     assert "groups" in body
     assert "results" not in body  # v3 contract: flat results are gone
     assert len(body["groups"]) == 1
-    assert body["groups"][0]["group_key"].startswith("g1:")
+    assert body["groups"][0]["group_key"].startswith("g2:")
     assert body["groups"][0]["title"] == "Дюна"
     assert len(body["groups"][0]["sources"]) == 2
     # Issue #89: member_keys is on the wire so the client can match
@@ -463,7 +511,7 @@ def test_search_single_provider_one_group_one_source(monkeypatch: pytest.MonkeyP
         {
             "id": "uakino:1",
             "provider": "uakino",
-            "type": "movie",
+            "form": "movie",
             "title": "Смолфут",
             "year": 2018,
             "poster": "https://uakino.example/1.jpg",

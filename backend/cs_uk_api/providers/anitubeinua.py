@@ -54,7 +54,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, model_b_axes
 
 BASE_URL = "https://anitube.in.ua"
 # ashdi.vip requires the upstream Referer to serve the m3u8 manifest.
@@ -64,7 +64,7 @@ ASHDI_REFERER = "https://qeruya.cyou"
 
 # The one and only section: the site root path is `/anime/page/N/`.
 ANITUBEINUA_SECTIONS: tuple[Section, ...] = (
-    Section(id="page", title="Нові", type="anime"),
+    Section(id="page", title="Нові", styles=frozenset({"anime"})),
 )
 
 # External id: numeric news id, hyphen, slug. Used as a security
@@ -170,13 +170,15 @@ def _parse_story(card: Any, provider_id: str) -> SearchResult | None:
         elif isinstance(src, str) and src and not src.endswith("spacer.gif"):
             poster_src = src
     poster = urljoin(BASE_URL, poster_src) if poster_src else None
+    mb_form, mb_styles = model_b_axes("anime")
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
-        type="anime",
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
+        form=mb_form,
+        styles=mb_styles,
     )
 
 
@@ -289,7 +291,7 @@ def _category_id(ep_data_id: str) -> str:
     return "_".join(segments[:2]) if len(segments) >= 2 else ""
 
 
-def _build_seasons(playlist: dict[str, Any], external_id: str) -> list[Season]:
+def _build_seasons(playlist: dict[str, Any], external_id: str, provider_id: str) -> list[Season]:
     """Group the playlist into seasons.
 
     Each season corresponds to one category (SUB / DUB). Within a
@@ -347,7 +349,7 @@ def _build_seasons(playlist: dict[str, Any], external_id: str) -> list[Season]:
             episodes_out.append(
                 Episode(
                     number=e_idx,
-                    id=f"{external_id}:s{s_idx}e{e_idx}",
+                    id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
                     title=ep.title,
                     translations=translations,
                 )
@@ -588,7 +590,7 @@ class AnitubeinuaProvider(BaseProvider):
         translations_level: str = "content"
         try:
             playlist = await self._load_playlist(external_id, http)
-            seasons = _build_seasons(playlist, external_id)
+            seasons = _build_seasons(playlist, external_id, self.id)
             if seasons:
                 translations_level = "episode"
         except ProviderError as e:
@@ -601,14 +603,16 @@ class AnitubeinuaProvider(BaseProvider):
         # Always have at least one translation so the model min_length
         # check passes.
         translations = [Translation(id="uk", label="Українська")]
+        mb_form, mb_styles = model_b_axes("anime")
         return ContentResponse(
             id=f"{self.id}:{external_id}",
-            type="anime",
             title=title,
             year=year,
             description=description,
             poster=poster,
             translations=translations,
+            form=mb_form,
+            styles=mb_styles,
             seasons=seasons,
             translations_level=translations_level,  # type: ignore[arg-type]
         )
@@ -668,7 +672,7 @@ class AnitubeinuaProvider(BaseProvider):
         return StreamResponse(
             url=m3u8.group(1),
             type="m3u8",
-            headers={"Referer": _referer_for(file_url), "User-Agent": "cs-uk-api/0.1"},
+            headers={"Referer": _referer_for(file_url), "User-Agent": "cs-uk-api/1.0"},
         )
 
     @staticmethod

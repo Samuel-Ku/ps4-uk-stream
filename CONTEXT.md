@@ -6,7 +6,7 @@
 
 ---
 
-> **Shipped-vs-decided (2026-08-08 sync):** the sections below document the **decided target model** (Model B). The backend **still ships Model A** — a single `MediaType = Literal["movie", "series", "anime", "cartoon", "dorama"]` in `backend/cs_uk_api/models.py`, and `SearchResult.type` carries it. The Model B migration (form/styles axes on items, sections and search) is **not yet implemented**; it is the open obligation of ADR-0001, whose cache-key consequence (form/styles in the `/api/search` key) only activates once the filters ship. Until then, `MediaType` values `anime`/`cartoon`/`dorama` remain conflated with `movie`/`series` in practice.
+> **Shipped (Model B, contract step #135, 2026-08-10):** the sections below document the shipped model — the decided target IS the wire contract. Every content item (search/browse/content/home) carries required `form` + `styles` axes; `Section` declares its `form`/`styles` filter axes; all providers populate them via the shared `model_b_axes` mapping; `/api/search` + `/api/browse` filter on them (tickets #129–#135). The legacy `MediaType`/`type` field is gone from models, providers, and API responses — `anime`/`cartoon`/`dorama` ship as `styles`, never conflated with `movie`/`series`.
 
 ## Catalog taxonomy (Model B — form + style)
 
@@ -94,7 +94,7 @@ Section {
 
 ---
 
-> **Shipped-vs-decided (2026-08-08 sync):** these filter axes are **decided, not shipped**. The route currently accepts only `q` (required) and `provider` (default `all`); `form`/`style` params do not exist yet, so the ADR-0001 cache-key obligation is dormant. `/api/browse` likewise takes no filter params beyond `provider`/`section`.
+> **Shipped (ticket #134, 2026-08-08):** `GET /api/search` accepts `form` and `style` as documented below, and `/api/browse` filters each section's results by its declared `form`/`styles` axes (undeclared axes pass everything). The `/api/search` cache key carries both axes, fulfilling the ADR-0001 obligation.
 
 ## Search filter axes (decided A)
 
@@ -224,7 +224,7 @@ Deployment assumption that drives most of it: **one host, one uvicorn process, L
 | `/api/content/{id}` (blocked-country 404) | memory | 30m | `CS_UK_CACHE_CONTENT` (shared) | The block follows from the item's `country` field, which is as stable as the item. Avoids re-fetching and re-parsing content that will be rejected again. |
 | `/api/poster` | memory | 1h | `CS_UK_CACHE_POSTER` | A memory-pressure bound, not a freshness bound — a poster is immutable for a given URL. |
 | `/api/poster` | backend disk | 7d | `CS_UK_POSTER_DISK_TTL` | Issue #54. Survives restarts; disk is cheap; content is immutable per URL. |
-| `/api/poster` | pplay-fork disk | 7d | — | Issue #54, mirrored so the console serves warm art without touching the LAN. |
+| `/Items/{id}/Images/*` (facade) | memory | per-poster | — | The facade serves the same backend-disk-cached bytes inline (public, token-less image routes); the WebP transcode memo bounds CPU, not freshness. |
 | `/api/providers` | **not cached** | — | — | Embeds live `TRACKER.status()`. A TTL would delay exactly the health signal the endpoint exists to deliver. |
 | `/api/sections` | **not cached** | — | — | A list comprehension over a static in-process registry. A cache in front of a dict lookup is pure overhead. |
 | `/api/stream/{id}` | **not cached** | — | — | See "What is not cached" below. |
@@ -246,7 +246,7 @@ Rules:
 - The key carries **every request parameter that can change the response** — nothing more.
 - The **provider axis is always present**: explicitly in `search:` / `browse:` keys, implicitly in `content:` keys because `content_id` is prefixed with the provider.
 - `q` is **not normalized** (no case-folding, no whitespace collapsing). A normalizer would have to mirror what 19 independent scrapers do with the query; where it disagrees, a hit returns results for a different search. Duplicate entries are the cheaper failure.
-- **Outstanding obligation from ADR-0001**: the `/api/search` key must gain the `form` and `styles` axes when those filters ship, or filtered and unfiltered searches collide.
+- **Fulfilled (ticket #134)**: the `/api/search` key carries the `form` and `styles` axes (`search:{provider}:{q}:{form}:{sorted-styles}`), so filtered and unfiltered searches never collide.
 
 ### Invalidation
 

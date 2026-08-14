@@ -59,3 +59,26 @@ async def test_safe_get_rejects_cross_host_redirect():
                 await safe_get(
                     http, "https://example.test/a/", allowed_hosts={"example.test"}
                 )
+
+
+@pytest.mark.asyncio
+async def test_safe_get_rejects_disallowed_initial_host():
+    """The INITIAL URL must also be checked against ``allowed_hosts``.
+
+    ``safe_get`` is used for player-hop requests whose URL comes from
+    (possibly decrypted) upstream HTML. A hostile CMS could return a
+    player URL pointing at an arbitrary host; the fetch must fail closed
+    before any network I/O, or the backend becomes an open fetcher from
+    its LAN position (SSRF).
+    """
+    with respx.mock(assert_all_called=False) as router:
+        # Route is registered only so a buggy (fetching) impl makes a
+        # clean network call instead of an unmocked-NetworkError; the
+        # assertion that matters is the ProviderError below.
+        router.get("https://evil.test/steal").respond(200, text="stolen")
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await safe_get(
+                    http, "https://evil.test/steal", allowed_hosts={"example.test"}
+                )
+    assert "disallowed host" in exc_info.value.message

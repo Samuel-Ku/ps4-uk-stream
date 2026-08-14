@@ -27,13 +27,111 @@ from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
+    Person,
     SearchResult,
     Season,
     Section,
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, model_b_axes
+
+
+def _jsonld_doc(soup: BeautifulSoup) -> dict[str, Any] | None:
+    """The page's schema.org JSON-LD as a dict, or None when missing
+    or malformed (shared by the cast and rating parsers)."""
+    script = soup.find("script", type="application/ld+json")
+    if script is None:
+        return None
+    try:
+        data = json.loads(script.string or "")
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _jsonld_rating(soup: BeautifulSoup) -> float | None:
+    """Rating from the page's schema.org ``aggregateRating`` (ticket
+    #222). klonua's JSON-LD carries ``{ratingValue, bestRating,
+    ratingCount}`` on the 0-10 scale — the only real score the catalog
+    exposes (ufdub/kinotron only show +/- vote deltas). Returns None
+    when the block is missing or the value is not a number.
+    """
+    data = _jsonld_doc(soup)
+    if data is None:
+        return None
+    raw = (data.get("aggregateRating") or {}).get("ratingValue")
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value
+
+
+def _jsonld_cast(soup: BeautifulSoup, provider: str) -> list[Person]:
+    """Cast from the page's schema.org JSON-LD (ticket #221).
+
+    klonua's content pages embed ``application/ld+json`` with an
+    ``actor[]`` (and ``director[]``) of ``{@type: Person, name}`` — the
+    only cast source on the site (there is no per-person page to link).
+    JSON-LD has names only, so ids are positional within the role.
+    Returns [] when the block is missing or malformed.
+    """
+    data = _jsonld_doc(soup)
+    if data is None:
+        return []
+    people: list[Person] = []
+    for role, label in (("actor", "Actor"), ("director", "Director")):
+        for i, entry in enumerate(data.get(role, []) or []):
+            name = entry.get("name") if isinstance(entry, dict) else None
+            if isinstance(name, str) and name.strip():
+                people.append(
+                    Person(id=f"{provider}:{role}:{i}", name=name.strip(), role=label)
+                )
+    return people
+
+# The genre row's first link is the section (Фільми/Серіали/…) —
+# a section is not a genre, so those link texts must be excluded
+# when parsing the Жанр row (the section slugs match the section
+# ids on klonua.com).
+_SECTION_SLUGS: frozenset[str] = frozenset(
+    {"films", "filmy", "series", "serialy", "multfilmy", "multserialy", "anime"}
+)
+
+
+def _table_info_year_genres(soup: BeautifulSoup) -> tuple[int | None, list[str]]:
+    """Year and genres from the page's ``table-info__item`` rows.
+
+    The content page carries a ``table-info__item`` block per fact
+    (Рік, Країна, Жанр, Тривалість, …). Рік is a link like
+    ``/year/2000/``, Жанр a row of links like ``/dramy/``. The first
+    Жанр link is the section (Фільми/Серіали) and is not a genre.
+    Returns (None, []) when the rows are missing.
+    """
+    year: int | None = None
+    genres: list[str] = []
+    for item in soup.select("div.table-info__item"):
+        label_el = item.select_one("div.table__category")
+        if label_el is None:
+            continue
+        label = label_el.get_text(strip=True)
+        if label == "Рік:":
+            link = item.select_one("a.table-info__link")
+            if link is not None:
+                text = link.get_text(strip=True)
+                if text.isdigit():
+                    year = int(text)
+        elif label == "Жанр:":
+            for link in item.select("a.table-info__link"):
+                text = link.get_text(strip=True)
+                href = str(link.get("href") or "")
+                slug = href.rstrip("/").rsplit("/", 1)[-1]
+                if text and slug not in _SECTION_SLUGS:
+                    genres.append(text)
+    return year, genres
+
 
 BASE_URL = "https://klonua.com"
 # ashdi.vip hosts the HLS manifest for every title. The upstream
@@ -51,8 +149,8 @@ _ALLOWED_HOSTS: frozenset[str] = frozenset({"klonua.com", "ashdi.vip"})
 # contract only ships `films` and `series` (multfilmy/multserialy/
 # anime are out of scope for now).
 KLONTV_SECTIONS: tuple[Section, ...] = (
-    Section(id="films", title="Фільми", type="movie"),
-    Section(id="series", title="Серіали", type="series"),
+    Section(id="films", title="Фільми", form="movie"),
+    Section(id="series", title="Серіали", form="series"),
 )
 
 # Path prefix -> MediaType. The site uses `/filmy/` (with a `y`)
@@ -175,13 +273,15 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
     external_id = _external_id_from_url(href)
     if external_id is None:
         return None
+    mb_form, mb_styles = model_b_axes(_type_from_url(href))  # type: ignore[arg-type]
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
-        type=_type_from_url(href),  # type: ignore[arg-type]
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
+        form=mb_form,
+        styles=mb_styles,
     )
 
 
@@ -260,8 +360,18 @@ class KlonTVProvider(BaseProvider):
             raise ProviderError("not_found", f"bad external_id: {external_id!r}")
         path = "filmy" if kind == "films" else "serialy"
         url = f"{BASE_URL}/{path}/{slug}.html"
+        # Fetch through safe_get: the upstream 301-redirects a title
+        # moved between sections (e.g. `/filmy/...` -> `/serialy/...`,
+        # observed live 2026-08-09) and safe_get follows same-host
+        # redirects instead of surfacing a dead not_found for a card
+        # whose player page is alive.
         try:
-            resp = await http.get(url)
+            resp = await safe_get(
+                http,
+                url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+                headers={"Referer": BASE_URL + "/"},
+            )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
@@ -315,28 +425,37 @@ class KlonTVProvider(BaseProvider):
             media_type = "series"
         seasons: list[Season] | None = None
         if media_type == "series":
-            seasons = await self._build_series_seasons(player_url, external_id, http)
+            seasons = await self._build_series_seasons(player_url, external_id, http, self.id)
         else:
             # Movie: single playable URL, surfaced as season 1 episode 1
             # with the `__movie__` suffix sentinel so stream() can pick
             # it up without per-episode routing.
             seasons = [Season(number=1, episodes=[Episode(
-                number=1, id=f"{external_id}{MOVIE_SUFFIX}", title="Фільм",
+                number=1, id=f"{self.id}:{external_id}{MOVIE_SUFFIX}", title="Фільм",
             )])]
+        cast = _jsonld_cast(soup, self.id)
+        rating = _jsonld_rating(soup)
+        year, genres = _table_info_year_genres(soup)
+        mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"klontv:{external_id}",
-            type=media_type,  # type: ignore[arg-type]
             title=title_el.get_text(strip=True),
             description=description,
             poster=poster,
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
             country=country,
+            form=mb_form,
+            styles=mb_styles,
+            people=cast,
+            rating=rating,
+            year=year,
+            genres=genres,
         )
 
     @staticmethod
     async def _build_series_seasons(
-        player_url: str, external_id: str, http: httpx.AsyncClient
+        player_url: str, external_id: str, http: httpx.AsyncClient, provider_id: str
     ) -> list[Season] | None:
         """Fetch the player page and decode the PlayerJS playlist.
 
@@ -381,7 +500,7 @@ class KlonTVProvider(BaseProvider):
                 episodes = [
                     Episode(
                         number=e_idx,
-                        id=f"{external_id}:s{s_idx}e{e_idx}",
+                        id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
                         title=str(ep.get("title", "")).strip(),
                     )
                     for e_idx, ep in enumerate(episodes_raw, start=1)
@@ -413,8 +532,16 @@ class KlonTVProvider(BaseProvider):
             raise ProviderError("not_found", f"bad external_id: {ext_id!r}")
         path = "filmy" if kind == "films" else "serialy"
         content_url = f"{BASE_URL}/{path}/{slug}.html"
+        # Same-host redirect following as content() — a title moved
+        # between sections (e.g. /filmy/ -> /serialy/) must still
+        # resolve its player page instead of surfacing not_found.
         try:
-            resp = await http.get(content_url)
+            resp = await safe_get(
+                http,
+                content_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+                headers={"Referer": BASE_URL + "/"},
+            )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
@@ -447,10 +574,16 @@ class KlonTVProvider(BaseProvider):
         if raw is None:
             raise ProviderError("parse_failed", "no file: in player page")
         # Movies: `raw` is the m3u8 URL. Series: `raw` is a JSON
-        # playlist — pick the right episode via the suffix.
+        # playlist — pick the right episode via the suffix. A bare
+        # series id (no episode suffix) must NOT hand the client the
+        # raw playlist JSON as a "stream" (regression class #165:
+        # content() with empty seasons lets a client stream the bare
+        # series id, and the JSON blob is not a playable URL).
         media_url: str | None
         if ep_suffix:
             media_url = self._select_episode_url(raw, ep_suffix)
+        elif raw.startswith("["):
+            media_url = None
         else:
             media_url = raw
         if media_url is None:
@@ -460,7 +593,7 @@ class KlonTVProvider(BaseProvider):
         return StreamResponse(
             url=media_url,
             type="m3u8",
-            headers={"Referer": ASHDI_REFERER, "User-Agent": "cs-uk-api/0.1"},
+            headers={"Referer": ASHDI_REFERER, "User-Agent": "cs-uk-api/1.0"},
         )
 
     @staticmethod

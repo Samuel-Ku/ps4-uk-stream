@@ -41,7 +41,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, model_b_axes
 
 API_URL = "https://api.coani.net/api"
 SITE_URL = "https://coani.net"
@@ -50,8 +50,8 @@ SITE_URL = "https://coani.net"
 # one for films and one for serials. The new catalog endpoint serves
 # both from the same route, so the section only labels the row.
 COANINET_SECTIONS: tuple[Section, ...] = (
-    Section(id="films", title="Фільми", type="movie"),
-    Section(id="series", title="Серіали", type="series"),
+    Section(id="films", title="Фільми", form="movie"),
+    Section(id="series", title="Серіали", form="series"),
 )
 
 # Type-string value the API uses for serial items.
@@ -129,14 +129,16 @@ def _parse_card(item: object) -> SearchResult | None:
     year = year_value if isinstance(year_value, int) else None
     type_field = inner.get("type")
     media_type: str = "series" if type_field == _TYPE_SERIAL else "movie"
+    mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
     return SearchResult(
         id=f"coaninet:{seo_slug}",
         provider="coaninet",
-        type=media_type,  # type: ignore[arg-type]
         title=str(name),
         year=year,
         poster=poster,
         url=f"{SITE_URL}/catalog/{film_seo_slug}/{seo_slug}",
+        form=mb_form,
+        styles=mb_styles,
     )
 
 
@@ -293,9 +295,9 @@ class CoaninetProvider(BaseProvider):
         ):
             translations_level = "episode"
         translations = [Translation(id="uk", label="Українська")]
+        mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"coaninet:{external_id}",
-            type=media_type,  # type: ignore[arg-type]
             title=str(name),
             year=year,
             description=description,
@@ -303,6 +305,8 @@ class CoaninetProvider(BaseProvider):
             translations=translations,
             seasons=seasons,
             translations_level=translations_level,  # type: ignore[arg-type]
+            form=mb_form,
+            styles=mb_styles,
         )
 
     async def stream(
@@ -366,7 +370,7 @@ class CoaninetProvider(BaseProvider):
             type="m3u8",
             headers={
                 "Referer": f"{SITE_URL}/",
-                "User-Agent": "cs-uk-api/0.1",
+                "User-Agent": "cs-uk-api/1.0",
             },
         )
 

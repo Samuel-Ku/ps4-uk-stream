@@ -13,6 +13,7 @@ from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
+    Person,
     SearchResult,
     Season,
     Section,
@@ -20,7 +21,7 @@ from ..models import (
     Translation,
 )
 from ..uakino_browser import _UA, BASE_URL, UakinoSessionProtocol, get_session
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, model_b_axes
 
 # ashdi.vip serves the playlist page; m3u8 manifests and segment URLs
 # stay on the same host. The host allowlist refuses SSRF pivots at the
@@ -32,10 +33,10 @@ _STREAM_ALLOWED_HOSTS: frozenset[str] = frozenset({"ashdi.vip"})
 # the anime sub-site (Ukrainian-dubbed anime). Section ids are stable;
 # titles are user-facing and may change.
 UAKINO_SECTIONS: tuple[Section, ...] = (
-    Section(id="filmy", title="Фільми", type="movie"),
-    Section(id="serials", title="Серіали", type="series"),
-    Section(id="animeukr", title="Аніме", type="series"),
-    Section(id="cartoons", title="Мультфільми", type="movie"),
+    Section(id="filmy", title="Фільми", form="movie"),
+    Section(id="serials", title="Серіали", form="series"),
+    Section(id="animeukr", title="Аніме", form="series"),
+    Section(id="cartoons", title="Мультфільми", form="movie"),
 )
 
 # external_id is "<section>:<id>-<slug>" (e.g. "filmy:12567-dyuna").
@@ -53,6 +54,12 @@ _EPISODE_RE = re.compile(r"^(\d+):e(\d+)$")
 # Sections that appear in search results but have no playable content.
 _SKIP_SECTIONS = frozenset(
     {"news", "franchise", "anonsi", "find", "year", "tag", "genre", "page", "ua"}
+)
+
+# Section titles the upstream prepends to the Жанр row (a section
+# is not a genre — must be filtered out of ContentResponse.genres).
+_SECTION_TITLES: frozenset[str] = frozenset(
+    s.title for s in UAKINO_SECTIONS
 )
 
 # Stream pages on the ashdi.vip CDN embed the playlist URL as
@@ -130,15 +137,24 @@ def _parse_cards(html: str) -> list[SearchResult]:
             # Genre segments like drama_series, detective_series,
             # anime-series, cartoonseries all denote serialized content.
             kind = "series" if section.endswith("series") else "movie"
+        # The cartoons section («Мультфільми») is animated *films* — its
+        # items must be form=movie, not model_b_axes's default series for
+        # the style-tagged "cartoon" type (else ?form=movie&style=cartoon
+        # search and the section filter both miss them).
+        mb_form, mb_styles = model_b_axes(
+            kind,  # type: ignore[arg-type]
+            form="movie" if section == "cartoon" else None,
+        )
         results.append(
             SearchResult(
                 id=f"uakino:{section}:{item_id}-{slug}",
                 provider="uakino",
-                type=kind,  # type: ignore[arg-type]
                 title=title,
                 year=year,
                 poster=poster,
                 url=urljoin(BASE_URL, href),
+                form=mb_form,
+                styles=mb_styles,
             )
         )
     return results
@@ -161,6 +177,23 @@ def _normalize_cdn_url(raw: str) -> str:
     if raw.startswith("//"):
         return "https:" + raw
     return raw
+
+
+def _direct_player_url(soup: BeautifulSoup) -> str | None:
+    """The movie's single playable player iframe URL, or None.
+
+    uakino migrated movie pages off playlists.php (which now answers
+    ERR_NOT_DATA for them) to a plain direct player iframe
+    (``<iframe src="https://ashdi.vip/vod/<id>">``). The page may also
+    embed a youtube trailer — never the player. Returns the bare vod
+    URL (query params like ``?geoblock=ua&`` stripped).
+    """
+    for iframe in soup.select("iframe"):
+        src = str(iframe.get("src") or "").strip()
+        if "ashdi.vip/vod/" not in src:
+            continue
+        return src.split("?", 1)[0]
+    return None
 
 
 def _parse_playlists(html: str) -> tuple[list[_PlaylistItem], bool]:
@@ -292,20 +325,57 @@ class UakinoProvider(BaseProvider):
         year: int | None = None
         tags: list[str] = []
         country: str | None = None
-        for item in soup.select("div.fi-item"):
+        rating: float | None = None
+        people: list[Person] = []
+        # The upstream template renamed these rows from ``fi-item`` to
+        # ``fi-item-s`` (seen live on anime-series pages, August 2026);
+        # match both spellings so year/genres/rating/people keep parsing
+        # on either template version.
+        for item in soup.select("div.fi-item, div.fi-item-s"):
             label = item.select_one("div.fi-label")
             value = item.select_one("div.fi-desc")
             if label is None or value is None:
                 continue
             label_text = label.get_text(strip=True)
+            if not label_text:
+                # The label-less fi-item carries the IMDb-style
+                # `<score>/<vote-count>` rating (e.g. 8.0/1118360).
+                m = re.match(r"(\d+(?:\.\d+)?)/\d+", value.get_text(strip=True))
+                if m:
+                    try:
+                        rating = float(m.group(1))
+                    except ValueError:
+                        rating = None
+                continue
             if "Рік виходу" in label_text:
                 year = _parse_year(value.get_text())
             elif label_text.startswith("Жанр"):
-                tags = [t.strip() for t in value.get_text().split(",") if t.strip()]
+                # The upstream row opens with the SECTION name
+                # (e.g. `Серіали , Драма , Пригоди , Фантастика` on a
+                # series page) — a section is not a genre, drop it.
+                tags = [
+                    t.strip()
+                    for t in value.get_text().split(",")
+                    if t.strip() and t.strip() not in _SECTION_TITLES
+                ]
             elif "Країна" in label_text:
                 links = value.select("a")
                 raw = links[0].get_text(strip=True) if links else value.get_text(strip=True)
                 country = " ".join(raw.lower().split()) if raw else None
+            elif label_text.startswith("Режисер"):
+                for a in value.select("a"):
+                    name = a.get_text(strip=True)
+                    if name:
+                        people.append(
+                            Person(id=f"uakino:{name}", name=name, role="Director")
+                        )
+            elif label_text.startswith("Актори"):
+                for a in value.select("a"):
+                    name = a.get_text(strip=True)
+                    if name:
+                        people.append(
+                            Person(id=f"uakino:{name}", name=name, role="Actor")
+                        )
 
         ajax_el = soup.select_one("div.playlists-ajax")
         news_id = (
@@ -343,16 +413,26 @@ class UakinoProvider(BaseProvider):
                 )
             ]
             translations = [Translation(id=v, label=v) for v in voices]
+            # animeukr section = anime series: keep the anime style on
+            # content so it matches the item's search/browse card
+            # (styles=["anime"]), not a plain series with no style.
+            mb_form, mb_styles = model_b_axes(
+                "anime" if section == "animeukr" else "series"
+            )
             return ContentResponse(
                 id=f"uakino:{external_id}",
-                type="series",
                 title=title,
                 year=year,
                 description=description,
                 poster=poster,
+                genres=tags,
+                people=people,
+                rating=rating,
                 translations=translations,
                 seasons=seasons,
                 translations_level="episode",
+                form=mb_form,
+                styles=mb_styles,
                 country=country,
             )
 
@@ -366,16 +446,32 @@ class UakinoProvider(BaseProvider):
         # the model requires at least one translation (issue #123, D2).
         if not translations:
             translations = [Translation(id="uk", label="Українська")]
+        # A movie whose playlist response is empty (upstream moved movie
+        # pages off playlists.php to a direct player iframe) is only
+        # playable when the page carries that iframe. A movie with
+        # neither playlists nor a direct player is a dead card — gate it
+        # (ADR-0002) so the catalog sweep drops it instead of failing at
+        # play time.
+        if not items and _direct_player_url(soup) is None:
+            raise ProviderError("gated", "no playable source on movie page")
+        movie_type = "anime" if "аніме" in " ".join(tags).lower() else "movie"
+        # A style-tagged movie (аніме-фільм) is form=movie, not series
+        # (model_b_axes defaults style-tagged types to series).
+        mb_form, mb_styles = model_b_axes(movie_type, form="movie")  # type: ignore[arg-type]
         return ContentResponse(
             id=f"uakino:{external_id}",
-            type="anime" if "аніме" in " ".join(tags).lower() else "movie",
             title=title,
             year=year,
             description=description,
             poster=poster,
+            genres=tags,
+            people=people,
+            rating=rating,
             translations=translations,
             seasons=None,
             country=country,
+            form=mb_form,
+            styles=mb_styles,
         )
 
     async def stream(
@@ -395,18 +491,35 @@ class UakinoProvider(BaseProvider):
             candidates = [it for it in items if it.get("episode") == episode]
             if not candidates:
                 raise ProviderError("not_found", f"episode {episode} not found in playlists")
+            chosen = _pick_voice(candidates, translation)
+            if chosen is None:
+                raise ProviderError(
+                    "translation_missing",
+                    f"voice {translation!r} not found in playlists",
+                )
+            stream_page_url = str(chosen["file"])
         else:
             candidates = [it for it in items if it.get("episode") is None]
-            if not candidates:
-                raise ProviderError("parse_failed", "no playable voices in playlists")
-        chosen = _pick_voice(candidates, translation)
-        if chosen is None:
-            raise ProviderError(
-                "translation_missing",
-                f"voice {translation!r} not found in playlists",
-            )
-
-        stream_page_url = str(chosen["file"])
+            if candidates:
+                chosen = _pick_voice(candidates, translation)
+                if chosen is None:
+                    raise ProviderError(
+                        "translation_missing",
+                        f"voice {translation!r} not found in playlists",
+                    )
+                stream_page_url = str(chosen["file"])
+            else:
+                # Movie with no playlists data: upstream moved movie
+                # pages off playlists.php to a direct player iframe.
+                # Resolve the player URL from the content page.
+                section, item_id, slug = _parse_external_id(content_id)
+                html = await self._fetch(f"/{section}/{item_id}-{slug}.html")
+                direct_url = _direct_player_url(BeautifulSoup(html, "lxml"))
+                if direct_url is None:
+                    raise ProviderError(
+                        "parse_failed", "no playable voices in playlists"
+                    )
+                stream_page_url = direct_url
         try:
             resp = await safe_get(
                 http,
@@ -436,10 +549,16 @@ class UakinoProvider(BaseProvider):
         # can't redirect the PS4 into an internal address.
         if urlparse(m3u8_url).netloc not in _STREAM_ALLOWED_HOSTS:
             raise ProviderError("not_found", "m3u8 host not in allowlist")
+        # The stream CDN (ashdi.vip) is served over plain HTTP and needs
+        # the Referer to authorize the manifest/segment fetches — but a
+        # comma-bearing desktop UA breaks clients that split headers on
+        # commas (e.g. mpv's --http-header-fields): the CDN then sees a
+        # malformed User-Agent and 400s the stream. Use the plain client
+        # UA like every other ashdi-backed provider.
         return StreamResponse(
             url=m3u8_url,
             type="m3u8",
-            headers={"Referer": _CDN_REFERER, "User-Agent": _DESKTOP_UA},
+            headers={"Referer": _CDN_REFERER, "User-Agent": "cs-uk-api/1.0"},
         )
 
     async def browse(

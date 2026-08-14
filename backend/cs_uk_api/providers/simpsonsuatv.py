@@ -16,6 +16,14 @@ either a show (e.g. `simpsony`), a season (e.g. `s35`, `sezon-1`),
 or a specific episode (e.g. `4441-37-sezon-17-seriya`). The provider
 validates the slug at both `content()` and `stream()` boundaries to
 refuse path traversal before any HTTP request is made.
+
+Season cap: a show page's `content()` surfaces only the newest
+`_MAX_SHOW_SEASONS` seasons (audit #138 kept the cap — see the
+constant's comment for the measured rationale). The Simpsons archive
+has 37 seasons, and the CMS both serialises concurrent season fetches
+and rate-limits bursts, so enumerating every season runs close to the
+request budget and silently drops seasons to HTTP 429s. Older seasons
+remain reachable directly via their own season slug (e.g. `content("s5")`).
 """
 
 from __future__ import annotations
@@ -37,7 +45,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, model_b_axes
 
 BASE_URL = "https://simpsonsua.tv"
 BASE_URL_HOST = urlparse(BASE_URL).hostname
@@ -51,21 +59,32 @@ ASHDI_REFERER = BASE_URL + "/"
 _ALLOWED_HOSTS: frozenset[str] = frozenset({"simpsonsua.tv", "ashdi.vip"})
 
 # How many season subpages a show page may fetch at once. A show like
-# The Simpsons has 35+ seasons; sequential fetches pushed content() past
+# The Simpsons has 37 seasons; sequential fetches pushed content() past
 # 30s (issue #119), so season enumeration runs with a bounded concurrency.
 _SEASON_FETCH_CONCURRENCY = 6
 
-# How many seasons a show page surfaces. The CMS answers each season
-# page in ~0.8s and serialises concurrent requests, so fetching all 37
-# Simpsons seasons blows the request budget. We return the newest N
-# seasons (the hot path); older seasons remain reachable by searching
-# for the season page itself (e.g. `s5`) or by its season external id.
+# How many seasons a show page surfaces. Audit #138 (measured live on
+# simpsonsua.tv, 2026-08-08) found the cap is load-bearing, so it is
+# kept. A cap-off `content()` for The Simpsons (37 seasons, fetched
+# 6-wide) took 25.5s — inside the D6 >30s symptom budget but with no
+# headroom — and, decisively, the 38-request sweep tripped CMS
+# rate-limiting (HTTP 429 / connection drops) that silently dropped 14
+# of 37 seasons. So dropping the cap is not merely slow, it is lossy:
+# the same rate-limit that makes it slow also corrupts the result. The
+# cap value 10 = 11 upstream requests for a show page, which completes
+# in ~8-10s (single page ~0.95s, and the CMS serialises concurrent
+# requests — 6 parallel fetches took 4.69s wall, only ~1.2x faster than
+# sequential) and stays under the rate-limit burst threshold. We return
+# the newest 10 seasons (the hot path); the price is that older seasons
+# (1-27 for The Simpsons) vanish from the show's browsable rail and are
+# only reachable directly via their own season slug (e.g. `content("s5")`)
+# or season external id.
 _MAX_SHOW_SEASONS = 10
 
 # Browse surfaces the latest home-page updates and the paginated catalogue.
 SIMPSONSUATV_SECTIONS: tuple[Section, ...] = (
-    Section(id="updates", title="Останні оновлення", type="cartoon"),
-    Section(id="page", title="Усі мультсеріали", type="cartoon"),
+    Section(id="updates", title="Останні оновлення", styles=frozenset({"cartoon"})),
+    Section(id="page", title="Усі мультсеріали", styles=frozenset({"cartoon"})),
 )
 
 # External-id regex. Accepts a slug, a season (e.g. `s35`, `sezon-1`),
@@ -179,8 +198,7 @@ def _slug_from_href(href: str) -> str | None:
     if not last:
         return None
     # Strip `.html` if present.
-    if last.endswith(".html"):
-        last = last[:-5]
+    last = last.removesuffix(".html")
     return last or None
 
 
@@ -209,13 +227,16 @@ def _episode_number(url: str, fallback: int) -> int:
 
 
 def _is_season_href(href: str) -> bool:
-    """A season page URL ends with `/sN/` or `/sezon-N/`. We accept
-    any path with a `/sezon-N/` or `/sN/` segment at the end."""
-    cleaned = href.split("?", 1)[0].rstrip("/")
-    last = cleaned.rsplit("/", 1)[-1]
+    """A season page URL ends in `/sezon-N/` or `/sN/`. The season token
+    may be slug-prefixed (`/futurama-sezon-11/`), but it must be the
+    final token: news-id episode slugs like
+    `4467-...-1-sezon-2-seriya` embed a `sezon-N` token followed by
+    `-seriya`, so they are not seasons."""
+    last = _slug_from_href(href)
     if not last:
         return False
-    return bool(_SEASON_RE.fullmatch(last))
+    m = _SEASON_RE.search(last)
+    return m is not None and m.end() == len(last)
 
 
 def _clean_title(text: str) -> str:
@@ -271,23 +292,29 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
         # page uses the titleMap. Both upstream and ours prefer the
         # map so the result is stable across listings.
         title = _title_for_slug(slug)
+    mb_form, mb_styles = model_b_axes("cartoon")
     return SearchResult(
         id=f"{provider_id}:{slug}",
         provider=provider_id,
-        type="cartoon",
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
+        form=mb_form,
+        styles=mb_styles,
     )
 
 
-def _parse_season_episodes(soup: BeautifulSoup, season_url: str) -> list[Episode]:
+def _parse_season_episodes(
+    soup: BeautifulSoup, season_url: str, provider_id: str
+) -> list[Episode]:
     """Parse the episode cards on a season page.
 
     Each card is a `div.movie_item.sezon` block containing an `<a
     href="...seriya.html">` and a `<div class="descr nazva">`
     title. Returns Episode objects whose `id` is the full URL of the
-    episode page (so `stream()` can fetch the player iframe directly)."""
+    episode page prefixed with the provider id (so the /api/stream
+    router can split on the first ':' and hand `stream()` the bare URL
+    to fetch the player iframe directly)."""
     episodes: list[Episode] = []
     for idx, card in enumerate(soup.select("div.movie_item"), start=1):
         a = card.select_one("a")
@@ -301,7 +328,11 @@ def _parse_season_episodes(soup: BeautifulSoup, season_url: str) -> list[Episode
         title = _clean_title(
             title_el.get_text(strip=True) if title_el else f"Серія {idx}"
         )
-        episodes.append(Episode(number=idx, id=url, title=title or f"Серія {idx}"))
+        episodes.append(
+            Episode(
+                number=idx, id=f"{provider_id}:{url}", title=title or f"Серія {idx}"
+            )
+        )
     return episodes
 
 
@@ -462,14 +493,16 @@ class SimpsonsUATvProvider(BaseProvider):
         soup = BeautifulSoup(response.text, "lxml")
         title, description, poster = self._parse_meta(soup, external_id)
         seasons = await self._build_seasons(soup, str(response.url), external_id, http)
+        mb_form, mb_styles = model_b_axes("cartoon")
         return ContentResponse(
             id=f"{self.id}:{external_id}",
-            type="cartoon",
             title=title,
             description=description,
             poster=poster,
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
+            form=mb_form,
+            styles=mb_styles,
         )
 
     def _parse_meta(
@@ -537,17 +570,21 @@ class SimpsonsUATvProvider(BaseProvider):
                 Season(
                     number=1,
                     episodes=[
-                        Episode(number=1, id=content_url, title=ep_title or "Серія")
+                        Episode(
+                            number=1,
+                            id=f"{self.id}:{content_url}",
+                            title=ep_title or "Серія",
+                        )
                     ],
                 )
             ]
         if _is_season_href(content_url):
             # Season page: parse episodes directly.
-            episodes = _parse_season_episodes(soup, content_url)
+            episodes = _parse_season_episodes(soup, content_url, self.id)
             season_num = _season_number(content_url) or 1
             return [Season(number=season_num, episodes=episodes)] if episodes else None
         # Show page: follow season subitems. Fetch the season pages
-        # concurrently (bounded by a semaphore) so a 35-season archive
+        # concurrently (bounded by a semaphore) so a 37-season archive
         # resolves in a few seconds instead of 30+ sequential hops
         # (issue #119). A failed season is skipped, matching the old
         # sequential behaviour.
@@ -569,7 +606,7 @@ class SimpsonsUATvProvider(BaseProvider):
                 except ProviderError:
                     return None
             season_soup = BeautifulSoup(resp.text, "lxml")
-            episodes = _parse_season_episodes(season_soup, season_url)
+            episodes = _parse_season_episodes(season_soup, season_url, self.id)
             if not episodes:
                 return None
             return Season(number=int(season_num_str), episodes=episodes)
@@ -598,7 +635,7 @@ class SimpsonsUATvProvider(BaseProvider):
         if parsed.netloc not in (BASE_URL_HOST, f"www.{BASE_URL_HOST}"):
             raise ProviderError("not_found", f"bad content_id: {content_id!r}")
         segments = [s for s in parsed.path.split("/") if s]
-        check_segments = [s[:-5] if s.endswith(".html") else s for s in segments]
+        check_segments = [s.removesuffix(".html") for s in segments]
         if not check_segments or not all(
             _EXTERNAL_ID_RE.fullmatch(s) for s in check_segments
         ):
@@ -656,7 +693,7 @@ class SimpsonsUATvProvider(BaseProvider):
         return StreamResponse(
             url=m3u8,
             type="m3u8",
-            headers={"Referer": ASHDI_REFERER, "User-Agent": "cs-uk-api/0.1"},
+            headers={"Referer": ASHDI_REFERER, "User-Agent": "cs-uk-api/1.0"},
         )
 
 

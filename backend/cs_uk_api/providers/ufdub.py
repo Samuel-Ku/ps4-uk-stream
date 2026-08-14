@@ -13,13 +13,14 @@ from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
+    Person,
     SearchResult,
     Season,
     Section,
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, model_b_axes
 
 BASE_URL = "https://ufdub.com"
 # Hosts the upstream may legally redirect to. The content page lives on
@@ -28,12 +29,15 @@ BASE_URL = "https://ufdub.com"
 _ALLOWED_HOSTS: frozenset[str] = frozenset({"ufdub.com", "video.ufdub.com"})
 
 UFDUB_SECTIONS: tuple[Section, ...] = (
-    Section(id="filmy", title="Фільми", type="movie"),
-    Section(id="serialy", title="Серіали", type="series"),
-    Section(id="doramy", title="Дорами", type="dorama"),
-    Section(id="cartoons", title="Мультфільми", type="movie"),
-    Section(id="multserialy", title="Мультсеріали", type="series"),
-    Section(id="anime", title="Аніме", type="anime"),
+    Section(id="filmy", title="Фільми", form="movie"),
+    Section(id="serialy", title="Серіали", form="series"),
+    Section(id="doramy", title="Дорами", styles=frozenset({"dorama"})),
+    # Ufdub cartoon films are tagged ``form=series, styles={cartoon}``
+    # (model_b_axes default form for style-tagged types) — a ``form``
+    # axis would filter them all out, so the section filters by style.
+    Section(id="cartoons", title="Мультфільми", styles=frozenset({"cartoon"})),
+    Section(id="multserialy", title="Мультсеріали", form="series"),
+    Section(id="anime", title="Аніме", styles=frozenset({"anime"})),
 )
 
 # Path prefix -> MediaType. Order matters: longest prefixes first so
@@ -69,6 +73,20 @@ def _external_id_from_url(href: str) -> str:
 
 _SLUG_RE = re.compile(r"\d+-[a-z0-9-]+")
 
+#: Full external-id shape: ``<kind>-<slug>`` where kind may itself
+#: contain hyphens (``cartoon-serial``) and the slug is the digit-
+#: prefixed tail (``308-wondla``). Issue #162: splitting on the FIRST
+#: hyphen mis-splits multi-word kinds (kind="cartoon", slug=
+#: "serial-308-…" → _SLUG_RE rejects the letter-prefixed slug), so
+#: every ``cartoon-serial`` title was unopenable.
+_EXTERNAL_ID_RE = re.compile(r"^([a-z][a-z-]*?)-(\d+-[a-z0-9-]+)$")
+
+
+def _split_external_id(external_id: str) -> tuple[str, str] | None:
+    """Split a ``kind-slug`` external id into (kind, slug)."""
+    m = _EXTERNAL_ID_RE.fullmatch(external_id)
+    return (m.group(1), m.group(2)) if m else None
+
 # One row of the player page's `var a = [['Title','codec',url], ...]`
 # array. Titles may contain spaces/hyphens but no quotes; codec is a
 # short label (mp4/720p/HD/source/web).
@@ -86,6 +104,27 @@ def _type_from_url(href: str) -> str:
         if f"/{needle}" in lower:
             return t
     return "series"  # safe default
+
+
+def _extract_year(soup: BeautifulSoup) -> int | None:
+    """Parse the content page's ``Рік:`` block (ticket #220).
+
+    ``div.fi-col-item`` rows are ``<span>Label:</span> <a>value</a>``;
+    the year row links to ``/xfsearch/year/<N>/``. The listing card
+    exposes no year — the content page is the only source for ufdub.
+    Returns None when the page carries no year (the meta block is
+    optional upstream).
+    """
+    for item in soup.select("div.full-info .fi-col-item"):
+        label = item.select_one("span")
+        link = item.select_one("a")
+        if label is None or link is None:
+            continue
+        if label.get_text(strip=True).rstrip(":").strip().lower() != "рік":
+            continue
+        text = link.get_text(strip=True)
+        return int(text) if text.isdigit() else None
+    return None
 
 
 def _section_url(section: str, page: int) -> str:
@@ -118,18 +157,67 @@ def _parse_card(card: Tag | BeautifulSoup, provider_id: str) -> SearchResult | N
     container = card.parent
     img = container.select_one(".img-box img") if container is not None else None
     poster = urljoin(BASE_URL, str(img["src"])) if img and img.get("src") else None
+    # Ticket #213: the ``div.short-c`` block is "Жанр: <a>Аніме</a> /
+    # <a>Жахи</a>" — parse the link texts as genre labels (skip the
+    # literal "Жанр:" prefix text node).
+    genre_links = a.parent.select("div.short-c a") if a.parent is not None else []
+    genres = [
+        x.get_text(strip=True) for x in genre_links if x.get_text(strip=True)
+    ]
     try:
         external_id = _external_id_from_url(href)
     except ProviderError:
         return None
+    mb_form, mb_styles = model_b_axes(_type_from_url(href))  # type: ignore[arg-type]
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
-        type=_type_from_url(href),  # type: ignore[arg-type]
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
+        form=mb_form,
+        styles=mb_styles,
+        genres=genres,
     )
+
+
+def _extract_people(soup: BeautifulSoup) -> list[Person]:
+    """Ticket #225: ufdub credits its dubbing team in ``div.voices``
+    blocks ("Перекладач:", "Актори озвучення:", ...) — parse them into
+    People so the Jellyfin People rail renders instead of sitting empty
+    (observed live on Kamen Rider Gavv). Each block is
+    ``<label>:<br/>`` followed by one or more ``<a>`` links.
+
+    ``Person.id`` follows models.Person's contract: the person's own
+    page slug when the site exposes one — the ``/xfsearch/<kind>/<slug>/``
+    href — so the same name in different roles gets distinct ids.
+    """
+    people: list[Person] = []
+    for block in soup.select("div.voices"):
+        label = ""
+        for child in block.children:
+            if getattr(child, "name", None) == "br":
+                break
+            if isinstance(child, str):
+                label += child
+        label = label.strip(" :\t\n")
+        if not label or label == "Постер":
+            # A poster designer is not on-screen crew; skip it.
+            continue
+        # Exact-label match: a substring check would misclassify
+        # «Редактор» (which contains "актор") as an actor.
+        role = "Actor" if label.lower() in {"актори озвучення", "актори"} else label
+        for a in block.select("a"):
+            name = a.get_text(strip=True)
+            if not name:
+                continue
+            _href = a.get("href")
+            href = _href if isinstance(_href, str) else ""
+            marker = "/xfsearch/"
+            idx = href.find(marker)
+            slug = href[idx + len(marker) :].rstrip("/") if idx >= 0 else name.lower()
+            people.append(Person(id=f"voice/{slug}", name=name, role=role))
+    return people
 
 
 class UFDubProvider(BaseProvider):
@@ -137,6 +225,11 @@ class UFDubProvider(BaseProvider):
     name = "UFDub"
     types = ("movie", "series", "anime", "dorama")
     sections = UFDUB_SECTIONS
+    #: ``content()`` gates cards whose player page has no playable
+    #: media (issue #164: upstream emits an empty ``var a = []`` for
+    #: dead titles) so the ADR-0002 catalog sweep drops them instead
+    #: of failing only at play time.
+    can_gate = True
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         url = f"{BASE_URL}/index.php?do=search"
@@ -197,11 +290,16 @@ class UFDubProvider(BaseProvider):
     async def content(
         self, external_id: str, http: httpx.AsyncClient
     ) -> ContentResponse:
-        kind, _, slug = external_id.partition("-")
-        if not kind or not slug:
-            raise ProviderError("parse_failed", f"invalid external_id: {external_id!r}")
-        if not _SLUG_RE.fullmatch(slug):
+        split = _split_external_id(external_id)
+        if split is None:
+            # Preserve the original error split: structurally-invalid id
+            # (empty kind/slug) is parse_failed; a kind with a malformed
+            # (non-digit-prefixed) slug is not_found.
+            kind, _, slug = external_id.partition("-")
+            if not kind or not slug:
+                raise ProviderError("parse_failed", f"invalid external_id: {external_id!r}")
             raise ProviderError("not_found", f"bad external_id: {external_id!r}")
+        kind, slug = split
         url = f"{BASE_URL}/{kind}/{external_id[len(kind) + 1:]}.html"
         try:
             resp = await http.get(url)
@@ -219,22 +317,47 @@ class UFDubProvider(BaseProvider):
             if poster_el and poster_el.get("src")
             else None
         )
-        desc_el = soup.select_one("div.full-text p")
+        # Ticket #225: ``div.full-text`` opens with an EMPTY ``<p>``
+        # spacer and the real description in the second paragraph —
+        # ``select_one`` grabbed the empty one, so every ufdub detail
+        # rendered a blank description area (observed live on Kamen
+        # Rider Gavv). Take the first non-empty paragraph.
+        desc_el = next(
+            (p for p in soup.select("div.full-text p") if p.get_text(strip=True)),
+            None,
+        )
         description = desc_el.get_text(strip=True) if desc_el else ""
         # Player URL is in an <input value="..."> or an inline JS var.
         player_url = self._extract_player_url(soup)
         media_type = _type_from_url(url)
+        # Issue #164: gate dead cards at content() time — a missing
+        # player page or a player page with no playable media (empty
+        # ``var a``) means the card can never play, so the catalog
+        # sweep must drop it from home/search.
+        episodes = await self._fetch_player_episodes(player_url, http)
+        if player_url is None or not episodes:
+            raise ProviderError(
+                "gated", "no playable media on player page"
+            )
+        year = _extract_year(soup)
         seasons: list[Season] | None = None
-        if media_type == "series" or media_type == "anime":
-            seasons = await self._parse_seasons(player_url, external_id, http)
+        if media_type in ("series", "anime", "dorama"):
+            seasons = [Season(number=1, episodes=[
+                Episode(number=i, id=f"{self.id}:{external_id}:s1e{i}", title=title)
+                for i, (title, _url) in enumerate(episodes, start=1)
+            ])]
+        mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"ufdub:{external_id}",
-            type=media_type,  # type: ignore[arg-type]
             title=title_el.get_text(strip=True),
             description=description,
             poster=poster,
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
+            form=mb_form,
+            styles=mb_styles,
+            year=year,
+            people=_extract_people(soup),
         )
 
     @staticmethod
@@ -252,15 +375,14 @@ class UFDubProvider(BaseProvider):
                 return m.group(1)
         return None
 
-    async def _parse_seasons(
-        self, player_url: str | None, external_id: str, http: httpx.AsyncClient
-    ) -> list[Season] | None:
-        """Fetch the player page and surface its `var a` array as a
-        single season of episodes. UFDub gives every content page its
-        own player (one season per page), so episode ids encode only
-        the position within that page: `<external>:s1e<N>`."""
+    async def _fetch_player_episodes(
+        self, player_url: str | None, http: httpx.AsyncClient
+    ) -> list[tuple[str, str]]:
+        """Fetch the player page and parse its ``var a`` array into
+        (title, url) pairs. Returns [] when there is no player page or
+        the player exposes no playable media (dead embed, issue #164)."""
         if player_url is None:
-            return None
+            return []
         try:
             resp = await safe_get(
                 http,
@@ -272,13 +394,7 @@ class UFDubProvider(BaseProvider):
             raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
             raise ProviderError("not_found", f"status {resp.status_code}")
-        episodes = self._extract_episodes(resp.text)
-        if not episodes:
-            return None
-        return [Season(number=1, episodes=[
-            Episode(number=i, id=f"{external_id}:s1e{i}", title=title)
-            for i, (title, _url) in enumerate(episodes, start=1)
-        ])]
+        return self._extract_episodes(resp.text)
 
     async def stream(
         self, content_id: str, translation: str | None, http: httpx.AsyncClient
@@ -296,11 +412,13 @@ class UFDubProvider(BaseProvider):
             ext_id, _, ep_suffix = content_id.rpartition(":")
         else:
             ext_id, ep_suffix = content_id, ""
-        kind, _, slug = ext_id.partition("-")
-        if not kind or not slug:
-            raise ProviderError("parse_failed", f"invalid content_id: {content_id!r}")
-        if not _SLUG_RE.fullmatch(slug):
+        split = _split_external_id(ext_id)
+        if split is None:
+            kind, _, slug = ext_id.partition("-")
+            if not kind or not slug:
+                raise ProviderError("parse_failed", f"invalid content_id: {content_id!r}")
             raise ProviderError("not_found", f"bad external_id: {content_id!r}")
+        kind, slug = split
         content_url = f"{BASE_URL}/{kind}/{ext_id[len(kind) + 1:]}.html"
         try:
             resp = await safe_get(
@@ -349,10 +467,17 @@ class UFDubProvider(BaseProvider):
             _title, media_url = episodes[episode - 1]
         else:
             _title, media_url = episodes[0]
+        # The VIDEOS.php gateway 302s to the real bytes: movies to
+        # ``api.ufdub.com`` (same registrable domain as the gateway — the
+        # proxy's dot-boundary rule already admits it) but series
+        # episodes to ``dl.dropboxusercontent.com``, a foreign domain the
+        # provider sanctions. Declare it so the stream proxy follows the
+        # hop (D7 SSRF posture: only provider-declared hosts pass).
         return StreamResponse(
             url=media_url,
             type="mp4",
-            headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/0.1"},
+            headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/1.0"},
+            allowed_domains=frozenset({"dropboxusercontent.com"}),
         )
 
     @staticmethod

@@ -25,10 +25,19 @@ venv/
 # Local developer tooling (reference clones, scratch artifacts)
 backend/tools/
 backend/tools/**
-pplay-fork/build-ps4/
+
+# Phone-preview scratch (screenshot tooling, device-driving sessions)
+.scratch-phone-preview/
 
 # Capture driver deps (npm install in tests/jellyfin_capture)
 node_modules/
 
 # CTest-generated artifact directory
 Testing/
+
+# Switchfin manual-test runner generated artifacts (regenerated every run)
+docs/switchfin-test-report.md
+docs/test-artifacts/switchfin/backend.log
+docs/test-artifacts/switchfin/logcat-*.txt
+docs/test-artifacts/switchfin/backend-*.txt
+docs/test-artifacts/switchfin/capture/

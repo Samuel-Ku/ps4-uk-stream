@@ -36,16 +36,16 @@ The current shape is the floor, not the ceiling. Each rejected alternative can b
 ### Backend developer flows
 
 8. As a backend developer adding a new provider, I want a single shape for `ContentResponse` and `Section`, so that I do not have to design a new schema per provider.
-9. As a backend developer, I want the shape to be stable across provider additions, so that the pplay-fork consumer does not need updates.
+9. As a backend developer, I want the shape to be stable across provider additions, so that the Switchfin client (via the Jellyfin facade) does not need updates.
 10. As a backend developer, I want `translation=None` on the stream endpoint to return a usable default, so that the PS4 client does not have to block on the user picking one when only one is available.
 11. As a backend developer, I want a 12s budget on `/api/search` to return partial results on timeout, so that one slow provider does not kill the whole search.
 
-### pplay-fork consumer flows
+### Switchfin consumer flows
 
-12. As a pplay-fork developer, I want `Section.styles` to be a frozenset with 3-case semantics, so that I can render the right filter hint without per-provider special cases.
-13. As a pplay-fork developer, I want `item.styles` to be a frozenset, so that I can render one icon per distinct style without pick-one heuristics.
-14. As a pplay-fork developer, I want `translations_level` to tell me whether to render a global picker or a per-episode picker, so that I do not have to inspect every episode to decide UI shape.
-15. As a pplay-fork developer, I want a single `StreamResponse.url` field, so that I do not have to handle multi-URL fallback chains that do not exist in the data.
+12. As a Switchfin-side developer, I want `Section.styles` to be a frozenset with 3-case semantics, so that I can render the right filter hint without per-provider special cases.
+13. As a Switchfin-side developer, I want `item.styles` to be a frozenset, so that I can render one icon per distinct style without pick-one heuristics.
+14. As a Switchfin-side developer, I want `translations_level` to tell me whether to render a global picker or a per-episode picker, so that I do not have to inspect every episode to decide UI shape.
+15. As a Switchfin-side developer, I want a single `StreamResponse.url` field, so that I do not have to handle multi-URL fallback chains that do not exist in the data.
 
 ### Domain maintainer flows
 
@@ -125,7 +125,7 @@ The implementation has these test seams, all already in place:
 
 - **Provider-level fixture tests** — one test module per provider, 9–24 tests each. Live-captured HTML via `curl -sS https://...`, no invented fixtures. Validate the new `form` / `styles` emission against the captured upstream structure.
 - **Backend integration tests** — 362 tests passing across the suite, including Section filter semantics, search filter axes, and translation-level auto-detection.
-- **pplay-fork standalone catalog tests** — JSON parsing of the new shape (`form`, `styles` frozenset, `translations_level`).
+- **Jellyfin facade tests** — the facade's DTO mapping consumes the new shape (`form`, `styles` frozenset, `translations_level`) from the shared models.
 
 What makes a good test for this domain model:
 
@@ -157,4 +157,4 @@ Explicitly NOT part of these decisions (deferred to future sessions or rejected 
 - **The current shape is the floor, not the ceiling.** Each rejected alternative can be added as a non-breaking optional field (`streams: list[str] | None = None`, `quality: str | None = None`, `language: str | None = None`, `default_translation_id: str | None = None`, etc.) without touching existing clients.
 - **No issue tracker publishing.** Project issue tracker is not configured in this repository; this document is filed in `docs/superpowers/specs/` for future reference and is the deliverable, not a tracker ticket. If a tracker is wired up later, this content can be sliced into per-decision tickets (one ticket per "rejected alternative that may become a future feature").
 - **Spec reconciliation.** [`2026-08-01-ps4-uk-stream-design.md`](2026-08-01-ps4-uk-stream-design.md) §3.2 (`MediaType` enum) is **obsolete in spirit** post-ADR-0001; it remains the source of truth for architecture, data flow, and error envelope sections not affected by Model B.
-- **Implementation status** — per `docs/status.md`, all 19 v2 providers landed, pplay-fork catalog wired (Task 18), PS4 PKG built and end-to-end verified (Task 19). Task 20 (on-console test) is deferred to the user — requires GoldHEN on a PS4 with firmware 11.00.
+- **Implementation status** — per `docs/status.md`, all 19 v2 providers landed. The client is Switchfin via the Jellyfin facade (spec #100); on-console verification is driven by `scripts/switchfin_test.py` (`docs/switchfin-test-report.md`).

@@ -1,7 +1,7 @@
 # Uakino reachability — 2026-08-02
 
 Research for wayfinder ticket #42 (feeds the decision ticket #45:
-retire, adapt, or keep Uakino as known-broken).
+retire, adapt, or keep Uakino).
 
 ## Method
 
@@ -72,19 +72,25 @@ turns into zero results.
 1. Not fixable by a one-line `BASE_URL` swap: parser selectors, external-id
    grammar, and the search method (GET → POST) all changed upstream.
 2. Even fully re-written for the new DLE theme, `content()` and `stream()`
-   fetch pages behind **Cloudflare Turnstile** — a JS challenge the spec
-   explicitly excludes (`not portable` = JS engine required). Listing and
-   search are parseable; stream resolution is not.
+   fetch pages behind **Cloudflare Turnstile** — a JS challenge that plain
+   HTTP cannot clear. Listing and search are parseable; stream resolution
+   is not (as of this research date).
 3. `animeukr.info` hardcode is dead; the anime section lives at
    `uakino.best/animeukr/` (reachable, but its content pages challenge).
 
-### Verdict for #45
+### Verdict for #45 (superseded 2026-08-09 by #193/#195)
 
-Recommend **keep as known-broken** (honest status quo: register + docs
-flag, gate stays red) or **retire** (delete provider/fixtures/tests;
+At the time: recommend **keep with a plain-HTTP limitation** (register +
+docs flag, gate stays red) or **retire** (delete provider/fixtures/tests;
 Uakino is currently the documented "reference implementation", so
-retiring means re-labelling the reference). **Adapt** is not viable
-without a JS engine / Cloudflare bypass, which is out of v2 scope.
+retiring means re-labelling the reference). **Adapt** was not viable
+without a JS engine / Cloudflare bypass, which was out of v2 scope.
+
+**Superseded:** the headless-Chromium session (issue #193) shipped
+2026-08-09 resolves the Turnstile challenge with in-page `fetch()`;
+uakino now serves live requests (search/content/stream → playable m3u8)
+and is marked `ready` in the triage table. See the ADR-0002 / ADR-0004
+amendments.
 
 ## Evidence
 

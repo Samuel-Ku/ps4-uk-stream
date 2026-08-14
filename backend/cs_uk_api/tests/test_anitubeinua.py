@@ -75,7 +75,7 @@ async def test_search_classifies_as_anime():
         router.post("https://anitube.in.ua/").respond(200, text=search_html)
         async with httpx.AsyncClient() as http:
             results = await AnitubeinuaProvider().search("військов", http)
-    assert all(r.type == "anime" for r in results)
+    assert all("anime" in r.styles for r in results)
 
 
 @pytest.mark.asyncio
@@ -135,7 +135,7 @@ async def test_browse_page_returns_results():
         async with httpx.AsyncClient() as http:
             results, has_next = await AnitubeinuaProvider().browse("page", 1, http)
     assert len(results) >= 1
-    assert all(r.type == "anime" for r in results)
+    assert all("anime" in r.styles for r in results)
     # DLE pagination has a page/2 link to trigger `has_next`.
     assert has_next is True
 
@@ -188,7 +188,7 @@ async def test_content_parses_title_poster_year_description():
                 "5981-vyskova-storya-malenkoyi-dvchinki-2-sezon", http
             )
     assert "Військов" in c.title
-    assert c.type == "anime"
+    assert "anime" in c.styles
     assert c.year == 2026
     assert c.poster is not None
     assert c.poster.startswith("https://anitube.in.ua/uploads/")

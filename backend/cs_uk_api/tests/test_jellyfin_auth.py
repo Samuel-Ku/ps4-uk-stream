@@ -16,11 +16,12 @@ consumes:
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import Any, cast
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
+from cs_uk_api.catalog_state import clear_playback
 from cs_uk_api.config import SETTINGS
 from cs_uk_api.main import (
     _blocklist_cache,
@@ -64,7 +65,7 @@ class _AuthStub(BaseProvider):
                 SearchResult(
                     id="auth-stub:one",
                     provider=self.id,
-                    type=cast(Any, "movie"),
+                    form="movie",
                     title="Дюна",
                     year=2021,
                     poster=None,
@@ -88,6 +89,7 @@ def _isolate() -> Iterator[None]:
     every test, so no real upstream call or stale snapshot leaks in."""
     saved_providers = dict(PROVIDERS)
     PROVIDERS.clear()
+    clear_playback()
     for cache in (_home_cache, _home_sources_cache, _content_cache, _blocklist_cache):
         cache.clear()
     try:
@@ -95,6 +97,7 @@ def _isolate() -> Iterator[None]:
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved_providers)
+        clear_playback()
         for cache in (_home_cache, _home_sources_cache, _content_cache, _blocklist_cache):
             cache.clear()
 

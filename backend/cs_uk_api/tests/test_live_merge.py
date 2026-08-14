@@ -101,7 +101,7 @@ def test_movie_duna_group_spans_three_providers() -> None:
     assert g is not None
     assert len(g.sources) == 6
     assert {s.provider for s in g.sources} == {"eneyida", "kinovezha", "klontv"}
-    assert {s.type for s in g.sources} == {"movie"}
+    assert {s.form for s in g.sources} == {"movie"}
     assert {s.title for s in g.sources} == {"Дюна"}
     # All members agree on the same own key -> group key is that key.
     assert len({item_group_key(s) for s in g.sources}) == 1
@@ -115,7 +115,7 @@ def test_series_duna_group_spans_three_providers() -> None:
     assert g is not None
     assert len(g.sources) == 5
     assert {s.provider for s in g.sources} == {"kinotron", "klontv", "serialno"}
-    assert {s.type for s in g.sources} == {"series"}
+    assert {s.form for s in g.sources} == {"series"}
     assert {s.title for s in g.sources} == {"Дюна"}
 
 
@@ -147,7 +147,7 @@ def test_every_group_sources_are_mutually_mergeable() -> None:
     for g in groups:
         for a in g.sources:
             for b in g.sources:
-                assert a.type == b.type
+                assert a.form == b.form and a.styles == b.styles
                 ya, yb = effective_year(a.title, a.year), effective_year(b.title, b.year)
                 assert ya is None or yb is None or ya == yb
                 shared = set(title_aliases(a.title)) & set(title_aliases(b.title))
@@ -162,7 +162,7 @@ def test_live_merge_is_deterministic() -> None:
     assert first == second
     reversed_keys = sorted(g.key for g in merge_results(list(reversed(items))))
     assert reversed_keys == first
-    assert all(k.startswith("g1:") for k in first)
+    assert all(k.startswith("g2:") for k in first)
 
 
 def test_fixture_groups_key_on_item_identity() -> None:

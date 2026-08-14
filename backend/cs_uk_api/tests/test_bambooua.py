@@ -45,14 +45,15 @@ async def test_bambooua_search_classifies_by_url_path():
         router.post("https://bambooua.com/").respond(200, text=search_html)
         async with httpx.AsyncClient() as http:
             results = await BambooUAProvider().search("love", http)
-    types_by_kind = {r.url.split("/")[3]: r.type for r in results}
-    # The upstream maps the URL path segment to a MediaType:
-    #   dorama  -> "dorama"
-    #   anime   -> "anime"
-    #   lakorn  -> "series"
-    #   cinema  -> "movie"
-    assert types_by_kind.get("dorama") == "dorama"
-    assert types_by_kind.get("lakorn") == "series"
+    types_by_kind = {r.url.split("/")[3]: r for r in results}
+    # The upstream maps the URL path segment to a MediaType, which now
+    # surfaces as Model B axes (form + styles):
+    #   dorama  -> styles={dorama}, form=series
+    #   anime   -> styles={anime}, form=series
+    #   lakorn  -> form=series
+    #   cinema  -> form=movie
+    assert "dorama" in types_by_kind["dorama"].styles
+    assert types_by_kind["lakorn"].form == "series"
     # /zhanr/ is a category index page that the upstream scripts also
     # surface; classify such listings as 'series' (the safe default).
     assert types_by_kind.get("zhanr") is not None
@@ -60,9 +61,11 @@ async def test_bambooua_search_classifies_by_url_path():
 
 @pytest.mark.asyncio
 async def test_bambooua_search_external_id_preserves_multi_segment():
-    """REGRESSION: catalog URLs like `/zhanr/romantyka/759-life-as-a-girl`
-    must keep the genre prefix in the external_id so the content URL
-    can be rebuilt verbatim."""
+    """REGRESSION (#139 id-collapse): catalog URLs like
+    `/zhanr/romantyka/1049-the_shapes_of_love` must keep the FULL path
+    in the external_id so the content URL can be rebuilt verbatim —
+    collapsing to the last two segments (`romantyka/1049-...`) produces
+    a URL that the site 301-redirects (only `/zhanr/...` is a 200)."""
     search_html = _fixture("search.html")
     with respx.mock(assert_all_called=True) as router:
         router.post("https://bambooua.com/").respond(200, text=search_html)
@@ -70,7 +73,71 @@ async def test_bambooua_search_external_id_preserves_multi_segment():
             results = await BambooUAProvider().search("love", http)
     zhanr = [r for r in results if "/zhanr/" in r.url]
     assert len(zhanr) == 1
-    assert zhanr[0].id == "bambooua:romantyka/1049-the_shapes_of_love"
+    assert zhanr[0].id == "bambooua:zhanr/romantyka/1049-the_shapes_of_love"
+
+
+@pytest.mark.asyncio
+async def test_bambooua_content_zhanr_full_path_is_gated_not_301():
+    """#139 id-collapse: the /zhanr/drama/1156-personasulli card keeps
+    the full path, so content() fetches the verbatim URL (the collapsed
+    `drama/1156-personasulli` form 301-redirects -> not_found, a
+    health-down). The resolved page is itself subscription-gated
+    (`const playlist = []`, captured 2026-08-08) -> gated, never a
+    transport/health failure."""
+    content_html = _fixture("content_zhanr_drama_1156.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://bambooua.com/zhanr/drama/1156-personasulli.html"
+        ).respond(200, text=content_html)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await BambooUAProvider().content(
+                    "zhanr/drama/1156-personasulli", http
+                )
+    assert exc.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_bambooua_stream_zhanr_full_path_uses_production_form_id():
+    """#139 id-collapse: stream() accepts the multi-segment production-form
+    id (no `provider:` prefix) and fetches the verbatim URL — a collapsed
+    `drama/1156-personasulli` form would 301-redirect -> not_found, a
+    health-down. The resolved page is subscription-gated (`const playlist
+    = []`, captured 2026-08-08), so stream() answers gated — never a
+    transport/health failure."""
+    content_html = _fixture("content_zhanr_drama_1156.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://bambooua.com/zhanr/drama/1156-personasulli.html"
+        ).respond(200, text=content_html)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await BambooUAProvider().stream(
+                    "zhanr/drama/1156-personasulli:s1e1", None, http
+                )
+    assert exc.value.code == "gated"
+
+
+def test_bambooua_external_id_from_url_keeps_full_path():
+    """#139 id-collapse: `_external_id_from_url` preserves the FULL
+    path (root-relative or absolute) so `content()` can rebuild the
+    verbatim 200 URL. A bare relative href with no leading slash must be
+    rejected (parse_failed) — matching it would silently collapse to the
+    301 form this fix exists to prevent."""
+    from cs_uk_api.providers.bambooua import _external_id_from_url
+
+    assert (
+        _external_id_from_url("/zhanr/drama/1156-personasulli.html")
+        == "zhanr/drama/1156-personasulli"
+    )
+    assert (
+        _external_id_from_url("https://bambooua.com/zhanr/romantyka/1049-the_shapes_of_love.html")
+        == "zhanr/romantyka/1049-the_shapes_of_love"
+    )
+    assert _external_id_from_url("/cinema/1159-aichaku.html") == "cinema/1159-aichaku"
+    with pytest.raises(ProviderError) as exc:
+        _external_id_from_url("zhanr/drama/1156-personasulli.html")
+    assert exc.value.code == "parse_failed"
 
 
 @pytest.mark.asyncio
@@ -86,10 +153,10 @@ async def test_bambooua_browse_cinema_parses_results():
     assert len(results) == 21
     # Type is per-card, not per-section. The cinema listing also has
     # 3 dorama/ and 1 zhanr/ cards mixed in.
-    cinema_count = sum(1 for r in results if r.type == "movie")
+    cinema_count = sum(1 for r in results if r.form == "movie")
     assert cinema_count == 17
-    types_by_kind = {r.url.split("/")[3]: r.type for r in results}
-    assert types_by_kind["dorama"] == "dorama"
+    types_by_kind = {r.url.split("/")[3]: r for r in results}
+    assert "dorama" in types_by_kind["dorama"].styles
     # The real listing has 13 pages.
     assert has_next is True
 
@@ -104,11 +171,11 @@ async def test_bambooua_browse_anime_parses_results():
     assert len(results) == 21
     # The anime listing has 2 /voice/ cards and 1 /lgbtq/ card
     # alongside 18 anime cards. Type is per-card, not per-section.
-    anime_count = sum(1 for r in results if r.type == "anime")
+    anime_count = sum(1 for r in results if "anime" in r.styles)
     assert anime_count == 18
-    types_by_kind = {r.url.split("/")[3]: r.type for r in results}
-    assert types_by_kind.get("voice") == "series"
-    assert types_by_kind.get("lgbtq") == "series"
+    types_by_kind = {r.url.split("/")[3]: r for r in results}
+    assert types_by_kind["voice"].form == "series"
+    assert types_by_kind["lgbtq"].form == "series"
     assert has_next is True
 
 
@@ -137,9 +204,75 @@ async def test_bambooua_content_free_movie_parses_title_poster():
             c = await BambooUAProvider().content(
                 "cinema/1041-you-are-the-apple-of-my-eye", http
             )
-    assert c.type == "movie"
+    assert c.form == "movie"
     assert c.poster is not None
     assert c.poster.startswith("https://bambooua.com")
+
+
+@pytest.mark.asyncio
+async def test_bambooua_content_free_movie_parses_jsonld_description():
+    """The JSON-LD block uses the standard `@graph` key; the model must
+    alias it so the description survives. Regression: every bambooua
+    detail rendered a blank description because `graph` stayed []
+    (Ticket #226)."""
+    content_html = _fixture("content_movie_free.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://bambooua.com/cinema/1041-you-are-the-apple-of-my-eye.html"
+        ).respond(200, text=content_html)
+        async with httpx.AsyncClient() as http:
+            c = await BambooUAProvider().content(
+                "cinema/1041-you-are-the-apple-of-my-eye", http
+            )
+    assert c.description
+    assert "перших симпатій" in c.description
+
+
+@pytest.mark.asyncio
+async def test_bambooua_content_free_movie_parses_year_from_datepublished():
+    """The JSON-LD carries ``datePublished``; content() must surface its
+    year. Regression: every bambooua detail showed no year even though
+    the fixture's JSON-LD had datePublished=2025-11-17 (Ticket #226)."""
+    content_html = _fixture("content_movie_free.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://bambooua.com/cinema/1041-you-are-the-apple-of-my-eye.html"
+        ).respond(200, text=content_html)
+        async with httpx.AsyncClient() as http:
+            c = await BambooUAProvider().content(
+                "cinema/1041-you-are-the-apple-of-my-eye", http
+            )
+    assert c.year == 2025
+
+
+@pytest.mark.asyncio
+async def test_bambooua_content_single_file_movie_prefixes_episode_id():
+    """A movie whose playlist group carries a single folder entry is
+    surfaced as season 1, episode 1. The episode id must be prefixed
+    with the provider namespace (issue #175) so /api/stream can split
+    on the first ':' — a bare `__movie__` id 404s on the real client."""
+    html = (
+        '<html><head><meta property="og:image" content="/img/poster.jpg">'
+        "<script>const playlist = "
+        '[{"title":"Озвучення","folder":[{"title":"Фільм",'
+        '"file":"https://cdn.example.com/film.m3u8"}]}];'
+        "</script></head><body><h1>Фільм тест</h1></body></html>"
+    )
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://bambooua.com/cinema/1041-you-are-the-apple-of-my-eye.html"
+        ).respond(200, text=html)
+        async with httpx.AsyncClient() as http:
+            c = await BambooUAProvider().content(
+                "cinema/1041-you-are-the-apple-of-my-eye", http
+            )
+    assert c.form == "movie"
+    assert c.seasons is not None
+    assert len(c.seasons) == 1
+    assert len(c.seasons[0].episodes) == 1
+    assert c.seasons[0].episodes[0].id == (
+        "bambooua:cinema/1041-you-are-the-apple-of-my-eye:__movie__"
+    )
 
 
 @pytest.mark.asyncio
@@ -171,7 +304,7 @@ async def test_bambooua_content_free_series_parses_seasons():
         )
         async with httpx.AsyncClient() as http:
             c = await BambooUAProvider().content("dorama/1119-blood-river", http)
-    assert c.type == "dorama"
+    assert "dorama" in c.styles
     assert c.seasons is not None
     # One season (Субтитри folder) with all 19 listed episodes.
     assert len(c.seasons) == 1
@@ -192,6 +325,126 @@ async def test_bambooua_content_gated_series_raises_gated():
             with pytest.raises(ProviderError) as exc:
                 await BambooUAProvider().content("dorama/1158-dream-to-you", http)
     assert exc.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_bambooua_content_no_playlist_raises_gated():
+    """#139 no_episodes: a live title served with a title but NO
+    `const playlist` block (subscription-gated to non-subscribers,
+    captured 2026-08-08 from dorama/262-legenda-pro-nok-tu) must raise
+    `gated`, not fall through to a zero-season listing."""
+    content_html = _fixture("content_no_playlist.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://bambooua.com/dorama/262-legenda-pro-nok-tu-the-tale-of-nok-du.html"
+        ).respond(200, text=content_html)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await BambooUAProvider().content(
+                    "dorama/262-legenda-pro-nok-tu-the-tale-of-nok-du", http
+                )
+    assert exc.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_bambooua_content_empty_playlist_array_raises_gated():
+    """The `const playlist = []` variant of the same break (captured
+    live 2026-08-08 from tv-show/652-his-man-season-1): the array parses
+    but is empty — still nothing playable, still gated."""
+    content_html = _fixture("content_empty_playlist.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://bambooua.com/tv-show/652-his-man-season-1.html"
+        ).respond(200, text=content_html)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await BambooUAProvider().content(
+                    "tv-show/652-his-man-season-1", http
+                )
+    assert exc.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_bambooua_content_groups_without_files_raises_gated():
+    """#139 coverage gap: a playlist parsed into non-empty groups whose
+    every group carries NO file and NO folder (e.g. an upstream variant
+    `[{title:"Сезон 1",folder:[]},{title:"Сезон 2",folder:[]}]`) is
+    neither caught by ``_require_playlist`` (groups is non-empty) nor by
+    ``_playlist_fully_gated`` (returns False when ``not files``). Without
+    an explicit guard, ``_build_seasons`` returns ``None`` and content()
+    surfaces a zero-season ``ContentResponse`` — the exact #139 break
+    this gate is meant to prevent. content() must raise ``gated``."""
+    content_html = _fixture("content_empty_folders.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://bambooua.com/dorama/262-legenda-pro-nok-tu.html"
+        ).respond(200, text=content_html)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await BambooUAProvider().content(
+                    "dorama/262-legenda-pro-nok-tu", http
+                )
+    assert exc.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_bambooua_stream_groups_without_files_raises_gated():
+    """Same coverage gap as the content() variant: stream() on a title
+    whose playlist is non-empty groups with zero playable files must
+    raise ``gated`` (consistent with ``test_bambooua_stream_no_playlist``),
+    not ``not_found`` — so a stale card for a withheld title does not
+    pollute the health tracker."""
+    content_html = _fixture("content_empty_folders.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://bambooua.com/dorama/262-legenda-pro-nok-tu.html"
+        ).respond(200, text=content_html)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await BambooUAProvider().stream(
+                    "dorama/262-legenda-pro-nok-tu:s1e1", None, http
+                )
+    assert exc.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_bambooua_stream_no_playlist_raises_gated():
+    """stream() on a title with no playable manifest must answer gated
+    (never parse_failed → health-down) so a stale card for a removed or
+    subscription-gated title does not pollute the health tracker."""
+    content_html = _fixture("content_no_playlist.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://bambooua.com/dorama/262-legenda-pro-nok-tu-the-tale-of-nok-du.html"
+        ).respond(200, text=content_html)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await BambooUAProvider().stream(
+                    "dorama/262-legenda-pro-nok-tu-the-tale-of-nok-du:s1e1", None, http
+                )
+    assert exc.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_bambooua_extract_playlist_malformed_block_raises_parse_failed():
+    """A `const playlist` block that exists but won't parse is a genuine
+    parse gap (upstream shape change), not deliberate withholding: it
+    must raise `parse_failed` so the health tracker sees the break
+    instead of the title being swallowed into gated/zero-season (#139)."""
+    from cs_uk_api.providers.bambooua import _extract_playlist
+
+    with pytest.raises(ProviderError) as exc:
+        _extract_playlist("const playlist = [{broken];")
+    assert exc.value.code == "parse_failed"
+
+
+@pytest.mark.asyncio
+async def test_bambooua_extract_playlist_empty_array_is_not_a_parse_gap():
+    """`const playlist = []` parses fine (returns []) — it is the
+    deliberate empty-manifest shape content() gates, NOT a parse gap."""
+    from cs_uk_api.providers.bambooua import _extract_playlist
+
+    assert _extract_playlist("const playlist = [];") == []
 
 
 @pytest.mark.asyncio
@@ -279,10 +532,16 @@ async def test_bambooua_stream_unknown_episode_raises_not_found():
 
 
 @pytest.mark.asyncio
-async def test_bambooua_sections_lists_nine():
-    """Per the upstream Kotlin `mainPageOf(...)` declaration."""
+async def test_bambooua_sections_exclude_dead_world_bl():
+    """The upstream Kotlin `mainPageOf(...)` declares nine sections, but
+    the `world-bl` («Світ ЛГБТ») listing is dead: `/world-bl/`
+    301-redirects to the site root and the homepage no longer links it
+    (verified live 2026-08-09). Following that redirect would serve home
+    content mislabeled as `world-bl` (wrong data), so the section is
+    retired from the exposed set — the eight live sections remain."""
     sections = BambooUAProvider().sections
     ids = [s.id for s in sections]
+    assert "world-bl" not in ids
     assert ids == [
         "cinema",
         "dorama",
@@ -291,16 +550,14 @@ async def test_bambooua_sections_lists_nine():
         "voice",
         "tv-show",
         "done",
-        "world-bl",
         "now",
     ]
 
 
 @pytest.mark.asyncio
 async def test_bambooua_browse_unknown_section_raises():
-    with respx.mock(assert_all_called=False):
-        with pytest.raises(ProviderError):
-            await BambooUAProvider().browse("nonexistent", 1, httpx.AsyncClient())
+    with respx.mock(assert_all_called=False), pytest.raises(ProviderError):
+        await BambooUAProvider().browse("nonexistent", 1, httpx.AsyncClient())
 
 
 @pytest.mark.asyncio

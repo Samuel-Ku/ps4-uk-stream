@@ -15,7 +15,6 @@ to the extractor, so for v2 we pick the highest-quality source.
 """
 from __future__ import annotations
 
-import json
 import pathlib
 
 import httpx
@@ -54,7 +53,7 @@ async def test_hentaiukr_search_filters_by_name_substring():
     # upstream itself uses the integer `id` for episodes (see
     # `loadLinks(data.split(", ")[1].toInt())`).
     assert r.id == "hentaiukr:159"
-    assert r.type == "anime"
+    assert "anime" in r.styles
     assert r.poster is not None
     assert r.poster.startswith("https://hentaiukr.com")
     assert r.url == "https://hentaiukr.com/video/159_velychezni_tsyts_ky_nagaj/"
@@ -96,7 +95,7 @@ async def test_hentaiukr_search_classifies_all_results_as_anime():
         )
         async with httpx.AsyncClient() as http:
             results = await HentaiUkrProvider().search("хоч", http)
-    assert all(r.type == "anime" for r in results)
+    assert all("anime" in r.styles for r in results)
 
 
 @pytest.mark.asyncio
@@ -123,9 +122,8 @@ async def test_hentaiukr_browse_unknown_section_raises():
     the API returns 404 instead of leaking an empty page. The provider
     should validate the section id *before* hitting the manifest, so
     we don't register the objects.json route here."""
-    with respx.mock(assert_all_called=False):
-        with pytest.raises(ProviderError) as exc_info:
-            await HentaiUkrProvider().browse("does-not-exist", 1, httpx.AsyncClient())
+    with respx.mock(assert_all_called=False), pytest.raises(ProviderError) as exc_info:
+        await HentaiUkrProvider().browse("does-not-exist", 1, httpx.AsyncClient())
     assert exc_info.value.code == "not_found"
 
 
@@ -137,10 +135,10 @@ async def test_hentaiukr_sections_lists_one():
     assert len(sections) == 1
     assert sections[0].id == "hentai"
     assert sections[0].title == "Хентай"
-    assert sections[0].type == "anime"
+    assert sections[0].styles == frozenset({"anime"})
 
 
-def _objects_route(router: "respx.MockRouter") -> None:
+def _objects_route(router: respx.MockRouter) -> None:
     """Mock the upstream ``/search/objects.json`` manifest.
 
     The provider looks up the URL slug from this manifest every time
@@ -175,7 +173,7 @@ async def test_hentaiukr_content_parses_title_year_poster():
             c = await HentaiUkrProvider().content("159", http)
     assert "Наґай" in c.title
     assert "Хентай" not in c.title  # no "| Хентай..." suffix
-    assert c.type == "anime"
+    assert "anime" in c.styles
     assert c.year == 2025
     assert c.poster is not None
     assert c.poster.startswith("https://hentaiukr.com")
@@ -207,6 +205,10 @@ async def test_hentaiukr_content_loads_episodes_from_plur_cfg_json():
     assert len(c.seasons[0].episodes) == 3
     titles = [ep.title for ep in c.seasons[0].episodes]
     assert titles == ["Серія 1", "Серія 2", "Серія 3"]
+    # Episode ids are prefixed with the provider namespace (issue #175)
+    # so /api/stream can route on the first ':'. 1-based episode index.
+    assert c.seasons[0].episodes[0].id == "hentaiukr:159:1"
+    assert c.seasons[0].episodes[2].id == "hentaiukr:159:3"
 
 
 @pytest.mark.asyncio
@@ -299,13 +301,12 @@ async def test_hentaiukr_stream_rejects_url_as_content_id():
     (``"159:1"``), NOT a URL. Passing a URL must not crash; it must
     be parsed as ``<id>:<episode>`` and (because the URL contains a
     slash that is not a colon) raise not_found."""
-    with respx.mock(assert_all_called=False):
-        with pytest.raises(ProviderError):
-            await HentaiUkrProvider().stream(
-                "https://hentaiukr.com/video/159_velychezni_tsyts_ky_nagaj/",
-                None,
-                httpx.AsyncClient(),
-            )
+    with respx.mock(assert_all_called=False), pytest.raises(ProviderError):
+        await HentaiUkrProvider().stream(
+            "https://hentaiukr.com/video/159_velychezni_tsyts_ky_nagaj/",
+            None,
+            httpx.AsyncClient(),
+        )
 
 
 @pytest.mark.asyncio

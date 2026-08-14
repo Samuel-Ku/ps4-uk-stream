@@ -82,7 +82,7 @@ class BaseItemDto(BaseModel):
     render one item's page and to walk Series → Season → Episode:
     ``Overview`` (description), ``IndexNumber``/``ParentIndexNumber``
     (position inside a season / season number) and ``SeriesId`` (the
-    owning series' ``g1:`` key) on Season/Episode items.
+    owning series' ``g2:`` key) on Season/Episode items.
     """
 
     Name: str | None = None
@@ -98,19 +98,58 @@ class BaseItemDto(BaseModel):
     ParentIndexNumber: int | None = None
     SeriesId: str | None = None
     SeriesName: str | None = None
+    PlaybackPositionTicks: int | None = None
+    #: Genre shelf (ticket #213): the genre name as both Id and Name
+    #: (Jellyfin's own convention — genre ids ARE the names), and
+    #: ChildCount = how many cards of the view carry the genre.
+    ChildCount: int | None = None
+    #: Free-form genre labels on an item (ticket #213) — the detail
+    #: surface renders them (``media_movie``/``media_series`` show a
+    #: ``labelGenres`` row when non-empty).
+    Genres: list[str] = Field(default_factory=list)
+    #: Cast rail (ticket #221) — present iff the resolved provider's
+    #: content page exposed cast; Switchfin hides the People header
+    #: when the list is empty, so the rail simply doesn't appear for
+    #: providers without cast data.
+    People: list[PersonDto] = Field(default_factory=list)
+    #: Rating badge (ticket #222) — 0-10 on Jellyfin's scale, populated
+    #: from the provider's page rating when one exists; omitted (None)
+    #: when absent so Switchfin hides the badge instead of showing 0.
+    CommunityRating: float | None = None
+    #: Episode metadata (ticket #223) — air date and runtime, emitted
+    #: when the provider exposes them. Omitted (None) otherwise.
+    PremiereDate: str | None = None
+    RunTimeTicks: int | None = None
+
+
+class PersonDto(BaseModel):
+    """One entry of ``BaseItemDto.People`` (ticket #221).
+
+    Jellyfin's wire shape is ``{Id, Name, PrimaryImageTag, Role}``;
+    Switchfin's ``media_series``/``media_movie`` populate the People
+    rail from this list and only render it when non-empty. ``Id`` is
+    the provider-scoped person key that round-trips through
+    ``/Persons/{id}``.
+    """
+
+    Id: str
+    Name: str
+    Role: str = "Actor"
 
 
 class BaseItemDtoQueryResult(BaseModel):
     """``ItemsResult``-style envelope every list endpoint returns.
 
     ``TotalRecordCount`` is what Jellyfin clients use to render
-    scrolling; the facade caps every listing at the home row size (20),
-    so it always equals ``len(Items)`` (D5: no pagination in v1).
+    scrolling; ``Items`` is the requested ``startIndex``/``limit`` page of
+    the (home-row-capped, 20-item) listing, and ``TotalRecordCount`` stays
+    the full count so a client knows more pages exist (device-driving B11:
+    ignoring the slice made page 2 repeat page 1 and the real client's
+    infinite scroll looped on it forever).
 
     ``StartIndex`` must be present: Switchfin's ``Result<T>`` wrapper is
     parsed via ``NLOHMANN_JSON_FROM`` (no default), so a missing key
-    raises ``out_of_range.403`` on the console. Always 0 — no
-    pagination.
+    raises ``out_of_range.403`` on the console. Echoes the requested page.
     """
 
     Items: list[BaseItemDto] = Field(default_factory=list)
@@ -149,7 +188,7 @@ class MediaStreamInfo(BaseModel):
 class MediaSourceInfo(BaseModel):
     """The thin ``MediaSources[0]`` of PlaybackInfo (spec D6).
 
-    ``Id`` = the item id (the ``g1:`` group key or the provider-scoped
+    ``Id`` = the item id (the ``g2:`` group key or the provider-scoped
     episode wire id); ``Container`` = the provider's ``StreamResponse``
     type (mp4/m3u8/hls); ``Path`` is a FICTITIOUS stable string — the
     bytes always come from ``/Videos/{id}/stream``, never from Path.
@@ -176,3 +215,28 @@ class PlaybackInfoResponse(BaseModel):
 
     MediaSources: list[MediaSourceInfo]
     PlaySessionId: str
+
+
+class SearchHint(BaseModel):
+    """One entry of ``SearchHintResult.SearchHints`` (spec D10, ticket #106).
+
+    The search-box surface some clients hit (``GET /Search/Hints``) —
+    the same merged-group card as the ``/Items?searchTerm=`` listing, in
+    hint shape: ``ItemId`` is the ``g2:`` group key the detail/image
+    routes resolve, ``Type`` the Movie/Series verdict. ``ImageTags``
+    present *iff* the card has a poster (D9), mirroring ``BaseItemDto``.
+    """
+
+    ItemId: str | None = None
+    Id: str | None = None
+    Name: str | None = None
+    Type: str | None = None
+    ProductionYear: int | None = None
+    ImageTags: dict[str, str] = Field(default_factory=dict)
+
+
+class SearchHintResult(BaseModel):
+    """``GET /Search/Hints`` envelope (spec D10, ticket #106)."""
+
+    SearchHints: list[SearchHint] = Field(default_factory=list)
+    TotalRecordCount: int = 0

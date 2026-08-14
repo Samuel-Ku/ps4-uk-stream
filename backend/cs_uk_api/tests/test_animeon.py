@@ -63,6 +63,9 @@ def test_animeon_provider_metadata():
     assert "seasons" in ids
     assert "popular" in ids
     assert "page" in ids
+    # Issue #160: content() gates withheld-translation titles, so the
+    # catalog sweep must run for animeon to drop dead cards from home.
+    assert p.can_gate is True
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +88,7 @@ async def test_search_returns_results():
             results = await AnimeONProvider().search("naruto", http)
     assert len(results) >= 1
     assert results[0].provider == "animeon"
-    assert results[0].type == "anime"
+    assert "anime" in results[0].styles
     assert "Наруто" in results[0].title
 
 
@@ -247,6 +250,7 @@ async def test_content_parses_title_description_and_translations():
     translations_json = _fixture("translations.json")
     episodes_ashdi_json = _fixture("episodes_ashdi.json")
     episodes_moon_json = _fixture("episodes_moon.json")
+    episodes_info_json = _fixture("episodes_info.json")
     with respx.mock(assert_all_called=True) as router:
         router.get("https://animeon.club/api/anime/913").respond(
             200, text=redirect_json
@@ -254,6 +258,9 @@ async def test_content_parses_title_description_and_translations():
         router.get("https://animeon.club/api/anime/913-naruto").respond(
             200, text=content_json
         )
+        router.get(
+            "https://animeon.club/api/anime/913-naruto/episodes-info"
+        ).respond(200, text=episodes_info_json)
         router.get("https://animeon.club/api/player/913/translations").respond(
             200, text=translations_json
         )
@@ -270,12 +277,18 @@ async def test_content_parses_title_description_and_translations():
         async with httpx.AsyncClient() as http:
             c = await AnimeONProvider().content("913", http)
     assert c.id == "animeon:913"
-    assert c.type == "anime"
+    assert "anime" in c.styles
     assert c.title == "Наруто"
     assert c.poster is not None
     assert c.poster.startswith("https://animeon.club/api/uploads/images/")
     # Description must be a non-empty Ukrainian string.
     assert c.description
+    # The upstream releaseDate is a bare year ("2002") — it must
+    # surface as ProductionYear, and the genres[] nameUa list must
+    # surface as genres (Ticket #232).
+    assert c.year == 2002
+    assert "Бойовик" in c.genres
+    assert "Фентезі" in c.genres
     # Per-episode translations because each translation is a separate
     # studio and the JSON gives one player per translation.
     assert c.translations_level == "episode"
@@ -283,13 +296,122 @@ async def test_content_parses_title_description_and_translations():
     assert len(c.seasons) == 1
     first = c.seasons[0].episodes[0]
     assert first.number == 1
-    assert first.id.startswith("913:e1:")
+    assert first.id.startswith("animeon:913:e1:")
+    # Ticket #223: episodes-info enriches the generic "Серія N" titles
+    # with the real Ukrainian title + air date.
+    assert first.title == "На сцену: Наруто Узумаки!"
+    assert first.premiere_date == "2002-10-03"
+    assert c.seasons[0].episodes[1].premiere_date == "2002-10-10"
     # The translation list should include all three studios (labels
     # come straight from the JSON `translation.name` field).
     labels = [t.id for t in first.translations or []]
     assert "QTV" in labels
     assert "QTV AI Remaster" in labels
     assert "Sweet Sound Studio" in labels
+
+
+@pytest.mark.asyncio
+async def test_content_empty_translations_raises_gated():
+    """A present-but-empty `translations` list is deliberate upstream
+    withholding, not a parse failure. Live capture 2026-08-08: animeon
+    8096 "Коджін Сенші Оредам" (type `special`) answers
+    `/api/player/8096/translations` with exactly `{"translations":[]}`
+    — the series path must raise `gated` (ADR-0002) so the health
+    tracker stays green, never a `parse_failed` health signal."""
+    from cs_uk_api.providers.base import ProviderError
+
+    redirect_json = _fixture("8096_redirect.json")
+    content_json = _fixture("8096_content.json")
+    translations_json = _fixture("8096_translations.json")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://animeon.club/api/anime/8096").respond(
+            200, text=redirect_json
+        )
+        router.get("https://animeon.club/api/anime/8096-kodzhin-senshi-oredam").respond(
+            200, text=content_json
+        )
+        router.get("https://animeon.club/api/player/8096/translations").respond(
+            200, text=translations_json
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await AnimeONProvider().content("8096", http)
+    assert exc.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_stream_empty_translations_raises_gated():
+    """The bare-id stream path walks `/api/player/<id>/translations`
+    first (`_movie_stream` mirrors upstream `loadMovieLinks`); a
+    present-but-empty list must surface as `gated`, matching content().
+    Production-form id: no `provider:` prefix."""
+    from cs_uk_api.providers.base import ProviderError
+
+    translations_json = _fixture("8096_translations.json")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://animeon.club/api/player/8096/translations").respond(
+            200, text=translations_json
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await AnimeONProvider().stream("8096", None, http)
+    assert exc.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_content_missing_translations_key_raises_parse_failed():
+    """The gated discriminator is present-but-empty; a missing or
+    malformed `translations` key is an upstream shape change and must
+    surface as `parse_failed` — never silently gated (ADR-0002: a
+    parse failure is not masked as gated)."""
+    from cs_uk_api.providers.base import ProviderError
+
+    redirect_json = _fixture("content_redirect.json")
+    content_json = _fixture("content.json")
+    malformed = '{"episodes":[],"anotherPlayer":null}'
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://animeon.club/api/anime/913").respond(
+            200, text=redirect_json
+        )
+        router.get("https://animeon.club/api/anime/913-naruto").respond(
+            200, text=content_json
+        )
+        router.get("https://animeon.club/api/player/913/translations").respond(
+            200, text=malformed
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await AnimeONProvider().content("913", http)
+    assert exc.value.code == "parse_failed"
+
+
+@pytest.mark.asyncio
+async def test_content_movie_withheld_translations_raises_gated():
+    """Issue #166: a movie whose translations list is present but empty
+    (deliberate upstream withholding, live 2026-08-09 on Ґінтама Фільм
+    1) must raise ``gated`` from content() — stream() already gates it,
+    so without this the dead card stays in the catalog and fails only
+    at play time."""
+    from cs_uk_api.providers.base import ProviderError
+
+    redirect_json = _fixture("movie_redirect.json")
+    movie_json = _fixture("movie.json")
+    withheld = '{"translations":[]}'
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://animeon.club/api/anime/8100").respond(
+            200, text=redirect_json
+        )
+        router.get("https://animeon.club/api/anime/8100-lyupen-iii-pershyy").respond(
+            200, text=movie_json
+        )
+        router.get("https://animeon.club/api/player/8100/translations").respond(
+            200, text=withheld
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await AnimeONProvider().content("8100", http)
+    assert exc.value.code == "gated"
+    assert "no translations" in exc.value.message
 
 
 @pytest.mark.asyncio
@@ -312,7 +434,7 @@ async def test_content_movie_returns_movie_without_seasons():
         )
         async with httpx.AsyncClient() as http:
             c = await AnimeONProvider().content("8100", http)
-    assert c.type == "movie"
+    assert c.form == "movie"
     assert c.seasons is None
     assert c.translations_level == "content"
     assert c.title == "Люпен III: Перший"
@@ -328,21 +450,13 @@ async def test_stream_movie_resolves_direct_source():
     Ashdi iframe (upstream `loadMovieLinks`). Regression (issue #115):
     previously a bare id hit the 3-part episode-id check and raised
     `not_found bad content_id` on every movie."""
-    from cs_uk_api.providers.base import ProviderError
-
     translations_json = _fixture("movie_translations.json")
     direct_json = _fixture("movie_direct.json")
     ashdi_html = _fixture("player_ashdi_movie.html")
-    empty_eps = '{"episodes":[],"anotherPlayer":null}'
     with respx.mock(assert_all_called=True) as router:
         router.get("https://animeon.club/api/player/8100/translations").respond(
             200, text=translations_json
         )
-        router.get(
-            url=re.compile(
-                r"https://animeon\.club/api/player/8100/episodes\?.*playerId=8293.*"
-            )
-        ).respond(200, text=empty_eps)
         router.get("https://animeon.club/api/player/8293/1793").respond(
             200, text=direct_json
         )
@@ -362,22 +476,49 @@ async def test_stream_movie_resolves_direct_source():
 
 
 @pytest.mark.asyncio
+async def test_stream_movie_prefers_direct_over_stale_walk():
+    """Regression (observed live 2026-08-09, movie 8102 «Ґінтама»):
+    the episode walk returned a STALE Moon iframe entry whose page no
+    longer carries the atob blob, while the direct player endpoint
+    (`/api/player/<playerId>/<translationId>`) resolved fine. The
+    direct endpoint is the authoritative movie source (upstream
+    `loadMovieLinks`) and must win over a stale walk entry — otherwise
+    the card streams `parse_failed: moon atob blob missing`."""
+    translations_json = _fixture("movie_translations.json")
+    direct_json = _fixture("movie_direct.json")
+    ashdi_html = _fixture("player_ashdi_movie.html")
+    # The walk yields a moon iframe (stale — would 404 the atob blob),
+    # but the direct endpoint + ashdi iframe must be used instead.
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://animeon.club/api/player/8100/translations").respond(
+            200, text=translations_json
+        )
+        router.get("https://animeon.club/api/player/8293/1793").respond(
+            200, text=direct_json
+        )
+        router.get("https://ashdi.vip/vod/276624?player=animeon.club").respond(
+            200, text=ashdi_html
+        )
+        # No walk-episodes route is registered: if the provider consulted
+        # the episode walk instead of the direct endpoint, respx would
+        # raise "no route" and the test fails.
+        async with httpx.AsyncClient() as http:
+            s = await AnimeONProvider().stream("8100", None, http)
+    assert s.url.startswith("https://ashdi.vip/video08/3/new/gotovo_lyupen_iii_pershij_276624/")
+    assert s.url.endswith("/index.m3u8")
+
+
+@pytest.mark.asyncio
 async def test_stream_movie_explicit_movie_suffix():
     """The `:__movie__` suffix form must be accepted too — some clients
     hand over the explicit suffix rather than the bare search id."""
     translations_json = _fixture("movie_translations.json")
     direct_json = _fixture("movie_direct.json")
     ashdi_html = _fixture("player_ashdi_movie.html")
-    empty_eps = '{"episodes":[],"anotherPlayer":null}'
     with respx.mock(assert_all_called=True) as router:
         router.get("https://animeon.club/api/player/8100/translations").respond(
             200, text=translations_json
         )
-        router.get(
-            url=re.compile(
-                r"https://animeon\.club/api/player/8100/episodes\?.*playerId=8293.*"
-            )
-        ).respond(200, text=empty_eps)
         router.get("https://animeon.club/api/player/8293/1793").respond(
             200, text=direct_json
         )
@@ -488,12 +629,11 @@ async def test_content_bad_redirect_slug_raises_not_found():
 
 
 @pytest.mark.asyncio
-async def test_content_specials_5xx_propagates_upstream_unreachable():
-    """A 5xx on the optional ``skip=-1`` specials fetch must surface
-    as ``upstream_unreachable`` — not be silently swallowed and
-    misattributed to ``parse_failed`` further down the call stack."""
-    from cs_uk_api.providers.base import ProviderError
-
+async def test_content_one_pair_5xx_does_not_gate_the_series():
+    """A 5xx on ONE (translation, player) pair's specials fetch must
+    not gate the whole series (issue #187 follow-up): the surviving
+    pairs still build the episode map, so the card stays playable.
+    Only when EVERY pair fails does content() surface the error."""
     redirect_json = _fixture("content_redirect.json")
     content_json = _fixture("content.json")
     translations_json = _fixture("translations.json")
@@ -527,6 +667,40 @@ async def test_content_specials_5xx_propagates_upstream_unreachable():
                 r"https://animeon\.club/api/player/913/episodes\?.*playerId=1052.*"
             )
         ).respond(200, text=episodes_ashdi_json)
+        async with httpx.AsyncClient() as http:
+            c = await AnimeONProvider().content("913", http)
+    assert c.id == "animeon:913"
+    assert c.seasons is not None
+    assert len(c.seasons[0].episodes) >= 1
+
+
+@pytest.mark.asyncio
+async def test_content_all_pairs_fail_propagates_upstream_error():
+    """When EVERY (translation, player) pair 5xxes on the episode
+    walk, content() must surface the upstream error instead of an
+    empty series (issue #187 follow-up) — a dead upstream is a real
+    health signal, not a parse failure."""
+    from cs_uk_api.providers.base import ProviderError
+
+    redirect_json = _fixture("content_redirect.json")
+    content_json = _fixture("content.json")
+    translations_json = _fixture("translations.json")
+    with respx.mock(assert_all_called=False) as router:
+        router.get("https://animeon.club/api/anime/913").respond(
+            200, text=redirect_json
+        )
+        router.get("https://animeon.club/api/anime/913-naruto").respond(
+            200, text=content_json
+        )
+        router.get("https://animeon.club/api/player/913/translations").respond(
+            200, text=translations_json
+        )
+        router.get(
+            url=re.compile(r"https://animeon\.club/api/player/913/episodes\?.*skip=-1.*")
+        ).respond(503, text="")
+        router.get(
+            url=re.compile(r"https://animeon\.club/api/player/913/episodes\?.*skip=0.*")
+        ).respond(503, text="")
         async with httpx.AsyncClient() as http:
             with pytest.raises(ProviderError) as exc:
                 await AnimeONProvider().content("913", http)
@@ -573,6 +747,157 @@ async def test_content_specials_4xx_is_swallowed_silently():
     assert c.id == "animeon:913"
     assert c.seasons is not None
     assert len(c.seasons[0].episodes) >= 1
+
+
+@pytest.mark.asyncio
+async def test_content_long_archive_windowed_walk_resolves_every_episode():
+    """A 1170-episode archive (the One Piece shape, issue #187) must
+    resolve EVERY episode through the windowed page walk. The old
+    fully-sequential walk needed ~13 upstream round-trips per pair and
+    502'd whenever the upstream throttled; the windowed walk fetches
+    skip=0 first, then bounded-concurrency windows, and must still
+    stop at the short final page (1170 = 11 full pages + 70)."""
+
+    def page_json(offset: int, count: int) -> str:
+        return json.dumps(
+            {
+                "episodes": [
+                    {
+                        "id": offset + i,
+                        "episode": offset + i,
+                        "videoUrl": f"https://moonanime.art/video/{offset + i}",
+                    }
+                    for i in range(1, count + 1)
+                ]
+            }
+        )
+
+    translations_json = json.dumps(
+        {
+            "translations": [
+                {
+                    "translation": {
+                        "id": 1097,
+                        "name": "Togarashi",
+                        "synonyms": [],
+                        "isSub": False,
+                        "studios": [],
+                    },
+                    "player": [{"name": "Moon", "id": 3838, "episodesCount": 1170}],
+                }
+            ]
+        }
+    )
+    content_json = _fixture("content.json")
+    redirect_json = _fixture("content_redirect.json")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://animeon.club/api/anime/913").respond(
+            200, text=redirect_json
+        )
+        router.get("https://animeon.club/api/anime/913-naruto").respond(
+            200, text=content_json
+        )
+        router.get("https://animeon.club/api/player/913/translations").respond(
+            200, text=translations_json
+        )
+        # skip=-1 specials page (empty is fine), then 11 full pages at
+        # skip 0..1000, a short 70-episode page at skip=1100, and an
+        # empty confirmation at skip=1200 (max_skip rounding).
+        router.get(
+            url=re.compile(
+                r"https://animeon\.club/api/player/913/episodes\?.*skip=-1.*"
+            )
+        ).respond(200, text='{"episodes": []}')
+        for page in range(11):
+            router.get(
+                url=re.compile(
+                    rf"https://animeon\.club/api/player/913/episodes\?.*skip={page * 100}(?=&|$).*"
+                )
+            ).respond(200, text=page_json(page * 100, 100))
+        router.get(
+            url=re.compile(
+                r"https://animeon\.club/api/player/913/episodes\?.*skip=1100(?=&|$).*"
+            )
+        ).respond(200, text=page_json(1100, 70))
+        router.get(
+            url=re.compile(
+                r"https://animeon\.club/api/player/913/episodes\?.*skip=1200(?=&|$).*"
+            )
+        ).respond(200, text='{"episodes": []}')
+        async with httpx.AsyncClient() as http:
+            c = await AnimeONProvider().content("913", http)
+    assert c.seasons is not None
+    episodes = c.seasons[0].episodes
+    assert len(episodes) == 1170
+    assert episodes[0].number == 1
+    assert episodes[-1].number == 1170
+
+
+@pytest.mark.asyncio
+async def test_content_short_first_page_stops_walk_without_fanout():
+    """A series whose first page is already short (≤100 episodes) must
+    stop the walk after exactly ONE page fetch — the skip=0-first
+    design must not fan out into a window of empty pages. Registered
+    routes are assert-all-called, so an unexpected skip=100 fetch would
+    fail the test."""
+    translations_json = json.dumps(
+        {
+            "translations": [
+                {
+                    "translation": {
+                        "id": 1097,
+                        "name": "Togarashi",
+                        "synonyms": [],
+                        "isSub": False,
+                        "studios": [],
+                    },
+                    # episodesCount missing -> max_skip fallback is
+                    # large; the walk must still stop at page 1.
+                    "player": [{"name": "Moon", "id": 3838}],
+                }
+            ]
+        }
+    )
+    short_json = json.dumps(
+        {
+            "episodes": [
+                {
+                    "id": i,
+                    "episode": i,
+                    "videoUrl": f"https://moonanime.art/video/{i}",
+                }
+                for i in range(1, 12)
+            ]
+        }
+    )
+    content_json = _fixture("content.json")
+    redirect_json = _fixture("content_redirect.json")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://animeon.club/api/anime/913").respond(
+            200, text=redirect_json
+        )
+        router.get("https://animeon.club/api/anime/913-naruto").respond(
+            200, text=content_json
+        )
+        router.get("https://animeon.club/api/player/913/translations").respond(
+            200, text=translations_json
+        )
+        router.get(
+            url=re.compile(
+                r"https://animeon\.club/api/player/913/episodes\?.*skip=-1.*"
+            )
+        ).respond(404, text="")
+        # Only skip=0 is mocked — if the walk fetches skip=100+ for a
+        # short first page, respx raises AllMockedAssertionError.
+        router.get(
+            url=re.compile(
+                r"https://animeon\.club/api/player/913/episodes\?.*skip=0.*"
+            )
+        ).respond(200, text=short_json)
+        async with httpx.AsyncClient() as http:
+            c = await AnimeONProvider().content("913", http)
+    assert c.seasons is not None
+    assert len(c.seasons[0].episodes) == 11
 
 
 # ---------------------------------------------------------------------------
@@ -656,6 +981,91 @@ async def test_stream_moon_decodes_iframe_to_m3u8():
     assert "s.moonanime.art/content" in s.url
     assert "manifest.m3u8" in s.url
     assert s.headers["Referer"] == "https://moonanime.art/"
+
+
+@pytest.mark.asyncio
+async def test_stream_moon_json_track_array_extracts_file():
+    """Live-gate regression (2026-08-09): Moon movie players now serve
+    the decrypted payload as a JSON track array
+    (``[{...,"file":"<m3u8>"}]``) instead of a bare manifest URL —
+    observed on animeon 8102 "Ґінтама Фільм 1". Before the fix the
+    whole array was returned as the stream URL, so nothing played.
+    The fixture is the live payload, re-encrypted with the provider's
+    own cipher so the decode path is exercised end to end."""
+    player_html = _fixture("player_moon_tracks.json.html")
+    ep_blob = json.dumps(
+        {
+            "id": 8102,
+            "episode": 1,
+            "sources": [
+                {
+                    "translation_name": "Одруківка",
+                    "player_name": "Moon",
+                    "video_url": "https://moonanime.art/title/2558",
+                    "file_url": "",
+                }
+            ],
+        },
+        separators=(",", ":"),
+    )
+    encoded_ep_id = (
+        f"8102:e1:{base64.b64encode(ep_blob.encode('utf-8')).decode('ascii')}"
+    )
+    with respx.mock(assert_all_called=True) as router:
+        router.get(url=re.compile(r"https://moonanime\.art/.*")).respond(
+            200, text=player_html
+        )
+        async with httpx.AsyncClient() as http:
+            s = await AnimeONProvider().stream(encoded_ep_id, "Одруківка", http)
+    assert s.type == "m3u8"
+    assert s.url.startswith("https://s.moonanime.art/content/stream/anime/47/")
+    assert "manifest.m3u8" in s.url
+    assert s.url.count("{") == 0  # not the raw JSON array
+    assert s.headers["Referer"] == "https://moonanime.art/"
+
+
+@pytest.mark.asyncio
+async def test_stream_moon_empty_track_array_raises_gated():
+    """Live-gate regression (2026-08-09): a movie listed in the catalog
+    whose moon player payload decodes to a well-formed EMPTY track array
+    ``[]`` is deliberate upstream unavailability — moonanime hasn't
+    published the video yet (animeon 8104 «Літературне дівча Фільм»
+    serves a "Скоро доступно" placeholder iframe and an empty player
+    payload). Per ADR-0002's empty-manifest amendment this is `gated`
+    (client 404, never a health signal), NOT `parse_failed` (502, which
+    would pollute the health tracker for a healthy provider)."""
+    from cs_uk_api.providers.base import ProviderError
+
+    player_html = _fixture("player_moon_empty.json.html")
+    ep_blob = json.dumps(
+        {
+            "id": 8104,
+            "episode": 1,
+            "sources": [
+                {
+                    "translation_name": "Робота Субтитрами",
+                    "player_name": "Moon",
+                    "video_url": "https://moonanime.art/title/2560",
+                    "file_url": "",
+                }
+            ],
+        },
+        separators=(",", ":"),
+    )
+    encoded_ep_id = (
+        f"8104:e1:{base64.b64encode(ep_blob.encode('utf-8')).decode('ascii')}"
+    )
+    with respx.mock(assert_all_called=True) as router:
+        router.get(url=re.compile(r"https://moonanime\.art/.*")).respond(
+            200, text=player_html
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await AnimeONProvider().stream(
+                    encoded_ep_id, "Робота Субтитрами", http
+                )
+    assert exc.value.code == "gated"
+    assert "not yet published" in exc.value.message
 
 
 @pytest.mark.asyncio

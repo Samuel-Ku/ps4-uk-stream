@@ -10,5 +10,5 @@ contact_links:
     url: https://github.com/Samuel-Ku/ps4-uk-stream/blob/master/docs/status.md
     about: What's done, what's deferred, how to add new providers.
   - name: PS4 test report template
-    url: https://github.com/Samuel-Ku/ps4-uk-stream/blob/master/docs/ps4-test-report.md
+    url: https://github.com/Samuel-Ku/ps4-uk-stream/blob/master/docs/switchfin-test-report.md
     about: Checklist to fill in on the actual PS4.

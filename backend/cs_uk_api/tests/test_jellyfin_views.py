@@ -21,19 +21,19 @@ its display name, open it, then ask for a card's image.
 
 from __future__ import annotations
 
+import importlib
 from collections.abc import Iterator
 from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
 
-import importlib
-
+from cs_uk_api.catalog_state import content_cache
 from cs_uk_api.config import SETTINGS
 from cs_uk_api.main import _home_cache, _home_sources_cache
-from cs_uk_api.models import SearchResult, Section
+from cs_uk_api.models import ContentResponse, SearchResult, Section, Translation
 from cs_uk_api.providers import PROVIDERS
-from cs_uk_api.providers.base import BaseProvider
+from cs_uk_api.providers.base import BaseProvider, model_b_axes
 
 #: The router *module* (the ``cs_uk_api.jellyfin`` package re-exports
 #: ``router`` as the APIRouter, shadowing the submodule under that name).
@@ -56,15 +56,19 @@ def _item(
     *,
     n: str = "1",
     poster: str | None = None,
+    genres: list[str] | None = None,
 ) -> SearchResult:
+    mb_form, mb_styles = model_b_axes(cast(Any, media_type))
     return SearchResult(
         id=f"{pid}:{n}",
         provider=pid,
-        type=cast(Any, media_type),
+        form=mb_form,
+        styles=mb_styles,
         title=title,
         year=year,
         poster=poster,
         url=f"https://{pid}.example/{n}",
+        genres=genres or [],
     )
 
 
@@ -124,22 +128,26 @@ def _seed() -> _ViewsStub:
         newest_section="page",
         newest=[
             _item("animeon", "Дюна", "movie", 2021, poster=_POSTER_MOVIE),
-            _item("animeon", "Сокіл", "movie", 2019),
+            # Distinct external id from Дюна's (``animeon:1``): the group
+            # resolution map keys content by ``provider:external``, so a
+            # colliding id would make two groups peek the same content
+            # (#216 re-verification).
+            _item("animeon", "Сокіл", "movie", 2019, n="3"),
         ],
         popular=[_item("animeon", "Сериалал серіал", "series", 2023, poster=_POSTER_SERIES)],
         sections=(
             # The home route gates «Популярні зараз» on
             # ``pid == "animeon" and has_section("popular")`` — declare
             # the section so the gate opens and the row appears.
-            Section(id="popular", title="Популярні", type="anime"),
-            Section(id="movie", title="Фільми", type="movie"),
-            Section(id="series", title="Серіали", type="series"),
-            Section(id="anime", title="Аніме", type="anime"),
+            Section(id="popular", title="Популярні", styles=frozenset({"anime"})),
+            Section(id="movie", title="Фільми", form="movie"),
+            Section(id="series", title="Серіали", form="series"),
+            Section(id="anime", title="Аніме", styles=frozenset({"anime"})),
         ),
         by_section={
             "movie": [
                 _item("animeon", "Дюна", "movie", 2021, n="2", poster=_POSTER_MOVIE),
-                _item("animeon", "Сокіл", "movie", 2019, n="2"),
+                _item("animeon", "Сокіл", "movie", 2019, n="4"),
             ],
             "series": [
                 _item("animeon", "Сериалал серіал", "series", 2023, n="2", poster=_POSTER_SERIES)
@@ -158,6 +166,7 @@ def _isolate() -> Iterator[None]:
     PROVIDERS.clear()
     _home_cache.clear()
     _home_sources_cache.clear()
+    content_cache.clear()
     try:
         yield
     finally:
@@ -165,6 +174,7 @@ def _isolate() -> Iterator[None]:
         PROVIDERS.update(saved_providers)
         _home_cache.clear()
         _home_sources_cache.clear()
+        content_cache.clear()
 
 
 @pytest.fixture()
@@ -188,6 +198,17 @@ def _views(client: TestClient) -> list[dict[str, Any]]:
 
 def _view_id(name: str, views: list[dict[str, Any]]) -> str:
     return cast(str, next(v["Id"] for v in views if v["Name"] == name))
+
+
+def _items_page(
+    client: TestClient, view_id: str, *, start_index: int, limit: int | None = None
+) -> dict[str, Any]:
+    params: dict[str, object] = {"parentId": view_id, "userId": USER, "startIndex": start_index}
+    if limit is not None:
+        params["limit"] = limit
+    r = client.get("/Items", params=params, headers={"X-Emby-Token": TOKEN})
+    assert r.status_code == 200
+    return cast("dict[str, Any]", r.json())
 
 
 def _items(client: TestClient, view_id: str) -> list[dict[str, Any]]:
@@ -257,7 +278,49 @@ def test_items_listing_returns_row_cards(client: TestClient) -> None:
     assert dune["Type"] == "Movie"
     assert dune["ProductionYear"] == 2021
     assert dune["ParentId"] == movie_view
-    assert dune["Id"].startswith("g1:")
+    assert dune["Id"].startswith("g2:")
+
+
+def test_items_listing_honors_start_index_and_limit(client: TestClient) -> None:
+    """The real client pages a listing with ``startIndex``/``limit`` and
+    stops when a page comes back short (device-driving B11: the route
+    ignored the slice, page 2 repeated page 1, and the app's infinite
+    scroll re-requested page 2 forever). Page 2 must be a *different*
+    slice, and ``TotalRecordCount`` must stay the full count so the app
+    knows more pages exist.
+    """
+    PROVIDERS["animeon"] = _seed()
+    _auth(client)
+    movie_view = _view_id("Фільми", _views(client))
+    page1 = _items_page(client, movie_view, start_index=0, limit=1)
+    page2 = _items_page(client, movie_view, start_index=1, limit=1)
+
+    assert len(page1["Items"]) == 1
+    assert len(page2["Items"]) == 1
+    assert page1["Items"][0]["Id"] != page2["Items"][0]["Id"]
+    assert page1["TotalRecordCount"] == 2
+    assert page1["StartIndex"] == 0
+    assert page2["StartIndex"] == 1
+
+    # A page beyond the end is empty but keeps the full count (the client
+    # reads the short page and stops scrolling).
+    beyond = _items_page(client, movie_view, start_index=5, limit=18)
+    assert beyond["Items"] == []
+    assert beyond["TotalRecordCount"] == 2
+
+    # The Switchfin client spells the listing under the user
+    # (``/Users/{id}/Items``, apiUserLibrary) — the same slice must apply
+    # there, or the app's page 2 still repeats page 1 (B11).
+    prefixed = client.get(
+        f"/Users/{USER}/Items",
+        params={"parentId": movie_view, "startIndex": 1, "limit": 1},
+        headers={"X-Emby-Token": TOKEN},
+    )
+    assert prefixed.status_code == 200
+    body = prefixed.json()
+    assert body["Items"] == page2["Items"]
+    assert body["StartIndex"] == 1
+    assert body["TotalRecordCount"] == 2
 
 
 def test_items_listing_series_type_mapping(client: TestClient) -> None:
@@ -266,6 +329,36 @@ def test_items_listing_series_type_mapping(client: TestClient) -> None:
     series_view = _view_id("Серіали", _views(client))
     items = _items(client, series_view)
     assert items and all(i["Type"] == "Series" for i in items)
+
+
+def test_items_listing_card_type_reverified_against_resolved_content(
+    client: TestClient,
+) -> None:
+    """#216: the card Type must match what the detail will show.
+
+    The card parser (section/URL heuristic) is a cheap guess; the
+    resolved content page is the truth. Once «Дюна»'s content is cached
+    (group resolution reads the first-seen source — the «Новинки» card
+    ``animeon:1`` → ``content:animeon:1``) and says series while its
+    card says movie, the grid must re-verify to Series. An unresolved
+    card («Сокіл») keeps the snapshot form.
+    """
+    PROVIDERS["animeon"] = _seed()
+    _auth(client)
+    movie_view = _view_id("Фільми", _views(client))
+    content_cache.set(
+        "content:animeon:1",
+        ContentResponse(
+            id="animeon:1",
+            title="Дюна",
+            year=2021,
+            form="series",
+            translations=[Translation(id="uk", label="Українська")],
+        ),
+    )
+    by_name = {i["Name"]: i for i in _items(client, movie_view)}
+    assert by_name["Дюна"]["Type"] == "Series"  # re-verified vs the resolved content
+    assert by_name["Сокіл"]["Type"] == "Movie"  # unresolved -> snapshot form
 
 
 def test_items_listing_image_tags_only_with_poster(client: TestClient) -> None:
@@ -285,6 +378,218 @@ def test_items_listing_unknown_parent_is_empty(client: TestClient) -> None:
     )
     assert r.status_code == 200
     assert r.json() == {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
+
+
+def _genres_seed() -> _ViewsStub:
+    """A snapshot where movies carry genre labels (#213).
+
+    Same-genre pairs so the Similar shelf has something to return: Дюна
+    and Війна share «Екшн», Дюна and Інтерстеллар share «Фантастика»,
+    Сокіл is genre-less (never similar)."""
+    return _ViewsStub(
+        "animeon",
+        newest_section="page",
+        newest=[
+            _item("animeon", "Дюна", "movie", 2021, n="1",
+                  genres=["Екшн", "Фантастика"], poster=_POSTER_MOVIE),
+            _item("animeon", "Війна", "movie", 2019, n="2", genres=["Екшн"]),
+        ],
+        sections=(
+            Section(id="movie", title="Фільми", form="movie"),
+        ),
+        by_section={
+            "movie": [
+                _item("animeon", "Дюна", "movie", 2021, n="1",
+                      genres=["Екшн", "Фантастика"], poster=_POSTER_MOVIE),
+                _item("animeon", "Інтерстеллар", "movie", 2014, n="2",
+                      genres=["Фантастика"]),
+                _item("animeon", "Сокіл", "movie", 2019, n="3"),
+            ],
+        },
+    )
+
+
+def test_items_similar_returns_same_genre_cards(client: TestClient) -> None:
+    """#218: the Similar shelf serves same-genre cards from the snapshot.
+
+    The app fires ``/Items/{gk}/Similar`` on every detail page; the
+    shelf was deliberately empty. With genres (#213) the snapshot can
+    answer it: cards sharing at least one genre, in the same Movie/
+    Series + g2: + ImageTags shape as the view grid, the item itself
+    excluded."""
+    PROVIDERS["animeon"] = _genres_seed()
+    _auth(client)
+    movie_view = _view_id("Фільми", _views(client))
+    by_name = {i["Name"]: i for i in _items(client, movie_view)}
+    dune_gk = by_name["Дюна"]["Id"]
+
+    r = client.get(f"/Items/{dune_gk}/Similar", headers={"X-Emby-Token": TOKEN})
+    assert r.status_code == 200
+    body = r.json()
+    names = {i["Name"] for i in body["Items"]}
+    # Війна (Екшн) and Інтерстеллар (Фантастика) both share a genre
+    assert names == {"Війна", "Інтерстеллар"}
+    assert "Дюна" not in names  # the item itself is excluded
+    assert all(i["Type"] == "Movie" for i in body["Items"])
+    assert all(i["Id"].startswith("g2:") for i in body["Items"])
+    assert body["TotalRecordCount"] == 2
+
+
+def test_items_similar_respects_limit(client: TestClient) -> None:
+    """#218: ``limit`` caps the shelf (the app asks for 12)."""
+    PROVIDERS["animeon"] = _genres_seed()
+    _auth(client)
+    movie_view = _view_id("Фільми", _views(client))
+    by_name = {i["Name"]: i for i in _items(client, movie_view)}
+    dune_gk = by_name["Дюна"]["Id"]
+
+    r = client.get(
+        f"/Items/{dune_gk}/Similar",
+        params={"limit": 1},
+        headers={"X-Emby-Token": TOKEN},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["Items"]) == 1
+    assert body["TotalRecordCount"] == 1
+
+
+def test_items_similar_genre_less_item_is_empty(client: TestClient) -> None:
+    """#218: a genre-less item (no similarity metadata) stays an empty
+    shelf — the same tolerant envelope, not an error."""
+    PROVIDERS["animeon"] = _genres_seed()
+    _auth(client)
+    movie_view = _view_id("Фільми", _views(client))
+    by_name = {i["Name"]: i for i in _items(client, movie_view)}
+    falcon_gk = by_name["Сокіл"]["Id"]
+
+    r = client.get(f"/Items/{falcon_gk}/Similar", headers={"X-Emby-Token": TOKEN})
+    assert r.status_code == 200
+    assert r.json() == {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
+
+
+def test_items_similar_unknown_item_is_empty(client: TestClient) -> None:
+    """#218: an unknown g2: id (not in the snapshot) is an empty shelf."""
+    PROVIDERS["animeon"] = _genres_seed()
+    _auth(client)
+    r = client.get(
+        "/Items/g2:0000000000000000/Similar",
+        headers={"X-Emby-Token": TOKEN},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
+
+
+def test_detail_genres_fall_back_to_snapshot_card(client: TestClient) -> None:
+    """#219: the detail DTO's Genres fall back to the snapshot card's
+    genres when the resolved content page carries none — the genre row
+    must render wherever the card parser (#213) found them.
+    """
+    PROVIDERS["animeon"] = _genres_seed()
+    _auth(client)
+    movie_view = _view_id("Фільми", _views(client))
+    by_name = {i["Name"]: i for i in _items(client, movie_view)}
+    dune_gk = by_name["Дюна"]["Id"]
+    # the resolved content carries NO genres (ufdub-style: the card lists
+    # them, the detail page does not) — the DTO must fall back to the card
+    content_cache.set(
+        "content:animeon:1",
+        ContentResponse(
+            id="animeon:1",
+            title="Дюна",
+            year=2021,
+            form="movie",
+            translations=[Translation(id="uk", label="Українська")],
+        ),
+    )
+
+    r = client.get(
+        f"/Users/{USER}/Items/{dune_gk}",
+        headers={"X-Emby-Token": TOKEN},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body["Genres"]) == {"Екшн", "Фантастика"}
+
+
+def test_detail_production_year_falls_back_to_snapshot_card(client: TestClient) -> None:
+    """#220: the detail DTO's ProductionYear falls back to the snapshot
+    card's year when the resolved content page carries none — the year
+    badge must render wherever either source exposes it."""
+    PROVIDERS["animeon"] = _genres_seed()
+    _auth(client)
+    movie_view = _view_id("Фільми", _views(client))
+    by_name = {i["Name"]: i for i in _items(client, movie_view)}
+    dune_gk = by_name["Дюна"]["Id"]
+    # the resolved content carries NO year (a provider whose content
+    # page lacks the meta block) — the DTO must fall back to the card's
+    # 2021 (the seed's card year)
+    content_cache.set(
+        "content:animeon:1",
+        ContentResponse(
+            id="animeon:1",
+            title="Дюна",
+            year=None,
+            form="movie",
+            translations=[Translation(id="uk", label="Українська")],
+        ),
+    )
+
+    r = client.get(
+        f"/Users/{USER}/Items/{dune_gk}",
+        headers={"X-Emby-Token": TOKEN},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ProductionYear"] == 2021
+
+
+def test_detail_production_year_content_wins_when_present(client: TestClient) -> None:
+    """#220: when the content page DOES carry a year (ufdub's ``Рік:``
+    block), it wins over the snapshot card's — the content page is the
+    truth, the card the cheap guess."""
+    PROVIDERS["animeon"] = _genres_seed()
+    _auth(client)
+    movie_view = _view_id("Фільми", _views(client))
+    by_name = {i["Name"]: i for i in _items(client, movie_view)}
+    dune_gk = by_name["Дюна"]["Id"]
+    content_cache.set(
+        "content:animeon:1",
+        ContentResponse(
+            id="animeon:1",
+            title="Дюна",
+            year=1984,
+            form="movie",
+            translations=[Translation(id="uk", label="Українська")],
+        ),
+    )
+
+    r = client.get(
+        f"/Users/{USER}/Items/{dune_gk}",
+        headers={"X-Emby-Token": TOKEN},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ProductionYear"] == 1984
+
+    # a genre-less card stays genre-less on the detail too
+    falcon_gk = by_name["Сокіл"]["Id"]
+    content_cache.set(
+        "content:animeon:3",
+        ContentResponse(
+            id="animeon:3",
+            title="Сокіл",
+            year=2019,
+            form="movie",
+            translations=[Translation(id="uk", label="Українська")],
+        ),
+    )
+    r = client.get(
+        f"/Users/{USER}/Items/{falcon_gk}",
+        headers={"X-Emby-Token": TOKEN},
+    )
+    assert r.status_code == 200
+    assert r.json()["Genres"] == []
 
 
 def test_items_listing_requires_token(client: TestClient) -> None:
@@ -422,8 +727,8 @@ def test_poster_primary_query_is_single_encoded(client: TestClient, monkeypatch:
         newest_section="page",
         newest=[_item("animeon", "Дюна", "movie", 2021, poster=escaped)],
         sections=(
-            Section(id="popular", title="Популярні", type="anime"),
-            Section(id="movie", title="Фільми", type="movie"),
+            Section(id="popular", title="Популярні", styles=frozenset({"anime"})),
+            Section(id="movie", title="Фільми", form="movie"),
         ),
         by_section={
             "movie": [_item("animeon", "Дюна", "movie", 2021, n="2", poster=escaped)],

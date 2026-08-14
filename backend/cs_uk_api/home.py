@@ -38,7 +38,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from .merge import item_group_key, merge_results
-from .models import HomeItem, HomeRow, SearchResult
+from .models import HomeItem, HomeRow, SearchResult, Section
 
 #: Five-row type-row order, per the issue #70 spec. Anything else in
 #: ``by_type`` is ignored (defensive — the route layer only buckets
@@ -143,8 +143,12 @@ def round_robin_dedup(
                 group_key=mg.key,
                 title=sample.title,
                 year=sample.year,
-                type=sample.type,
                 poster=sample.poster,
+                # Model B (contract #135): first-seen-wins, like the
+                # other canonical fields.
+                form=sample.form,
+                styles=sample.styles,
+                genres=list(sample.genres),
                 providers=providers,
                 member_keys=member_keys,
             )
@@ -162,7 +166,7 @@ def aggregate_by_group_key(items: Sequence[HomeItem]) -> list[HomeItem]:
     named seam so the row-level dedup story stays obvious.
 
     Order is first-seen-preserved. The first HomeItem's ``title``,
-    ``year``, ``type``, and ``poster`` fields win (round-robin gives
+    ``year``, ``form``, and ``poster`` fields win (round-robin gives
     them all the same value modulo data noise, so the choice is
     arbitrary).
     """
@@ -178,6 +182,23 @@ def aggregate_by_group_key(items: Sequence[HomeItem]) -> list[HomeItem]:
                 if pid not in existing.providers:
                     existing.providers.append(pid)
     return [by_key[k] for k in order]
+
+
+def section_row_type(section: Section) -> str | None:
+    """The home-row kind a section contributes to, from its Model B axes.
+
+    Contract step #135: sections no longer carry the legacy ``type``
+    axis — their home-row kind is derived from ``form`` + ``styles``:
+    a non-empty style set wins (anime/cartoon/dorama row), else the
+    form (movie/series row). A section with neither axis declared
+    (``form=None``, ``styles=None`` — pass-any filter) contributes to
+    no kind row. Deterministic for multi-style sets (lexicographic min).
+    """
+    if section.styles:
+        return min(section.styles)
+    if section.form is not None:
+        return section.form
+    return None
 
 
 def build_home_rows(
@@ -257,4 +278,5 @@ __all__ = [
     "aggregate_by_group_key",
     "build_home_rows",
     "round_robin_dedup",
+    "section_row_type",
 ]

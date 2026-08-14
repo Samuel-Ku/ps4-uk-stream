@@ -11,7 +11,6 @@ from cs_uk_api.extractors import (
     RegexExtractor,
 )
 
-
 # ---------- regex extractor ----------
 
 

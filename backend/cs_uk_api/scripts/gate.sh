@@ -159,10 +159,37 @@ gate_one() {
         title=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['title'])" "$content")
 
         # --- stream ---
+        # Series-only providers (serialno, anitubeinua, doramyworld,
+        # simpsonsuatv) reject a bare id: their stream() needs the
+        # episode form the client sends. When the bare-id stream fails
+        # and content() exposed seasons, retry with the first
+        # episode's id (issue #127). Episode ids vary in shape across
+        # providers — some already carry the `<provider>:` prefix,
+        # simpsonsuatv uses a full episode-page URL — so prefix only
+        # when absent.
         if ! stream=$(curl -fsS --max-time 30 "$BASE/api/stream/$cid" 2>/dev/null); then
-            echo "GATE NOTE $provider: stream ($cid) — trying next result"
-            tries=$((tries + 1))
-            continue
+            # Series-only providers (serialno, anitubeinua, doramyworld,
+            # simpsonsuatv) reject a bare id: their stream() needs the
+            # episode form the client sends. When the bare-id stream fails
+            # and content() exposed seasons, retry with the first
+            # episode's id (issue #127 / ticket #142). The extraction +
+            # prefixing decision lives in cs_uk_api.gate_tools
+            # (fallback_episode_cid) so the behaviour is pinned by
+            # execution, not grep.
+            stream_cid=$(python3 -m cs_uk_api.gate_tools fallback - "$provider" <<< "$content")
+            if [ -n "$stream_cid" ]; then
+                echo "GATE NOTE $provider: bare id not streamable — trying first episode ($stream_cid)"
+                cid="$stream_cid"
+                if ! stream=$(curl -fsS --max-time 30 "$BASE/api/stream/$cid" 2>/dev/null); then
+                    echo "GATE NOTE $provider: stream ($cid) — trying next result"
+                    tries=$((tries + 1))
+                    continue
+                fi
+            else
+                echo "GATE NOTE $provider: stream ($cid) — trying next result"
+                tries=$((tries + 1))
+                continue
+            fi
         fi
         url=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['url'])" "$stream")
         headers_str=$(python3 -c "

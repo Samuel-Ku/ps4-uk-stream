@@ -1,0 +1,35 @@
+# Tap coordinates recorded by `scripts/switchfin_test.py --calibrate`.
+#
+# Each key is a UI element on the phone; the runner turns it into an
+# `adb shell input tap <x> <y>` command. Populated interactively — this
+# file ships empty as a scaffold (ticket #144 needs no taps; #145 fills
+# it via the `getevent -l` calibration walkthrough).
+#
+# Elements:
+#   login_button          — the sign-in button on the server screen
+#   sidebar_folders       — the sidebar "media folders" icon; opens the
+#                           Views grid (the screen the view_*_x taps expect,
+#                           device-driving B21)
+#   view_<name>_x         — the home-screen row for a library view
+#   first_card            — the first card in an opened library
+#   play_button           — the play action on the detail screen
+#   first_season / first_episode — series playback sequence (B7: the
+#   episode-row tap auto-plays, so no seasons_tab / post-play button)
+#
+# CALIBRATED on OnePlus 8 Pro (IN2023, Android 14), landscape 3168×1440,
+# Switchfin 0.9.3, 2026-08-10 — every value verified by the request it
+# fires (see docs/test-artifacts/switchfin/device-driving.md, B8 table).
+# Coordinates are for the DEFAULT (unscrolled) screen state.
+login_button: {x: 0, y: 0}
+sidebar_folders: {x: 141, y: 285}
+view_newest_x: {x: 756, y: 310}
+view_popular_x: {x: 1688, y: 310}
+view_movie_x: {x: 2620, y: 310}
+view_series_x: {x: 756, y: 792}
+view_anime_x: {x: 1688, y: 792}
+view_cartoon_x: {x: 2620, y: 792}
+view_dorama_x: {x: 756, y: 1126}
+first_card: {x: 294, y: 448}
+play_button: {x: 825, y: 470}
+first_season: {x: 266, y: 1200}
+first_episode: {x: 995, y: 135}

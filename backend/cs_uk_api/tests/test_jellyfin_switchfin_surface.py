@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Iterator
-from typing import Any, cast
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -54,7 +54,7 @@ _POSTER = "https://cdn.example.test/posters/serial.jpg"
 def _movie() -> ContentResponse:
     return ContentResponse(
         id="p1:dune-1",
-        type="movie",
+        form="movie",
         title="Дюна",
         year=2021,
         description="Епічна науково-фантастична стрічка.",
@@ -66,7 +66,7 @@ def _movie() -> ContentResponse:
 def _serial() -> ContentResponse:
     return ContentResponse(
         id="p1:serial-1",
-        type="series",
+        form="series",
         title="Сериалал серіал",
         year=2023,
         description="Детективний серіал.",
@@ -99,11 +99,11 @@ class _Stub(BaseProvider):
     async def browse(self, section: str, page: int, http: Any) -> tuple[list[SearchResult], bool]:
         cards = [
             SearchResult(
-                id="p1:dune-1", provider="p1", type=cast(Any, "movie"),
+                id="p1:dune-1", provider="p1", form="movie",
                 title="Дюна", year=2021, poster=_POSTER, url="https://p1.example/dune-1",
             ),
             SearchResult(
-                id="p1:serial-1", provider="p1", type=cast(Any, "series"),
+                id="p1:serial-1", provider="p1", form="series",
                 title="Сериалал серіал", year=2023, poster=_POSTER, url="https://p1.example/serial-1",
             ),
         ]

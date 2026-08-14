@@ -12,8 +12,10 @@ The contract under test:
   - the native content/stream routes answer ``gated`` with 404 (never
     the promo clip, never a 502).
 """
+
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from pathlib import Path
 from typing import ClassVar
@@ -36,13 +38,11 @@ from cs_uk_api.providers.base import BaseProvider, ProviderError
 FIX = Path(__file__).parent / "fixtures" / "bambooua"
 
 
-def _item(
-    pid: str, n: str, title: str = "Айчаку", year: int = 2024
-) -> SearchResult:
+def _item(pid: str, n: str, title: str = "Айчаку", year: int = 2024) -> SearchResult:
     return SearchResult(
         id=f"{pid}:{n}",
         provider=pid,
-        type="movie",
+        form="movie",
         title=title,
         year=year,
         url=f"https://{pid}.example/{n}",
@@ -55,7 +55,7 @@ class _GatedStub(BaseProvider):
     id = "gated-stub"
     name = "GatedStub"
     types = ("movie",)
-    sections = (Section(id="cinema", title="Фільми", type="movie"),)
+    sections = (Section(id="cinema", title="Фільми", form="movie"),)
     can_gate = True
     _results: ClassVar[list[SearchResult]] = []
     _content_calls: ClassVar[list[str]] = []
@@ -84,7 +84,7 @@ class _FreeStub(BaseProvider):
     id = "free-stub"
     name = "FreeStub"
     types = ("movie",)
-    sections = (Section(id="cinema", title="Фільми", type="movie"),)
+    sections = (Section(id="cinema", title="Фільми", form="movie"),)
     _results: ClassVar[list[SearchResult]] = []
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
@@ -98,7 +98,7 @@ class _FreeStub(BaseProvider):
     async def content(self, external_id: str, http: httpx.AsyncClient) -> ContentResponse:
         return ContentResponse(
             id=f"free-stub:{external_id}",
-            type="movie",
+            form="movie",
             title="Айчаку",
             year=2024,
             translations=[Translation(id="uk", label="UK")],
@@ -133,6 +133,42 @@ def _isolate() -> Iterator[None]:
     PROVIDERS.update(saved)
     for cache in caches:
         cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_sweep_share_one_semaphore_bounds_total_concurrency() -> None:
+    """Issue #168 regression: the home sweep spawns one task per
+    (listing, provider) — up to a dozen. Each task must share ONE
+    semaphore so total upstream concurrency is bounded; otherwise N
+    tasks × 24 each = hundreds of simultaneous requests, upstreams
+    throttle, the sweep blows its budget, and gated cards leak into
+    home."""
+    from cs_uk_api.catalog_state import _GATE_CHECK_CONCURRENCY, filter_gated_items
+
+    class _SlowGated(_GatedStub):
+        id = "slow-gated"
+        _inflight = 0
+        _max_inflight = 0
+
+        async def content(self, external_id, http):  # type: ignore[no-untyped-def]
+            self._inflight += 1
+            self._max_inflight = max(self._max_inflight, self._inflight)
+            await asyncio.sleep(0.01)
+            self._inflight -= 1
+            raise ProviderError("gated", "subscription required")
+
+    PROVIDERS["slow-gated"] = _SlowGated()
+    items = [_item("slow-gated", f"g{i}") for i in range(30)]
+    shared = asyncio.Semaphore(_GATE_CHECK_CONCURRENCY)
+
+    async def sweep_one(start: int, stop: int) -> None:
+        await filter_gated_items(items[start:stop], http, sem=shared)
+
+    async with httpx.AsyncClient() as http:
+        await asyncio.gather(sweep_one(0, 15), sweep_one(15, 30))
+    stub = PROVIDERS["slow-gated"]
+    assert stub._max_inflight <= _GATE_CHECK_CONCURRENCY
+    assert stub._max_inflight > 1  # the test actually ran concurrently
 
 
 @pytest.mark.asyncio
@@ -174,6 +210,150 @@ async def test_filter_gated_items_keeps_transient_upstream_errors() -> None:
     async with httpx.AsyncClient() as http:
         out = await filter_gated_items(items, http)
     assert [i.id for i in out] == ["flaky-stub:f1"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_group_content_gated_backstop_no_health_down() -> None:
+    """ADR-0002 backstop (#139): a cold-cache g2: detail call whose
+    content() raises ``gated`` must NOT record a health-down, and must
+    cache the verdict so later calls short-circuit. ``filter_gated_items``
+    normally warms ``gated_cache`` during ``load_home``; a sweep timeout
+    or a title added after the home build would otherwise leave the
+    group-content path recording ``ok=False`` on a gated title."""
+    from cs_uk_api import catalog_state
+    from cs_uk_api.catalog_state import resolve_group_content
+    from cs_uk_api.health import TRACKER
+    from cs_uk_api.merge import item_group_key
+
+    PROVIDERS.clear()
+    gated = _GatedStub()
+    item = _item("gated-stub", "g1")
+    PROVIDERS["gated-stub"] = gated
+
+    # Seed the group's sources map WITHOUT running the load_home sweep,
+    # so `gated_cache` is cold when the detail call resolves.
+    group_key = item_group_key(item)
+    catalog_state.sources_cache.set(catalog_state._SOURCES_KEY, {group_key: {"gated-stub": item}})
+    assert catalog_state.gated_cache.get("content:gated-stub:g1") is None
+
+    content = await resolve_group_content(group_key)
+    assert content is None
+    assert TRACKER.last_error_at("gated-stub") is None
+    assert catalog_state.gated_cache.get("content:gated-stub:g1") is True
+
+    # Second call short-circuits on the cached verdict — content() is
+    # not re-invoked.
+    PROVIDERS["gated-stub"]._content_calls.clear()  # type: ignore[attr-defined]
+    await resolve_group_content(group_key)
+    assert PROVIDERS["gated-stub"]._content_calls == []  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_resolve_group_content_retries_transient_failure() -> None:
+    """B23 (#211): a provider that fails once with a NON-gated error and
+    succeeds on retry must resolve — the item is valid, so the detail
+    path must not 404 it — and the health tracker sees only the final ok
+    verdict."""
+    from cs_uk_api import catalog_state
+    from cs_uk_api.catalog_state import resolve_group_content
+    from cs_uk_api.health import TRACKER
+    from cs_uk_api.merge import item_group_key
+
+    class _FlakyThenOk(BaseProvider):
+        id = "flaky-ok-stub"
+        name = "FlakyOkStub"
+        types = ("movie",)
+        sections = (Section(id="cinema", title="Фільми", form="movie"),)
+        _content_calls: ClassVar[list[str]] = []
+
+        async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
+            return []
+
+        async def browse(
+            self, section: str, page: int, http: httpx.AsyncClient
+        ) -> tuple[list[SearchResult], bool]:
+            return [], False
+
+        async def content(self, external_id: str, http: httpx.AsyncClient) -> ContentResponse:
+            self._content_calls.append(external_id)
+            if len(self._content_calls) == 1:
+                raise ProviderError("upstream_unreachable", "site down")
+            return ContentResponse(
+                id=f"flaky-ok-stub:{external_id}",
+                form="movie",
+                title="Айчаку",
+                year=2024,
+                translations=[Translation(id="uk", label="UK")],
+            )
+
+        async def stream(
+            self, content_id: str, translation: str | None, http: httpx.AsyncClient
+        ) -> StreamResponse:
+            raise AssertionError("unused")
+
+    PROVIDERS.clear()
+    PROVIDERS["flaky-ok-stub"] = _FlakyThenOk()
+    item = _item("flaky-ok-stub", "f1")
+    group_key = item_group_key(item)
+    catalog_state.sources_cache.set(
+        catalog_state._SOURCES_KEY, {group_key: {"flaky-ok-stub": item}}
+    )
+
+    content = await resolve_group_content(group_key)
+
+    assert content is not None
+    assert content.id == "flaky-ok-stub:f1"
+    assert len(PROVIDERS["flaky-ok-stub"]._content_calls) == 2  # type: ignore[attr-defined]
+    assert TRACKER.last_error_at("flaky-ok-stub") is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_group_content_404_after_both_attempts_fail() -> None:
+    """B23 (#211): when the retry ALSO fails, the item stays unavailable
+    and the health tracker records the down verdict (only after the final
+    attempt)."""
+    from cs_uk_api import catalog_state
+    from cs_uk_api.catalog_state import resolve_group_content
+    from cs_uk_api.health import TRACKER
+    from cs_uk_api.merge import item_group_key
+
+    class _AlwaysDown(BaseProvider):
+        id = "always-down-stub"
+        name = "AlwaysDownStub"
+        types = ("movie",)
+        sections = (Section(id="cinema", title="Фільми", form="movie"),)
+        _content_calls: ClassVar[list[str]] = []
+
+        async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
+            return []
+
+        async def browse(
+            self, section: str, page: int, http: httpx.AsyncClient
+        ) -> tuple[list[SearchResult], bool]:
+            return [], False
+
+        async def content(self, external_id: str, http: httpx.AsyncClient) -> ContentResponse:
+            self._content_calls.append(external_id)
+            raise ProviderError("upstream_unreachable", "site down")
+
+        async def stream(
+            self, content_id: str, translation: str | None, http: httpx.AsyncClient
+        ) -> StreamResponse:
+            raise AssertionError("unused")
+
+    PROVIDERS.clear()
+    PROVIDERS["always-down-stub"] = _AlwaysDown()
+    item = _item("always-down-stub", "f1")
+    group_key = item_group_key(item)
+    catalog_state.sources_cache.set(
+        catalog_state._SOURCES_KEY, {group_key: {"always-down-stub": item}}
+    )
+
+    content = await resolve_group_content(group_key)
+
+    assert content is None
+    assert len(PROVIDERS["always-down-stub"]._content_calls) == 2  # type: ignore[attr-defined]
+    assert TRACKER.last_error_at("always-down-stub") is not None
 
 
 @pytest.mark.asyncio
@@ -286,12 +466,10 @@ def test_stream_route_free_movie_returns_m3u8() -> None:
 
     free_html = (FIX / "content_movie_free.html").read_text(encoding="utf-8")
     with respx.mock:
-        respx.get(
-            "https://bambooua.com/cinema/1041-you-are-the-apple-of-my-eye.html"
-        ).respond(200, text=free_html)
-        r = TestClient(app).get(
-            "/api/stream/bambooua:cinema/1041-you-are-the-apple-of-my-eye"
+        respx.get("https://bambooua.com/cinema/1041-you-are-the-apple-of-my-eye.html").respond(
+            200, text=free_html
         )
+        r = TestClient(app).get("/api/stream/bambooua:cinema/1041-you-are-the-apple-of-my-eye")
     assert r.status_code == 200
     body = r.json()
     assert body["type"] == "m3u8"

@@ -22,16 +22,17 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, cast
-
-from ..country import extract_country
 from urllib.parse import quote, urljoin
 
 import httpx
 from bs4 import BeautifulSoup, Tag
 
+from ..country import extract_country
+from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
+    Person,
     SearchResult,
     Season,
     Section,
@@ -39,9 +40,50 @@ from ..models import (
     Translation,
 )
 from ._tortuga import decode as _tor_decrypt
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, model_b_axes
 
 BASE_URL = "https://serialno.tv"
+
+
+def _parse_fmeta(soup: BeautifulSoup) -> tuple[int | None, list[str], list[Person]]:
+    """Year + people from the `.flist` info rows.
+
+    The DLE template renders `<li><span>Рік:</span> <a>2023</a> …`,
+    `<li><span>Режисер:</span> <a>…</a>, <a>…</a>`, and
+    `<li><span>В ролях:</span> <a>…</a>, …`. The parser ignored the
+    block entirely, so every serialno title showed no year and an
+    empty People rail even though the data is on the page (ticket
+    #227).
+    """
+    year: int | None = None
+    genres: list[str] = []
+    people: list[Person] = []
+    for li in soup.select("ul.flist li"):
+        label_el = li.select_one("span")
+        if label_el is None:
+            continue
+        label = label_el.get_text(strip=True).rstrip(":")
+        if label == "Рік":
+            m = re.search(r"(20\d{2})", li.get_text(" ", strip=True))
+            if m:
+                year = int(m.group(1))
+        elif label == "Жанр":
+            genres = [g for g in (a.get_text(strip=True) for a in li.select("a")) if g]
+        elif label in ("Режисер", "В ролях"):
+            role = "Director" if label == "Режисер" else "Actor"
+            for a in li.select("a"):
+                name = a.get_text(strip=True)
+                if not name:
+                    continue
+                # The xfsearch href ends with the person's name; the
+                # display name must be the final segment so /Persons/
+                # round-trips (kinotron convention).
+                people.append(Person(id=f"serialno:{name}", name=name, role=role))
+    return year, genres, people
+# Hosts the upstream may legally redirect to: the DLE CMS and the
+# tortuga player. A hostile CMS response must not be able to pivot
+# either hop to an attacker-controlled host.
+_ALLOWED_HOSTS: frozenset[str] = frozenset({"serialno.tv", "tortuga.tw"})
 
 
 def _season_list(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -70,7 +112,7 @@ def _season_list(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # and the spec note, the site is series-only — the homepage lists
 # series and there is no film/cartoon section in scope.
 SERIALNO_SECTIONS: tuple[Section, ...] = (
-    Section(id="series", title="Серіали", type="series"),
+    Section(id="series", title="Серіали", form="series"),
 )
 
 # Slug regex: the site uses Latin transliteration of Ukrainian titles
@@ -134,13 +176,15 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
     external_id = _external_id_from_url(href)
     if not external_id:
         return None
+    mb_form, mb_styles = model_b_axes("series")
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
-        type="series",
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
+        form=mb_form,
+        styles=mb_styles,
     )
 
 
@@ -253,6 +297,7 @@ class SerialnoProvider(BaseProvider):
         # we accept the whole block and surface its text.
         desc_el = soup.select_one(".fdesc")
         description = desc_el.get_text(" ", strip=True) if desc_el else ""
+        year_int, genres, people = _parse_fmeta(soup)
         country: str | None = extract_country(soup)
         # Player URL: the first `<iframe>` inside `.fplayer` is the
         # series player (`tortuga.tw/embed/<id>`); the second is a
@@ -261,21 +306,26 @@ class SerialnoProvider(BaseProvider):
         if iframe is None or not iframe.get("src"):
             raise ProviderError("parse_failed", "no player iframe on content page")
         player_url = str(iframe["src"])
-        seasons = await self._load_series_seasons(player_url, external_id, http)
+        seasons = await self._load_series_seasons(player_url, external_id, http, self.id)
+        mb_form, mb_styles = model_b_axes("series")
         return ContentResponse(
             id=f"serialno:{external_id}",
-            type="series",
             title=title_el.get_text(strip=True),
             description=description,
+            year=year_int,
             poster=poster,
+            genres=genres,
+            people=people,
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
             country=country,
+            form=mb_form,
+            styles=mb_styles,
         )
 
     @staticmethod
     async def _load_series_seasons(
-        player_url: str, external_id: str, http: httpx.AsyncClient
+        player_url: str, external_id: str, http: httpx.AsyncClient, provider_id: str
     ) -> list[Season] | None:
         """Fetch the tortuga.tw player page and decode the obfuscated
         season/episode JSON list.
@@ -290,7 +340,11 @@ class SerialnoProvider(BaseProvider):
         empty seasons list — the live gate will then see no episodes
         and stop, instead of crashing."""
         try:
-            resp = await http.get(player_url)
+            resp = await safe_get(
+                http,
+                player_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+            )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
@@ -325,7 +379,7 @@ class SerialnoProvider(BaseProvider):
                 ep_title = str(ep.get("title", "")).strip() or f"Серія {e_idx}"
                 episodes.append(Episode(
                     number=e_idx,
-                    id=f"{external_id}:s{s_idx}e{e_idx}",
+                    id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
                     title=ep_title,
                 ))
             if episodes:
@@ -359,7 +413,11 @@ class SerialnoProvider(BaseProvider):
             raise ProviderError("parse_failed", "no player iframe on content page")
         player_url = str(iframe["src"])
         try:
-            player_resp = await http.get(player_url)
+            player_resp = await safe_get(
+                http,
+                player_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+            )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if player_resp.status_code != 200:
@@ -377,7 +435,7 @@ class SerialnoProvider(BaseProvider):
         return StreamResponse(
             url=stream_url,
             type="m3u8",
-            headers={"Referer": BASE_URL + "/", "User-Agent": "cs-uk-api/0.1"},
+            headers={"Referer": BASE_URL + "/", "User-Agent": "cs-uk-api/1.0"},
         )
 
     @staticmethod

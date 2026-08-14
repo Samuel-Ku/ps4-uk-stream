@@ -22,7 +22,7 @@ status: [`docs/provider-triage.md`](../docs/provider-triage.md).
 | kinotron    | kinotron.tv                   | films, serials, cartoons, cartoon-series, anime | m3u8 |
 | cikavaideya | cikava-ideya.top              | filmy, serialy, cartoon, arthaus     | m3u8          |
 | hentaiukr   | hentaiukr.com                 | hentai                              | mp4           |
-| bambooua    | bambooua.com                  | cinema, dorama, anime, lakorn, voice, tv-show, done, world-bl, now | mp4 |
+| bambooua    | bambooua.com                  | cinema, dorama, anime, lakorn, voice, tv-show, done, now | mp4 |
 | kinovezha   | kinovezha.tv                 | films, series, cartoons, s-cartoons  | m3u8          |
 | uaflix      | uafix.net                     | filmy, serialy, doramy, cartoons, multserialy, anime | mp4 |
 | animeua     | animeua.club                  | page, film, anime, ona, ova          | m3u8          |
@@ -88,7 +88,11 @@ status: [`docs/provider-triage.md`](../docs/provider-triage.md).
   empty fall back to the direct endpoint
   `/api/player/<playerId>/<translationId>` (`DirectPlayerResponse`),
   mirroring the upstream Kotlin `loadMovieLinks` — so films return a
-  real m3u8 instead of `not_found`.
+  real m3u8 instead of `not_found`. **Decision (#128): the direct
+  endpoint stays** — it makes episode-less movies playable rather
+  than detail-only, matching upstream behaviour and verified live in
+  #115; a movie is only unplayable when the direct endpoint itself
+  answers 4xx.
 - **anitubeinua**: content page → AJAX `load-playlist` blocks;
   `_parse_playlist` classifies blocks by `data-id` shape rather than
   block position, so a page serving 2 of the usual 4 blocks still
@@ -143,7 +147,7 @@ results from the latest full run (2026-08-08, after the fix pass #112–#125).
 | anitubeinua  | ◐    | series-only: same bare-id gate limitation. Verified live with `:s1e1` (2026-08-08) |
 | doramyworld  | ◐    | series-only: same bare-id gate limitation. Verified live with `:s1e1` (2026-08-08) |
 | simpsonsuatv | ◐    | series-only: episode ids are full content-page URLs, so the gate's bare-id stream cannot work. Verified live with a season episode URL (2026-08-08) |
-| uakino       | ⛔   | public stance: known-broken — Cloudflare's per-request JS check blocks plain HTTP (research: `docs/research/uakino-reachability-2026-08-02.md`). Personal-use exception implemented (#51): headless-Chromium session + new-theme extraction, verified live (search/content/stream → playable m3u8, 2026-08-02) |
+| uakino       | ✅   | requires system Chromium at `UAKINO_CHROMIUM` and `playwright`; Cloudflare Turnstile bypassed via in-page `fetch()`; lifecycle warm/heartbeat/warming per #193 |
 
 Gate queries: the default `Дюна` no longer matches upstream catalogs
 that rotated their listings (cikavaideya, hentaiukr, bambooua,

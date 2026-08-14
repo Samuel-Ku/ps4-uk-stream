@@ -7,9 +7,12 @@ same title iff:
     AND type equal
     AND (year equal OR at least one year unknown)
 
-Group keys are stateless and versioned: ``group_key`` = "g1:" + sha1 of the
-canonical (alias|type|year) triple, so a normalization-rule change is a
-simple "gN:" bump, never a data migration.
+Group keys are stateless and versioned: ``group_key`` = "gN:" + sha1 of the
+canonical (alias|form|year) triple, so a normalization-rule change is a
+simple "gN:" bump, never a data migration. The identity axis is the Model
+B ``form`` (movie|series) — the legacy ``type`` axis is gone (contract
+#135); style tags do NOT participate in identity (the same film tagged
+"anime" by one provider and plain by another is the same title).
 """
 from __future__ import annotations
 
@@ -24,7 +27,11 @@ from .models import SearchResult
 
 log = logging.getLogger("cs_uk_api.merge")
 
-_KEY_VERSION = "g1"
+#: Model B contract step (#135): the identity axis changed from the
+#: legacy ``MediaType`` to ``form``, so keys are regenerated under a new
+#: version. A style-tagged title now keys on its FORM (e.g. an anime
+#: film and a plain film with the same name+year merge).
+_KEY_VERSION = "g2"
 
 #: DLE-style sites sprinkle codec/quality labels into titles.
 _QUALITY_TAGS = re.compile(
@@ -91,9 +98,9 @@ def normalize_title(raw: str) -> str:
     return aliases[0] if aliases else ""
 
 
-def group_key(alias: str, media_type: str, year: int | None) -> str:
+def group_key(alias: str, form: str, year: int | None) -> str:
     """Stateless versioned group identity."""
-    digest = hashlib.sha1(f"{alias}|{media_type}|{year or ''}".encode()).hexdigest()
+    digest = hashlib.sha1(f"{alias}|{form}|{year or ''}".encode()).hexdigest()
     return f"{_KEY_VERSION}:{digest[:16]}"
 
 
@@ -102,11 +109,12 @@ def effective_year(title: str, year: int | None) -> int | None:
     return year if year is not None else extract_year(title)
 
 
-def group_key_from(title: str, media_type: str, year: int | None, item_id: str) -> str:
+def group_key_from(title: str, form: str, year: int | None, item_id: str) -> str:
     """Stateless group identity for one raw title (issue #69, v3 spec §4.3).
 
     A pure function of the item's own listing data — its most canonical
-    alias, its type, its RAW year field — so the same title always yields
+    alias, its ``form`` (movie/series), its RAW year field — so the same
+    title always yields
     the same key no matter which other providers appear in the same call.
     The raw year is composed through ``effective_year`` (explicit year,
     else title-parsed) internally, exactly as the merge core composes it
@@ -115,7 +123,7 @@ def group_key_from(title: str, media_type: str, year: int | None, item_id: str) 
     """
     aliases = title_aliases(title)
     key_alias = min(aliases) if aliases else f"id:{item_id}"
-    return group_key(key_alias, media_type, effective_year(title, year))
+    return group_key(key_alias, form, effective_year(title, year))
 
 
 @dataclass(frozen=True)
@@ -136,9 +144,10 @@ def item_group_key(it: SearchResult) -> str:
     Public seam for callers that hold one item (e.g. ``/api/content``) and
     need the same key the merge core would produce for it. The item's raw
     year field is passed through — ``group_key_from`` applies the effective
-    year itself.
+    year itself. The identity axis is ``form`` (contract #135) — ``type``
+    no longer exists on items.
     """
-    return group_key_from(it.title, it.type, it.year, it.id)
+    return group_key_from(it.title, it.form, it.year, it.id)
 
 
 def _years_match(a: int | None, b: int | None) -> bool:
@@ -176,10 +185,10 @@ def merge_results(items: Iterable[SearchResult]) -> list[MergeGroup]:
     per_item_aliases = [title_aliases(it.title) for it in items]
     for i, it in enumerate(items):
         for alias in per_item_aliases[i]:
-            for j in seen.get((alias, it.type), []):
+            for j in seen.get((alias, it.form), []):
                 if _years_match(_effective_year(it), _effective_year(items[j])):
                     union(i, j)
-            seen.setdefault((alias, it.type), []).append(i)
+            seen.setdefault((alias, it.form), []).append(i)
 
     buckets: dict[int, list[int]] = {}
     for i in range(len(items)):

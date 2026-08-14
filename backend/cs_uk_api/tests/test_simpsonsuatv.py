@@ -23,7 +23,7 @@ import httpx
 import pytest
 import respx
 
-from cs_uk_api.providers.simpsonsuatv import SimpsonsUATvProvider
+from cs_uk_api.providers.simpsonsuatv import SimpsonsUATvProvider, _is_season_href
 
 FIX = pathlib.Path(__file__).parent / "fixtures" / "simpsonsuatv"
 
@@ -191,6 +191,58 @@ async def test_browse_unknown_section_raises_not_found():
 
 
 # ---------------------------------------------------------------------------
+# _is_season_href()
+# ---------------------------------------------------------------------------
+
+
+def test_is_season_href_matches_slug_prefixed_season():
+    """Regression (#182): a season slug may be prefixed by the show slug
+    (`/futurama-sezon-11/`). The old fullmatch only accepted bare season
+    slugs, which is why `allfuturama`, `family-guy`, and `rick137`
+    surfaced seasons=null."""
+    assert _is_season_href("https://simpsonsua.tv/futurama-sezon-11/") is True
+    assert _is_season_href("futurama-sezon-11") is True
+    assert _is_season_href("https://simpsonsua.tv/family-guy-sezon-1/") is True
+    assert _is_season_href("https://simpsonsua.tv/rick137-sezon-9/") is True
+
+
+def test_is_season_href_matches_bare_season():
+    """Bare season slugs (`s37`, `sezon-1`) still match."""
+    assert _is_season_href("https://simpsonsua.tv/s37/") is True
+    assert _is_season_href("https://simpsonsua.tv/sezon-1/") is True
+
+
+def test_is_season_href_rejects_special_slug():
+    """A special-section slug without a `sezon-N`/`sN` token is not a
+    season."""
+    assert _is_season_href("https://simpsonsua.tv/futurama-rizdvo/") is False
+
+
+def test_is_season_href_rejects_news_id_special_card():
+    """The `37-simpsony-u-kino.html` card is a news-id special page, not
+    a season."""
+    assert (
+        _is_season_href(
+            "https://simpsonsua.tv/simpsony-u-kino/37-simpsony-u-kino.html"
+        )
+        is False
+    )
+
+
+def test_is_season_href_rejects_news_id_episode():
+    """A news-id episode URL embeds a `sezon-N` token, but the token is
+    followed by `-seriya`, so it must not be misread as a season."""
+    assert (
+        _is_season_href(
+            "https://simpsonsua.tv/prezydent-kertis-sezon-1/"
+            "4467-prezydent-kertis-1-sezon-2-seriya.html"
+        )
+        is False
+    )
+    assert _is_season_href("4467-prezydent-kertis-1-sezon-2-seriya") is False
+
+
+# ---------------------------------------------------------------------------
 # content()
 # ---------------------------------------------------------------------------
 
@@ -200,7 +252,8 @@ async def test_content_for_show_follows_to_seasons_and_episodes():
     """For a show external_id, content() must fetch the show page,
     follow the season subitems, and return at least one Season with
     episodes. Each episode's `id` is the full URL of the episode
-    page (so stream() can fetch it directly)."""
+    page prefixed with the provider id (issue #180) so the /api/stream
+    router can hand the bare URL to stream()."""
     from cs_uk_api.providers.simpsonsuatv import _MAX_SHOW_SEASONS
 
     show_html = _fixture("content_show.html")
@@ -215,7 +268,7 @@ async def test_content_for_show_follows_to_seasons_and_episodes():
         async with httpx.AsyncClient() as http:
             c = await SimpsonsUATvProvider().content("simpsony", http)
     assert "Сімпсони" in c.title or "simpsony" in c.id
-    assert c.type in ("cartoon", "series")
+    assert "cartoon" in c.styles and c.form == "series"
     assert c.seasons is not None
     assert len(c.seasons) >= 1
     # Regression (issue #119): long archives are bounded to the newest
@@ -223,13 +276,48 @@ async def test_content_for_show_follows_to_seasons_and_episodes():
     assert len(c.seasons) == _MAX_SHOW_SEASONS
     nums = [s.number for s in c.seasons]
     assert nums == sorted(nums)
+    # The cap keeps the newest 10 seasons; with the 37-season fixture
+    # that is seasons 28-37 (the oldest 27, 1-27, are dropped).
+    assert min(nums) == 28 and max(nums) == 37
     # At least one season must have at least one episode.
     assert any(len(s.episodes) >= 1 for s in c.seasons)
-    # Episode ids must be the full URL of the episode page.
+    # Episode ids must be the full URL of the episode page prefixed
+    # with the provider id so the router can split on the first ':'.
     all_ids = [e.id for s in c.seasons for e in s.episodes]
     assert all(
-        i.startswith("https://simpsonsua.tv/") and "-seriya" in i for i in all_ids
+        i.startswith("simpsonsuatv:https://simpsonsua.tv/") and "-seriya" in i
+        for i in all_ids
     )
+
+
+@pytest.mark.asyncio
+async def test_content_show_with_slug_prefixed_seasons_returns_seasons():
+    """Regression (#182): a show whose season links are slug-prefixed
+    (`/futurama-sezon-11/`) must resolve seasons. `_is_season_href` had
+    regressed to fullmatch, so `content("allfuturama")` returned
+    seasons=null and the client fell back to streaming the bare show id
+    (502 bad content_id)."""
+    from cs_uk_api.providers.simpsonsuatv import _MAX_SHOW_SEASONS
+
+    show_html = _fixture("content_show_allfuturama.html")
+    season_html = _fixture("content_season.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://simpsonsua.tv/allfuturama/").respond(200, text=show_html)
+        # The provider follows every season subitem; route them all to
+        # the same season fixture. Specials (`futurama-rizdvo`) and
+        # episode cards must NOT be fetched as seasons.
+        router.get(url__regex=r"https://simpsonsua\.tv/futurama-sezon-\d+/").respond(
+            200, text=season_html
+        )
+        async with httpx.AsyncClient() as http:
+            c = await SimpsonsUATvProvider().content("allfuturama", http)
+    assert c.seasons is not None
+    assert len(c.seasons) == _MAX_SHOW_SEASONS
+    nums = [s.number for s in c.seasons]
+    assert nums == sorted(nums)
+    # The fixture has seasons 1-12; the cap keeps the newest 10 (3-12).
+    assert min(nums) == 3 and max(nums) == 12
+    assert any(len(s.episodes) >= 1 for s in c.seasons)
 
 
 @pytest.mark.asyncio
@@ -266,7 +354,7 @@ async def test_content_episode_slug_falls_back_to_html_variant():
     assert len(c.seasons) == 1
     assert len(c.seasons[0].episodes) == 1
     ep_id = c.seasons[0].episodes[0].id
-    assert ep_id.startswith("https://simpsonsua.tv/")
+    assert ep_id.startswith("simpsonsuatv:https://simpsonsua.tv/")
     assert "seriya" in ep_id
 
 
@@ -284,8 +372,52 @@ async def test_content_for_season_returns_episodes():
     assert len(c.seasons[0].episodes) >= 1
     all_ids = [e.id for e in c.seasons[0].episodes]
     assert all(
-        i.startswith("https://simpsonsua.tv/") and "-seriya" in i for i in all_ids
+        i.startswith("simpsonsuatv:https://simpsonsua.tv/") and "-seriya" in i
+        for i in all_ids
     )
+
+
+@pytest.mark.asyncio
+async def test_content_for_slug_prefixed_season_returns_episodes():
+    """Regression (#182): a direct slug-prefixed season URL
+    (`/futurama-sezon-1/`) must be detected as a season page and its
+    episodes parsed inline. `_is_season_href` had regressed to
+    fullmatch, so this path returned seasons=null."""
+    season_html = _fixture("content_season.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://simpsonsua.tv/futurama-sezon-1/").respond(
+            200, text=season_html
+        )
+        async with httpx.AsyncClient() as http:
+            c = await SimpsonsUATvProvider().content("futurama-sezon-1", http)
+    assert c.seasons is not None
+    assert len(c.seasons) == 1
+    assert c.seasons[0].number == 1
+    assert len(c.seasons[0].episodes) >= 1
+
+
+@pytest.mark.asyncio
+async def test_content_episode_ids_route_on_first_colon():
+    """Regression (issue #180): the PS4 client passes episode ids
+    verbatim to /api/stream/{id}, and the router resolves the provider
+    by partitioning on the first ':'. simpsonsuatv episodes are raw
+    page URLs, so an unprefixed id makes the router treat `https` as
+    the provider -> 404 not_found. The emitted id must carry the
+    `simpsonsuatv:` prefix and leave the bare URL after the first ':'
+    (the form stream() validates)."""
+    season_html = _fixture("content_season.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://simpsonsua.tv/s35/").respond(200, text=season_html)
+        async with httpx.AsyncClient() as http:
+            c = await SimpsonsUATvProvider().content("s35", http)
+    assert c.seasons is not None
+    assert len(c.seasons) == 1
+    assert len(c.seasons[0].episodes) >= 1
+    for ep in c.seasons[0].episodes:
+        # Mirror `_split_content_id`: partition on the first ':'.
+        provider_id, _, rest = ep.id.partition(":")
+        assert provider_id == "simpsonsuatv"
+        assert rest.startswith("https://simpsonsua.tv/")
 
 
 @pytest.mark.asyncio

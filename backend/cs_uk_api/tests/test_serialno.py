@@ -43,7 +43,7 @@ async def test_serialno_search_parses_results():
     assert len(results) == 6
     assert all(r.provider == "serialno" for r in results)
     assert all(r.id.startswith("serialno:") for r in results)
-    assert all(r.type == "series" for r in results)
+    assert all(r.form == "series" for r in results)
     # All posters must be absolute URLs (card data-src is relative).
     assert all(r.poster is not None and r.poster.startswith("https://") for r in results)
     # All URLs must be absolute.
@@ -61,7 +61,7 @@ async def test_serialno_browse_series_page1():
         async with httpx.AsyncClient() as http:
             results, has_next = await SerialnoProvider().browse("series", 1, http)
     assert len(results) == 20
-    assert all(r.type == "series" for r in results)
+    assert all(r.form == "series" for r in results)
     assert all(r.id.startswith("serialno:") for r in results)
     # IDs are bare slugs (no section prefix on serialno).
     assert all("serialno:" in r.id and "/" not in r.id.split(":", 1)[1] for r in results)
@@ -78,7 +78,7 @@ async def test_serialno_browse_series_page2():
         async with httpx.AsyncClient() as http:
             results, has_next = await SerialnoProvider().browse("series", 2, http)
     assert len(results) >= 1
-    assert all(r.type == "series" for r in results)
+    assert all(r.form == "series" for r in results)
     # The last page is 103; page 2 has higher pages, so has_next is True.
     assert has_next is True
 
@@ -113,7 +113,7 @@ async def test_serialno_content_series_parses_title_poster_player():
         async with httpx.AsyncClient() as http:
             c = await SerialnoProvider().content("2075-1670", http)
     assert c.title == "1670"
-    assert c.type == "series"
+    assert c.form == "series"
     assert c.poster is not None
     assert c.poster.startswith("https://serialno.tv/")
     assert c.seasons is not None
@@ -122,7 +122,7 @@ async def test_serialno_content_series_parses_title_poster_player():
     # First season, first episode from the captured playlist.
     first = c.seasons[0]
     assert first.number == 1
-    assert first.episodes[0].id == "2075-1670:s1e1"
+    assert first.episodes[0].id == "serialno:2075-1670:s1e1"
 
 
 @pytest.mark.asyncio
@@ -143,6 +143,38 @@ async def test_serialno_content_description_and_translation():
             c = await SerialnoProvider().content("2075-1670", http)
     assert "сатиричн" in c.description
     assert len(c.translations) == 1 and c.translations[0].id == "uk"
+
+
+@pytest.mark.asyncio
+async def test_serialno_content_parses_year_and_people():
+    """The `.flist` block carries `Рік:` and `В ролях:`/`Режисер:`
+    rows with the data present — the provider must surface them.
+    Regression: year was always None and people always [] even
+    though the live-captured fixture has Рік: 2023, 6 actors and
+    2 directors (Ticket #227)."""
+    content_html = _fixture("content_series.html")
+    player_html = _fixture("player_embed.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://serialno.tv/2075-1670.html").respond(
+            200, text=content_html
+        )
+        router.get("https://tortuga.tw/embed/2083").respond(
+            200, text=player_html
+        )
+        async with httpx.AsyncClient() as http:
+            c = await SerialnoProvider().content("2075-1670", http)
+    assert c.year == 2023
+    assert len(c.people) == 8
+    actors = [p for p in c.people if p.role == "Actor"]
+    directors = [p for p in c.people if p.role == "Director"]
+    assert len(actors) == 6
+    assert len(directors) == 2
+    assert actors[0].name == "Бартломей Топа"
+    assert directors[0].name == "Мацей Бухвальд"
+    assert all(p.id.startswith("serialno:") for p in c.people)
+    # The Жанр row is parsed but dropped — it must surface as genres.
+    assert c.genres
+    assert "Комедія" in c.genres
 
 
 @pytest.mark.asyncio
@@ -168,6 +200,29 @@ async def test_serialno_stream_series_resolves_episode_m3u8():
     # tortuga.tw requires a Referer to serve the manifest; the
     # upstream Kotlin sets it to the page origin.
     assert s.headers.get("Referer") == "https://serialno.tv/"
+
+
+@pytest.mark.asyncio
+async def test_serialno_stream_rejects_player_redirect_to_disallowed_host():
+    """The player URL comes from upstream HTML, so it must go through
+    the SSRF redirect allowlist (issue #126): a player page that
+    redirects to an attacker-controlled host fails closed with
+    `not_found` instead of being followed."""
+    from cs_uk_api.providers.base import ProviderError
+
+    content_html = _fixture("content_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://serialno.tv/2075-1670.html").respond(
+            200, text=content_html
+        )
+        router.get("https://tortuga.tw/embed/2083").respond(
+            302, headers={"Location": "https://evil.example.com/pivot"}
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await SerialnoProvider().stream("2075-1670:s1e1", None, http)
+    assert exc_info.value.code == "not_found"
+    assert "disallowed host" in exc_info.value.message
 
 
 @pytest.mark.asyncio
@@ -211,7 +266,7 @@ async def test_serialno_content_flat_live_payload_parses_seasons():
     assert c.seasons is not None
     assert len(c.seasons) >= 1
     assert len(c.seasons[0].episodes) >= 1
-    assert c.seasons[0].episodes[0].id == "1398-dyuna:s1e1"
+    assert c.seasons[0].episodes[0].id == "serialno:1398-dyuna:s1e1"
 
 
 @pytest.mark.asyncio
@@ -241,14 +296,13 @@ def test_serialno_sections_lists_one():
     sections = SerialnoProvider().sections
     ids = [s.id for s in sections]
     assert ids == ["series"]
-    assert all(s.type == "series" for s in sections)
+    assert all(s.form == "series" for s in sections)
 
 
 @pytest.mark.asyncio
 async def test_serialno_browse_unknown_section_raises():
-    with respx.mock(assert_all_called=False):
-        with pytest.raises(ProviderError) as exc_info:
-            await SerialnoProvider().browse("films", 1, httpx.AsyncClient())
+    with respx.mock(assert_all_called=False), pytest.raises(ProviderError) as exc_info:
+        await SerialnoProvider().browse("films", 1, httpx.AsyncClient())
     assert exc_info.value.code == "not_found"
 
 

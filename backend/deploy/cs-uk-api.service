@@ -1,0 +1,34 @@
+# cs-uk-api systemd unit
+#
+# Install:
+#   sudo cp deploy/cs-uk-api.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now cs-uk-api
+#
+# Edit User= and WorkingDirectory= to match the host before enabling.
+
+[Unit]
+Description=cs-uk-api - PS4 UK Stream backend (Ukrainian-dubbed catalog)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rorschach
+WorkingDirectory=/home/rorschach/UA flims/ps4-uk-stream/backend
+# LAN-only service (ADR-0003 deployment assumption: one host, one process).
+# Paths with spaces must stay quoted (systemd splits ExecStart on whitespace).
+ExecStart="/home/rorschach/UA flims/ps4-uk-stream/backend/.venv/bin/uvicorn" cs_uk_api.main:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=5
+
+# TTL knobs (documented in CONTEXT.md "Cache contract"); defaults match
+# the built-ins, uncomment to tune.
+# Environment=CS_UK_CACHE_SEARCH=300
+# Environment=CS_UK_CACHE_CONTENT=1800
+# Environment=CS_UK_CACHE_POSTER=3600
+# uakino needs a system Chromium (default /usr/bin/chromium).
+# Environment=UAKINO_CHROMIUM=/usr/bin/chromium
+
+[Install]
+WantedBy=multi-user.target

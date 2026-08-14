@@ -49,7 +49,7 @@ async def test_coaninet_search_parses_results():
         "coaninet:the-villainess-is-adored-by-the-prince-of-the-neighbor-kingdom"
     )
     assert r.provider == "coaninet"
-    assert r.type == "series"
+    assert r.form == "series"
     assert "Лиходійка" in r.title
     assert r.poster is not None
     assert r.poster.startswith("https://api.coani.net/uploads/resized/preview_main/")
@@ -112,7 +112,7 @@ async def test_coaninet_content_film_parses_title_poster():
         async with httpx.AsyncClient() as http:
             c = await CoaninetProvider().content(slug, http)
     assert c.id == f"coaninet:{slug}"
-    assert c.type == "series"
+    assert c.form == "series"
     assert "Лиходійка" in c.title
     assert c.year == 2026
     assert c.poster is not None
@@ -183,7 +183,6 @@ async def test_coaninet_sections_lists_two():
 async def test_coaninet_browse_unknown_section_raises():
     """Unknown section ids must raise ProviderError("not_found") without
     hitting the network."""
-    with respx.mock(assert_all_called=False):
-        with pytest.raises(ProviderError) as exc_info:
-            await CoaninetProvider().browse("nonexistent", 1, httpx.AsyncClient())
+    with respx.mock(assert_all_called=False), pytest.raises(ProviderError) as exc_info:
+        await CoaninetProvider().browse("nonexistent", 1, httpx.AsyncClient())
     assert exc_info.value.code == "not_found"

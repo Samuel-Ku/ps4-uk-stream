@@ -26,7 +26,7 @@ async def test_kinotron_search_parses_real_response():
     assert len(results) == 3
     assert results[0].title == "Ван Піс / Великий куш"
     assert results[0].provider == "kinotron"
-    assert results[0].type == "series"
+    assert results[0].form == "series"
     assert results[0].id.startswith("kinotron:4808")
 
 
@@ -44,7 +44,7 @@ async def test_kinotron_browse_films_has_exact_cards_and_next():
         async with httpx.AsyncClient() as http:
             results, has_next = await KinoTronProvider().browse("films", 1, http)
     assert len(results) == 18
-    assert all(result.type == "movie" for result in results)
+    assert all(result.form == "movie" for result in results)
     assert has_next is True
     assert all(r.url.startswith("https://kinotron.tv/") for r in results)
 
@@ -62,14 +62,116 @@ async def test_kinotron_browse_last_page_has_no_next():
 
 
 @pytest.mark.asyncio
-async def test_kinotron_content_movie_parses_title_poster():
+async def test_kinotron_browse_serials_follows_page_1_redirect():
+    """Issue #172: the upstream now 301-redirects the first page of the
+    non-films sections (`/serials/page/1/` -> `/serials/`, and the same
+    for cartoons/cartoon-series/anime). `browse()` must follow the
+    same-host redirect (via the SSRF-safe `safe_get`) instead of failing
+    with `not_found` on the 301, which surfaced as a 502."""
     with respx.mock(assert_all_called=True) as router:
-        router.get("https://kinotron.tv/10496-mesniki-shodzhennja-doktora-duma.html").respond(200, text=_fixture("content_movie.html"))
+        router.get("https://kinotron.tv/serials/page/1/").respond(
+            301, headers={"Location": "/serials/"}
+        )
+        router.get("https://kinotron.tv/serials/").respond(
+            200, text=_fixture("serials_listing.html")
+        )
         async with httpx.AsyncClient() as http:
-            content = await KinoTronProvider().content("10496-mesniki-shodzhennja-doktora-duma", http)
-    assert content.title.startswith("Месники: Сходження Доктора Дума")
-    assert content.type == "movie"
+            results, has_next = await KinoTronProvider().browse("serials", 1, http)
+    assert len(results) == 18
+    assert all(result.form == "series" for result in results)
+    assert has_next is True
+
+
+@pytest.mark.asyncio
+async def test_kinotron_content_movie_parses_title_poster():
+    """A playable movie page (real player iframe, not trailer-only) must
+    parse into a movie ContentResponse (#163: the Месники page is
+    trailer-only, so this test uses the Дюна VOD fixture). The movie
+    path fetches the player page to gate dead players (#167), so it
+    must be mocked too."""
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://kinotron.tv/9728-djuna.html").respond(200, text=_fixture("content_movie_vod.html"))
+        router.get("https://ashdi.vip/vod/176240").respond(200, text=_fixture("player_movie.html"))
+        async with httpx.AsyncClient() as http:
+            content = await KinoTronProvider().content("9728-djuna", http)
+    assert content.title.startswith("Дюна")
+    assert content.form == "movie"
     assert content.poster and content.poster.startswith("https://kinotron.tv/")
+
+
+@pytest.mark.asyncio
+async def test_kinotron_content_movie_dead_player_raises_gated() -> None:
+    """Issue #167: a movie whose player page exposes no playable files
+    (upstream migrated the title to a dead zetvideo.net/vod page) must
+    raise ``gated`` from content() so the catalog sweep drops the dead
+    card instead of failing only at play time."""
+    page = (
+        '<html><body><div class="full"><h1>Різдвяне бажання</h1></div>'
+        '<div class="fsubtitle">Фільм</div>'
+        '<div class="video-box">'
+        '<iframe data-src="https://zetvideo.net/vod/38430"></iframe>'
+        '</div></body></html>'
+    )
+    dead_player = (
+        '<html><body><title>404 Not Found</title>'
+        '<h1>404 Not Found</h1></body></html>'
+    )
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://kinotron.tv/10381-rzdvjane-bazhannja.html").respond(200, text=page)
+        router.get("https://zetvideo.net/vod/38430").respond(200, text=dead_player)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await KinoTronProvider().content("10381-rzdvjane-bazhannja", http)
+    assert exc_info.value.code == "gated"
+
+
+@pytest.mark.asyncio
+async def test_kinotron_movie_with_double_quoted_player_file_is_not_gated():
+    """Live-gate regression (2026-08-09): zetvideo vod players serve
+    the file as `file:"https://..."` (double quotes) while ashdi serials
+    use `file:'[{...}]'` (single quotes). Only single quotes were matched
+    before, so a live playable movie was wrongly gated as dead."""
+    page = (
+        '<html><body><div class="full"><h1>Різдвяне бажання</h1></div>'
+        '<div class="fsubtitle">Фільм</div>'
+        '<div class="video-box">'
+        '<iframe data-src="https://zetvideo.net/vod/38430"></iframe>'
+        '</div></body></html>'
+    )
+    player = (
+        '<html><body><script>'
+        'file:"https://zetvideo.net/vid/1/films/a.season.for.family.2023.1080p/hls/index.m3u8"'
+        '</script></body></html>'
+    )
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://kinotron.tv/10381-rzdvjane-bazhannja.html").respond(200, text=page)
+        router.get("https://zetvideo.net/vod/38430").respond(200, text=player)
+        async with httpx.AsyncClient() as http:
+            content = await KinoTronProvider().content("10381-rzdvjane-bazhannja", http)
+            stream = await KinoTronProvider().stream("10381-rzdvjane-bazhannja", None, http)
+    assert content.form == "movie"
+    assert stream.url == "https://zetvideo.net/vid/1/films/a.season.for.family.2023.1080p/hls/index.m3u8"
+    assert stream.type == "m3u8"
+
+
+@pytest.mark.asyncio
+async def test_kinotron_content_trailer_only_page_raises_gated():
+    """Issue #163: a page whose video box carries only a youtube embed
+    is trailer-only (upstream has no playable player) — content() must
+    raise ``gated`` so the catalog sweep drops the dead card."""
+    page = (
+        '<html><body><div class="full"><h1>Месники</h1></div>'
+        '<div class="fsubtitle">Фільм</div>'
+        '<div class="video-box">'
+        '<iframe width="560" height="400" data-src="https://www.youtube.com/embed/IRycQ32qo88"></iframe>'
+        '</div></body></html>'
+    )
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://kinotron.tv/10496-trailer-only.html").respond(200, text=page)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await KinoTronProvider().content("10496-trailer-only", http)
+    assert exc_info.value.code == "gated"
 
 
 @pytest.mark.asyncio
@@ -79,12 +181,32 @@ async def test_kinotron_series_parses_seasons_and_type():
         router.get("https://ashdi.vip/serial/3329").respond(200, text=_fixture("player_series.html"))
         async with httpx.AsyncClient() as http:
             content = await KinoTronProvider().content("3663-pervorodn-pradavn-pershonarodzhenn", http)
-    assert content.type == "series"
+    assert content.form == "series"
     assert content.seasons and len(content.seasons) == 2
     assert len(content.seasons[0].episodes) == 22
     assert content.seasons[1].episodes[0].number == 1
     assert content.translations_level == "episode"
     assert len(content.seasons[0].episodes[0].translations or []) == 3
+
+
+@pytest.mark.asyncio
+async def test_kinotron_content_parses_cast():
+    """Ticket #221: the content page's ``В ролях:`` li lists the cast
+    with one ``/xfsearch/actors/<name>/`` anchor per person — parse it
+    into ``ContentResponse.people`` so the detail DTO's People rail has
+    data."""
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://kinotron.tv/3663-pervorodn-pradavn-pershonarodzhenn.html").respond(200, text=_fixture("content_series.html"))
+        router.get("https://ashdi.vip/serial/3329").respond(200, text=_fixture("player_series.html"))
+        async with httpx.AsyncClient() as http:
+            content = await KinoTronProvider().content("3663-pervorodn-pradavn-pershonarodzhenn", http)
+    assert len(content.people) == 10
+    first = content.people[0]
+    assert first.name == "Джозеф Морґан"
+    assert first.role == "Actor"
+    # The person key is the decoded ``/xfsearch/actors/<name>/`` slug —
+    # stable and round-trippable through /Persons/{id}.
+    assert first.id == "kinotron:Джозеф Морґан"
 
 
 @pytest.mark.asyncio
@@ -126,7 +248,7 @@ async def test_kinotron_series_with_dead_player_keeps_default_translation():
         router.get("https://ashdi.vip/serial/3329").respond(200, text=_fixture("player_movie.html"))
         async with httpx.AsyncClient() as http:
             content = await KinoTronProvider().content("3663-pervorodn-pradavn-pershonarodzhenn", http)
-    assert content.type == "series"
+    assert content.form == "series"
     assert content.translations and len(content.translations) == 1
     assert content.translations[0].id == "uk"
 

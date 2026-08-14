@@ -74,3 +74,24 @@ def test_gate_parses_merged_groups_contract_issue71():
     assert "['groups']" in text
     assert "['groups'][$tries]['sources'][0]['id']" in text
     assert "['results']" not in text
+
+
+def test_gate_episode_fallback_wired_to_gate_tools_issue127():
+    """Regression (issue #127 / ticket #142): series-only providers
+    (serialno, anitubeinua, doramyworld, simpsonsuatv) reject the bare
+    search id at /api/stream. gate.sh must fall back to the first
+    episode id from content()'s ``seasons`` and prefix the provider
+    when the episode id lacks it.
+
+    The decision logic moved OUT of inline bash into
+    ``gate_tools.fallback_episode_cid`` (ticket #142) so it is pinned
+    by execution — see test_gate_fallback.py for the behavioural
+    coverage. This test only pins the WIRING: gate.sh invokes the
+    tool on the content payload and uses the emitted cid.
+    """
+    text = GATE.read_text(encoding="utf-8")
+    assert "gate_tools fallback" in text
+    assert "first episode" in text
+    # The old inline python (with its grep-pinned strings) is gone;
+    # the logic now lives in the executable tool.
+    assert "eps[0]['id']" not in text

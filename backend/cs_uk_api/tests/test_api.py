@@ -1,7 +1,9 @@
+import asyncio
+
 from fastapi.testclient import TestClient
 
+from cs_uk_api import uakino_browser
 from cs_uk_api.main import app
-import cs_uk_api.uakino_browser as uakino_browser
 
 client = TestClient(app)
 
@@ -41,9 +43,9 @@ def test_unknown_content_returns_404():
 def test_stream_rejects_invalid_translation_via_provider_hook(monkeypatch):
     """If a provider reports per-episode translations, /api/stream must
     reject unknown translations before fetching the upstream URL."""
+    from cs_uk_api.models import ContentResponse, StreamResponse, Translation
     from cs_uk_api.providers import PROVIDERS
     from cs_uk_api.providers.base import BaseProvider
-    from cs_uk_api.models import ContentResponse, StreamResponse, Translation
 
     class _Epi(BaseProvider):
         id = "epi-test"
@@ -56,7 +58,7 @@ def test_stream_rejects_invalid_translation_via_provider_hook(monkeypatch):
         async def content(self, external_id, http):
             return ContentResponse(
                 id=external_id,
-                type="series",
+                form="series",
                 title="T",
                 translations=[Translation(id="uk", label="UK")],
                 translations_level="episode",
@@ -86,9 +88,9 @@ def test_content_route_accepts_slash_in_content_id(monkeypatch):
     slash (`bambooua:dorama/722-story-of-kunning-palace`), which the
     plain `{content_id}` route path parameter rejects. The external_id
     must reach the provider intact."""
+    from cs_uk_api.models import ContentResponse, Translation
     from cs_uk_api.providers import PROVIDERS
     from cs_uk_api.providers.base import BaseProvider
-    from cs_uk_api.models import ContentResponse, Translation
 
     seen: list[str] = []
 
@@ -104,7 +106,7 @@ def test_content_route_accepts_slash_in_content_id(monkeypatch):
             seen.append(external_id)
             return ContentResponse(
                 id=f"slash-test:{external_id}",
-                type="series",
+                form="series",
                 title="T",
                 translations=[Translation(id="uk", label="UK")],
             )
@@ -132,8 +134,19 @@ def test_lifespan_closes_uakino_session():
     closes: list[None] = []
 
     class _StubSession:
+        """Minimal ``UakinoSessionProtocol``: the lifespan warm task calls
+        ``warm()`` + ``heartbeat_loop()`` and ``/api/providers`` reads
+        ``ready_event`` (issue #193/#195)."""
+
         def __init__(self) -> None:
-            self._browser = object()
+            self.ready_event = asyncio.Event()
+
+        async def warm(self) -> None:
+            pass
+
+        async def heartbeat_loop(self, record):  # type: ignore[no-untyped-def]
+            while True:
+                await asyncio.sleep(3600)
 
         async def close(self) -> None:
             closes.append(None)
@@ -168,7 +181,7 @@ def test_content_route_blocks_russian_country(monkeypatch):
         async def content(self, external_id, http):
             return ContentResponse(
                 id=f"russian-test:{external_id}",
-                type="movie",
+                form="movie",
                 title="Блокированный",
                 translations=[Translation(id="uk", label="UK")],
                 country="росія",
@@ -205,7 +218,7 @@ def test_content_route_allows_non_russian_country(monkeypatch):
         async def content(self, external_id, http):
             return ContentResponse(
                 id=f"ukr-test:{external_id}",
-                type="movie",
+                form="movie",
                 title="Не блокувати",
                 translations=[Translation(id="uk", label="UK")],
                 country="україна",
@@ -241,7 +254,7 @@ def test_content_route_passes_open_when_country_unknown(monkeypatch):
         async def content(self, external_id, http):
             return ContentResponse(
                 id=f"unknown-test:{external_id}",
-                type="movie",
+                form="movie",
                 title="Невідома країна",
                 translations=[Translation(id="uk", label="UK")],
                 country=None,
@@ -304,7 +317,7 @@ def test_content_route_respects_block_russian_disabled(monkeypatch):
             async def content(self, external_id, http):
                 return ContentResponse(
                     id=f"russian-disabled-test:{external_id}",
-                    type="movie",
+                    form="movie",
                     title="Разрешено",
                     translations=[Translation(id="uk", label="UK")],
                     country="росія",

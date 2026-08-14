@@ -9,4 +9,4 @@ def register(provider: BaseProvider) -> None:
     PROVIDERS[provider.id] = provider
 
 
-__all__ = ["BaseProvider", "ProviderError", "PROVIDERS", "register"]
+__all__ = ["PROVIDERS", "BaseProvider", "ProviderError", "register"]

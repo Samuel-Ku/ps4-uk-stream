@@ -22,7 +22,7 @@ from ..models import (
     Translation,
     TranslationLevel,
 )
-from .base import BaseProvider, MediaTypeStr, ProviderError
+from .base import BaseProvider, MediaTypeStr, ProviderError, model_b_axes
 
 BASE_URL = "https://animeua.club"
 # The ashdi.vip CDN serves the HLS manifest only with this Referer; the
@@ -32,11 +32,11 @@ ASHDI_REFERER = "https://tortuga.wtf/"
 # Sections mirror the upstream `mainPage = mainPageOf(...)`. The "page"
 # section is the site root ("Нове аніме").
 ANIMEUA_SECTIONS: tuple[Section, ...] = (
-    Section(id="page", title="Нове аніме", type="anime"),
-    Section(id="film", title="Повнометражки", type="movie"),
-    Section(id="anime", title="Аніме серіали", type="anime"),
-    Section(id="ona", title="ONA", type="anime"),
-    Section(id="ova", title="OVA", type="anime"),
+    Section(id="page", title="Нове аніме", styles=frozenset({"anime"})),
+    Section(id="film", title="Повнометражки", form="movie"),
+    Section(id="anime", title="Аніме серіали", styles=frozenset({"anime"})),
+    Section(id="ona", title="ONA", styles=frozenset({"anime"})),
+    Section(id="ova", title="OVA", styles=frozenset({"anime"})),
 )
 
 # Same as the upstream Kotlin `fileRegex`. The capture group is either a
@@ -99,9 +99,16 @@ def _parse_cards(html: str, provider: str, media_type: MediaTypeStr) -> list[Sea
         title = title_el.get_text(" ", strip=True) if title_el else card.get_text(" ", strip=True)
         image = card.select_one(".img-fit-cover img")
         poster = urljoin(BASE_URL, str(image.get("data-src"))) if image and image.get("data-src") else None
+        # animeua is an anime-only site: every item carries the anime
+        # style; the form comes from the section/fixture type (film vs
+        # series — search results are all "anime" = series).
+        mb_form, mb_styles = model_b_axes(
+            "anime", form="movie" if media_type == "movie" else "series"
+        )
         results.append(SearchResult(
-            id=f"{provider}:{external_id}", provider=provider, type=media_type,
+            id=f"{provider}:{external_id}", provider=provider,
             title=title, poster=poster, url=urljoin(BASE_URL, str(href)),
+            form=mb_form, styles=mb_styles,
         ))
     return results
 
@@ -179,7 +186,7 @@ def _resolve_episode(grouped: _DubsMap, ep_suffix: str, translation: str | None)
     return files[0][1]
 
 
-def _build_seasons(grouped: _DubsMap, external_id: str) -> list[Season]:
+def _build_seasons(grouped: _DubsMap, external_id: str, provider_id: str) -> list[Season]:
     seasons: list[Season] = []
     for s_idx, (_, episodes) in enumerate(grouped.items(), 1):
         seasons.append(Season(
@@ -187,7 +194,7 @@ def _build_seasons(grouped: _DubsMap, external_id: str) -> list[Season]:
             episodes=[
                 Episode(
                     number=e_idx,
-                    id=f"{external_id}:s{s_idx}e{e_idx}",
+                    id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
                     title=episode_title,
                     translations=[Translation(id=name, label=name) for name, _ in files],
                 )
@@ -266,7 +273,13 @@ class AnimeUAProvider(BaseProvider):
         self, section: str, page: int, http: httpx.AsyncClient
     ) -> tuple[list[SearchResult], bool]:
         response = await self._get(_section_url(section, page), http)
-        section_type = next(item.type for item in self.sections if item.id == section)
+        # Contract #135: sections carry Model B axes, not the legacy
+        # ``type`` — the card classifier needs the legacy type string,
+        # derived from the axes (style wins, else form).
+        axes = next(item for item in self.sections if item.id == section)
+        section_type = (
+            min(axes.styles) if axes.styles else (axes.form or "series")
+        )
         results = _parse_cards(response.text, self.id, section_type)
         soup = BeautifulSoup(response.text, "lxml")
         has_next = any(
@@ -303,21 +316,34 @@ class AnimeUAProvider(BaseProvider):
             dubs = _parse_dubs(_file_value(player.text))
             if dubs:
                 grouped = _group_episodes(dubs)
-                seasons = _build_seasons(grouped, external_id)
+                seasons = _build_seasons(grouped, external_id, self.id)
                 names = _dub_names(grouped)
                 if names:
                     translations = [Translation(id=name, label=name) for name in names]
                 translations_level = "episode"
+        # kind="movie" (Повнометражка) means an anime film — form=movie
+        # with the anime style, not the default plain movie; kind="anime"
+        # means an anime series (form=series). The axes always carry the
+        # anime style — every entry on this site is animation.
+        mb_form, mb_styles = model_b_axes(
+            "anime", form="movie" if kind == "movie" else "series"
+        )
         return ContentResponse(
             id=f"{self.id}:{external_id}",
-            type=kind,
             title=title_el.get_text(" ", strip=True),
             year=year,
             description=description,
             poster=poster,
             translations=translations,
+            form=mb_form,
+            styles=mb_styles,
             seasons=seasons,
             translations_level=translations_level,
+            # Ticket #213: the ``.pmovie__genres`` tag list (already
+            # parsed above for kind detection) IS the genre metadata —
+            # surface it on the detail so the Jellyfin detail page can
+            # render the genre row.
+            genres=tags,
         )
 
     async def stream(
@@ -346,7 +372,7 @@ class AnimeUAProvider(BaseProvider):
         return StreamResponse(
             url=url,
             type="m3u8",
-            headers={"Referer": ASHDI_REFERER, "User-Agent": "cs-uk-api/0.1"},
+            headers={"Referer": ASHDI_REFERER, "User-Agent": "cs-uk-api/1.0"},
         )
 
     async def episode_translations(

@@ -109,7 +109,8 @@ def test_providers_endpoint_exposes_health_fields() -> None:
     r = client.get("/api/providers")
     assert r.status_code == 200
     for p in r.json():
-        assert p["status"] in ("ok", "degraded", "down")
+        # ``warming`` is the transient pre-ready uakino state (issue #193).
+        assert p["status"] in ("ok", "degraded", "down", "warming")
         assert "last_error_at" in p
 
 
@@ -132,7 +133,7 @@ def test_successful_search_recovers_status(monkeypatch: pytest.MonkeyPatch) -> N
         raise RuntimeError("site 522")
 
     async def fine(query, http):
-        return [SearchResult(id="eneyida:1", provider="eneyida", type="movie",
+        return [SearchResult(id="eneyida:1", provider="eneyida", form="movie",
                              title="T", url="https://eneyida.example/1")]
 
     monkeypatch.setattr(PROVIDERS["eneyida"], "search", boom)

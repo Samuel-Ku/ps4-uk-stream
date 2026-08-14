@@ -19,6 +19,8 @@ What the contract says:
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi.testclient import TestClient
 
 from cs_uk_api.main import (
@@ -51,13 +53,13 @@ def _register(provider_id: str, _search_call_counter: list[int], _content_call_c
 
         async def search(self, q, http):
             _search_call_counter.append(1)
-            return [SearchResult(id=f"{provider_id}:x", provider=provider_id, type="movie", title="X", url="https://x/")]
+            return [SearchResult(id=f"{provider_id}:x", provider=provider_id, form="movie", title="X", url="https://x/")]
 
         async def content(self, external_id, http):
             _content_call_counter.append(1)
             return ContentResponse(
                 id=f"{provider_id}:{external_id}",
-                type="movie",
+                form="movie",
                 title="Cached?",
                 translations=[Translation(id="uk", label="UK")],
             )
@@ -127,14 +129,14 @@ def test_search_cache_expiry():
         PROVIDERS["cache-stub"] = _register("cache-stub", search_calls, content_calls)
 
         _search_cache.clear()
-        _search_cache.set("search:all:expiry-q", _search_cache.get("search:all:expiry-q") or "marker", ttl_s=0)
+        _search_cache.set("search:all:expiry-q::", _search_cache.get("search:all:expiry-q::") or "marker", ttl_s=0)
         # The pre-seeded entry is already expired. Even if the route
         # returned the cached value, the cache is empty for the real query.
         client.get("/api/search?q=expiry-q")
         assert len(search_calls) == 1
 
         # Force expiry: set the cache entry's TTL to 0 in the past.
-        _search_cache.set("search:all:expiry-q", "stale", ttl_s=0)
+        _search_cache.set("search:all:expiry-q::", "stale", ttl_s=0)
         import time
 
         time.sleep(0.01)
@@ -181,13 +183,13 @@ def test_browse_second_call_hits_cache():
         class _BrowseStub(_StubBase):
             id = "browse-stub"
             name = "browse-stub"
-            sections = (Section(id="top", title="Top", type="movie"),)
+            sections = (Section(id="top", title="Top", form="movie"),)
 
             async def search(self, q, http):
                 return []
 
             async def browse(self, section, page, http):
-                return ([SearchResult(id="x", provider="browse-stub", type="movie", title="X", url="https://x/")], False)
+                return ([SearchResult(id="x", provider="browse-stub", form="movie", title="X", url="https://x/")], False)
 
         PROVIDERS["browse-stub"] = _BrowseStub()
 
@@ -203,7 +205,7 @@ def test_browse_second_call_hits_cache():
         class _Bomb(_StubBase):
             id = "browse-stub"
             name = "Bomb"
-            sections = (Section(id="top", title="Top", type="movie"),)
+            sections = (Section(id="top", title="Top", form="movie"),)
 
             async def search(self, q, http):
                 return []
@@ -304,7 +306,7 @@ def test_sections_route_is_not_cached():
         class _S1(_StubBase):
             id = "s1"
             name = "s1"
-            sections = (Section(id="top", title="Top", type="movie"),)
+            sections = (Section(id="top", title="Top", form="movie"),)
 
             async def search(self, q, http):
                 return []
@@ -318,7 +320,7 @@ def test_sections_route_is_not_cached():
         class _S2(_StubBase):
             id = "s2"
             name = "s2"
-            sections = (Section(id="hot", title="Hot", type="movie"),)
+            sections = (Section(id="hot", title="Hot", form="movie"),)
 
             async def search(self, q, http):
                 return []
@@ -359,7 +361,7 @@ def test_content_cache_stores_response_with_group_key_already_set():
                 content_calls.append(1)
                 return ContentResponse(
                     id=f"mutstub:{external_id}",
-                    type="movie",
+                    form="movie",
                     title="Ok",
                     translations=[Translation(id="uk", label="UK")],
                 )
@@ -448,6 +450,41 @@ def test_search_cache_key_includes_provider_axis():
         client.get("/api/search?q=q&provider=b")  # cache hit
         assert len(a_calls) == 1
         assert len(b_calls) == 1
+    finally:
+        PROVIDERS.clear()
+        PROVIDERS.update(saved)
+        _search_cache.clear()
+
+
+def test_search_cache_key_includes_form_axis() -> None:
+    """Filtered and unfiltered searches for the same query never share a
+    cache entry (ADR-0001 obligation) — the parsed ``form`` value still
+    participates in the key after the #141 ``str``-param change."""
+    saved = dict(PROVIDERS)
+    try:
+        PROVIDERS.clear()
+        search_calls: list[int] = []
+
+        class _Stub(_StubBase):
+            id = "k"
+            name = "k"
+
+            async def search(self, q: str, http: Any) -> list[SearchResult]:
+                search_calls.append(1)
+                return []
+
+            async def content(self, external_id: str, http: Any) -> ContentResponse:
+                raise AssertionError("content not used in this test")
+
+        PROVIDERS["k"] = _Stub()
+
+        _search_cache.clear()
+        client.get("/api/search?q=alpha")
+        client.get("/api/search?q=alpha&form=movie")
+        client.get("/api/search?q=alpha&form=series")
+        client.get("/api/search?q=alpha")            # cache hit (unfiltered)
+        client.get("/api/search?q=alpha&form=movie")  # cache hit (movie)
+        assert len(search_calls) == 3
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved)

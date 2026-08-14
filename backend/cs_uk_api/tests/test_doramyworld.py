@@ -22,8 +22,8 @@ import httpx
 import pytest
 import respx
 
-from cs_uk_api.providers.doramyworld import DoramyWorldProvider
 from cs_uk_api.providers.base import ProviderError
+from cs_uk_api.providers.doramyworld import DoramyWorldProvider
 
 FIX = pathlib.Path(__file__).parent / "fixtures" / "doramyworld"
 
@@ -48,7 +48,7 @@ async def test_doramyworld_search_parses_results():
     assert any("Пандора" in t for t in titles)
     # Search cards on doramy.world are dorama or film; never generic
     # post type=post.
-    assert all(r.type in {"dorama", "movie", "series"} for r in results)
+    assert all(r.form in {"movie", "series"} for r in results)
 
 
 @pytest.mark.asyncio
@@ -60,9 +60,9 @@ async def test_doramyworld_search_classifies_by_url_path():
         router.get("https://doramy.world/").respond(200, text=search_html)
         async with httpx.AsyncClient() as http:
             results = await DoramyWorldProvider().search("pan", http)
-    types_by_kind = {r.url.split("/")[3]: r.type for r in results}
+    types_by_kind = {r.url.split("/")[3]: r for r in results}
     # The /?s=pan capture only surfaces dorama cards.
-    assert types_by_kind.get("dorama") == "dorama"
+    assert "dorama" in types_by_kind["dorama"].styles
 
 
 @pytest.mark.asyncio
@@ -93,7 +93,7 @@ async def test_doramyworld_browse_dorama_parses_results():
                 "dorama", 1, http
             )
     assert len(results) == 12
-    assert all(r.type == "dorama" for r in results)
+    assert all("dorama" in r.styles for r in results)
     # The site has 19 pages of dorama.
     assert has_next is True
 
@@ -111,7 +111,26 @@ async def test_doramyworld_browse_film_parses_results():
                 "film", 1, http
             )
     assert len(results) == 12
-    assert all(r.type == "movie" for r in results)
+    assert all(r.form == "movie" for r in results)
+    assert has_next is True
+
+
+@pytest.mark.asyncio
+async def test_doramyworld_browse_follows_page_one_canonical_redirect():
+    """REGRESSION (#171): the upstream 301s `/film/page/1/` to the
+    canonical `/film/`. browse() must follow the same-host redirect via
+    safe_get and parse the canonical page instead of raising not_found
+    on the 301 status."""
+    listing_html = _fixture("film_listing.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://doramy.world/film/page/1/").respond(
+            301, headers={"Location": "https://doramy.world/film/"}
+        )
+        router.get("https://doramy.world/film/").respond(200, text=listing_html)
+        async with httpx.AsyncClient() as http:
+            results, has_next = await DoramyWorldProvider().browse("film", 1, http)
+    assert len(results) == 12
+    assert all(r.form == "movie" for r in results)
     assert has_next is True
 
 
@@ -138,7 +157,7 @@ async def test_doramyworld_content_dorama_parses_title_poster():
         async with httpx.AsyncClient() as http:
             c = await DoramyWorldProvider().content("dorama/koroleva-chorin", http)
     assert "Пан королева" in c.title
-    assert c.type == "dorama"
+    assert "dorama" in c.styles
     assert c.poster is not None
     assert c.poster.startswith("https://doramy.world")
     # K'Di is the single translation surfaced in the data-player JSON.
@@ -166,7 +185,7 @@ async def test_doramyworld_content_dorama_parses_seasons():
     # stream() resolver can pick the right ashdi URL.
     ep = c.seasons[0].episodes[0]
     assert ep.number == 1
-    assert ep.id == "dorama/koroleva-chorin:s1e1"
+    assert ep.id == "doramyworld:dorama/koroleva-chorin:s1e1"
     # Cyrillic "серія" is rendered with capital initial letter because
     # the implementation generates "Серія N" -- assert case-insensitively.
     assert "серія" in ep.title.lower()
@@ -182,13 +201,33 @@ async def test_doramyworld_content_film_parses_seasons():
         )
         async with httpx.AsyncClient() as http:
             c = await DoramyWorldProvider().content("film/ekstremalna-robota", http)
-    assert c.type == "movie"
+    assert c.form == "movie"
     assert "Екстремальна робота" in c.title
     assert c.seasons is not None
     assert len(c.seasons) == 1
     assert len(c.seasons[0].episodes) == 1
     ep = c.seasons[0].episodes[0]
-    assert ep.id == "film/ekstremalna-robota:s1e1"
+    assert ep.id == "doramyworld:film/ekstremalna-robota:s1e1"
+
+
+@pytest.mark.asyncio
+async def test_doramyworld_content_no_player_raises_gated():
+    """A content page without a ``data-player`` at all (observed live
+    on «У шкірі моєї матері») has no playable source — content() must
+    raise ``gated`` (ADR-0002) so the catalog sweep drops the dead
+    card from home/search instead of surfacing an unplayable movie
+    with a fake «Українська» track."""
+    content_html = _fixture("content_film.html").replace(
+        ' data-player="', ' data-player-missing="'
+    )
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://doramy.world/film/ekstremalna-robota/").respond(
+            200, text=content_html
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await DoramyWorldProvider().content("film/ekstremalna-robota", http)
+    assert exc.value.code == "gated"
 
 
 @pytest.mark.asyncio
@@ -210,6 +249,31 @@ async def test_doramyworld_stream_resolves_to_m3u8():
     assert s.url.endswith(".m3u8")
     assert s.type == "m3u8"
     assert s.headers["Referer"] == "https://ashdi.vip/"
+
+
+@pytest.mark.asyncio
+async def test_doramyworld_stream_rejects_player_redirect_to_disallowed_host():
+    """The player URL comes from upstream HTML, so it must go through
+    the SSRF redirect allowlist (issue #126): a player page that
+    redirects to an attacker-controlled host fails closed with
+    `not_found` instead of being followed."""
+    from cs_uk_api.providers.base import ProviderError
+
+    content_html = _fixture("content_film.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://doramy.world/film/ekstremalna-robota/").respond(
+            200, text=content_html
+        )
+        router.get("https://ashdi.vip/vod/94600").respond(
+            302, headers={"Location": "https://evil.example.com/pivot"}
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc_info:
+                await DoramyWorldProvider().stream(
+                    "film/ekstremalna-robota:s1e1", None, http
+                )
+    assert exc_info.value.code == "not_found"
+    assert "disallowed host" in exc_info.value.message
 
 
 @pytest.mark.asyncio
@@ -254,34 +318,34 @@ async def test_doramyworld_sections_lists_three():
     sections = DoramyWorldProvider().sections
     ids = [s.id for s in sections]
     assert ids == ["film", "dorama", "show"]
+    # Issue #188: no-player pages raise gated, so the catalog sweep
+    # must run for doramyworld to drop dead cards from home.
+    assert DoramyWorldProvider().can_gate is True
 
 
 @pytest.mark.asyncio
 async def test_doramyworld_browse_unknown_section_raises():
-    with respx.mock(assert_all_called=False):
-        with pytest.raises(ProviderError):
-            await DoramyWorldProvider().browse(
-                "nonexistent", 1, httpx.AsyncClient()
-            )
+    with respx.mock(assert_all_called=False), pytest.raises(ProviderError):
+        await DoramyWorldProvider().browse(
+            "nonexistent", 1, httpx.AsyncClient()
+        )
 
 
 @pytest.mark.asyncio
 async def test_doramyworld_content_bad_slug_raises_not_found():
     """REGRESSION: external_id must be validated at the boundary."""
-    with respx.mock(assert_all_called=False):
-        with pytest.raises(ProviderError) as exc:
-            await DoramyWorldProvider().content(
-                "../../etc/passwd", httpx.AsyncClient()
-            )
+    with respx.mock(assert_all_called=False), pytest.raises(ProviderError) as exc:
+        await DoramyWorldProvider().content(
+            "../../etc/passwd", httpx.AsyncClient()
+        )
     assert exc.value.code == "not_found"
 
 
 @pytest.mark.asyncio
 async def test_doramyworld_stream_bad_slug_raises_not_found():
     """REGRESSION: stream() must validate the external_id portion."""
-    with respx.mock(assert_all_called=False):
-        with pytest.raises(ProviderError) as exc:
-            await DoramyWorldProvider().stream(
-                "../bad:slug", None, httpx.AsyncClient()
-            )
+    with respx.mock(assert_all_called=False), pytest.raises(ProviderError) as exc:
+        await DoramyWorldProvider().stream(
+            "../bad:slug", None, httpx.AsyncClient()
+        )
     assert exc.value.code == "not_found"

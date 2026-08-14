@@ -82,7 +82,7 @@ def _fake_host() -> Iterator[None]:
 def _dune() -> ContentResponse:
     return ContentResponse(
         id="p1:dune-1",
-        type="movie",
+        form="movie",
         title="Дюна",
         year=2021,
         description="Епічна науково-фантастична стрічка.",
@@ -94,7 +94,7 @@ def _dune() -> ContentResponse:
 def _serial() -> ContentResponse:
     return ContentResponse(
         id="p1:serial-1",
-        type="series",
+        form="series",
         title="Сериалал серіал",
         year=2023,
         description="Детективний серіал.",
@@ -182,7 +182,7 @@ def _seed(streams: dict[str, StreamResponse]) -> _StreamStub:
             SearchResult(
                 id="p1:dune-1",
                 provider="p1",
-                type="movie",
+                form="movie",
                 title="Дюна",
                 year=2021,
                 poster="https://cdn.example.test/posters/dune.jpg",
@@ -191,7 +191,7 @@ def _seed(streams: dict[str, StreamResponse]) -> _StreamStub:
             SearchResult(
                 id="p1:serial-1",
                 provider="p1",
-                type="series",
+                form="series",
                 title="Сериалал серіал",
                 year=2023,
                 poster="https://cdn.example.test/posters/serial.jpg",
@@ -244,7 +244,7 @@ def client() -> TestClient:
 
 
 def _home_seed(client: TestClient, stub: _StreamStub) -> tuple[_StreamStub, str, str]:
-    """Register ``stub``, run /api/home once, pull the movie's ``g1:``
+    """Register ``stub``, run /api/home once, pull the movie's ``g2:``
     group key and the episode wire id."""
     PROVIDERS["p1"] = stub
     r = client.get("/api/home")
@@ -345,6 +345,37 @@ def test_stream_mp4_full_body_passthrough(client: TestClient) -> None:
     assert r.status_code == 200
     assert r.content == b"\x01\x02\x03"
     assert r.headers["content-type"] == "video/mp4"
+
+
+def test_stream_follows_redirect_to_provider_allowed_cdn(client: TestClient) -> None:
+    """A provider's mp4 URL may be a 302 gateway (ufdub's VIDEOS.php)
+    that redirects to a FOREIGN registrable domain the provider declared
+    (its ``allowed_domains``, e.g. ufdub episodes live on
+    ``dl.dropboxusercontent.com``). The proxy must follow that hop — the
+    foreign domain is provider-sanctioned, not an SSRF escape — while
+    still rejecting undeclared hosts (D7 SSRF posture)."""
+    gateway = f"{_CDN}/gate.php?ID=1"
+    cdn = "https://dl.dropboxusercontent.test/serial/e1.mp4"
+    stream = StreamResponse(
+        url=gateway,
+        type="mp4",
+        headers=dict(_COMPANY_HEADERS),
+        allowed_domains=frozenset({"dropboxusercontent.test"}),
+    )
+    stub, gk, _ = _seeded(client, headers=False)
+    stub._streams["dune-1"] = stream
+
+    with respx.mock() as mlock:
+        mlock.get(gateway).mock(return_value=httpx.Response(302, headers={"Location": cdn}))
+        cdn_route = mlock.get(cdn).mock(
+            return_value=httpx.Response(200, content=b"\x99\x88", headers={"Content-Type": "video/mp4"})
+        )
+        with _fake_host():
+            r = client.get(f"/Videos/{gk}/stream", headers={"X-Emby-Token": TOKEN})
+
+    assert r.status_code == 200
+    assert r.content == b"\x99\x88"
+    assert cdn_route.called
 
 
 # --- HLS manifest rewrite ----------------------------------------------------
@@ -566,8 +597,8 @@ def test_stream_and_segment_are_public(client: TestClient) -> None:
     """Stream and segment routes are public (no token required): the PS4
     media player fetches the stream URL directly and does not carry auth
     headers. This mirrors the public-image-route convention."""
-    assert client.get("/Videos/g1:abcdefabcdefabcdef/stream").status_code == 404
+    assert client.get("/Videos/g2:abcdefabcdefabcdef/stream").status_code == 404
     assert (
-        client.get("/Videos/g1:abcdefabcdefabcdef/segment", params={"url": f"{_CDN}/s.ts"}).status_code
+        client.get("/Videos/g2:abcdefabcdefabcdef/segment", params={"url": f"{_CDN}/s.ts"}).status_code
         == 404
     )

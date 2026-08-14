@@ -1,21 +1,21 @@
 import pytest
 from pydantic import ValidationError
 
-from cs_uk_api.models import ContentResponse, SearchResult, SearchResponse, StreamResponse
+from cs_uk_api.models import ContentResponse, SearchResponse, SearchResult, StreamResponse
 
 
 def test_search_result_round_trip():
     r = SearchResult(
         id="uakino:1",
         provider="uakino",
-        type="movie",
+        form="movie",
         title="Дюна",
         year=2021,
         poster="/api/poster?u=abc",
         url="https://uakino.club/film/1",
     )
     assert r.id == "uakino:1"
-    assert r.model_dump()["type"] == "movie"
+    assert r.model_dump()["form"] == "movie"
 
 
 def test_search_query_length_is_validated():
@@ -28,7 +28,7 @@ def test_content_movie_requires_translations():
         ContentResponse.model_validate(
             {
                 "id": "uakino:1",
-                "type": "movie",
+                "form": "movie",
                 "title": "X",
                 "year": 2020,
                 "description": "",

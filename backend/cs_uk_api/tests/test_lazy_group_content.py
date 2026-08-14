@@ -55,8 +55,7 @@ from cs_uk_api.models import (
     Translation,
 )
 from cs_uk_api.providers import PROVIDERS
-from cs_uk_api.providers.base import BaseProvider
-
+from cs_uk_api.providers.base import BaseProvider, model_b_axes
 
 # ---------------------------------------------------------------------------
 # Helpers + fixtures
@@ -70,10 +69,12 @@ def _make_item(
     year: int | None = None,
     n: str = "1",
 ) -> SearchResult:
+    mb_form, mb_styles = model_b_axes(cast(Any, media_type))
     return SearchResult(
         id=f"{pid}:{n}",
         provider=pid,
-        type=media_type,  # type: ignore[arg-type]
+        form=mb_form,
+        styles=mb_styles,
         title=title,
         year=year,
         url=f"https://{pid}.example/{n}",
@@ -81,13 +82,7 @@ def _make_item(
 
 
 from collections.abc import Iterator
-
-from cs_uk_api.main import (
-    _home_cache,
-    _home_sources_cache,
-    _search_cache,
-    app,
-)
+from typing import Any, ClassVar, cast
 
 
 @pytest.fixture(autouse=True)
@@ -136,7 +131,7 @@ def _both_pid(
         name = pid.title()
         types = ("movie",)
         newest_section = "page"
-        content_calls: list[str] = []
+        content_calls: ClassVar[list[str]] = []
 
         async def search(self, q, http):  # type: ignore[no-untyped-def]
             return [search_item]
@@ -166,7 +161,7 @@ def _register(stub: BaseProvider, monkeypatch: pytest.MonkeyPatch) -> None:
 def _dune_content(description: str) -> ContentResponse:
     return ContentResponse(
         id="placeholder",
-        type="movie",
+        form="movie",
         title="Дюна",
         year=2021,
         description=description,
@@ -246,7 +241,99 @@ def test_content_by_group_key_with_source_fetches_one_source(
     # Exactly ONE upstream fetch — p2's content() must not be called.
     assert len(p1.content_calls) == 1
     assert len(p2.content_calls) == 0
-    assert p1.content_calls[0] == "p1:p1-1"
+    # Issue #157: content() receives the BARE external id, not the
+    # wire-prefixed SearchResult.id.
+    assert p1.content_calls[0] == "p1-1"
+
+
+@pytest.mark.unit
+def test_content_by_group_key_lazy_strips_provider_prefix_for_strict_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #157 regression: the lazy ``?source=`` branch must pass the
+    bare external id to ``content()``. Real adapters (serialno,
+    cikavaideya, coaninet, …) validate the external-id shape and reject
+    a prefixed value with ``not_found: bad external_id``; the lazy route
+    used to hand them the wire-prefixed ``SearchResult.id`` and 502'd.
+    A strict stub mirrors that contract: prefixed ids raise, bare ids
+    resolve."""
+    from cs_uk_api.providers.base import ProviderError
+
+    class _Strict(BaseProvider):
+        id = "strict"
+        name = "Strict"
+        types = ("movie",)
+        newest_section = "page"
+        content_calls: ClassVar[list[str]] = []
+
+        async def search(self, q, http):  # type: ignore[no-untyped-def]
+            return [_make_item("strict", "Дюна", year=2021, n="s-1")]
+
+        async def browse(self, section, page, http):  # type: ignore[no-untyped-def]
+            if section == "page":
+                return [_make_item("strict", "Дюна", year=2021, n="s-1")], False
+            return [], False
+
+        async def content(self, external_id, http):  # type: ignore[no-untyped-def]
+            self.content_calls.append(external_id)
+            if ":" in external_id:
+                raise ProviderError("not_found", f"bad external_id: {external_id!r}")
+            return _dune_content("strict")
+
+        async def stream(self, content_id, translation, http):  # type: ignore[no-untyped-def]
+            raise NotImplementedError
+
+    _register(_Strict(), monkeypatch)
+    client = TestClient(app)
+    client.get("/api/home")
+    home = client.get("/api/home").json()
+    gk = home["rows"][0]["items"][0]["group_key"]
+
+    r = client.get(f"/api/content/{gk}?source=strict")
+    assert r.status_code == 200
+    assert r.json()["title"] == "Дюна"
+    assert _Strict.content_calls == ["s-1"]
+
+
+@pytest.mark.unit
+def test_content_by_group_key_source_resolves_merged_member_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #161 regression: a merged row (yearful + yearless pair, issue
+    #89) lists BOTH providers as chips, but the yearless provider's per-
+    item group key differs from the canonical key — a per-item sources
+    index hid it from ``resolve_group``, so ``?source=`` 400'd. The map
+    must register the provider union under every member key."""
+    p1 = _both_pid(
+        "p1", _make_item("p1", "Дюна", year=None, n="p1-1"),
+        content=_dune_content("From p1"),
+    )
+    p2 = _both_pid(
+        "p2", _make_item("p2", "Дюна", year=2021, n="p2-1"),
+        content=_dune_content("From p2"),
+    )
+    _register(p1, monkeypatch)
+    _register(p2, monkeypatch)
+    client = TestClient(app)
+    client.get("/api/home")
+    home = client.get("/api/home").json()
+    item = home["rows"][0]["items"][0]
+    gk = item["group_key"]
+    # The merged row carries the union of providers + both member keys.
+    assert set(item["providers"]) == {"p1", "p2"}
+    assert len(item["member_keys"]) == 2
+    # ?source= resolves BOTH chips — including the yearless member whose
+    # per-item key differs from the canonical one.
+    r1 = client.get(f"/api/content/{gk}?source=p1")
+    r2 = client.get(f"/api/content/{gk}?source=p2")
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert r1.json()["title"] == "Дюна"
+    # A member-key lookup also resolves the full group.
+    member = next(k for k in item["member_keys"] if k != gk)
+    r3 = client.get(f"/api/content/{member}?source=p1")
+    assert r3.status_code == 200
+    assert r3.json()["title"] == "Дюна"
 
 
 @pytest.mark.unit

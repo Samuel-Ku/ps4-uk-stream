@@ -39,7 +39,7 @@ class _BlockedStub(BaseProvider):
         self.calls += 1
         return ContentResponse(
             id=f"blocked-stub:{external_id}",
-            type="movie",
+            form="movie",
             title="Блокований контент",
             translations=[Translation(id="uk", label="UK")],
             country="росія",

@@ -2,21 +2,47 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 
-MediaType = Literal["movie", "series", "anime", "cartoon", "dorama"]
+# Model B axes (ADR-0001, contract step #135): form is the
+# cinematic-vs-episodic split, styles the optional genre tags. Empty
+# frozenset = ordinary live-action (decided: empty, not "live"). The
+# legacy ``MediaType``/``type`` axis is gone — every content item ships
+# exactly ``form`` + ``styles``.
+MediaForm = Literal["movie", "series"]
+MediaStyle = Literal["anime", "cartoon", "dorama"]
 StreamType = Literal["mp4", "m3u8", "hls", "dash"]
 TranslationLevel = Literal["content", "episode"]
+
+
+def _empty_styles() -> frozenset[MediaStyle]:
+    return frozenset()
 
 
 class SearchResult(BaseModel):
     id: str
     provider: str
-    type: MediaType
+    # Model B (ADR-0001, contract #135): ``form`` is required — every
+    # piece of content is either a movie or a series. ``styles`` is the
+    # decided set of genre tags; empty frozenset = ordinary live-action
+    # (the decided default, not an absence marker).
+    form: MediaForm
     title: str
     year: int | None = None
     poster: str | None = None
     url: str
+    styles: frozenset[MediaStyle] = Field(default_factory=_empty_styles)
+    #: Free-form genre labels parsed from the listing card (ticket #213),
+    #: e.g. ufdub's ``div.short-c`` "Жанр: Аніме / Жахи". Empty list =
+    #: the provider's page carries no genre metadata. Flows into the
+    #: home snapshot's ``HomeItem.genres`` and the Jellyfin ``/Genres``
+    #: shelf + ``genreIds`` filter.
+    genres: list[str] = Field(default_factory=list)
+
+    @field_serializer("styles")
+    def _ser_styles(self, value: frozenset[MediaStyle]) -> list[str]:
+        # frozenset is not JSON-serializable; emit a stable sorted list.
+        return sorted(value)
 
 
 class ProviderFailure(BaseModel):
@@ -70,21 +96,34 @@ class SearchGroup(BaseModel):
     group_key: str
     title: str
     year: int | None = None
-    type: MediaType
     poster: str | None = None
+    # Model B (contract #135): first-seen-wins, like the other canonical
+    # fields; ``form``/``styles`` come from the first source row. ``form``
+    # is required (no legacy ``type`` on the wire anymore).
+    form: MediaForm
+    styles: frozenset[MediaStyle] = Field(default_factory=_empty_styles)
+    #: Genre labels (ticket #213) — first-seen-wins like the other
+    #: canonical fields (the merge core's ``sources[0]`` is the group's
+    #: first-seen member).
+    genres: list[str] = Field(default_factory=list)
     #: Per-provider ``SearchResult`` rows that collapsed into this
     #: group. Always non-empty (an empty group was dropped upstream).
     #: Order = first-seen in the merge pass; the first source also
-    #: wins the canonical title/year/type/poster fields above.
+    #: wins the canonical title/year/form/poster fields above.
     sources: list[SearchResult]
     #: Every per-item group key that contributed to this merged card
     #: (issue #89). First-seen order — the canonical ``group_key``
     #: (``yearful-preferred-min``) is always the first element for
     #: groups with at least one yearful member. Sort key is the
-    #: ``g1:`` digest in lexicographic order; ``"g1:"`` prefix sorts
+    #: ``g2:`` digest in lexicographic order; ``"g2:"`` prefix sorts
     #: before any other character so the yearful preference still
     #: wins on tie.
     member_keys: list[str] = Field(default_factory=list)
+
+    @field_serializer("styles")
+    def _ser_styles(self, value: frozenset[MediaStyle]) -> list[str]:
+        # frozenset is not JSON-serializable; emit a stable sorted list.
+        return sorted(value)
 
 
 class SearchResponse(BaseModel):
@@ -110,6 +149,21 @@ class Translation(BaseModel):
     label: str
 
 
+class Person(BaseModel):
+    """One cast member on a content page (ticket #221).
+
+    ``id`` is provider-scoped and stable — the person's own page slug
+    when the site exposes one (uaserialspro ``/person/<id>-<slug>/``,
+    kinotron ``/xfsearch/actors/<name>/``), else a name-based key
+    (klontv's JSON-LD has names only) — so the Jellyfin People rail can
+    round-trip it through ``/Persons/{id}`` without a second lookup.
+    """
+
+    id: str
+    name: str
+    role: str = "Actor"
+
+
 class Episode(BaseModel):
     number: int
     id: str
@@ -117,6 +171,12 @@ class Episode(BaseModel):
     # Per-episode translations (v2 spec). When None, fall back to the
     # content-level translations from the parent ContentResponse.
     translations: list[Translation] | None = None
+    # Ticket #223: per-episode metadata the provider exposes (animeon's
+    # ``episodes-info`` carries real titles + air dates). Empty/None =
+    # the provider has no per-episode data; the episode DTO then omits
+    # the field (Switchfin renders a bare row, as before).
+    description: str = ""
+    premiere_date: str | None = None
 
 
 class Season(BaseModel):
@@ -126,7 +186,10 @@ class Season(BaseModel):
 
 class ContentResponse(BaseModel):
     id: str
-    type: MediaType
+    # Model B (ADR-0001, contract #135): ``form`` is required — the
+    # Movie/Series verdict every consumer (facade, filters, merge)
+    # reads. The legacy ``type`` axis is gone.
+    form: MediaForm
     title: str
     year: int | None = None
     description: str = ""
@@ -139,27 +202,65 @@ class ContentResponse(BaseModel):
     #: the same title yields the same key from any provider. Client resume/
     #: memory records anchor on this, not on the provider-scoped id.
     group_key: str = ""
+    styles: frozenset[MediaStyle] = Field(default_factory=_empty_styles)
+    #: Genre labels (ticket #213) — mirrors ``SearchResult.genres`` so
+    #: the detail surface and the genre shelf share one source.
+    genres: list[str] = Field(default_factory=list)
+    #: Cast (ticket #221) — parsed from the provider's content page
+    #: where it exposes one (kinotron/uaserialspro actor lists, klontv
+    #: JSON-LD). Empty list = the provider's page carries no cast; the
+    #: detail DTO then omits ``People`` and the app hides the rail.
+    people: list[Person] = Field(default_factory=list)
+    #: Community rating on the provider's 0-10 scale (ticket #222) —
+    #: klontv's schema.org ``aggregateRating.ratingValue`` is the only
+    #: real score exposed so far (ufdub/kinotron show +/- vote deltas,
+    #: not ratings). None = no rating on the page; the detail DTO then
+    #: omits ``CommunityRating`` and the badge stays hidden.
+    rating: float | None = None
+
+    @field_serializer("styles")
+    def _ser_styles(self, value: frozenset[MediaStyle]) -> list[str]:
+        # frozenset is not JSON-serializable; emit a stable sorted list.
+        return sorted(value)
 
 
 class StreamResponse(BaseModel):
     url: str
     type: StreamType = "mp4"
     headers: dict[str, str] = Field(default_factory=dict)
+    #: Registrable domains the provider sanctions beyond ``url``'s own
+    #: host: a 302 gateway (e.g. ufdub's VIDEOS.php) may hand bytes to a
+    #: foreign CDN the provider picked (Dropbox). The stream proxy's CDN
+    #: check (D7 SSRF posture) honours these in addition to the
+    #: dot-boundary rule — undeclared hosts still fail closed.
+    allowed_domains: frozenset[str] = Field(default_factory=frozenset)
 
 
 #: Wire status literals (v3 spec §2.1.3/§3.4) — the single source of truth:
 #: health.py imports these; no second copy of the strings exists anywhere.
-STATUS_OK = "ok"
-STATUS_DEGRADED = "degraded"
-STATUS_DOWN = "down"
+STATUS_OK: Literal["ok"] = "ok"
+STATUS_DEGRADED: Literal["degraded"] = "degraded"
+STATUS_DOWN: Literal["down"] = "down"
+#: Transient "session is warming up" state (issue #193) — reported on
+#: /api/providers while uakino's browser session has not become ready.
+STATUS_WARMING: Literal["warming"] = "warming"
 
-HealthStatus = Literal[STATUS_OK, STATUS_DEGRADED, STATUS_DOWN]
+HealthStatus = Literal["ok", "degraded", "down", "warming"]
 
 
 class ProviderInfo(BaseModel):
+    """One provider's capabilities on ``/api/providers``.
+
+    Model B shape (ADR-0001, contract #135): ``forms`` is the rollup of
+    the provider's cinematic-vs-episodic forms, ``styles`` the rollup of
+    its style-tagged content (∅ = no style-tagged content). This replaces
+    the legacy single ``types`` axis.
+    """
+
     id: str
     name: str
-    types: list[MediaType]
+    forms: list[MediaForm]
+    styles: list[MediaStyle]
     status: HealthStatus = "ok"
     last_error_at: str | None = None
 
@@ -167,7 +268,30 @@ class ProviderInfo(BaseModel):
 class Section(BaseModel):
     id: str
     title: str
-    type: MediaType
+    # Model B filter axes (ADR-0001, ticket #134, contract #135): the
+    # section narrows its browse results by these match rules (CONTEXT.md
+    # «Section schema»). The legacy ``type`` axis is gone — a section's
+    # kind is exactly its ``form`` + ``styles`` filter axes (∅ = the
+    # ordinary-only filter).
+    #   form — exact-or-None: ``None`` passes everything, else
+    #     ``item.form == section.form`` must hold.
+    #   styles — 3-case filter: ``None`` passes anything (including
+    #     empty); ``frozenset()`` (∅) passes only ordinary-only items
+    #     (``item.styles == frozenset()``); a non-empty set passes iff
+    #     ``item.styles & section.styles`` is non-empty (intersection).
+    # Optional until the section migration populates them; both default
+    # to ``None`` (pass-all) so today's sections behave unchanged.
+    form: MediaForm | None = None
+    styles: frozenset[MediaStyle] | None = None
+
+    @field_serializer("styles")
+    def _ser_styles(self, value: frozenset[MediaStyle] | None) -> list[str] | None:
+        # frozenset is not JSON-serializable; emit a stable sorted list.
+        # None (pass-any) stays None on the wire to distinguish it from
+        # an explicit ∅ (ordinary-only) filter.
+        if value is None:
+            return None
+        return sorted(value)
 
 
 class ProviderSections(BaseModel):
@@ -197,9 +321,9 @@ class ErrorResponse(BaseModel):
 # stable groupKey plus the list of provider ids that contributed to it
 # (dedup is by groupKey — same title from two providers is one row, and
 # the client receives the union of providers that surfaced it). The
-# ``type`` and ``poster`` fields are sourced from the first-seen
-# provider; the spec doesn't preserve attribution at the field level,
-# only at the row level (via ``providers``).
+# ``form``/``styles`` and ``poster`` fields are sourced from the
+# first-seen provider; the spec doesn't preserve attribution at the
+# field level, only at the row level (via ``providers``).
 #
 # ``HomeRow`` aggregates ``HomeItem`` rows under a human label. The
 # ``type`` field doubles as a routing key for the row's contents:
@@ -207,9 +331,10 @@ class ErrorResponse(BaseModel):
 #     ``newest_section``.
 #   - ``"popular"`` — «Популярні зараз», only when animeon's ``popular``
 #     browse returned data (issue #70 AC).
-#   - a media-type literal (``"movie"``, ``"series"``, ``"anime"``,
-#     ``"cartoon"``, ``"dorama"``) — one row per type, aggregating every
-#     provider section whose ``Section.type`` matches.
+#   - a media-kind literal (``"movie"``, ``"series"``, ``"anime"``,
+#     ``"cartoon"``, ``"dorama"``) — one row per kind, aggregating every
+#     provider section whose Model B axes (``form``/``styles``) map to
+#     that kind (``home.section_row_type``).
 #
 # ``GroupContentResponse`` is the ``/api/content/{groupKey}`` payload:
 # the merged item plus the full providers list. It deliberately mirrors
@@ -222,13 +347,24 @@ class HomeItem(BaseModel):
     group_key: str
     title: str
     year: int | None = None
-    type: MediaType
     poster: str | None = None
+    # Model B (contract #135): ``form`` is required, ``styles`` the
+    # decided tag set (∅ = ordinary). The legacy ``type`` axis is gone.
+    form: MediaForm
+    styles: frozenset[MediaStyle] = Field(default_factory=_empty_styles)
+    #: Genre labels from the contributing card(s) (ticket #213), unioned
+    #: across sources like ``styles`` — first-seen order preserved.
+    genres: list[str] = Field(default_factory=list)
     #: Provider ids that contributed this row. Always non-empty (a row
     #: with zero providers was dropped upstream). Order = round-robin
     #: visit order across providers; first-seen wins for the title
     #: fields.
     providers: list[str] = Field(default_factory=list)
+
+    @field_serializer("styles")
+    def _ser_styles(self, value: frozenset[MediaStyle]) -> list[str]:
+        # frozenset is not JSON-serializable; emit a stable sorted list.
+        return sorted(value)
     #: Every per-item group key that contributed to this merged row
     #: (issue #89). The canonical ``group_key`` is the yearful-
     #: preferred-min of those — for a year-soft pair (yearful +
@@ -262,7 +398,7 @@ class GroupContentResponse(BaseModel):
 class GroupSourceContentResponse(ContentResponse):
     """``/api/content/{groupKey}?source=<provider>`` payload (v3 spec §3.3).
 
-    Inherits every field of ``ContentResponse`` (id, type, title, year,
+    Inherits every field of ``ContentResponse`` (id, form, title, year,
     description, poster, translations, seasons, translations_level,
     country, group_key) — the chosen source's content body is the
     response body verbatim, no transformation. The added ``sources``

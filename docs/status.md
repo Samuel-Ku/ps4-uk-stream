@@ -6,7 +6,11 @@ followed the plan at
 
 ## Delivered
 
-### Backend (FastAPI, Python) -- 719 tests passing (2026-08-08)
+### Backend (FastAPI, Python) -- 1020 tests passing (2026-08-14)
+
+Release gate (2026-08-14, v1.0.0): `pytest` 1020 passed; `ruff check
+cs_uk_api` clean; `mypy cs_uk_api` strict-clean on the shipped package
+(test files excluded via `pyproject.toml` `exclude`).
 
 Diagnostics + fix pass (2026-08-08, see `docs/diagnostics-2026-08-08.md`
 and GitHub issues #112–#125): live-gate review of all 19 providers
@@ -33,8 +37,10 @@ boundary validation is `fullmatch` everywhere; uakino movies without a
 - Shared extractors layer (`providers/extractors.py`) for the
   iframe / PlayerJson / regex pipeline used by v2 stream resolution.
 - **19 of 20 v2 providers landed** in `backend/cs_uk_api/providers/`
-  (issue #17). One skipped — `banderakino`, live site offline (HTTP 522)
-  and the only provider not portable without a JS engine. The registered 19:
+  (issue #17). One skipped — `banderakino`, live site offline (HTTP 522).
+  Uakino — the sole JS-engine provider — landed via its headless-Chromium
+  session (issues #193/#195): warmed in the background at startup,
+  `warming` while cold. The registered 19:
   - `uakino`, `ufdub`, `unimay`, `kinotron`, `cikavaideya`, `hentaiukr`,
     `bambooua`, `kinovezha`, `animeua`, `uaflix`, `coaninet`, `eneyida`,
     `klontv`, `serialno`, `doramyworld`, `uaserialspro`, `anitubeinua`,
@@ -54,6 +60,35 @@ boundary validation is `fullmatch` everywhere; uakino movies without a
   [query]` / `gate.sh --all`) drives search → content → stream → mpv
   playback against the real site for smoke-testing (issue #30, spec
   §7.1); `backend/cs_uk_api/scripts/README.md` documents it.
+- Switchfin manual-test pipeline (`scripts/switchfin_test.py`, issues
+  #143–#148): cold-starts the uvicorn backend, tails its request-log
+  middleware line (`METHOD path -> status (ms)`) as the detection
+  channel, and verifies the wire. The 2 handshake steps (login + views)
+  are self-issued headlessly; with a phone attached it drives the real
+  Switchfin client via hold-tap adb input (see
+  `docs/test-artifacts/switchfin/device-driving.md` — plain `input tap`
+  is too fast for this Qt/SDL client and is missed between frame polls)
+  through all 7 library
+  views (open + first card + type-aware play), applies a per-step logcat
+  error filter, and writes `docs/switchfin-test-report.md`. For each ❌
+  step it also dumps `logcat-<step>.txt` (spec-required) and
+  `backend-<step>.txt` (a deliberate extra channel, kept for triage —
+  #150; gitignored like the logcat snapshots). Step definitions are data
+  in `docs/test-artifacts/switchfin/steps.yaml` +
+  `tap-coords.yaml` (populated by `--calibrate`). Run with
+  `python scripts/switchfin_test.py`: it cold-starts the backend with
+  `CS_UK_JF_CAPTURE_DIR` capture enabled, slices the run's real-client
+  records into `backend/cs_uk_api/tests/fixtures/jellyfin/
+  capture.real-client.jsonl` (never `capture.jsonl`), and its runner unit
+  tests live in `backend/cs_uk_api/tests/test_switchfin_runner.py`.
+  Issue #148 resolved the series-play endpoints against the Switchfin
+  client source (branch dev): the real client emits
+  `/Shows/{series}/Seasons` + `/Shows/{series}/Episodes` (its
+  `apiShowSeasons`/`apiShowEpisodes` constants in
+  `app/include/api/jellyfin/media.hpp`, called from `app/src/tab/
+  media_series.cpp`) — the spec's `/Items?parentId={season}` is the
+  JS-SDK spelling. The shipped `/Shows/…` patterns are therefore left
+  unchanged; on-device confirmation is still pending (no device attached).
 - Live smoke test confirmed `/api/providers` returns all registered
   providers and the validation/404 paths behave correctly.
 
@@ -70,152 +105,38 @@ Run the tests:
 
 ```bash
 cd backend && . .venv/bin/activate && pytest cs_uk_api/tests -v
-```
+```### PS4 client: Switchfin (2026-08-09)
 
-### pPlay fork catalog module -- 3/3 standalone tests passing
+The project is now **Switchfin** — a Jellyfin client on the PS4 — talking
+ to the backend's Jellyfin facade (spec #100). The original C++ catalog
+client and its Docker PS4 build pipeline were removed along with the
+status sections that described them; the backend sections above remain
+the current implementation status.
 
-- `pplay-fork/src/catalog/Json.{h,cpp}` -- cJSON wrapper exposing
-  `JsonDoc::parse`, `JsonValue::str`, `integer`, `arr`, `asArray`.
-- `pplay-fork/src/catalog/CatalogApi.{h,cpp}` -- DTOs (`SearchItem`,
-  `ContentItem`, `StreamInfo`) and pure parsing functions
-  (`parseSearch`, `parseContent`, `parseStream`); the network
-  methods call through an injected `HttpClient` interface (tests pass a
-  fake; the real `BrowserHttpClient` wire-up was deferred at plan time
-  and landed in Task 18).
-- `pplay-fork/src/catalog/OnscreenKeyboard.{h,cpp}` -- UTF-8 aware
-  on-screen keyboard widget with focus grid, `append(char32_t)`,
-  `backspace()`, `clear()`, and action keys (`space`, `back`, `clear`,
-  `done`).
-- `pplay-fork/external/cJSON/` -- cJSON v1.7.18 vendored.
-- `pplay-fork/tests/standalone-catalog/` -- sandbox-friendly CMake
-  harness that builds only the catalog module + tests (the full pPlay
-  build requires libcross2d/SDL2/ffmpeg/mpv which were not installed in
-  the build environment).
-- `pplay-fork/CMakeLists.txt` and `pplay-fork/tests/catalog/CMakeLists.txt`
-  edited per the plan, ready to be picked up by a full pPlay build
-  (cross2d is the missing dep on a non-PS4 Linux host).
-
-Build and test the standalone harness:
-
-```bash
-cd pplay-fork
-cmake -B build-standalone -S tests/standalone-catalog -DCMAKE_BUILD_TYPE=Debug
-cmake --build build-standalone -- -j
-ctest --test-dir build-standalone --output-on-failure
-```
-
-### PS4 build pipeline (Docker) -- end-to-end build verified
-
-- `Dockerfile.ps4` -- Ubuntu 22.04 + clang/lld/cmake + OpenOrbis v0.5.2
-  cloned to `/opt/oo` with the right env vars.
-- `pplay-fork/scripts/build-ps4-docker.sh` -- autodetects docker/podman,
-  builds the image, runs the FFmpeg + pPlay build, verifies artifacts.
-- `pplay-fork/scripts/ffmpeg-ps4.sh` -- cross-compiles FFmpeg n6.1 for
-  the OpenOrbis target.
-- `pplay-fork/scripts/ps4-toolchain/pplay-create-fself.sh` -- bash
-  wrapper around `create-fself` (Sony) that dodges cmake's
-  Unix-Makefiles dash-escape quirk (cmake wraps arg values in `\"...\"`
-  which dash treats as literal characters; the wrapper reads input /
-  output paths from positional args that cmake leaves unescaped).
-- `pplay-fork/scripts/README.md` -- build, install, and test instructions
-  for the user's own machine.
-
-End-to-end build (Task 19):
-
-- `bash pplay-fork/scripts/build-ps4-docker.sh` → OK, produces
-  `pplay-fork/build/IV0000-PPLA00001_00-PPLAY00000000000.pkg` (6.6 MB)
-  with the fake-signed SELF at `pplay-fork/build/eboot/eboot.bin`
-  (5.0 MB). Verified:
-  - PKG magic `\x7FCNT` (bytes `7f 43 4e 54`) ✓
-  - ELF magic `\x7FELF` (bytes `7f 45 4c 46`) ✓
-  - ELF type `0xFE10` "SCE Executable (ASLR)" ✓
-  - ELF OS/ABI: FREEBSD ✓; Machine: EM_X86_64 ✓
-- Stubs added to make pplay linkable on PS4 without libmpv / libcurl /
-  libpng / libz / libfreetype / libGLESv2 (none of which ship as
-  static libs in the OpenOrbisSDK):
-  - `libcross2d/source/platforms/ps4/gl_renderer_stub.cpp` -- no-op
-    `c2d::GLRenderer` / `c2d::GLTexture` / `c2d::GLTextureBuffer` plus
-    `glGenBuffers`/`glBindBuffer`/`glBufferData`/`glDeleteBuffers`
-    stubs that `source/skeleton/sfml/VertexArray.cpp` calls directly.
-  - `pplay-fork/src/p_movie.h` / `src/p_search.h` -- PS4 stubs for
-    `pscrap::Movie` / `pscrap::Search` (the upstream classes pull in
-    libcurl + json-c; we ship the catalog client only and run the
-    scrapper as an out-of-band Linux service).
-  - `pplay-fork/src/scrapper/scrapper_stub.cpp` -- no-op
-    `pplay::Scrapper` for PS4.
-  - `pplay-fork/src/player/ps4_stubs/mpv_stub.h` -- PS4 replacements
-    for `<mpv/client.h>` and `<mpv/render_gl.h>` so pplay's
-    `src/player/mpv.cpp` and `src/catalog/ScreenContent.cpp` compile
-    without libmpv. `mpv_ps4_vars.cpp` provides the `ps4_mpv_*`
-    globals that the upstream libmpv PS4 platform layer defines.
-  - `pplay-fork/src/filer/Browser/Browser.hpp` -- when `__PS4__` is
-    defined, the libcurl-backed `Browser` class is replaced with an
-    empty stub (no networking on PS4; the catalog client uses its own
-    libcurl-less path).
-- Link line additions for the Sce SDK stubs that vendored SDL2.a
-  references: `-lScePad -lSceAudioOut -lSceVideoOut -lSceUserService
-  -lSceSysmodule -lSceSystemService` (added to `ps4.cmake`'s
-  `CMAKE_EXE_LINKER_FLAGS`).
-- FreeBSD 12.0 libc++ workarounds in `ps4.cmake` (pre-include
-  `cstdlib` + `cmath-shim.h` so `using std::isnan;` / `std::isinf`
-  resolve — the FreeBSD libc++ only exposes them as `#define` macros
-  in this sysroot).
-- pkg.gp4 generator hooked into the `pplay_pkg` cmake target (the
-  upstream `add_pkg` macro wrote the generator script but never
-  executed it; without this PkgTool.Core aborts with "Could not find
-  file 'pkg.gp4'"). Generates the canonical OpenOrbis XML project
-  descriptor from `PS4_PKG_TITLE_ID` / `PS4_PKG_TITLE` so the .pkg
-  is named `IV0000-<TITLE_ID>_00-...pkg` (36-char content_id as
-  required by PkgTool.Core).
-
-## Deferred -- work reserved for the user
-
-These tasks require a PS4 console with GoldHEN.
-
-- **Task 20 -- On-console test.** Install the PKG (side-load via
-  GoldHEN payload or DNS redirect), fill in
-  [`docs/ps4-test-report.md`](ps4-test-report.md), and tick the
-  checklist.
-
-## Tasks 18-20 (this pass)
-
-- **Task 18 (done).** Full `ScreenSections`, `ScreenSearch`,
-  `ScreenResults`, `ScreenContent` implementations wired through a
-  shared `CatalogContext` (singleton-style accessor for one worker
-  thread + one `BrowserHttpClient`). Main owns the `CatalogApi`
-  lifecycle, adds a "Пошук UA" menu entry, and tears the api down
-  before other screens in `~Main`. mpv ABI fix: dropped the obsolete
-  third `mpv_opengl_init_params` initializer (libmpv 0.32+). Three
-  out-of-class definitions in `Browser/regex.hpp`, `links.hpp`,
-  `Browser.hpp` marked `inline` so two TUs can include them without
-  multiple-definition errors.
-
-  Linux build: `cmake --build build-linux --target pplay` → OK
-  (ELF 64-bit produced). Standalone ctest: 3/3 pass. Backend pytest:
-  362/362 pass.
-
-- **Task 19 (done).** End-to-end `bash pplay-fork/scripts/build-ps4-docker.sh`
-  produces a 6.6 MB `IV0000-PPLA00001_00-PPLAY00000000000.pkg` with
-  the expected PKG magic + ELF SELF type 0xFE10. See the
-  "End-to-end build" section above for the full list of new files /
-  changes. The release PKG is ready to install via GoldHEN.
-
-- **Task 20 (done).** [`docs/ps4-test-report.md`](ps4-test-report.md)
-  updated with the new "Пошук UA" menu entry, search → results →
-  content → play happy-path   checklist, and Provider/Translation
-  matrices for the 19 v2 providers.
+Search mapping (ticket #106): the facade serves the shared merged search
+under `GET /Items?searchTerm=…` (both bare and `Users/{id}/Items`
+spellings) and `GET /Search/Hints?searchTerm=…` — the same
+`catalog_state.merged_search` core the native `/api/search` route runs
+(one fan-out, one 5m cache, uakino skip/warming included). Search cards
+carry `g1:` ids and Movie/Series types; the facade registers the merged
+groups into the group-key resolution map so a searched card opens in the
+detail/hierarchy surface (#105) even when it is not in the 30-min home
+snapshot.
 
 ## Adding more providers
 
 The v2 plan calls for 20 providers (issue #17). 19 are landed; 1 was
-skipped (Banderakino — site offline, and the only one not portable
-without a JS engine). The Uakino provider is the reference
-implementation — note: its live upstream moved to `uakino.best`
-(content/player pages are behind a Cloudflare Turnstile challenge, the
-site runs a new DLE theme), so the plain-HTTP live gate cannot pass;
-fixture tests remain green. The personal-use Chromium exception
-(issue #51) serves live uakino requests; `refresh_uakino.py` is its
-health probe. See
+skipped (Banderakino — site offline). The Uakino provider is the
+reference implementation and the sole JS-engine provider: its content
+and player pages sit behind a Cloudflare Turnstile challenge, so the
+plain-HTTP live gate cannot pass — the headless-Chromium session
+(issues #193/#195) serves live requests instead. The API warms that
+session in the background at startup (bounded by `WARM_WAIT_S`);
+`/api/providers` reports `warming` while it is cold, `ok` once ready,
+and the sliding-window health tracker recovers through the 5-minute
+heartbeat. `refresh_uakino.py` is a detached external probe only — it
+does not share state with the API process and answers whether a fresh
+session can warm from zero on this host. See
 [`docs/research/uakino-reachability-2026-08-02.md`](research/uakino-reachability-2026-08-02.md).
 To add a new provider:
 
@@ -242,5 +163,6 @@ To add a new provider:
 8. Smoke-test with `python -m cs_uk_api.scripts.live_gate --provider <id>`
    to confirm the stream plays in mpv on the live site.
 
-No frontend changes are required for additional providers; the
-`CatalogApi` client only consumes the API contract.
+No client changes are required for additional providers; Switchfin
+consumes the Jellyfin facade, which serves whatever the registry
+contains.

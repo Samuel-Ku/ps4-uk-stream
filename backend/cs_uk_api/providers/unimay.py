@@ -18,6 +18,8 @@ import httpx
 from ..models import (
     ContentResponse,
     Episode,
+    MediaForm,
+    MediaStyle,
     SearchResult,
     Season,
     Section,
@@ -33,8 +35,8 @@ IMG_URL = "https://img.unimay.media"
 # Per the upstream Kotlin's `mainPageOf(...)` call: two sections,
 # both typed as `anime` because every row on Unimay is an anime.
 UNIMAY_SECTIONS: tuple[Section, ...] = (
-    Section(id="updates", title="Останні релізи", type="anime"),
-    Section(id="projects", title="Наші проєкти", type="anime"),
+    Section(id="updates", title="Останні релізи", styles=frozenset({"anime"})),
+    Section(id="projects", title="Наші проєкти", styles=frozenset({"anime"})),
 )
 
 # Type-string values in the API's `release.type` field. Anything else
@@ -55,6 +57,14 @@ def _type_from_api(type_field: str | None) -> str:
     if type_field == _TYPE_SERIES:
         return "anime"
     return "anime"
+
+
+def _unimay_axes(api_type: str) -> tuple[MediaForm, frozenset[MediaStyle]]:
+    """Model B axes for a unimay item. Unimay is an anime-only site:
+    ``movie`` means an anime film, ``anime`` an anime series — the
+    anime style tag applies to everything."""
+    form: MediaForm = "movie" if api_type == "movie" else "series"
+    return form, frozenset({"anime"})
 
 
 def _poster_url(uuid: str | None, *, width: int = 640) -> str | None:
@@ -123,15 +133,17 @@ class UnimayProvider(BaseProvider):
                 continue
             names = item.get("names") or {}
             images = item.get("images") or {}
+            mb_form, mb_styles = _unimay_axes(_type_from_api(item.get("type")))
             results.append(
                 SearchResult(
                     id=f"{self.id}:{code}",
                     provider=self.id,
-                    type=_type_from_api(item.get("type")),  # type: ignore[arg-type]
                     title=str(names.get("ukr") or names.get("eng") or code),
                     year=item.get("year"),
                     poster=_poster_url(images.get("poster")),
                     url=_project_url(code),
+                    form=mb_form,
+                    styles=mb_styles,
                 )
             )
         return results
@@ -162,14 +174,16 @@ class UnimayProvider(BaseProvider):
             code = release.get("code")
             if not code:
                 continue
+            mb_form, mb_styles = _unimay_axes(_type_from_api(release.get("type")))
             results.append(
                 SearchResult(
                     id=f"{self.id}:{code}",
                     provider=self.id,
-                    type=_type_from_api(release.get("type")),  # type: ignore[arg-type]
                     title=str(release.get("name") or code),
                     poster=_poster_url(release.get("posterUuid")),
                     url=_project_url(code),
+                    form=mb_form,
+                    styles=mb_styles,
                 )
             )
         # Updates section is never paginated.
@@ -188,15 +202,17 @@ class UnimayProvider(BaseProvider):
                 continue
             names = item.get("names") or {}
             images = item.get("images") or {}
+            mb_form, mb_styles = _unimay_axes(_type_from_api(item.get("type")))
             results.append(
                 SearchResult(
                     id=f"{self.id}:{code}",
                     provider=self.id,
-                    type=_type_from_api(item.get("type")),  # type: ignore[arg-type]
                     title=str(names.get("ukr") or names.get("eng") or code),
                     year=item.get("year"),
                     poster=_poster_url(images.get("poster")),
                     url=_project_url(code),
+                    form=mb_form,
+                    styles=mb_styles,
                 )
             )
         # The API's `last` field tells us if more pages exist.
@@ -227,15 +243,17 @@ class UnimayProvider(BaseProvider):
             ]
             if episodes:
                 seasons = [Season(number=1, episodes=episodes)]
+        mb_form, mb_styles = _unimay_axes(media_type)
         return ContentResponse(
             id=f"{self.id}:{external_id}",
-            type=media_type,  # type: ignore[arg-type]
             title=title,
             year=data.get("year"),
             description=str(data.get("description") or ""),
             poster=_poster_url(images.get("banner"), width=2560),
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
+            form=mb_form,
+            styles=mb_styles,
         )
 
     async def stream(
@@ -283,7 +301,7 @@ class UnimayProvider(BaseProvider):
         return StreamResponse(
             url=str(url),
             type="m3u8",
-            headers={"Referer": f"{MAIN_URL}/", "User-Agent": "cs-uk-api/0.1"},
+            headers={"Referer": f"{MAIN_URL}/", "User-Agent": "cs-uk-api/1.0"},
         )
 
 

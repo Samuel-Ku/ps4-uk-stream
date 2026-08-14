@@ -28,7 +28,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, model_b_axes
 
 BASE_URL = "https://hentaiukr.com"
 OBJECTS_URL = f"{BASE_URL}/search/objects.json"
@@ -37,7 +37,7 @@ CFG_SUFFIX = "plur.cfg.json"
 # Per the upstream Kotlin `mainPageOf(objectsUrl to "Хентай")` — exactly
 # one section. NSFW rows collapse to `anime` in our v2 contract.
 HENTAIUKR_SECTIONS: tuple[Section, ...] = (
-    Section(id="hentai", title="Хентай", type="anime"),
+    Section(id="hentai", title="Хентай", styles=frozenset({"anime"})),
 )
 
 # Source-size preference. The upstream adds all sources to the
@@ -63,14 +63,16 @@ def _parse_video_array(
             continue
         if not all(item.get(k) for k in ("id", "name", "url")):
             continue
+        mb_form, mb_styles = model_b_axes("anime")
         results.append(
             SearchResult(
                 id=f"{provider_id}:{item['id']}",
                 provider=provider_id,
-                type="anime",
                 title=str(item["name"]),
                 poster=urljoin(BASE_URL, str(item["thumb"])) if item.get("thumb") else None,
                 url=urljoin(BASE_URL, str(item["url"])),
+                form=mb_form,
+                styles=mb_styles,
             )
         )
     return results
@@ -178,20 +180,22 @@ class HentaiUkrProvider(BaseProvider):
                     episodes.append(
                         Episode(
                             number=idx,
-                            id=f"{external_id}:{idx}",
+                            id=f"{self.id}:{external_id}:{idx}",
                             title=f"Серія {idx}",
                         )
                     )
         # HentaiUkr is single-dub (Ukrainian). One Translation row so
         # /api/content passes ``min_length=1`` on ``translations``.
+        mb_form, mb_styles = model_b_axes("anime")
         return ContentResponse(
             id=f"{self.id}:{external_id}",
-            type="anime",
             title=title,
             year=year,
             description=description,
             poster=poster,
             translations=[Translation(id="uk", label="Українська")],
+            form=mb_form,
+            styles=mb_styles,
             seasons=[Season(number=1, episodes=episodes)] if episodes else None,
         )
 
@@ -252,7 +256,7 @@ class HentaiUkrProvider(BaseProvider):
         return StreamResponse(
             url=urljoin(content_url, str(best["src"])),
             type="mp4",
-            headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/0.1"},
+            headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/1.0"},
         )
 
 

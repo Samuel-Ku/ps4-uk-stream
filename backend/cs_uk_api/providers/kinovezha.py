@@ -23,6 +23,8 @@ import httpx
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 
+from ..country import extract_country
+from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -32,21 +34,24 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from ..country import extract_country
 from ._tortuga import decode as _tor_decrypt
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, model_b_axes
 
 BASE_URL = "https://kinovezha.tv"
+# Hosts the upstream may legally redirect to: the DLE CMS and the
+# tortuga player. A hostile CMS response must not be able to pivot
+# either hop to an attacker-controlled host.
+_ALLOWED_HOSTS: frozenset[str] = frozenset({"kinovezha.tv", "tortuga.tw"})
 
 # Sections exposed by KinoVezha's main navigation. Per the upstream
 # Kotlin source's `mainPage = mainPageOf(...)`:
 #   films -> Фільми, series -> Серіали,
 #   cartoons -> Мультфільми, s-cartoons -> Мультсеріали.
 KINOVEZHA_SECTIONS: tuple[Section, ...] = (
-    Section(id="films", title="Фільми", type="movie"),
-    Section(id="series", title="Серіали", type="series"),
-    Section(id="cartoons", title="Мультфільми", type="movie"),
-    Section(id="s-cartoons", title="Мультсеріали", type="series"),
+    Section(id="films", title="Фільми", form="movie"),
+    Section(id="series", title="Серіали", form="series"),
+    Section(id="cartoons", title="Мультфільми", form="movie"),
+    Section(id="s-cartoons", title="Мультсеріали", form="series"),
 )
 
 # Section path -> external kind prefix for `_classify_from_url`.
@@ -74,10 +79,15 @@ _PATH_TYPE: tuple[tuple[str, str], ...] = (
 # Жанр tag -> MediaType. Used by `content()` to classify the page from
 # the tag list (the Kotlin conditional: contains "Мультсеріали" or
 # "Серіали" → TvSeries; else Movie).
-# Needles are pre-lowered to skip `.lower()` on every call.
+# Needles are pre-lowered to skip `.lower()` on every call. Both the
+# singular and plural forms are needed — upstream titles a Мультсеріал
+# page's Жанр row «Мультсеріал» (singular, observed live 2026-08-09).
+# Longest needles first so "Мультсеріали" beats "Серіали".
 _TAG_TYPE: tuple[tuple[str, str], ...] = (
     ("мультсеріали", "series"),
+    ("мультсеріал", "series"),
     ("серіали", "series"),
+    ("серіал", "series"),
     ("мультфільми", "movie"),
     ("фільми", "movie"),
 )
@@ -172,13 +182,15 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
     external_id = _external_id_from_url(href)
     if not external_id:
         return None
+    mb_form, mb_styles = model_b_axes(_classify_from_url(href))  # type: ignore[arg-type]
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
-        type=_classify_from_url(href),  # type: ignore[arg-type]
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
+        form=mb_form,
+        styles=mb_styles,
     )
 
 
@@ -244,8 +256,16 @@ class KinoVezhaProvider(BaseProvider):
         self, section: str, page: int, http: httpx.AsyncClient
     ) -> tuple[list[SearchResult], bool]:
         url = _section_url(section, page)
+        # The upstream now 301-redirects the first page (`/films/page/1/`
+        # -> `/films/`), so fetch through the SSRF-safe `safe_get` helper
+        # (same host allowlist as stream()) which follows allowed same-host
+        # redirects. Pages > 1 still return 200 directly and are unaffected.
         try:
-            resp = await http.get(url)
+            resp = await safe_get(
+                http,
+                url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+            )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
@@ -259,12 +279,14 @@ class KinoVezhaProvider(BaseProvider):
             _page_number(str(a.get("href") or "")) > page
             for a in soup.select("div#pagination a[href*='/page/']")
         )
-        # Section type overrides per-card URL classification — the path
+        # Section kind overrides per-card URL classification — the path
         # itself doesn't always carry a kind prefix on browse listings.
+        # Contract #135: the override lands on ``form`` (the section is
+        # form-only; the legacy ``type`` field is gone).
         kind = _SECTION_KIND.get(section)
         if kind:
             results = [
-                r.model_copy(update={"type": kind})
+                r.model_copy(update={"form": kind})
                 for r in results
             ]
         return results, has_next
@@ -294,10 +316,19 @@ class KinoVezhaProvider(BaseProvider):
         if img is not None:
             poster_src = str(img.get("src") or img.get("data-src") or "") or None
         poster = urljoin(BASE_URL, poster_src) if poster_src else None
-        # The Жанр row is `<li>` index 2 of `.inner-page__list`. We
-        # collect the visible text to drive type classification.
+        # The Жанр row is the `<li>` whose label is «Жанр» inside
+        # `.inner-page__list`. It used to sit at a fixed index (2), but
+        # upstream dropped the «Списки:» row so the position shifted
+        # (observed live 2026-08-09) — index-based lookup misread the
+        # row as «Країна: США» and classified a Мультсеріал as a movie,
+        # dead at stream() time. Match the label instead.
         flist = soup.select(".inner-page__list > li")
-        tags_text = flist[2].get_text(" ", strip=True) if len(flist) >= 3 else ""
+        tags_text = ""
+        for li in flist:
+            label = li.select_one("span")
+            if label is not None and "Жанр" in label.get_text(strip=True):
+                tags_text = li.get_text(" ", strip=True)
+                break
         media_type = _classify_from_tags(tags_text)
         country: str | None = extract_country(soup)
         desc_el = soup.select_one("div.inner-page__text")
@@ -309,20 +340,22 @@ class KinoVezhaProvider(BaseProvider):
         player_url = self._extract_player_url(soup)
         seasons: list[Season] | None = None
         if media_type == "series" and player_url:
-            seasons = await self._load_series_seasons(player_url, external_id, http)
+            seasons = await self._load_series_seasons(player_url, external_id, http, self.id)
         elif player_url:
             seasons = [Season(number=1, episodes=[Episode(
-                number=1, id=f"{external_id}{MOVIE_SUFFIX}", title=title_el.get_text(strip=True),
+                number=1, id=f"{self.id}:{external_id}{MOVIE_SUFFIX}", title=title_el.get_text(strip=True),
             )])]
+        mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"kinovezha:{external_id}",
-            type=media_type,  # type: ignore[arg-type]
             title=title_el.get_text(strip=True),
             description=description,
             poster=poster,
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
             country=country,
+            form=mb_form,
+            styles=mb_styles,
         )
 
     @staticmethod
@@ -340,10 +373,14 @@ class KinoVezhaProvider(BaseProvider):
 
     @staticmethod
     async def _load_series_seasons(
-        player_url: str, external_id: str, http: httpx.AsyncClient
+        player_url: str, external_id: str, http: httpx.AsyncClient, provider_id: str
     ) -> list[Season] | None:
         try:
-            resp = await http.get(player_url)
+            resp = await safe_get(
+                http,
+                player_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+            )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
@@ -369,7 +406,7 @@ class KinoVezhaProvider(BaseProvider):
                 ep_title = str(ep.get("title", "")).strip() or f"Серія {e_idx}"
                 episodes.append(Episode(
                     number=e_idx,
-                    id=f"{external_id}:s{s_idx}e{e_idx}",
+                    id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
                     title=ep_title,
                 ))
             if episodes:
@@ -408,8 +445,14 @@ class KinoVezhaProvider(BaseProvider):
         player_url = self._extract_player_url(soup)
         if player_url is None:
             raise ProviderError("parse_failed", "no player iframe on content page")
+        # The player URL came from upstream HTML, so it goes through
+        # the redirect allowlist (#126).
         try:
-            player_resp = await http.get(player_url)
+            player_resp = await safe_get(
+                http,
+                player_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+            )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if player_resp.status_code != 200:
@@ -422,7 +465,7 @@ class KinoVezhaProvider(BaseProvider):
             raise ProviderError("parse_failed", f"no stream url for {ep_suffix!r}")
         return StreamResponse(url=stream_url, type="m3u8", headers={
             "Referer": BASE_URL + "/",
-            "User-Agent": "cs-uk-api/0.1",
+            "User-Agent": "cs-uk-api/1.0",
         })
 
     @staticmethod

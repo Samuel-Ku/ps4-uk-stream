@@ -1,18 +1,82 @@
 from __future__ import annotations
 
 import abc
-from typing import Literal
+import re
+from typing import Any, Literal
+from urllib.parse import unquote
 
 import httpx
 
 from ..models import (
     ContentResponse,
+    MediaForm,
+    MediaStyle,
+    Person,
     SearchResult,
     Section,
     StreamResponse,
 )
 
 MediaTypeStr = Literal["movie", "series", "anime", "cartoon", "dorama"]
+
+#: Style-tagged MediaType values map 1:1 to a MediaStyle.
+_STYLE_BY_TYPE: dict[str, MediaStyle] = {
+    "anime": "anime",
+    "cartoon": "cartoon",
+    "dorama": "dorama",
+}
+
+
+def parse_actor_list(
+    soup: Any,
+    label: str,
+    provider: str,
+    href_re: re.Pattern[str],
+) -> list[Person]:
+    """Parse a ``<li><span>Label:</span> <a href=…>Name</a>, …</li>``
+    cast row into Person entries (ticket #221).
+
+    The DLE-family sites that expose cast share this block shape —
+    kinotron's ``В ролях:`` and uaserialspro's ``Актори:`` — with one
+    anchor per person whose href carries the stable person key.
+    ``href_re`` extracts that key from the href (the first capture
+    group); the display name is the fallback key when the link has no
+    matching shape. Returns [] when the page has no such row.
+    """
+    for li in soup.select("li"):
+        span = li.select_one("span")
+        if span is None or label not in span.get_text():
+            continue
+        people: list[Person] = []
+        for a in li.select("a"):
+            name = a.get_text(strip=True)
+            if not name:
+                continue
+            m = href_re.search(str(a.get("href") or ""))
+            key = unquote(m.group(1)) if m else name
+            people.append(Person(id=f"{provider}:{key}", name=name))
+        return people
+    return []
+
+
+def model_b_axes(
+    media_type: MediaTypeStr,
+    *,
+    form: MediaForm | None = None,
+) -> tuple[MediaForm, frozenset[MediaStyle]]:
+    """Map a legacy ``MediaType`` to Model B axes (ADR-0001, expand
+    step #129).
+
+    ``movie``/``series`` map directly with an empty style set (ordinary
+    live-action). Style-tagged types (``anime``/``cartoon``/``dorama``)
+    always carry their style; their ``form`` defaults to ``"series"``
+    unless the caller knows the item is a film and passes ``form``
+    explicitly (e.g. an anime movie in a ``films`` section).
+    """
+    if media_type in ("movie", "series"):
+        return media_type, frozenset()
+    style = _STYLE_BY_TYPE[media_type]
+    return (form or "series"), frozenset({style})
 
 
 class ProviderError(Exception):

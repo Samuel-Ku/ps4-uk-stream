@@ -9,13 +9,13 @@
 
 The user can already run **Switchfin**, a Jellyfin client for PS4 (FW 11.00 + GoldHEN), on the console without problems. But the entire backend of this project (`cs_uk_api`) speaks the project's own `/api/*` JSON contract — Switchfin cannot talk to it because it only speaks the **Jellyfin REST API**. Without an adapter, using Switchfin would require a full Jellyfin server, which is out of proportion for a LAN-scraping catalog.
 
-The user wants to know: can the existing backend, which already works for the pPlay client, be reused as a Switchfin backend with minimal work — and if so, which parts are JSON mapping, which are true proxying, and which need emulation?
+The user wants to know: can the existing backend, originally built to serve a custom in-house PS4 catalog client, be reused as a Switchfin backend with minimal work — and if so, which parts are JSON mapping, which are true proxying, and which need emulation?
 
 ## Solution
 
 Add a **Jellyfin facade** to the same FastAPI process (`cs_uk_api`). It emulates the minimal Jellyfin REST surface that Switchfin's navigation and playback require, reusing the existing provider/scraper/merge logic without rewriting any parsing. Playback uses a **conditional stream handler**: emit a 302 redirect when the upstream stream needs no special headers, and act as a byte proxy (with `Range` support and HLS segment rewriting) when it does.
 
-Switchfin replaces both the pPlay catalog UI and the pPlay player. The pPlay fork is no longer on the critical path for catalog delivery; it is retained in the repo as a Linux reference/test surface.
+Switchfin replaces the in-house PS4 catalog UI and player. The facade's Jellyfin surface is now the sole catalog delivery path.
 
 ## User Stories
 
@@ -120,7 +120,7 @@ This resolves the "JSON mapping + redirect vs full proxy" question: **neither al
 - Real transcoding: everything is direct stream; `IsDirectStream: true` always.
 - Resume / "continue watching": sessions are no-ops; no resume state endpoint.
 - Security beyond a fixed opaque token; the LAN API stays open as today.
-- Replacing the pPlay fork deliverable: it is retired from the critical path but kept as a reference/Linux test surface.
+- Replacing the in-house fork deliverable: retired from the critical path; the backend's Jellyfin facade is the sole catalog surface.
 
 ## Further Notes
 

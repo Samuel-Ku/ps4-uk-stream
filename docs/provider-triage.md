@@ -12,7 +12,9 @@ once they pass the live gate (search → content → stream → plays in mpv).
 - **Player**: how the provider's stream URL is resolved (iframe chain, regex on inline JS, JSON from a CDN player, or packed/obfuscated JS that we cannot port without a JS engine).
 - **JS dep**: how much JS execution is needed to extract the stream URL.
   `none` = pure HTML scraping, `mild` = regex on inline JS, `heavy` = must
-  execute JS (not portable without a JS engine).
+  execute JS in a real browser engine. uakino's `heavy` is served by a
+  headless-Chromium session (Playwright) rather than a pure-Python port —
+  it is the sole `heavy` provider and lands as `ready` (ADR-0004 amendment).
 - **Verdict**:
   - `ready` — landed in `backend/cs_uk_api/providers/` and passing tests
   - `portable` — code is straightforward to port (HTML + regex/iframe), not yet started
@@ -23,12 +25,12 @@ once they pass the live gate (search → content → stream → plays in mpv).
 
 | Provider id | Upstream plugin | Kotlin sources | Search | Player | JS dep | Verdict |
 | ----------- | --------------- | -------------- | ------ | ------ | ------ | ------- |
-| uakino | [UakinoProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UakinoProvider) | `UakinoProvider.kt` (14.6 KB) | HTML | iframe → regex | mild | **not portable** (upstream moved to `uakino.best` — new DLE theme, all adapter selectors dead; content/player behind Cloudflare Turnstile 403; search via POST only; fixture tests remain green, live gate cannot pass — research `docs/research/uakino-reachability-2026-08-02.md`) |
+| uakino | [UakinoProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UakinoProvider) | `UakinoProvider.kt` (14.6 KB) | HTML | iframe → regex (browser session) | heavy (browser session) | **ready** — heavy (browser session; headless Chromium via Playwright); warm on startup, heartbeat every 5 min, status="warming" while cold; see ADR-0002 / ADR-0004 amendments |
 | uaflix | [UAFlixProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UAFlixProvider) | `UAFlixProvider.kt` (14.9 KB) | HTML, has mainPage | iframe → regex | mild | **ready** |
 | animeua | [AnimeUAProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/AnimeUAProvider) | `AnimeUAProvider.kt` (8.2 KB), `Tracker.kt` | HTML | iframe → JSON `file:` (dubs or m3u8) | mild | **ready** |
 | kinovezha | [KinoVezhaProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/KinoVezhaProvider) | `KinoVezhaProvider.kt` (10.3 KB) | HTML | iframe → regex (torDecrypt) | mild | **ready** |
 | banderakino | [BanderakinoProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/BanderakinoProvider) | `BanderakinoProvider.kt` (14.2 KB) | HTML | TBD | TBD | **not portable (live site offline — HTTP 522 from `banderakino.online`, DNS NXDOMAIN for `banderakino.pp.ua`)** |
-| bambooua | [BambooUAProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/BambooUAProvider) | `BambooUAProvider.kt` (8.9 KB), `JSONModel.kt` | HTML + JSON | inline `const playlist` JSON on the content page | mild | **ready** |
+| bambooua | [BambooUAProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/BambooUAProvider) | `BambooUAProvider.kt` (8.9 KB), `JSONModel.kt` | HTML + JSON | inline `const playlist` JSON on the content page | mild | **ready** (no_episodes fix per #139: a content page with an empty/missing `const playlist` — dead/removed listing or subscription-gated title («Для підписників» served without a manifest) — raises `gated` (ADR-0002) from content()/stream(), so `can_gate`'s `filter_gated_items` drops the zero-season card during `load_home`; id-collapse fix per #139: `/zhanr/` cards keep the full multi-segment path in the external_id (`zhanr/drama/N-slug`) so content()/stream() rebuild the verbatim 200 URL — the collapsed `drama/N-slug` form 301-redirects into a health-down `not_found`) |
 | coaninet | [CoaninetProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/CoaninetProvider) | `CoaninetProvider.kt` (12.3 KB) | JSON API | pre-resolved HLS master | none | **ready** |
 | klontv | [KlonTVProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/KlonTVProvider) | `KlonTVProvider.kt` (10.0 KB), `Tracker.kt` | HTML | iframe → regex | mild | **ready** |
 | uaserialspro | [UASerialsProProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UASerialsProProvider) | `UASerialsProProvider.kt` (20.5 KB) | HTML | AES-256-CBC + PBKDF2 + Tortuga XOR | mild (adds pycryptodome dep) | **ready** |
@@ -38,11 +40,59 @@ once they pass the live gate (search → content → stream → plays in mpv).
 | kinotron | [KinoTronProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/KinoTronProvider) | `KinoTronProvider.kt` (7.9 KB) | HTML | iframe → inline JSON | mild | **ready** |
 | hentaiukr | [HentaiUkrProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/HentaiUkrProvider) | `HentaiUkrProvider.kt` (5.3 KB) | JSON manifest + plur.cfg.json | mp4 (per-source highest-quality pick) | none | **ready** (in scope per spec; no hiding) |
 | doramyworld | [DoramyWorldProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/DoramyWorldProvider) | `DoramyWorldProvider.kt` (8.3 KB), `JSONModel.kt` | HTML + JSON | ashdi.vip iframe → data-player JSON | mild | **ready** |
-| cikavaideya | [CikavaIdeyaProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/CikavaIdeyaProvider) | `CikavaIdeyaProvider.kt` (8.2 KB) | HTML | regex (ashdi.vip `file:`) | mild | **ready** |
+| cikavaideya | [CikavaIdeyaProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/CikavaIdeyaProvider) | `CikavaIdeyaProvider.kt` (8.2 KB) | HTML | regex (ashdi.vip `file:`) | mild | **ready** (gated fix per #139: removed/trailer-only/no-player titles raise `gated` (ADR-0002), dead ashdi embed raises `gated`; `can_gate=True` so `filter_gated_items` drops them from home) |
 | ufdub | [UFDubProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UFDubProvider) | `UFDubProvider.kt` (6.1 KB) | HTML | iframe → regex | none | **ready** |
 | unimay | [UnimayProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UnimayProvider) | `UnimayProvider.kt` (6.6 KB) | JSON | hls.master URL | none | **ready** |
 | serialno | [SerialnoProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/SerialnoProvider) | `SerialnoProvider.kt` (10.1 KB) | HTML | iframe → torDecrypt | mild | **ready** |
-| simpsonsuatv | [SimpsonsUATvProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/SimpsonsUATvProvider) | `SimpsonsUATvProvider.kt` (29.3 KB) | HTML | iframe → ashdi.vip | mild | **ready** (multi-iframe selection + SSRF redirect guard) |
+| simpsonsuatv | [SimpsonsUATvProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/SimpsonsUATvProvider) | `SimpsonsUATvProvider.kt` (29.3 KB) | HTML | iframe → ashdi.vip | mild | **ready** (multi-iframe selection + SSRF redirect guard; season cap kept per #138 audit) |
+
+## Episode-rail verification sweep (#136 -> #139)
+
+The episode-rail sweep (`backend/cs_uk_api/sweep_episode_rail.py`, see issue
+#136) walks the series play path for every provider -- `/Shows/{g1}/Seasons`
+-> `/Shows/{g1}/Episodes?seasonId=` -> `POST /Items/{ep}/PlaybackInfo` ->
+`GET /Videos/{ep}/stream` -- and asserts 200 at each hop. Issue #139 targets
+every provider the sweep flags broken.
+
+**Status (verified 2026-08-09, live sweep against a warm `/api/home`):** the
+adapter fixes #139 set out to land are **already implemented and
+regression-tested** in this branch. The documented pre-fix bugs are closed:
+
+| Target (from #139) | Bug | State | Locked by |
+| ------------------ | ---- | ------ | --------- |
+| kinotron | BUG-1 -- `stream()` choked on the production 2-part id `slug:sNeM` | **fixed** | `test_kinotron_stream_selects_requested_episode` |
+| serialno | BUG-2 -- Tortuga payload drift (`_season_list` flat vs dub-wrapped; `{label}`/`(subtitle:)` trim) | **fixed** | `serialno` content/stream tests |
+| bambooua | gated titles leak into the catalog | **fixed** | `can_gate=True` + `filter_gated_items` drops `const playlist = []` cards |
+| cikavaideya | gated / dead-embed titles | **fixed** | `can_gate=True`; trailer-only / empty `Object({})` / dead ashdi raise `gated` |
+| animeua / simpsonsuatv | episode-rail for non-gated series | **fixed** | existing content/stream tests green |
+
+The remaining sweep flags are **not adapter bugs** -- they are live-data /
+cache edge cases, confirmed by direct reproduction:
+
+- **Orphaned / stale catalog ids** -- e.g. `cikavaideya:g1:16cd3e36c59d5348`
+  (bug item_unavailable) resolves to a 404 upstream page and fails the slug
+  regex; the id was valid when cached and is now dead. Correct 404, not a
+  regression.
+- **Gated series leaked via home-cache staleness** -- e.g. `bambooua:...personasulli`
+  (warn no-eps) serves `const playlist = []`. `filter_gated_items` *does* drop
+  it on a fresh home build (verified in isolation); it only appears while a
+  stale 30-min home snapshot predates the upstream gating. Self-heals on TTL.
+- **Upstream mis-tags** -- e.g. an animeua episode page carries the
+  `Povnometrazhka` genre and a `/vod/` (not `/serial/`) player, so
+  `_type_from_player` classifies it as a film; the catalog lists it as a
+  series. The adapter faithfully mirrors the upstream `tvType` -- forcing it
+  to series would misclassify genuine anime films.
+- **Volatile snapshot** -- the warm home rotates, so the *same* provider flips
+  between ok and warn run-to-run (e.g. `uaflix` was ok in one run and warn
+  no-eps in the next). The flags track which specific series landed in the
+  snapshot, not a stable adapter defect.
+
+**Conclusion for #139:** the actionable adapter work is complete; the residual
+warn/bug rows are upstream/live artifacts that cannot be fixed at the adapter
+layer without breaking legitimate titles, and most self-heal as catalog caches
+rotate. Acceptance "every non-gated series episode-rail returns 200" holds for
+genuinely non-gated series; the flagged rows are gated, dead, or mis-tagged
+upstream.
 
 ## Per-provider "owner" field (suggested order)
 
@@ -51,10 +101,10 @@ Group 1 (simple, HTML-based, `<15 KB`):
 1. `ufdub` — landed in `backend/cs_uk_api/providers/ufdub.py` (10 tests, ready)
 2. `unimay` — landed in `backend/cs_uk_api/providers/unimay.py` (13 tests, ready; JSON API, not HTML)
 3. `kinotron` — landed in `backend/cs_uk_api/providers/kinotron.py` (9 tests, ready)
-4. `cikavaideya` — landed in `backend/cs_uk_api/providers/cikavaideya.py` (12 tests, ready)
+4. `cikavaideya` — landed in `backend/cs_uk_api/providers/cikavaideya.py` (24 tests, ready; #139 gated fix: a removed title (`.fmessage` «Видалено на прохання правовласника»), a trailer-only `{"Трейлер": youtube}` Player1, or an empty `Object({})` raises `gated` from `content()`, and a dead ashdi embed (`<center>Файл не знайдено</center>`) raises `gated` from `stream()` — ADR-0002 deliberate-unavailability verdicts, no health impact; `can_gate=True` drops those cards from the catalog during `load_home`)
 5. `animeua` — landed in `backend/cs_uk_api/providers/animeua.py` (9 tests, ready; supports `translations_level="episode"`)
 6. `uaflix` — landed in `backend/cs_uk_api/providers/uaflix.py` (21 tests, ready; uses shared `RegexExtractor`)
-7. `kinovezha`, `bambooua`
+7. `kinovezha` (landed, 17 tests, ready); `bambooua` — landed in `backend/cs_uk_api/providers/bambooua.py` (22 tests, ready; #139 gated fix: an empty/missing `const playlist` — dead/removed listing or subscription-gated title — raises `gated` (ADR-0002) from `content()`/`stream()`, so `filter_gated_items` drops the zero-season card during `load_home`)
 8. `coaninet` — landed in `backend/cs_uk_api/providers/coaninet.py` (8 tests, ready; JSON API, single-hop stream)
 
 Group 2 (medium, 10–25 KB):
@@ -69,7 +119,7 @@ Group 3 (heavy, needs deeper triage):
 1. `eneyida` — landed in `backend/cs_uk_api/providers/eneyida.py` (12 tests, ready; DLE + PlayerJS JSON season/episode playlists)
 2. `uaserialspro` — landed in `backend/cs_uk_api/providers/uaserialspro.py` (20 tests, ready; AES-256-CBC + PBKDF2 player-config decrypt + Tortuga XOR; adds `pycryptodome>=3.20` dep; Tortuga XOR + AES helpers extracted to shared `_tortuga.py` / `_crypto.py` modules used by serialno/kinovezha too)
 3. `anitubeinua` — landed in `backend/cs_uk_api/providers/anitubeinua.py` (19 tests, ready; DLE + ashdi.vip iframe + `qeruya.cyou` Referer; supports `translations_level="episode"`; per-episode studio dubs from playlist JSON; 764 lines)
-4. `simpsonsuatv` — landed in `backend/cs_uk_api/providers/simpsonsuatv.py` (20 tests, ready; DLE + ashdi.vip iframe; 2 sections (`updates` carousel + `multserialy-ukrainskoyu` listing); multi-iframe selection + SSRF redirect guard; TitleMap with upstream-vs-live drift noted)
+4. `simpsonsuatv` — landed in `backend/cs_uk_api/providers/simpsonsuatv.py` (21 tests, ready; DLE + ashdi.vip iframe; 2 sections (`updates` carousel + `multserialy-ukrainskoyu` listing); multi-iframe selection + SSRF redirect guard; TitleMap with upstream-vs-live drift noted). **Season cap `_MAX_SHOW_SEASONS=10` kept** per #138 audit (measured live 2026-08-08): a cap-off `content()` for The Simpsons (37 seasons, fetched 6-wide) took 25.5s — inside the D6 >30s budget but with no headroom — and the 38-request sweep tripped CMS rate-limiting (HTTP 429 / connection drops) that silently dropped 14/37 seasons. Dropping the cap is therefore not merely slow but **lossy**; the cap value 10 = 11 upstream requests for a show page, ~8-10s to complete (single page ~0.95s; the CMS serialises concurrent fetches — 6 parallel = 4.69s wall, only ~1.2× faster than sequential) and below the rate-limit burst threshold. Cap-on `content()` measured 7.8s. The price is that seasons 1-27 vanish from the show's browsable rail; they stay reachable only directly via their own season slug (`s5`, `sezon-N`).
 5. `animeon` — landed in `backend/cs_uk_api/providers/animeon.py` (24 tests, ready; JSON API + XOR-decoded iframe → ashdi.vip direct m3u8)
 
 Group 4:

@@ -35,9 +35,9 @@ async def test_klontv_search_parses_results():
     assert all(r.url.startswith("https://klonua.com/") for r in results)
     # Type classification: serialy URLs must produce `series`, filmy URLs
     # must produce `movie`. First card is a serialy link.
-    types_by_path = {r.url.split("/")[3]: r.type for r in results}
-    assert types_by_path.get("serialy") == "series"
-    assert types_by_path.get("filmy") == "movie"
+    types_by_path = {r.url.split("/")[3]: r for r in results}
+    assert types_by_path["serialy"].form == "series"
+    assert types_by_path["filmy"].form == "movie"
 
 
 @pytest.mark.asyncio
@@ -63,9 +63,9 @@ async def test_klontv_browse_films_page1():
         for r in results
     )
     # Type classification is consistent with the URL path.
-    type_by_path = {r.url.split("/")[3]: r.type for r in results}
-    assert type_by_path.get("filmy") == "movie"
-    assert type_by_path.get("serialy") == "series"
+    type_by_path = {r.url.split("/")[3]: r for r in results}
+    assert type_by_path["filmy"].form == "movie"
+    assert type_by_path["serialy"].form == "series"
     assert has_next is True
 
 
@@ -79,7 +79,7 @@ async def test_klontv_browse_series_page1():
         async with httpx.AsyncClient() as http:
             results, has_next = await KlonTVProvider().browse("series", 1, http)
     assert len(results) == 48
-    assert all(r.type == "series" for r in results)
+    assert all(r.form == "series" for r in results)
     assert all(r.id.startswith("klontv:series/") for r in results)
     assert all(r.url.startswith("https://klonua.com/serialy/") for r in results)
     assert has_next is True
@@ -110,7 +110,7 @@ async def test_klontv_content_movie_parses_title_poster_player():
         async with httpx.AsyncClient() as http:
             c = await KlonTVProvider().content("films/11719-duna-chastyna-druga", http)
     assert "Дюна" in c.title
-    assert c.type == "movie"
+    assert c.form == "movie"
     assert c.poster is not None
     assert c.poster.startswith("https://klonua.com/uploads/")
     # Movies expose a single playable URL; surface it as season 1
@@ -141,7 +141,7 @@ async def test_klontv_content_series_parses_seasons():
         async with httpx.AsyncClient() as http:
             c = await KlonTVProvider().content("series/8431-duna", http)
     assert "Дюна" in c.title
-    assert c.type == "series"
+    assert c.form == "series"
     assert c.seasons is not None
     assert len(c.seasons) >= 1
     assert all(len(s.episodes) >= 1 for s in c.seasons)
@@ -149,6 +149,135 @@ async def test_klontv_content_series_parses_seasons():
     first = c.seasons[0]
     assert first.number == 1
     assert len(first.episodes) >= 1
+
+
+@pytest.mark.asyncio
+async def test_klontv_content_parses_cast():
+    """Ticket #221: the content page's schema.org JSON-LD carries an
+    ``actor[]`` (and ``director[]``) of ``{@type: Person, name}`` — parse
+    them into ``ContentResponse.people`` with role labels."""
+    content_html = _fixture("content_series.html")
+    player_html = _fixture("player_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://klonua.com/serialy/8431-duna.html").respond(
+            200, text=content_html
+        )
+        router.get("https://ashdi.vip/serial/6212").respond(
+            200, text=player_html
+        )
+        async with httpx.AsyncClient() as http:
+            c = await KlonTVProvider().content("series/8431-duna", http)
+    actors = [p for p in c.people if p.role == "Actor"]
+    directors = [p for p in c.people if p.role == "Director"]
+    assert len(actors) == 20
+    assert actors[0].name == "Вільям Гарт"
+    assert actors[0].id == "klontv:actor:0"
+    assert directors == [
+        p for p in c.people if p.name == "Джон Гаррісон" and p.role == "Director"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_klontv_content_parses_rating():
+    """Ticket #222: the content page's schema.org ``aggregateRating``
+    carries the only real score in the catalog — parse ``ratingValue``
+    (0-10) into ``ContentResponse.rating`` so the detail badge renders."""
+    content_html = _fixture("content_series.html")
+    player_html = _fixture("player_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://klonua.com/serialy/8431-duna.html").respond(
+            200, text=content_html
+        )
+        router.get("https://ashdi.vip/serial/6212").respond(
+            200, text=player_html
+        )
+        async with httpx.AsyncClient() as http:
+            c = await KlonTVProvider().content("series/8431-duna", http)
+    assert c.rating == 6.9
+
+
+@pytest.mark.asyncio
+async def test_klontv_content_movie_rating():
+    """Ticket #222: the movie content page carries its own
+    aggregateRating (8.9)."""
+    content_html = _fixture("content_movie.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://klonua.com/filmy/11719-duna-chastyna-druga.html"
+        ).respond(200, text=content_html)
+        async with httpx.AsyncClient() as http:
+            c = await KlonTVProvider().content("films/11719-duna-chastyna-druga", http)
+    assert c.rating == 8.9
+
+
+@pytest.mark.asyncio
+async def test_klontv_content_parses_year_and_genres():
+    """The content page's ``table-info__item`` rows carry Рік (a link
+    like ``/year/2000/``) and Жанр (links like ``/dramy/``) — parse
+    them so the detail view renders year and the genre row instead of
+    leaving them blank when klontv wins the group resolution. The
+    section link (Серіали/Фільми) is a section, not a genre, and must
+    be excluded."""
+    content_html = _fixture("content_series.html")
+    player_html = _fixture("player_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://klonua.com/serialy/8431-duna.html").respond(
+            200, text=content_html
+        )
+        router.get("https://ashdi.vip/serial/6212").respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            c = await KlonTVProvider().content("series/8431-duna", http)
+    assert c.year == 2000
+    assert c.genres == ["Драми", "Бойовики", "Пригоди", "Фантастика", "Фентезі"]
+
+
+@pytest.mark.asyncio
+async def test_klontv_content_follows_section_redirect():
+    """Regression (observed live 2026-08-09): a title moved between
+    sections answers 301 (`/filmy/...` -> `/serialy/...`). content()
+    must follow the same-host redirect (safe_get) and resolve the
+    title's player page instead of surfacing a dead not_found."""
+    content_html = _fixture("content_series.html")
+    player_html = _fixture("player_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://klonua.com/filmy/10905-serial.html").respond(
+            301, headers={"Location": "/serialy/10905-serial.html"}
+        )
+        router.get("https://klonua.com/serialy/10905-serial.html").respond(
+            200, text=content_html
+        )
+        router.get("https://ashdi.vip/serial/6212").respond(
+            200, text=player_html
+        )
+        async with httpx.AsyncClient() as http:
+            c = await KlonTVProvider().content("films/10905-serial", http)
+    assert "Дюна" in c.title
+    assert c.form == "series"
+    assert c.seasons is not None
+    assert len(c.seasons) >= 1
+
+
+@pytest.mark.asyncio
+async def test_klontv_stream_bare_series_id_refuses_json_blob():
+    """Regression (class #165): stream() for a bare series id (no
+    episode suffix — reachable when content() surfaced empty seasons)
+    must NOT hand the client the raw PlayerJS playlist JSON as a
+    stream URL; it raises parse_failed instead."""
+    content_html = _fixture("content_series.html")
+    player_html = _fixture("player_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://klonua.com/serialy/8431-duna.html").respond(
+            200, text=content_html
+        )
+        router.get("https://ashdi.vip/serial/6212").respond(
+            200, text=player_html
+        )
+        from cs_uk_api.providers.base import ProviderError
+
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await KlonTVProvider().stream("series/8431-duna", None, http)
+    assert exc.value.code == "parse_failed"
 
 
 @pytest.mark.asyncio
@@ -219,9 +348,8 @@ async def test_klontv_sections_lists_two():
 async def test_klontv_browse_unknown_section_raises():
     from cs_uk_api.providers.base import ProviderError
 
-    with respx.mock(assert_all_called=False):
-        with pytest.raises(ProviderError):
-            await KlonTVProvider().browse("nonexistent", 1, httpx.AsyncClient())
+    with respx.mock(assert_all_called=False), pytest.raises(ProviderError):
+        await KlonTVProvider().browse("nonexistent", 1, httpx.AsyncClient())
 
 
 @pytest.mark.asyncio

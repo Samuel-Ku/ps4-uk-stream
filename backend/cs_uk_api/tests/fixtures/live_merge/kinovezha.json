@@ -2,7 +2,7 @@
  {
   "id": "kinovezha:1884-dyuna",
   "provider": "kinovezha",
-  "type": "movie",
+  "form": "movie",
   "title": "Дюна",
   "year": null,
   "poster": "https://kinovezha.tv/posters/1884.jpg",

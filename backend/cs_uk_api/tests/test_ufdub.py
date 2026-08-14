@@ -7,7 +7,7 @@ import httpx
 import pytest
 import respx
 
-from cs_uk_api.providers.ufdub import UFDubProvider
+from cs_uk_api.providers.ufdub import UFDubProvider, _split_external_id
 
 FIX = pathlib.Path(__file__).parent / "fixtures" / "ufdub"
 
@@ -32,7 +32,7 @@ async def test_ufdub_search_parses_results():
     assert all(r.provider == "ufdub" for r in results)
     anime_one = next(r for r in results if "Net-juu no Susume" in r.title)
     assert anime_one.id.startswith("ufdub:anime-")
-    assert anime_one.type == "anime"
+    assert "anime" in anime_one.styles
     assert anime_one.url.startswith("https://ufdub.com/anime/")
 
 
@@ -46,13 +46,13 @@ async def test_ufdub_search_classifies_types_by_url_path():
     # The id is `ufdub:<kind>-<slug>`. For hyphened kinds like
     # `cartoon-serial`, splitting on `-` gives `cartoon` as the first
     # chunk, so we use the URL path segment instead.
-    types_by_url_kind = {r.url.split("/")[3]: r.type for r in results}
+    types_by_url_kind = {r.url.split("/")[3]: r for r in results}
     # Regression: `/cartoon-serial/` must classify as `series`, not
     # `movie` (caught by the code-reviewer — `cartoon` was matching
     # before `cartoon-serial`).
-    assert types_by_url_kind.get("cartoon-serial") == "series"
-    assert types_by_url_kind.get("anime") == "anime"
-    assert types_by_url_kind.get("dorama") == "dorama"
+    assert types_by_url_kind["cartoon-serial"].form == "series"
+    assert "anime" in types_by_url_kind["anime"].styles
+    assert "dorama" in types_by_url_kind["dorama"].styles
 
 
 @pytest.mark.asyncio
@@ -65,11 +65,28 @@ async def test_ufdub_browse_anime_section_parses_results():
     # Regression: `.short-text, .short` selector returned each card
     # twice (32 results for 16 cards). Use only the inner `.short-text`.
     assert len(results) == 16
-    assert all(r.type == "anime" for r in results)
+    assert all("anime" in r.styles for r in results)
     assert all(r.id.startswith("ufdub:anime-") for r in results)
     # Regression: DLE pagination is `<span class="navigation">`, not
     # `<div class="navigation">`, and the marker link is `/page/N/`.
     assert has_next is True
+
+
+@pytest.mark.asyncio
+async def test_ufdub_browse_cards_expose_genres():
+    """Ticket #213: the listing cards carry a ``div.short-c`` block
+    ("Жанр: Аніме / Пригоди / Фентезі / Ісекай") — parse it into
+    ``SearchResult.genres`` so the Jellyfin genre shelf has data."""
+    listing_html = _fixture("anime_listing.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ufdub.com/anime/").respond(200, text=listing_html)
+        async with httpx.AsyncClient() as http:
+            results, _ = await UFDubProvider().browse("anime", 1, http)
+    assert len(results) >= 1
+    card = next(r for r in results if "мудреця" in r.title)
+    assert "Аніме" in card.genres
+    assert "Фентезі" in card.genres
+    assert "Ісекай" in card.genres
 
 
 @pytest.mark.asyncio
@@ -99,19 +116,192 @@ async def test_ufdub_browse_film_page_last_has_next_false():
     assert has_next is False
 
 
+def test_ufdub_split_external_id_multi_hyphen_kind():
+    """Issue #162: a kind with a hyphen (``cartoon-serial``) must split
+    at the digit boundary, not the first hyphen — otherwise
+    ``cartoon-serial-308-wondla`` becomes kind="cartoon", slug=
+    "serial-308-…" and _SLUG_RE rejects it."""
+    assert _split_external_id("cartoon-serial-308-wondla") == (
+        "cartoon-serial",
+        "308-wondla",
+    )
+    assert _split_external_id("film-48-fokus-pokus-hocus-pocus") == (
+        "film",
+        "48-fokus-pokus-hocus-pocus",
+    )
+    assert _split_external_id("anime-23-rekomendaciji") == ("anime", "23-rekomendaciji")
+    assert _split_external_id("no-slug") is None
+
+
+@pytest.mark.asyncio
+async def test_ufdub_content_cartoon_serial_kind_opens():
+    """Issue #162 regression: a ``cartoon-serial`` card (search/browse
+    id ``cartoon-serial-<slug>``) must open — content() used to reject
+    the id as ``bad external_id`` before ever fetching, so every
+    mult-serial was unopenable."""
+    content_html = _fixture("content_movie.html")
+    player_html = _fixture("player_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://ufdub.com/cartoon-serial/308-wondla.html"
+        ).respond(200, text=content_html)
+        router.get(
+            "https://video.ufdub.com/AT/VP.php?ID=2780",
+            headers={"Referer": "https://ufdub.com/"},
+        ).respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            c = await UFDubProvider().content("cartoon-serial-308-wondla", http)
+    assert c.title
+    assert c.form == "series"
+
+
 @pytest.mark.asyncio
 async def test_ufdub_content_movie_parses_title_poster():
+    """content() fetches the player page for every type (issue #164
+    gating), so the movie player must be mocked too."""
+    content_html = _fixture("content_movie.html")
+    player_html = _fixture("player.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ufdub.com/film/48-fokus-pokus-hocus-pocus.html").respond(
+            200, text=content_html
+        )
+        router.get(
+            "https://video.ufdub.com/AT/VP.php?ID=2780",
+            headers={"Referer": "https://ufdub.com/"},
+        ).respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            c = await UFDubProvider().content("film-48-fokus-pokus-hocus-pocus", http)
+    assert "Фокус" in c.title
+    assert c.form == "movie"
+    assert c.poster is not None
+    assert c.poster.startswith("https://ufdub.com")
+
+
+@pytest.mark.asyncio
+async def test_ufdub_content_parses_year_from_full_info():
+    """Ticket #220: the content page carries a ``div.fi-col-item`` block
+    ("Рік: <a href="/xfsearch/year/1993/">1993</a>") — parse it into
+    ``ContentResponse.year`` so the detail DTO's ProductionYear renders.
+    The listing card exposes no year, so the content page is the only
+    source for ufdub."""
+    content_html = _fixture("content_movie.html")
+    player_html = _fixture("player.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ufdub.com/film/48-fokus-pokus-hocus-pocus.html").respond(
+            200, text=content_html
+        )
+        router.get(
+            "https://video.ufdub.com/AT/VP.php?ID=2780",
+            headers={"Referer": "https://ufdub.com/"},
+        ).respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            c = await UFDubProvider().content("film-48-fokus-pokus-hocus-pocus", http)
+    assert c.year == 1993
+
+
+@pytest.mark.asyncio
+async def test_ufdub_content_parses_description_after_empty_lead_par():
+    """Ticket #225: ufdub's ``div.full-text`` opens with an EMPTY
+    ``<p>`` spacer and the real description in the SECOND ``<p>`` —
+    ``select_one("div.full-text p")`` grabbed the empty one, so every
+    ufdub detail rendered a blank description area (observed live on
+    Kamen Rider Gavv). Pick the first non-empty paragraph."""
+    content_html = _fixture("content_movie.html")
+    player_html = _fixture("player.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ufdub.com/film/48-fokus-pokus-hocus-pocus.html").respond(
+            200, text=content_html
+        )
+        router.get(
+            "https://video.ufdub.com/AT/VP.php?ID=2780",
+            headers={"Referer": "https://ufdub.com/"},
+        ).respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            c = await UFDubProvider().content("film-48-fokus-pokus-hocus-pocus", http)
+    assert c.description.startswith("Згідно з легендою")
+    assert len(c.description) > 100
+
+
+@pytest.mark.asyncio
+async def test_ufdub_content_parses_voices_as_people():
+    """Ticket #225: ufdub credits its dubbing team in ``div.voices``
+    blocks ("Перекладач:", "Актори озвучення:", ...) — the provider
+    never parsed them, so the People rail rendered empty on every ufdub
+    detail (observed live on Kamen Rider Gavv). The fixture carries the
+    full 5-block shape: lead, translator, editor, 7 voice actors, sound."""
+    content_html = _fixture("content_movie.html")
+    player_html = _fixture("player.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ufdub.com/film/48-fokus-pokus-hocus-pocus.html").respond(
+            200, text=content_html
+        )
+        router.get(
+            "https://video.ufdub.com/AT/VP.php?ID=2780",
+            headers={"Referer": "https://ufdub.com/"},
+        ).respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            c = await UFDubProvider().content("film-48-fokus-pokus-hocus-pocus", http)
+    by_role: dict[str, list[str]] = {}
+    for p in c.people:
+        by_role.setdefault(p.role, []).append(p.name)
+    # «Актори озвучення» maps to role Actor; the other blocks keep
+    # their label as the role.
+    assert by_role["Actor"] == ["Ayla", "Ninja", "Stepalex", "Hoshi", "VOLCUA", "Maxx Light", "irenneri"]
+    assert by_role["Перекладач"] == ["Ayla"]
+    assert by_role["Куратор проєкту"] == ["Ayla"]
+    assert by_role["Робота зі звуком"] == ["Грицька"]
+    assert len(c.people) == 11
+    # Person.id is the person's own page slug (per models.Person) —
+    # same name in different roles must not collide (Ayla is lead,
+    # translator, editor AND one of the voice actors → 4 ids).
+    ids = {p.id for p in c.people if p.name == "Ayla"}
+    assert len(ids) == 4
+    assert all(p.id.startswith("voice/") for p in c.people)
+
+
+@pytest.mark.asyncio
+async def test_ufdub_content_year_absent_stays_none():
+    """A content page without a ``Рік:`` block must keep year=None, not
+    crash — the meta block is optional upstream."""
+    content_html = _fixture("content_movie.html").replace(
+        '<div class="fi-col-item"><span>Рік:</span> <a href="https://ufdub.com/xfsearch/year/1993/">1993</a></div>',
+        "",
+    )
+    player_html = _fixture("player.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ufdub.com/film/48-fokus-pokus-hocus-pocus.html").respond(
+            200, text=content_html
+        )
+        router.get(
+            "https://video.ufdub.com/AT/VP.php?ID=2780",
+            headers={"Referer": "https://ufdub.com/"},
+        ).respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            c = await UFDubProvider().content("film-48-fokus-pokus-hocus-pocus", http)
+    assert c.year is None
+
+
+@pytest.mark.asyncio
+async def test_ufdub_content_dead_player_page_raises_gated():
+    """Issue #164: a content page whose player page exposes no
+    playable media (upstream emits an empty ``var a = []``) is a dead
+    card — content() must raise ``gated`` so the catalog sweep drops
+    it from home instead of failing only at play time."""
+    from cs_uk_api.providers.base import ProviderError
+
     content_html = _fixture("content_movie.html")
     with respx.mock(assert_all_called=True) as router:
         router.get("https://ufdub.com/film/48-fokus-pokus-hocus-pocus.html").respond(
             200, text=content_html
         )
+        router.get(
+            "https://video.ufdub.com/AT/VP.php?ID=2780",
+            headers={"Referer": "https://ufdub.com/"},
+        ).respond(200, text="<html><script>var a = [];</script></html>")
         async with httpx.AsyncClient() as http:
-            c = await UFDubProvider().content("film-48-fokus-pokus-hocus-pocus", http)
-    assert "Фокус" in c.title
-    assert c.type == "movie"
-    assert c.poster is not None
-    assert c.poster.startswith("https://ufdub.com")
+            with pytest.raises(ProviderError) as exc_info:
+                await UFDubProvider().content("film-48-fokus-pokus-hocus-pocus", http)
+    assert exc_info.value.code == "gated"
 
 
 @pytest.mark.asyncio
@@ -130,7 +320,7 @@ async def test_ufdub_content_anime_classifies_as_anime():
         ).respond(200, text=player_html)
         async with httpx.AsyncClient() as http:
             c = await UFDubProvider().content("anime-23-rekomendaciji-dlja-chudovogo-zhittja-onlajn-net-juu-no-susume", http)
-    assert c.type == "anime"
+    assert "anime" in c.styles
 
 
 @pytest.mark.asyncio
@@ -156,10 +346,36 @@ async def test_ufdub_content_series_parses_episodes_from_player():
     assert len(eps) == 37
     assert eps[0].number == 1
     assert eps[0].id == (
-        "anime-23-rekomendaciji-dlja-chudovogo-zhittja-onlajn-net-juu-no-susume:s1e1"
+        "ufdub:anime-23-rekomendaciji-dlja-chudovogo-zhittja-onlajn-net-juu-no-susume:s1e1"
     )
     assert "Ритм Емоцій" in eps[0].title
     assert eps[-1].id.endswith(":s1e37")
+
+
+@pytest.mark.asyncio
+async def test_ufdub_content_dorama_gets_single_season():
+    """Dorama is series-like: content() must surface the player page's
+    ``var a`` episodes as one season. Regression (run #14): dorama
+    titles classified as ``Type=Series`` in the catalog but the provider
+    returned ``seasons=None``, so /Seasons was empty and the titles were
+    unplayable in the app."""
+    content_html = _fixture("content_anime.html")
+    player_html = _fixture("player_series.html")
+    ext_id = "dorama-408-kamen-rider-gavv-kamen-raider-gavv"
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://ufdub.com/dorama/408-kamen-rider-gavv-kamen-raider-gavv.html"
+        ).respond(200, text=content_html)
+        router.get(
+            "https://video.ufdub.com/AT/VP.php?ID=285",
+            headers={"Referer": "https://ufdub.com/"},
+        ).respond(200, text=player_html)
+        async with httpx.AsyncClient() as http:
+            c = await UFDubProvider().content(ext_id, http)
+    assert c.seasons is not None and len(c.seasons) == 1
+    eps = c.seasons[0].episodes
+    assert len(eps) == 37
+    assert eps[0].id == f"ufdub:{ext_id}:s1e1"
 
 
 @pytest.mark.asyncio
@@ -344,9 +560,8 @@ async def test_ufdub_sections_lists_six():
 async def test_ufdub_browse_unknown_section_raises():
     from cs_uk_api.providers.base import ProviderError
 
-    with respx.mock(assert_all_called=False):
-        with pytest.raises(ProviderError):
-            await UFDubProvider().browse("nonexistent", 1, httpx.AsyncClient())
+    with respx.mock(assert_all_called=False), pytest.raises(ProviderError):
+        await UFDubProvider().browse("nonexistent", 1, httpx.AsyncClient())
 
 
 @pytest.mark.asyncio

@@ -33,6 +33,7 @@ simple XOR cycle against ``k``. Both ciphers are reimplemented in
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import json
@@ -47,13 +48,14 @@ import httpx
 from ..models import (
     ContentResponse,
     Episode,
+    MediaForm,
     SearchResult,
     Season,
     Section,
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, MediaTypeStr, ProviderError
+from .base import BaseProvider, MediaTypeStr, ProviderError, model_b_axes
 
 BASE_URL = "https://animeon.club"
 MOON_BASE = "https://moonanime.art"
@@ -67,14 +69,22 @@ logger = logging.getLogger(__name__)
 #  * "popular"   -> /api/stats/anime/<date>?withView=false
 #  * "page"      -> /api/anime?pageSize=24&pageIndex=N (paginated)
 ANIMEON_SECTIONS: tuple[Section, ...] = (
-    Section(id="seasons", title="Сезон", type="anime"),
-    Section(id="popular", title="Популярні", type="anime"),
-    Section(id="page", title="Нове аніме", type="anime"),
+    Section(id="seasons", title="Сезон", styles=frozenset({"anime"})),
+    Section(id="popular", title="Популярні", styles=frozenset({"anime"})),
+    Section(id="page", title="Нове аніме", styles=frozenset({"anime"})),
 )
 
 # Bare integer ids only (matches the v1 Kotlin's
 # substringAfterLast("/").substringBefore("-").toIntOrNull()).
 _EXTERNAL_ID_RE = re.compile(r"\d{1,8}")
+
+#: Bounded concurrency for the episode-map walk (issue #187). A long
+#: archive like One Piece spans 11 (translation, player) pairs and
+#: ~55 upstream pages; the old fully-sequential walk took 10s+ and
+#: 502'd whenever the upstream throttled. Pages are fetched in
+#: bounded-concurrency windows through ONE shared semaphore (same
+#: pattern as simpsonsuatv's season fetch, issue #119).
+_EPISODE_FETCH_CONCURRENCY = 6
 
 # Slug shape returned by the bare-id redirect at /api/anime/<id>:
 # upstream joins the numeric id with the URL-safe title via ``-``.
@@ -156,7 +166,7 @@ def _moon_decrypt(blob: str, xor_key: str) -> str:
 def _today_string() -> str:
     """Upstream passes ``EEE MMM dd yyyy`` to ``/api/stats/anime/`` —
     replicate the locale-stable English format."""
-    return datetime.now().strftime("%a %b %d %Y").replace(" 0", "  ")
+    return datetime.now().astimezone().strftime("%a %b %d %Y").replace(" 0", "  ")
 
 
 def _poster_url(preview: str | None) -> str | None:
@@ -166,6 +176,38 @@ def _poster_url(preview: str | None) -> str | None:
     if not preview:
         return None
     return f"{BASE_URL}/api/uploads/images/{preview}"
+
+
+def _form_from_type(raw_type: Any) -> MediaForm:
+    """Map an upstream listing item's ``type`` onto the Model B form axis.
+
+    Issue #140 — listing cards must agree with ``content()`` on the form
+    axis for the same id: ``type == "movie"`` is an anime film
+    (``form="movie"``); every other value (``tv`` / ``ova`` / ``ona`` /
+    ``special``) and a missing field (older captures such as the
+    /api/anime/seasons shape) are episodic (``form="series"``).
+    Styles stay ``{anime}`` — animeon is an anime-only catalogue — and
+    are supplied by ``model_b_axes("anime")`` callers; ``content()``
+    derives its form from the same ``type == "movie"`` check, so a
+    card and its detail never disagree."""
+    return "movie" if str(raw_type or "").strip().lower() == "movie" else "series"
+
+
+def _classify_translations(doc: dict[str, Any]) -> list[dict[str, Any]]:
+    """Classify a raw ``/api/player/<id>/translations`` payload.
+
+    A ``translations`` key that is present but empty (``{"translations":
+    []}``) is deliberate upstream withholding — live capture 2026-08-08:
+    animeon 8096 "Коджін Сенші Оредам" answers exactly this — so it
+    raises ``gated`` (ADR-0002: client-side 404, never a health signal).
+    A missing or malformed key is an upstream shape change and returns
+    ``[]`` for the caller to surface ``parse_failed`` instead."""
+    raw = doc.get("translations")
+    if isinstance(raw, list):
+        if not raw:
+            raise ProviderError("gated", "no translations")
+        return raw
+    return []
 
 
 def _is_ashdi(source: dict[str, Any]) -> bool:
@@ -186,6 +228,12 @@ class AnimeONProvider(BaseProvider):
     # v3 (issue #70): the ``page`` section is animeon's "Нове аніме"
     # listing — contributes to the «Новинки» row.
     newest_section = "page"
+    #: ``content()`` gates titles whose upstream translations are
+    #: withheld (``{"translations": []}`` → ``gated``, ADR-0002). The
+    #: catalog sweep must run for animeon so those dead cards are
+    #: dropped from home/search instead of failing only at play time
+    #: (#160, same pattern as eneyida #158).
+    can_gate = True
 
     async def _get_json(
         self,
@@ -239,18 +287,29 @@ class AnimeONProvider(BaseProvider):
         encoded = quote_plus(query, safe="")
         data = await self._get_json(f"{BASE_URL}/api/anime?search={encoded}", http)
         results = (data or {}).get("results", []) if isinstance(data, dict) else []
-        return [
-            SearchResult(
+        out: list[SearchResult] = []
+        for item in results:
+            if "id" not in item:
+                continue
+            title = str(item.get("titleUa") or "").strip()
+            if not title:
+                continue
+            # Issue #140: derive the form axis per-item from the upstream
+            # `type` field so search cards agree with content() for the
+            # same id. Styles stay {anime} (animeon is anime-only).
+            mb_form, mb_styles = model_b_axes(
+                "anime", form=_form_from_type(item.get("type"))
+            )
+            out.append(SearchResult(
                 id=f"{self.id}:{item['id']}",
                 provider=self.id,
-                type="anime",
-                title=str(item.get("titleUa", "")).strip(),
+                title=title,
                 poster=_poster_url((item.get("image") or {}).get("preview")),
+                form=mb_form,
+                styles=mb_styles,
                 url=f"{BASE_URL}/anime/{item['id']}",
-            )
-            for item in results
-            if "id" in item and str(item.get("titleUa") or "").strip()
-        ]
+            ))
+        return out
 
     async def browse(
         self, section: str, page: int, http: httpx.AsyncClient
@@ -285,13 +344,18 @@ class AnimeONProvider(BaseProvider):
             if "id" not in item:
                 continue
             image = item.get("image") or {}
+            # Issue #140: default to "series" when `type` is absent (older
+            # LocalResult captures like seasons.json carry no `type` key);
+            # `movie` maps to form="movie", everything else stays "series".
+            mb_form, mb_styles = model_b_axes("anime", form=_form_from_type(item.get("type")))
             out.append(
                 SearchResult(
                     id=f"{ANIMEON_ID}:{item['id']}",
                     provider="animeon",
-                    type="anime",
                     title=str(item.get("titleUa", "")).strip(),
                     poster=_poster_url(image.get("preview")),
+                    form=mb_form,
+                    styles=mb_styles,
                     url=f"{BASE_URL}/anime/{item['id']}",
                 )
             )
@@ -315,15 +379,31 @@ class AnimeONProvider(BaseProvider):
         image = info.get("image") or {}
         poster = _poster_url(image.get("preview"))
         description = str(info.get("description") or "")
+        # Ticket #232: the upstream genres[] carries {nameEn, nameUa,
+        # slug} — surface the Ukrainian names so the detail page's
+        # genre row renders (was never parsed).
+        genres = [
+            str(g.get("nameUa") or "").strip()
+            for g in (info.get("genres") or [])
+            if isinstance(g, dict) and str(g.get("nameUa") or "").strip()
+        ]
 
         if str(info.get("type") or "").strip().lower() == "movie":
             return await self._movie_content(
-                anime_id, external_id, title, year_int, description, poster, http
+                anime_id, external_id, title, year_int, description, poster, genres, http
             )
 
         episodes_by_num = await self._collect_episode_map(anime_id, http)
         if not episodes_by_num:
             raise ProviderError("parse_failed", "no episodes resolved")
+
+        # Ticket #223: the upstream ``/api/anime/<slug>/episodes-info``
+        # endpoint carries per-episode real titles (``titleUa``) and air
+        # dates (``aired``) — the player-episode walk only yields "Серія
+        # N". Best-effort: a failure or 404 degrades to the generic
+        # titles (never gates the card).
+        slug = str(info.get("slug") or external_id)
+        episode_info = await self._episode_info(slug, http)
 
         all_translations = sorted(
             {
@@ -332,19 +412,25 @@ class AnimeONProvider(BaseProvider):
                 for entry in entries
             }
         )
-        season = self._build_season(anime_id, episodes_by_num, all_translations)
+        season = self._build_season(
+            anime_id, episodes_by_num, all_translations, self.id,
+            episode_info=episode_info,
+        )
+        mb_form, mb_styles = model_b_axes("anime")
         return ContentResponse(
             id=f"{self.id}:{external_id}",
-            type="anime",
             title=title,
             year=year_int,
             description=description,
             poster=poster,
+            genres=genres,
             translations=[
                 Translation(id=name, label=name) for name in all_translations
             ],
             seasons=[season],
             translations_level="episode",
+            form=mb_form,
+            styles=mb_styles,
         )
 
     @staticmethod
@@ -352,7 +438,11 @@ class AnimeONProvider(BaseProvider):
         anime_id: int,
         episodes_by_num: dict[int, list[dict[str, Any]]],
         all_translations: list[str],
+        provider_id: str,
+        *,
+        episode_info: dict[int, dict[str, Any]] | None = None,
     ) -> Season:
+        info = episode_info or {}
         return Season(
             number=1,
             episodes=[
@@ -367,6 +457,8 @@ class AnimeONProvider(BaseProvider):
                         ),
                     ),
                     translations=all_translations,
+                    provider_id=provider_id,
+                    ep_info=info.get(ep_num),
                 )
                 for ep_num, entries in sorted(episodes_by_num.items())
             ],
@@ -380,6 +472,7 @@ class AnimeONProvider(BaseProvider):
         year: int | None,
         description: str,
         poster: str | None,
+        genres: list[str],
         http: httpx.AsyncClient,
     ) -> ContentResponse:
         """Movies have no episode list upstream (``/api/player/<id>/
@@ -387,21 +480,32 @@ class AnimeONProvider(BaseProvider):
         to a viewable detail — poster, studio list, Movie form — so the
         facade degrades to a season-less response instead of a 404."""
         payload = await self._ask_translations(anime_id, http)
+        # Same gating as stream(): a present-but-empty `translations`
+        # list is deliberate upstream withholding (`gated`, issue #160)
+        # — the card must not surface with a fake «Оригінал» track that
+        # can never play. A missing key (shape change) keeps the detail
+        # viewable with the default track, exactly like stream().
+        translations = _classify_translations(payload or {})
         names: list[str] = []
-        for trans in (payload or {}).get("translations") or []:
+        for trans in translations:
             name = str((trans.get("translation") or {}).get("name") or "").strip()
             if name and name not in names:
                 names.append(name)
         if not names:
             names = ["Оригінал"]
+        # AnimeON movies are anime films — form=movie, styles={anime}
+        # (the default model_b_axes for "movie" would drop the style).
+        mb_form, mb_styles = model_b_axes("anime", form="movie")
         return ContentResponse(
             id=f"{self.id}:{external_id}",
-            type="movie",
             title=title,
             year=year,
             description=description,
             poster=poster,
+            genres=genres,
             translations=[Translation(id=name, label=name) for name in names],
+            form=mb_form,
+            styles=mb_styles,
             seasons=None,
             translations_level="content",
         )
@@ -427,11 +531,55 @@ class AnimeONProvider(BaseProvider):
         raw_year = info.get("releaseDate")
         year_int: int | None = None
         if isinstance(raw_year, str) and raw_year:
-            try:
-                year_int = datetime.strptime(raw_year[:10], "%Y-%m-%d").year
-            except ValueError:
-                year_int = None
+            # The upstream sends either a full ISO date ("2002-10-03")
+            # or a bare year ("2002") — both must surface as the
+            # ProductionYear (ticket #232).
+            m = re.search(r"(19\d{2}|20\d{2})", raw_year)
+            if m:
+                year_int = int(m.group(1))
         return info, year_int
+
+    async def _episode_info(
+        self, slug: str, http: httpx.AsyncClient
+    ) -> dict[int, dict[str, Any]]:
+        """Best-effort ``/api/anime/<slug>/episodes-info`` (ticket #223).
+
+        Returns ``{episode_number: {title, titleUa, aired}}`` from the
+        upstream's per-episode metadata endpoint. Any failure — the
+        endpoint missing for a title, an upstream error, a malformed
+        body — degrades to ``{}`` so content() keeps the generic
+        "Серія N" titles; per-episode enrichment must never gate a
+        card that is otherwise playable.
+        """
+        try:
+            raw = await self._get_json(
+                f"{BASE_URL}/api/anime/{slug}/episodes-info", http
+            )
+        except Exception:  # noqa: BLE001
+            # Best-effort by contract: a missing endpoint (some titles
+            # 404 it), an upstream error, OR a test double that rejects
+            # the URL (respx AllMockedAssertionError is not an httpx
+            # error) must never gate a playable card — degrade to the
+            # generic "Серія N" titles instead.
+            return {}
+        if not isinstance(raw, list):
+            return {}
+        out: dict[int, dict[str, Any]] = {}
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                num = int(entry.get("episode") or 0)
+            except (TypeError, ValueError):
+                continue
+            if num < 1:
+                continue
+            out[num] = {
+                "title": str(entry.get("title") or ""),
+                "titleUa": str(entry.get("titleUa") or ""),
+                "aired": entry.get("aired"),
+            }
+        return out
 
     async def _ask_translations(
         self, anime_id: int, http: httpx.AsyncClient
@@ -448,27 +596,67 @@ class AnimeONProvider(BaseProvider):
     ) -> dict[int, list[dict[str, Any]]]:
         """Walk every (translation, player) pair from
         ``/api/player/<id>/translations`` and aggregate per-episode
-        source lists. Returns an empty dict when the API returns no
-        translations — the caller surfaces ``parse_failed``."""
+        source lists. A present-but-empty ``translations`` list is
+        deliberate withholding and raises ``gated`` (see
+        ``_classify_translations``); a missing/malformed key returns an
+        empty map for the caller to surface ``parse_failed``."""
         translations_doc = await self._ask_translations(anime_id, http)
-        translations: list[dict[str, Any]] = []
-        raw = translations_doc.get("translations")
-        if isinstance(raw, list):
-            translations = raw
+        translations = _classify_translations(translations_doc)
 
-        episodes_by_num: dict[int, list[dict[str, Any]]] = {}
-        for trans in translations:
+        # Issue #187: the (translation, player) pairs are walked
+        # CONCURRENTLY through ONE shared semaphore instead of one-by-
+        # one — a long archive needs dozens of upstream pages and the
+        # old sequential walk 502'd under throttling. ``_build_season``
+        # sorts the aggregated entries by (translation_name,
+        # player_name), so completion order never affects the response.
+        sem = asyncio.Semaphore(_EPISODE_FETCH_CONCURRENCY)
+
+        async def collect_pair(
+            trans: dict[str, Any], player: dict[str, Any]
+        ) -> list[dict[str, Any]]:
             trans_obj = trans.get("translation") or {}
             trans_id = trans_obj.get("id")
             trans_name = str(trans_obj.get("name") or "").strip()
             if trans_id is None or not trans_name:
+                return []
+            return await self._collect_player_sources(
+                anime_id, int(trans_id), trans_name, player, http, sem=sem
+            )
+
+        pairs = [
+            collect_pair(trans, player)
+            for trans in translations
+            for player in trans.get("player") or []
+        ]
+        # Issue #192 follow-up: one (translation, player) pair that
+        # hiccups (throttle 502, read timeout) must NOT kill the whole
+        # series — a long archive has many pairs and a single transient
+        # failure would gate the entire card. Failures are logged and
+        # the surviving pairs still build the episode map; only when
+        # EVERY pair failed do we surface the first real error so the
+        # caller sees `upstream_unreachable` / `unreachable` instead of
+        # a misleading empty parse.
+        results = await asyncio.gather(*pairs, return_exceptions=True)
+        failures = [r for r in results if isinstance(r, BaseException)]
+        episodes_by_num: dict[int, list[dict[str, Any]]] = {}
+        for sources in results:
+            if isinstance(sources, BaseException):
                 continue
-            for player in trans.get("player") or []:
-                sources = await self._collect_player_sources(
-                    anime_id, int(trans_id), trans_name, player, http
-                )
-                for entry in sources:
-                    episodes_by_num.setdefault(int(entry["episode"]), []).append(entry)
+            for entry in sources:
+                episodes_by_num.setdefault(int(entry["episode"]), []).append(entry)
+        if failures:
+            first_error = next(
+                (f for f in failures if isinstance(f, ProviderError)), None
+            )
+            if not episodes_by_num and first_error is not None:
+                raise first_error
+            logger.warning(
+                "animeon %d/%d episode-walk pairs failed (continuing with %d): %s",
+                len(failures),
+                len(pairs),
+                len(episodes_by_num),
+                "; ".join(str(f) for f in failures[:3]),
+            )
         return episodes_by_num
 
     async def _collect_player_sources(
@@ -478,17 +666,24 @@ class AnimeONProvider(BaseProvider):
         translation_name: str,
         player: dict[str, Any],
         http: httpx.AsyncClient,
+        sem: asyncio.Semaphore | None = None,
     ) -> list[dict[str, Any]]:
         """Walk the paginated ``/api/player/<id>/episodes`` list for
         one (translation, player) pair, deduplicating by episode id.
         The response sometimes wraps specials at ``skip=-1`` (the
-        upstream Kotlin calls that out explicitly)."""
+        upstream Kotlin calls that out explicitly).
+
+        ``sem`` is the shared walk semaphore from ``_collect_episode_map``
+        (a fresh one is created when called standalone, e.g. the movie
+        source fallback) so every page fetch is bounded globally."""
         player_id = player.get("id")
         player_name = str(player.get("name") or "").strip()
         if player_id is None or not player_name:
             return []
         episodes_count = int(player.get("episodesCount") or 0)
         max_skip = ((episodes_count // 100) + 1) * 100 if episodes_count > 0 else 11000
+        if sem is None:
+            sem = asyncio.Semaphore(_EPISODE_FETCH_CONCURRENCY)
 
         collected: dict[int, dict[str, Any]] = {}
         base = (
@@ -500,14 +695,16 @@ class AnimeONProvider(BaseProvider):
         # empty state. A 5xx, on the other hand, means the upstream is
         # actually broken and we must let it bubble up so the caller
         # sees ``upstream_unreachable`` instead of a misleading
-        # ``parse_failed`` further down.
-        specials = await self._fetch_specials_page(base, http)
+        # ``parse_failed`` further down. Held under the semaphore so
+        # concurrent pairs don't burst past the bound.
+        async with sem:
+            specials = await self._fetch_specials_page(base, http)
         if specials is not None:
             self._absorb_collected(
                 collected, specials, translation_name, player_name, specials_only=True
             )
         await self._fetch_episode_pages(
-            base, max_skip, collected, translation_name, player_name, http
+            base, max_skip, collected, translation_name, player_name, http, sem=sem
         )
         return list(collected.values())
 
@@ -551,27 +748,63 @@ class AnimeONProvider(BaseProvider):
         translation_name: str,
         player_name: str,
         http: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
     ) -> None:
         """Walk ``/api/player/<id>/episodes?skip=N`` pages from skip=0
-        upward until the page is short or empty."""
-        skip = 0
+        upward until the page is short or empty.
+
+        skip=0 is fetched first (sequential) so a short first page
+        stops the walk after exactly one request — the common small-
+        series case must not fan out. Only once the first page proves
+        the archive is long do the remaining pages go out in bounded-
+        concurrency windows (each fetch still acquires ``sem``): a
+        1170-episode series needs ~12 pages per pair, and the old
+        fully-sequential walk took 10s+ and 502'd under upstream
+        throttling (issue #187). A short/empty page still ends the
+        walk; offsets beyond it hold nothing worth absorbing."""
+
+        async def fetch_page(skip: int) -> list[dict[str, Any]]:
+            async with sem:
+                try:
+                    doc = await self._get_json(f"{base}&skip={skip}", http)
+                except ProviderError as e:
+                    if e.code in {"unreachable", "upstream_unreachable"}:
+                        raise
+                    logger.debug("animeon episodes skip=%d unavailable: %s", skip, e)
+                    return []
+            return (doc or {}).get("episodes") or []
+
+        first = await fetch_page(0)
+        if not first:
+            return
+        self._absorb_collected(
+            collected, {"episodes": first}, translation_name, player_name, specials_only=False
+        )
+        if len(first) < 100:
+            return
+
+        skip = 100
         while skip <= max_skip:
-            try:
-                doc = await self._get_json(f"{base}&skip={skip}", http)
-            except ProviderError as e:
-                if e.code in {"unreachable", "upstream_unreachable"}:
-                    raise
-                logger.debug("animeon episodes skip=%d unavailable: %s", skip, e)
+            window = [
+                s
+                for s in range(skip, skip + _EPISODE_FETCH_CONCURRENCY * 100, 100)
+                if s <= max_skip
+            ]
+            if not window:
                 break
-            episodes = (doc or {}).get("episodes") or []
-            if not episodes:
-                break
-            self._absorb_collected(
-                collected, doc, translation_name, player_name, specials_only=False
-            )
-            if len(episodes) < 100:
-                break
-            skip += 100
+            pages = await asyncio.gather(*(fetch_page(s) for s in window))
+            for episodes in pages:
+                if episodes:
+                    self._absorb_collected(
+                        collected,
+                        {"episodes": episodes},
+                        translation_name,
+                        player_name,
+                        specials_only=False,
+                    )
+                if len(episodes) < 100:
+                    return
+            skip = window[-1] + 100
 
     @staticmethod
     def _build_entry(
@@ -595,12 +828,23 @@ class AnimeONProvider(BaseProvider):
         episode_num: int,
         entries: list[dict[str, Any]],
         translations: list[str],
+        provider_id: str,
+        *,
+        ep_info: dict[str, Any] | None = None,
     ) -> Episode:
         ep_translations = [
             Translation(id=name, label=name)
             for name in translations
             if any(name == e["translation_name"] for e in entries)
         ]
+        # Ticket #223: the ``episodes-info`` row (when the endpoint
+        # answered) carries the real Ukrainian title + air date —
+        # ``titleUa``/``title`` fall back to the generic "Серія N".
+        title = str((ep_info or {}).get("titleUa") or (ep_info or {}).get("title") or "").strip()
+        if not title:
+            title = f"Серія {episode_num}"
+        aired = (ep_info or {}).get("aired")
+        premiere_date = str(aired)[:10] if isinstance(aired, str) and aired else None
         # Encode the per-episode source list in Episode.id so
         # stream() can pick one without re-fetching the JSON. The
         # format is a JSON object — short, opaque, ASCII-safe.
@@ -623,9 +867,10 @@ class AnimeONProvider(BaseProvider):
         encoded = base64.b64encode(blob.encode("utf-8")).decode("ascii")
         return Episode(
             number=episode_num,
-            id=f"{anime_id}:e{episode_num}:{encoded}",
-            title=f"Серія {episode_num}",
+            id=f"{provider_id}:{anime_id}:e{episode_num}:{encoded}",
+            title=title,
             translations=ep_translations,
+            premiere_date=premiere_date,
         )
 
     async def stream(
@@ -693,7 +938,7 @@ class AnimeONProvider(BaseProvider):
         `/api/player/<playerId>/<translationId>`, whose `videoUrl`/
         `fileUrl` lead straight to the film."""
         doc = await self._ask_translations(anime_id, http)
-        translations = (doc or {}).get("translations") or []
+        translations = _classify_translations(doc or {})
         for trans in translations:
             t = trans.get("translation") or {}
             name = str(t.get("name") or "").strip()
@@ -731,15 +976,13 @@ class AnimeONProvider(BaseProvider):
         http: httpx.AsyncClient,
     ) -> dict[str, Any] | None:
         """One (translation, player) pair's playable source for a movie:
-        the first episode-row entry if the walk yields any, otherwise
-        the direct player endpoint (the upstream `loadMovieLinks`
-        fallback). 4xx on the direct endpoint means "no direct source"
-        and is skipped; 5xx propagates as `upstream_unreachable`."""
-        entries = await self._collect_player_sources(
-            anime_id, translation_id, translation_name, player, http
-        )
-        if entries:
-            return entries[0]
+        the direct player endpoint first (the upstream `loadMovieLinks`
+        authoritative source for films — observed live 2026-08-09 the
+        episode walk returned a STALE Moon iframe for a movie whose
+        direct endpoint resolved fine), then the first episode-row
+        entry as a fallback. 4xx on the direct endpoint means "no
+        direct source" and is skipped; 5xx propagates as
+        `upstream_unreachable`."""
         try:
             direct = await self._get_json(
                 f"{BASE_URL}/api/player/{player.get('id')}/{translation_id}", http
@@ -748,21 +991,25 @@ class AnimeONProvider(BaseProvider):
             if e.code in {"unreachable", "upstream_unreachable"}:
                 raise
             logger.debug("animeon movie direct source unavailable: %s", e)
-            return None
-        if not isinstance(direct, dict):
-            return None
-        video_url = str(direct.get("videoUrl") or "") or None
-        file_url = str(direct.get("fileUrl") or "") or None
-        if not video_url and not file_url:
-            return None
-        return {
-            "id": 0,
-            "episode": 1,
-            "video_url": video_url,
-            "file_url": file_url,
-            "translation_name": translation_name,
-            "player_name": player_name,
-        }
+            direct = None
+        if isinstance(direct, dict):
+            video_url = str(direct.get("videoUrl") or "") or None
+            file_url = str(direct.get("fileUrl") or "") or None
+            if video_url or file_url:
+                return {
+                    "id": 0,
+                    "episode": 1,
+                    "video_url": video_url,
+                    "file_url": file_url,
+                    "translation_name": translation_name,
+                    "player_name": player_name,
+                }
+        entries = await self._collect_player_sources(
+            anime_id, translation_id, translation_name, player, http
+        )
+        if entries:
+            return entries[0]
+        return None
 
     async def _resolve_source_url(
         self,
@@ -822,7 +1069,14 @@ class AnimeONProvider(BaseProvider):
         self, iframe_url: str, http: httpx.AsyncClient
     ) -> str:
         """Fetch the MoonAnime iframe page, decode the obfuscated
-        Playerjs config, and return the first ``.m3u8`` URL."""
+        Playerjs config, and return the first ``.m3u8`` URL.
+
+        The decrypted payload is either a direct manifest URL or a JSON
+        array of tracks (live 2026-08-09: movies — e.g. animeon 8102
+        "Ґінтама Фільм 1" — now answer ``[{...,"file":"<m3u8>"}]``;
+        the array previously meant the card was dead, today it is the
+        current upstream shape).
+        """
         clean = iframe_url.rstrip("?")
         if "player=" not in clean:
             separator = "&" if "?" in clean else "?"
@@ -854,9 +1108,34 @@ class AnimeONProvider(BaseProvider):
         xor_key = key_match.group(1)
 
         for inner in _INNER_RE.findall(decoded_js):
-            decoded = _moon_decrypt(inner, xor_key)
-            if ".m3u8" in decoded:
-                return decoded.strip().rstrip(",")
+            decoded = _moon_decrypt(inner, xor_key).strip().rstrip(",")
+            if decoded.startswith("["):
+                try:
+                    tracks = json.loads(decoded)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(tracks, list) and not tracks:
+                    # A well-formed EMPTY track array is deliberate
+                    # upstream unavailability — the movie is listed in
+                    # the catalog but moonanime hasn't published the
+                    # video yet (live 2026-08-09: animeon 8104
+                    # «Літературне дівча Фільм» serves a "Скоро
+                    # доступно" placeholder iframe and an empty `[]`
+                    # player payload). Per ADR-0002's empty-manifest
+                    # amendment this is `gated` (client 404, never a
+                    # health signal), NOT `parse_failed` (502, pollutes
+                    # the health tracker for a healthy provider).
+                    raise ProviderError(
+                        "gated", "no playable tracks — video not yet published"
+                    )
+                for track in tracks if isinstance(tracks, list) else []:
+                    url = str(track.get("file") or "").strip()
+                    if ".m3u8" in url:
+                        return url
+                continue
+            if ".m3u8" not in decoded:
+                continue
+            return decoded
         raise ProviderError("parse_failed", "no .m3u8 in moon payload")
 
 

@@ -4,18 +4,19 @@ import asyncio
 import logging
 import os
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import TypeVar, cast
 
-import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 
 import cs_uk_api.providers._registry  # noqa: F401
 
+from . import catalog_warm as catalog_warm_mod
+from . import watchdog as watchdog_mod
 from .cache import TtlCache
 from .catalog_state import _GATE_CHECK_TIMEOUT_S, resolve_group
+from .catalog_state import await_uakino_ready as _await_uakino_ready
 from .catalog_state import blocklist_cache as _catalog_blocklist_cache
 from .catalog_state import content_cache as _catalog_content_cache
 from .catalog_state import filter_gated_items as _filter_gated_items
@@ -23,33 +24,48 @@ from .catalog_state import gated_cache as _catalog_gated_cache
 from .catalog_state import get_home as _catalog_get_home
 from .catalog_state import home_cache as _catalog_home_cache
 from .catalog_state import load_home as _catalog_load_home
+from .catalog_state import merged_search as _catalog_merged_search
+from .catalog_state import search_cache as _catalog_search_cache
 from .catalog_state import sources_cache as _catalog_sources_cache
 from .config import SETTINGS
 from .country import is_blocked_country
+from .filters import parse_form_filter as _parse_form_filter
+from .filters import parse_style_filter as _parse_style_filter
+from .filters import section_matches as _section_matches
 from .health import TRACKER
 from .http_client import close_client, get_client
 from .jellyfin import router as jellyfin_router
 from .jellyfin.capture import capture_request
 from .jellyfin.router import normalize_jellyfin_path
-from .merge import group_key_from, item_group_key, merge_results
+from .merge import group_key_from
 from .models import (
+    STATUS_DOWN,
+    STATUS_WARMING,
     BrowseResponse,
     ContentResponse,
     ErrorResponse,
     GroupContentResponse,
     GroupSourceContentResponse,
+    HealthStatus,
     HomeResponse,
-    ProviderFailure,
+    MediaForm,
+    MediaStyle,
     ProviderInfo,
     ProviderSections,
-    SearchGroup,
     SearchResponse,
-    SearchResult,
     StreamResponse,
 )
 from .poster_proxy import fetch as fetch_poster
 from .providers import PROVIDERS
-from .providers.base import BaseProvider, ProviderError
+from .providers.base import BaseProvider
+from .providers.base import model_b_axes as _model_b_axes
+from .service import (
+    content_provider_error as _content_provider_error,
+)
+from .service import inject_sources_into_unavailable_error as _inject_sources_into_unavailable_error
+from .service import split_content_id as _split_content_id
+from .service import stream_provider_error as _stream_provider_error
+from .service import upstream_guard as _upstream_guard
 from .uakino_browser import DEFAULT_CHROMIUM, get_session
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -62,7 +78,11 @@ if not os.path.exists(DEFAULT_CHROMIUM):
     TRACKER.mark_startup("uakino", "chromium_missing")
     log.warning("uakino marked down at startup: chromium binary not found at %s", DEFAULT_CHROMIUM)
 
-_search_cache = TtlCache(default_ttl_s=SETTINGS.cache_search_s)
+#: The shared merged-search cache now lives in ``catalog_state``
+#: (ticket #106: the native /api/search route and the Jellyfin facade
+#: share one fan-out and one cache). ``_search_cache`` stays as a
+#: back-compat alias — tests import it from here.
+_search_cache = _catalog_search_cache
 _content_cache = _catalog_content_cache
 _browse_cache = TtlCache(default_ttl_s=SETTINGS.cache_search_s)
 _blocklist_cache = _catalog_blocklist_cache
@@ -74,91 +94,130 @@ _blocklist_cache = _catalog_blocklist_cache
 _home_cache = _catalog_home_cache
 _home_sources_cache = _catalog_sources_cache
 
-T = TypeVar("T")
+#: Bounded drain for the background warm/heartbeat task in lifespan
+#: shutdown so a mid-warm Chromium launch cannot hang the teardown.
+_WARM_TASK_DRAIN_S: float = 1.0
 
-# Sentinel for ``_upstream_guard(..., on_error=...)``: distinguishes the
-# parameter's "no default provided" state from a legitimate ``None`` default.
-# Callers that want to degrade to None on upstream failure must pass
-# ``on_error=None`` explicitly; omitting the kwarg means "raise 502".
-_UNSET: object = object()
+#: Handle of the background warm+heartbeat task started by ``lifespan``.
+_warm_task: asyncio.Task[None] | None = None
+
+#: Latest observable state of the startup catalog warm (#204/#210).
+#: None until the task has run at least once; updated in place by
+#: ``_catalog_warm_loop`` so ``/api/health`` can surface it.
+_catalog_warm_state: catalog_warm_mod.CatalogWarmState | None = None
+
+#: Handle of the background catalog-warm task started by ``lifespan``.
+_catalog_warm_task: asyncio.Task[None] | None = None
+
+#: Handle of the background watchdog task started by ``lifespan``
+#: (ticket #215).
+_watchdog_task: asyncio.Task[None] | None = None
+
+#: Watchdog tick period: how often the all-providers-down check runs.
+_WATCHDOG_INTERVAL_S: float = 60.0
 
 
-def _split_content_id(content_id: str) -> tuple[str, str]:
-    """Content id "provider:external" -> (provider, external).
+async def _watchdog_loop() -> None:
+    """Periodic all-providers-down check (ticket #215).
 
-    The named accessor for the provider-by-prefix derivation shared by the
-    content and stream routes; malformed ids yield ("", "").
+    Scheduled once by ``lifespan``. Each tick asks the shared watchdog
+    whether EVERY non-marker provider is down simultaneously and, if so,
+    resets the shared httpx client (cooldown-gated). A tick failure must
+    never kill the loop — log and move on.
     """
-    provider_id, _, external_id = content_id.partition(":")
-    return provider_id, external_id
+    while True:
+        await asyncio.sleep(_WATCHDOG_INTERVAL_S)
+        try:
+            await watchdog_mod.WATCHDOG.check_and_reset()
+        except Exception:
+            log.exception("watchdog tick failed")
 
 
-async def _upstream_guard(
-    provider_id: str,
-    coro: Awaitable[T],
-    log_label: str,
-    *,
-    on_error: T | object = _UNSET,
-    exc_handler: Callable[[Exception], None] | None = None,
-) -> T:
-    """Await an upstream provider call with health recording + the 502 guard.
+async def _catalog_warm_loop() -> None:
+    """Background catalog warm (tickets #204/#210).
 
-    The record+log+raise(502) pattern shared by every upstream try/except
-    site lives here and nowhere else. The failure path runs in this order:
-
-      1. ``exc_handler(e)`` — if provided, runs first. It either raises
-         (translating the upstream error into a client-side response such
-         as 400/404) or returns. The helper does NOT record when the
-         handler raises; translation-level errors are not upstream-health
-         signals.
-      2. ``TRACKER.record(provider_id, ok=False)`` + warning log.
-      3. Either return ``on_error`` (when an explicit default was passed)
-         or raise the canonical 502 ``upstream_unreachable``.
-
-    ``on_error`` uses the ``_UNSET`` sentinel (NOT ``None``) as its
-    default, so callers can distinguish "no default" (raises 502) from
-    "degrade to None" (returns None). Pass ``on_error=None`` explicitly
-    when the degraded value legitimately is None.
+    Scheduled once by ``lifespan``. Builds the home snapshot, then
+    warms each view's first-card detail chain — so a real client's
+    first ``/UserViews`` / ``/Items`` / card-open after launch finds
+    warm caches instead of a 17-21s cold scrape that blows the app's
+    own request timeout. Best-effort: a provider failure never crashes
+    the process; the outcome is observable via ``/api/health``.
     """
+    global _catalog_warm_state
+    _catalog_warm_state = await catalog_warm_mod.warm_catalog()
+    log.info(
+        "catalog warm done: home_warmed=%s content_warmed=%d failed=%d",
+        _catalog_warm_state.home_warmed,
+        _catalog_warm_state.content_warmed,
+        _catalog_warm_state.failed,
+    )
+
+
+async def _warm_and_heartbeat() -> None:
+    """Background uakino warm + heartbeat (issue #193/#195).
+
+    Scheduled once by ``lifespan``. ``warm()`` failures are pinned as
+    deterministic startup markers so explicit uakino routes short-circuit
+    502 instead of blocking on a session that can never serve; success
+    hands off to the heartbeat loop, which records ok/fail per tick into
+    TRACKER — the sliding-window state ``/api/providers`` and the fan-out
+    skip read. Cancelled by ``lifespan`` shutdown.
+    """
+    session = get_session()
     try:
-        result = await coro
-    except Exception as e:
-        if exc_handler is not None:
-            exc_handler(e)
-        TRACKER.record(provider_id, ok=False)
-        log.warning("%s failed provider=%s err=%s", log_label, provider_id, e)
-        if on_error is _UNSET:
-            raise HTTPException(502, detail=ErrorResponse(error="upstream_unreachable", message=str(e)).model_dump()) from e
-        # The sentinel check above guarantees this is a real T (the caller
-        # passed an explicit default), but mypy cannot narrow ``T | object``
-        # to ``T`` from ``is not _UNSET`` alone.
-        return cast(T, on_error)
-    TRACKER.record(provider_id, ok=True)
-    return result
-
-
-def _content_provider_error(e: Exception) -> None:
-    """Subscription-gated content is a client-visible 404, not an
-    upstream-health signal — the item is deliberately unavailable."""
-    if isinstance(e, ProviderError) and e.code == "gated":
-        raise HTTPException(404, detail=ErrorResponse(error=e.code, message=e.message).model_dump()) from e
-
-
-def _stream_provider_error(e: Exception) -> None:
-    """Translation-level validation errors are client-side semantics, not
-    upstream-health signals — they must not move the needle. A gated
-    stream is a deliberate "no playable file" verdict → 404."""
-    if not isinstance(e, ProviderError):
+        await session.warm()
+    except TimeoutError:
+        TRACKER.mark_startup("uakino", "warm_timeout")
+        log.warning("uakino warm timed out; marked down at startup")
         return
-    if e.code == "invalid_translation":
-        raise HTTPException(400, detail=ErrorResponse(error=e.code, message=e.message).model_dump()) from e
-    if e.code in ("translation_missing", "gated"):
-        raise HTTPException(404, detail=ErrorResponse(error=e.code, message=e.message).model_dump()) from e
+    except Exception as e:  # noqa: BLE001
+        TRACKER.mark_startup("uakino", "warm_failed")
+        log.warning("uakino warm failed; marked down at startup: %s", e)
+        return
+    await session.heartbeat_loop(record=lambda ok: TRACKER.record("uakino", ok))
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI):
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    global _warm_task, _watchdog_task, _catalog_warm_task
+    if os.path.exists(DEFAULT_CHROMIUM):
+        # Background warm+heartbeat (issue #193): uakino's browser session
+        # is brought up once at startup instead of lazily on first request,
+        # so its health is known before a client asks for it.
+        _warm_task = asyncio.create_task(_warm_and_heartbeat())
+    # Background watchdog (ticket #215): a long-running process can lose
+    # ALL outbound connectivity while caches still serve 200s; this loop
+    # detects every-provider-down and resets the shared httpx client.
+    _watchdog_task = asyncio.create_task(_watchdog_loop())
+    # Background catalog warm (#204/#210): build the home snapshot and
+    # warm the first-card detail chain before a client drives, so the
+    # app's first requests never hit a 17-21s cold scrape. OFF in tests
+    # (conftest sets CS_UK_CATALOG_WARM=0) so a TestClient lifespan
+    # never triggers real provider scrapes.
+    if SETTINGS.catalog_warm_enabled:
+        _catalog_warm_task = asyncio.create_task(_catalog_warm_loop())
     yield
+    if _watchdog_task is not None:
+        _watchdog_task.cancel()
+        try:
+            await asyncio.wait_for(_watchdog_task, timeout=1.0)
+        except (TimeoutError, asyncio.CancelledError):
+            pass
+        _watchdog_task = None
+    if _catalog_warm_task is not None:
+        _catalog_warm_task.cancel()
+        try:
+            await asyncio.wait_for(_catalog_warm_task, timeout=1.0)
+        except (TimeoutError, asyncio.CancelledError):
+            pass
+        _catalog_warm_task = None
+    if _warm_task is not None:
+        _warm_task.cancel()
+        try:
+            await asyncio.wait_for(_warm_task, timeout=_WARM_TASK_DRAIN_S)
+        except (TimeoutError, asyncio.CancelledError):
+            pass
+        _warm_task = None
     # The uakino browser session is lazily created on first request and
     # runs a headless Chromium; close it on shutdown so SIGTERM doesn't
     # orphan the browser process. `close()` is a no-op when the session
@@ -176,7 +235,7 @@ app.include_router(jellyfin_router)
 
 
 @app.middleware("http")
-async def jellyfin_case_normalize(request: Request, call_next):
+async def jellyfin_case_normalize(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
     """Rewrite Jellyfin facade paths to canonical case.
 
     Real Jellyfin routes case-insensitively; FastAPI does not. A client
@@ -191,7 +250,7 @@ async def jellyfin_case_normalize(request: Request, call_next):
 
 
 @app.middleware("http")
-async def log_requests(request: Request, call_next):
+async def log_requests(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
     started = time.monotonic()
     response: Response = await call_next(request)
     latency_ms = int((time.monotonic() - started) * 1000)
@@ -211,18 +270,101 @@ async def unhandled(_request: Request, exc: Exception) -> JSONResponse:
     )
 
 
+@app.get("/api/health")
+async def health() -> dict[str, object]:
+    """Backend + provider health snapshot (ticket #215).
+
+    Returns per-provider status (the same ``/api/providers`` view),
+    whether ALL non-marker providers are simultaneously down (the wedge
+    signal — never a legit steady state), and the watchdog's reset
+    counter/last-reset time so an external supervisor can decide to
+    restart the process.
+    """
+    statuses = {
+        p.id: _provider_status(p.id)
+        for p in PROVIDERS.values()
+    }
+    return {
+        "providers": statuses,
+        "all_down": watchdog_mod.WATCHDOG.all_relevant_down(),
+        "watchdog": {
+            "reset_count": watchdog_mod.WATCHDOG.reset_count,
+            "last_reset_at": watchdog_mod.WATCHDOG.last_reset_at,
+            "cooldown_s": watchdog_mod.WATCHDOG.cooldown_s,
+        },
+        "catalog_warm": (
+            {
+                "status": _catalog_warm_state.status,
+                "home_warmed": _catalog_warm_state.home_warmed,
+                "content_warmed": _catalog_warm_state.content_warmed,
+                "failed": _catalog_warm_state.failed,
+                "cold_keys": _catalog_warm_state.cold_keys,
+            }
+            if _catalog_warm_state is not None
+            else {
+                # Ticket #224: a disabled warm (CS_UK_CATALOG_WARM=0) is
+                # NOT "pending" — it will never finish, so the runner's
+                # warm gate must not block on it. Report done: there is
+                # nothing to wait for.
+                "status": "done" if not SETTINGS.catalog_warm_enabled else "pending",
+                "home_warmed": False,
+                "content_warmed": 0,
+                "failed": 0,
+                "cold_keys": [],
+            }
+        ),
+    }
+
+
 @app.get("/api/providers")
 async def list_providers() -> list[ProviderInfo]:
     return [
         ProviderInfo(
             id=p.id,
             name=p.name,
-            types=list(p.types),  # type: ignore[arg-type]
-            status=TRACKER.status(p.id),
+            # Model B capabilities (contract #135): derive the provider's
+            # form/styles rollup from its internal classification — the
+            # legacy single ``types`` axis is gone from the wire.
+            forms=_provider_forms(p),
+            styles=_provider_styles(p),
+            status=_provider_status(p.id),
             last_error_at=TRACKER.last_error_at(p.id),
         )
         for p in PROVIDERS.values()
     ]
+
+
+def _provider_forms(p: BaseProvider) -> list[MediaForm]:
+    """The provider's ``MediaForm`` rollup, deduped in a stable order."""
+    seen: list[MediaForm] = []
+    for kind in p.types:
+        form = _model_b_axes(kind)[0]
+        if form not in seen:
+            seen.append(form)
+    return seen
+
+
+def _provider_styles(p: BaseProvider) -> list[MediaStyle]:
+    """The provider's style-tag rollup (∅ on the wire when none)."""
+    styles: set[MediaStyle] = set()
+    for kind in p.types:
+        styles.update(_model_b_axes(kind)[1])
+    return sorted(styles)
+
+
+def _provider_status(provider_id: str) -> HealthStatus:
+    """Per-provider status for /api/providers (issue #193).
+
+    A startup marker or a down sliding-window wins outright. Otherwise a
+    uakino session that has not finished warming reports the transient
+    ``warming`` status; once ready the sliding-window value takes over.
+    """
+    status = TRACKER.status(provider_id)
+    if status == STATUS_DOWN:
+        return status
+    if provider_id == "uakino" and not get_session().ready_event.is_set():
+        return STATUS_WARMING
+    return status
 
 
 @app.get("/api/sections")
@@ -267,6 +409,14 @@ async def browse(
             )
         except TimeoutError:
             pass  # keep the cards; stream() still refuses gated items
+    # Model B section filter (ADR-0001, ticket #134): the section's
+    # ``form``/``styles`` axes narrow its own browse results (CONTEXT.md
+    # «Section schema» match semantics — 3-case styles). Sections that
+    # haven't declared axes (both ``None``) pass everything, so this is
+    # a no-op for today's un-migrated sections.
+    section_def = next(s for s in p.sections if s.id == section)
+    if section_def.form is not None or section_def.styles is not None:
+        results = [r for r in results if _section_matches(r, section_def)]
     resp = BrowseResponse(provider=provider, section=section, page=page, has_next=has_next, results=results)
     _browse_cache.set(cache_key, resp)
     return resp
@@ -276,8 +426,20 @@ async def browse(
 async def search(
     q: str = Query(min_length=1, max_length=80),
     provider: str = Query("all"),
+    form: str | None = Query(default=None),
+    style: str | None = Query(default=None),
 ) -> SearchResponse:
     """Multi-provider search with per-provider failure attribution (ADR-0002).
+
+    Model B filter axes (ADR-0001, ticket #134):
+      - ``form=movie|series`` — exact-or-None; absent = any.
+      - ``style=anime|cartoon|dorama[,anime,...]`` — comma-separated
+        list, intersection semantics (an item passes iff it carries at
+        least one requested style); absent = any. No ordinary-only
+        token on search — that filter lives on Section (CONTEXT.md).
+    Both axes participate in the cache key, so filtered and unfiltered
+    searches for the same ``q`` never share an entry (ADR-0001
+    obligation, fulfilled here).
 
     Behaviour:
       - 200 OK with ``failures: list[ProviderFailure]`` whenever at least
@@ -287,179 +449,19 @@ async def search(
         the overall 12s budget expired for ALL providers — i.e. nothing
         usable came back in time. Partial results on timeout return 200
         with synthetic timeout rows; total-failure returns 502.
+
+    The fan-out, merge, gating, cache, and uakino lifecycle live in the
+    shared ``catalog_state.merged_search`` (ticket #106) — the Jellyfin
+    facade feeds the same search, so both surfaces share one cache and
+    one behaviour.
     """
     if provider != "all" and provider not in PROVIDERS:
         raise HTTPException(400, detail=ErrorResponse(error="unknown_provider", message=provider).model_dump())
-    cache_key = f"search:{provider}:{q}"
-    cached = _search_cache.get(cache_key)
-    if cached is not None:
-        return cached  # type: ignore[return-value]
-    selected = list(PROVIDERS.values() if provider == "all" else [PROVIDERS[provider]])
-    http = get_client()
-
-    async def run(p: BaseProvider) -> list[SearchResult] | ProviderFailure:
-        """Per-provider search that converts any exception into a ProviderFailure.
-
-        Returns ``list[SearchResult]`` on success and ``ProviderFailure``
-        on failure. A provider that returns ``[]`` with no exception is
-        a legitimate "no match" answer and is NOT a failure (the empty
-        list is the success signal). Health recording lives in the
-        outer loop, not here, so partial-failure paths don't double-count.
-        """
-        try:
-            return await p.search(q, http)
-        except Exception as e:  # noqa: BLE001
-            log.warning("search failed provider=%s err=%s", p.id, e)
-            if isinstance(e, (httpx.TimeoutException, asyncio.TimeoutError)):
-                code = "timeout"
-            else:
-                code = "upstream_unreachable"
-            return ProviderFailure(provider=p.id, code=code, message=str(e))
-
-    # One task per provider, so the overall-timeout branch can observe
-    # partial completion (ADR-0002 contract: "if it fires, any in-flight
-    # providers that didn't complete get a synthetic timeout row").
-    # `asyncio.wait` returns (done, pending) within the budget; we then
-    # cancel pending and assemble the response — 502 only when no
-    # provider completed at all.
-    tasks: dict[asyncio.Task[list[SearchResult] | ProviderFailure], str] = {
-        asyncio.create_task(run(p)): p.id for p in selected
-    }
-    done: set[asyncio.Task[list[SearchResult] | ProviderFailure]]
-    pending: set[asyncio.Task[list[SearchResult] | ProviderFailure]]
-    done, pending = await asyncio.wait(
-        tasks.keys(),
-        timeout=SETTINGS.search_total_timeout_s,
+    form_filter = _parse_form_filter(form)
+    style_filter = _parse_style_filter(style)
+    return await _catalog_merged_search(
+        q, provider=provider, form=form_filter, style_filter=style_filter
     )
-
-    # Cancel + drain the still-flying tasks. CancelledError is not
-    # caught by `run()`'s `except Exception`, so a cancel leaves the
-    # task in cancelled state; we don't iterate cancelled tasks below.
-    for task in pending:
-        task.cancel()
-    if pending:
-        await asyncio.wait(pending, timeout=0.5)
-
-    out_results: list[SearchResult] = []
-    failures: list[ProviderFailure] = []
-
-    # Drain done tasks into pid-keyed maps so we can iterate PROVIDERS in
-    # registration order below. ``asyncio.wait`` returns done as a set,
-    # which has nondeterministic iteration order — that propagates into
-    # the response and breaks stable test assertions + UI source-order.
-    # The PROVIDERS dict preserves insertion order (Python 3.7+), so we
-    # use it as the canonical traversal key for results/failures too.
-    results_by_pid: dict[str, list[SearchResult]] = {}
-    failures_by_pid: dict[str, ProviderFailure] = {}
-    for task in done:
-        if task.cancelled():
-            continue
-        pid = tasks[task]
-        try:
-            content = task.result()
-        except Exception as e:  # noqa: BLE001
-            # Defensive: ``run()`` catches Exception everywhere; an
-            # escapee is a programming error. Surface as an internal
-            # failure attributed to the provider so the client sees a
-            # structured signal rather than a partial response.
-            log.warning("search unexpected escapee provider=%s err=%r", pid, e)
-            TRACKER.record(pid, ok=False)
-            failures_by_pid[pid] = ProviderFailure(
-                provider=pid, code="internal", message=str(e)
-            )
-            continue
-        if isinstance(content, ProviderFailure):
-            TRACKER.record(pid, ok=False)
-            failures_by_pid[pid] = content
-        else:
-            TRACKER.record(pid, ok=True)
-            results_by_pid[pid] = content
-
-    # Pending tasks: the overall budget fired before they completed.
-    # Per ADR-0002, each one gets a synthetic ``timeout`` row.
-    for task in pending:
-        pid = tasks[task]
-        failures_by_pid[pid] = ProviderFailure(
-            provider=pid,
-            code="timeout",
-            message=f"overall budget {SETTINGS.search_total_timeout_s}s exceeded",
-        )
-
-    # Subscription-gate sweep (can_gate providers): drop cards whose
-    # only stream is the sponsor promo clip. Bounded so a slow sweep
-    # degrades to keeping the cards instead of failing the search.
-    for prov in PROVIDERS.values():
-        if prov.can_gate and prov.id in results_by_pid:
-            try:
-                results_by_pid[prov.id] = await asyncio.wait_for(
-                    _filter_gated_items(results_by_pid[prov.id], http),
-                    timeout=_GATE_CHECK_TIMEOUT_S,
-                )
-            except TimeoutError:
-                pass
-
-    # Emit results + failures in PROVIDERS registration order so the
-    # response is deterministic regardless of which asyncio task
-    # finishes first. The UI relies on stable source order for the
-    # source-switching chip strip. Use ``prov`` to avoid shadowing the
-    # function's ``provider`` query parameter (which is typed as ``str``).
-    for prov in PROVIDERS.values():
-        pid = prov.id
-        if pid in results_by_pid:
-            out_results.extend(results_by_pid[pid])
-        if pid in failures_by_pid:
-            failures.append(failures_by_pid[pid])
-
-    if not done and failures:
-        # Every provider timed out — total failure is a server-side
-        # problem, not a per-provider outcome. Surface as a clean error
-        # (never cached per ADR-0003).
-        log.warning(
-            "search total-timeout exceeded q=%r providers=%d", q, len(selected)
-        )
-        raise HTTPException(
-            502,
-            detail=ErrorResponse(
-                error="search_timeout",
-                message=f"search exceeded {SETTINGS.search_total_timeout_s}s for all {len(selected)} providers",
-            ).model_dump(),
-        ) from None
-
-    # Build the response. Always cache 200 responses — including those
-    # with populated failures (a flapping provider should not become a
-    # permanent cache bypass per ADR-0003). The 502 path never reaches
-    # this code because it raises above.
-    #
-    # v3 (issue #71): cross-provider duplicates are merged server-side
-    # via ``merge_results`` (issue #52 / v3 spec §4). The result is a
-    # ``groups: list[SearchGroup]`` payload — one entry per group_key,
-    # each carrying the full per-provider ``sources`` list. The UI
-    # renders one card per group; opening it hits
-    # ``/api/content/{group_key}`` (issue #70) which then loads the
-    # merged detail with the same ``g1:…`` key.
-    groups = [
-        SearchGroup(
-            group_key=mg.key,
-            title=mg.sources[0].title,
-            year=mg.sources[0].year,
-            type=mg.sources[0].type,
-            poster=mg.sources[0].poster,
-            sources=list(mg.sources),
-            # Issue #89: every per-item group key that contributed to
-            # this merged card. Deduped, first-seen order. The canonical
-            # ``group_key`` is the yearful-preferred-min; the client
-            # matches a resume entry against ANY member key, not only
-            # ``group_key``.
-            member_keys=list(dict.fromkeys(item_group_key(s) for s in mg.sources)),
-        )
-        for mg in merge_results(out_results)
-    ]
-    if failures:
-        resp = SearchResponse(query=q, groups=groups, failures=failures)
-    else:
-        resp = SearchResponse(query=q, groups=groups)
-    _search_cache.set(cache_key, resp)
-    return resp
 
 
 @app.get("/api/home", response_model=HomeResponse)
@@ -476,8 +478,9 @@ async def home() -> HomeResponse:
         returns at least one item (spec AC: present iff animeon
         provides it).
       - Five type rows (movie, series, anime, cartoon, dorama) — each
-        aggregates every provider section whose ``Section.type``
-        matches. Empty types are omitted.
+        aggregates every provider section whose Model B axes
+        (``form``/``styles``) map to that kind (``section_row_type``).
+        Empty types are omitted.
 
     Cached for ``SETTINGS.cache_home_s`` (30 minutes by default). On a
     cache hit the providers are not re-invoked.
@@ -493,17 +496,17 @@ async def content(
     content_id: str,
     source: str | None = Query(default=None),
 ) -> ContentResponse | GroupContentResponse | GroupSourceContentResponse:
-    """Discriminator: ``g1:…`` group keys route to the merged lookup;
+    """Discriminator: ``g2:…`` group keys route to the merged lookup;
     everything else is the existing ``provider:external`` content path.
 
-    For ``g1:…`` keys, an optional ``?source=<provider>`` query param
+    For ``g2:…`` keys, an optional ``?source=<provider>`` query param
     routes to the lazy single-source fetch (issue #60 / v3 spec §3.3):
     returns that ONE source's v2 ContentResponse + a ``providers`` echo
     for the source-switching chip strip. Without ``?source=``, the
     legacy ``GroupContentResponse{item, providers}`` shape is returned
     (preserved for backwards compatibility).
     """
-    if content_id.startswith("g1:"):
+    if content_id.startswith("g2:"):
         if source is not None:
             return await _content_by_group_key_and_source(content_id, source)
         return await _content_by_group_key(content_id)
@@ -522,6 +525,8 @@ async def _content_by_id(content_id: str) -> ContentResponse:
     provider_id, external_id = _split_content_id(content_id)
     if provider_id not in PROVIDERS or not external_id:
         raise HTTPException(404, detail=ErrorResponse(error="not_found", message=content_id).model_dump())
+    if provider_id == "uakino":
+        await _await_uakino_ready()
     http = get_client()
     resp = await _upstream_guard(
         provider_id,
@@ -536,7 +541,7 @@ async def _content_by_id(content_id: str) -> ContentResponse:
     # Stateless per-item group key (issue #69): pure function of the item's
     # own title/type/year, so client state survives across sessions and
     # provider-set changes.
-    resp.group_key = group_key_from(resp.title, resp.type, resp.year, content_id)
+    resp.group_key = group_key_from(resp.title, resp.form, resp.year, content_id)
     _content_cache.set(cache_key, resp)
     return resp
 
@@ -606,7 +611,20 @@ async def _content_by_group_key_and_source(
             ).model_dump(),
         )
 
-    external_id = per_provider[source].id
+    # SearchResult.id carries the ``<provider>:`` wire prefix; the
+    # adapter's ``content()`` expects the bare external id (the same
+    # derivation ``_content_by_id`` does via ``_split_content_id``).
+    # Issue #157: the lazy branch used to pass the prefixed id straight
+    # through, which 502'd for every provider whose content() validates
+    # the external id shape.
+    _, external_id = _split_content_id(per_provider[source].id)
+    if not external_id:
+        raise HTTPException(
+            404,
+            detail=ErrorResponse(
+                error="not_found", message=per_provider[source].id
+            ).model_dump(),
+        )
     provider = PROVIDERS[source]
     http = get_client()
 
@@ -630,31 +648,11 @@ async def _content_by_group_key_and_source(
     # Re-derive the group key on this single-source response so the
     # returned ContentResponse is self-identifying (issue #69 stateless
     # identity — same key the merge core would compute for this item).
-    resp.group_key = group_key_from(resp.title, resp.type, resp.year, resp.id)
+    resp.group_key = group_key_from(resp.title, resp.form, resp.year, resp.id)
     return GroupSourceContentResponse(
         **resp.model_dump(),
         sources=sources_echo,
     )
-
-
-def _inject_sources_into_unavailable_error(
-    exc: HTTPException, sources: list[SearchResult]
-) -> None:
-    """Add the spec-required ``sources`` echo to an upstream-guard 502.
-
-    Called from the 502 re-raise path so the chip strip stays up even
-    when the focused source's ``content()`` raised. The echo is
-    JSON-serialized as a plain list of dicts because FastAPI's
-    HTTPException detail is encoded by ``json.dumps`` directly (no
-    Pydantic reduction). If the upstream detail is not a dict, the
-    function is a no-op — the caller will re-raise the original
-    exception unchanged.
-    """
-    if not isinstance(exc.detail, dict):
-        return
-    new_detail = dict(exc.detail)
-    new_detail["sources"] = [s.model_dump() for s in sources]
-    exc.detail = new_detail
 
 
 @app.get("/api/stream/{content_id:path}")
@@ -662,6 +660,8 @@ async def stream(content_id: str, translation: str | None = None) -> StreamRespo
     provider_id, rest = _split_content_id(content_id)
     if provider_id not in PROVIDERS or not rest:
         raise HTTPException(404, detail=ErrorResponse(error="not_found", message=content_id).model_dump())
+    if provider_id == "uakino":
+        await _await_uakino_ready()
     provider = PROVIDERS[provider_id]
     http = get_client()
     # Episode-level translation validation (issue #9): if the provider
@@ -671,6 +671,11 @@ async def stream(content_id: str, translation: str | None = None) -> StreamRespo
         try:
             allowed = await provider.episode_translations(rest, http)
         except Exception:
+            log.warning(
+                "episode_translations(%s) failed; accepting any translation",
+                provider_id,
+                exc_info=True,
+            )
             allowed = None
         if allowed is not None and translation not in allowed:
             raise HTTPException(

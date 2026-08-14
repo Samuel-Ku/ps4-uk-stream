@@ -6,11 +6,12 @@ client pointed at ``host:port`` finds a server without configuration.
 
 Ticket #102: the handshake. Ticket #104: the catalog surface — views,
 item listing, poster. Ticket #105: item detail + hierarchy. Ticket
-#106: PlaybackInfo. Ticket #107: the conditional stream handler
-(``GET /Videos/{id}/stream``) with byte proxying, Range support, and
-HLS segment rewriting. Ticket #108: sessions no-op endpoints
-(``/Sessions/Playing|Progress|Stopped|Logout`` → 204), all behind the
-same ``require_token`` gate.
+#106: search mapping (``/Items?searchTerm=`` + ``/Search/Hints``) feeding
+the shared merged search; PlaybackInfo. Ticket #107: the conditional
+stream handler (``GET /Videos/{id}/stream``) with byte proxying, Range
+support, and HLS segment rewriting. Ticket #108: sessions no-op
+endpoints (``/Sessions/Playing|Progress|Stopped|Logout`` → 204), all
+behind the same ``require_token`` gate.
 """
 
 from __future__ import annotations
@@ -22,18 +23,47 @@ import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
-from ..catalog_state import get_home, load_home, resolve_group, resolve_group_content
+from ..catalog_state import (
+    get_home,
+    group_key_for_external,
+    is_hard_unavailable,
+    load_home,
+    merged_search,
+    peek_group_content,
+    playback_positions,
+    record_playback,
+    register_search_groups,
+    resolve_group,
+    resolve_group_content,
+)
 from ..config import SETTINGS
 from ..health import TRACKER
 from ..http_client import get_client
-from ..models import ContentResponse, Episode, HomeItem, HomeRow, Season, StreamResponse
+from ..models import (
+    ContentResponse,
+    Episode,
+    HomeItem,
+    HomeRow,
+    SearchGroup,
+    SearchResult,
+    Season,
+    StreamResponse,
+)
 from ..poster_proxy import fetch as fetch_poster_bytes
 from ..providers import PROVIDERS
 from ..providers.base import ProviderError
@@ -44,7 +74,10 @@ from .models import (
     BaseItemDtoQueryResult,
     DisplayPreferencesDto,
     MediaSourceInfo,
+    PersonDto,
     PlaybackInfoResponse,
+    SearchHint,
+    SearchHintResult,
     SystemInfoPublic,
     UserDto,
 )
@@ -84,8 +117,8 @@ def normalize_jellyfin_path(path: str) -> str | None:
     for route in router.routes:
         compiled = getattr(route, "_jf_ci_regex", None)
         if compiled is None:
-            compiled = _compile_case_insensitive(route.path_format)
-            route._jf_ci_regex = compiled
+            compiled = _compile_case_insensitive(route.path_format)  # type: ignore[attr-defined]
+            route._jf_ci_regex = compiled  # type: ignore[attr-defined]
         m = compiled.fullmatch(path)
         if m is None:
             continue
@@ -100,18 +133,20 @@ def normalize_jellyfin_path(path: str) -> str | None:
         best_route, best_match = route, m
         if best_specificity == 0:
             break
-    if best_route is None:
+    if best_route is None or best_match is None:
         return None
-    canonical = best_route.path_format
+    canonical: str = best_route.path_format  # type: ignore[attr-defined]
     for name, value in best_match.groupdict().items():
         canonical = canonical.replace("{" + name + "}", value)
     return canonical
 
-#: What the server tells the client it is. The real Jellyfin server name
-#: is configurable; we surface the project's own identity so the
-#: client's connection dialog shows something recognizable.
-_PRODUCT = "cs-uk-api"
-_VERSION = "0.1.0"
+#: What the server tells the client it is. The official Jellyfin apps
+#: validate the server's product/version on connect and refuse anything
+#: that doesn't look like a real Jellyfin ("unsupported version or
+#: product"). Surface a genuine Jellyfin identity so any client accepts
+#: the handshake; the facade itself is version-agnostic.
+_PRODUCT = "Jellyfin Server"
+_VERSION = "10.11.11"
 
 
 def _user_name_for(user_id: str) -> str:
@@ -158,9 +193,10 @@ _COLLECTION_TYPE_BY_ROW = {
     "popular": "tvshows",
 }
 
-#: Home ``MediaType`` → Jellyfin item Type. Only Movie/Series are expressible
+#: Home-row kind → Jellyfin item Type. Only Movie/Series are expressible
 #: on the wire (AC: "correct Type (Movie/Series)"); style-tagged rows are
-#: episodic content and become Series.
+#: episodic content and become Series. Row kinds come from the Model B
+#: section axes (contract #135) — the legacy ``type`` axis is gone.
 _JF_TYPE_BY_ROW = {
     "movie": "Movie",
     "series": "Series",
@@ -168,6 +204,42 @@ _JF_TYPE_BY_ROW = {
     "cartoon": "Series",
     "dorama": "Series",
 }
+
+#: Reverse of ``_JF_TYPE_BY_ROW``: Jellyfin item Type → the home-row
+#: kinds that map to it. Multiple rows collapse onto one wire Type
+#: (series/anime/cartoon/dorama are all "Series"), so this is a
+#: set-valued index — used to translate ``includeItemTypes`` back to
+#: the row kinds the home snapshot is keyed by (ticket #213).
+_HOME_KINDS_BY_JF_TYPE: dict[str, set[str]] = {}
+for _kind, _jf_type in _JF_TYPE_BY_ROW.items():
+    _HOME_KINDS_BY_JF_TYPE.setdefault(_jf_type, set()).add(_kind)
+
+
+def _parse_include_types(include_item_types: str | None) -> set[str] | None:
+    """Parse ``includeItemTypes=Movie,Series`` into the home-row kinds.
+
+    None when the param is absent (no type filter); empty set when the
+    param is present but names nothing we express (→ filter everything
+    out, mirroring the client's expectation that an unexpressible type
+    yields an empty shelf).
+    """
+    if include_item_types is None:
+        return None
+    kinds: set[str] = set()
+    for t in include_item_types.split(","):
+        kinds.update(_HOME_KINDS_BY_JF_TYPE.get(t.strip(), set()))
+    return kinds
+
+
+def _parse_genre_ids(genre_ids: str | None) -> set[str] | None:
+    """Parse ``genreIds=a,b`` into a set (None when absent).
+
+    Genre ids ARE the genre names (Jellyfin's convention), so the value
+    round-trips directly as the shelf tap's filter (ticket #213).
+    """
+    if genre_ids is None:
+        return None
+    return {g for g in (x.strip() for x in genre_ids.split(",")) if g}
 
 
 def _poster_tag(poster_url: str) -> str:
@@ -192,17 +264,26 @@ def _row_dto(row: HomeRow, server_id: str) -> BaseItemDto:
 
 
 def _item_dto(row: HomeRow, item: HomeItem, server_id: str) -> BaseItemDto:
-    """One library card: Movie/Series item carrying the ``g1:`` id.
+    """One library card: Movie/Series item carrying the ``g2:`` id.
 
     ``ImageTags.Primary`` is set only when the card carries a poster
     (D9). ``year`` is surfaced as ``ProductionYear`` (Jellyfin's field);
     ``ParentId`` is the view the card came from.
+
+    Ticket #216: the card's Type is re-verified against the item's
+    RESOLVED content when one is cached — the section/URL heuristic is a
+    cheap guess, the content page is the truth, and the grid must not
+    promise a Type the detail page will contradict. ``peek_group_content``
+    is a cache-only read (never fetches), so the re-verification is free;
+    an unresolved card keeps the snapshot's own form.
     """
+    resolved = peek_group_content(item.group_key)
+    form = resolved.form if resolved is not None else item.form
     dto = BaseItemDto(
         Name=item.title,
         ServerId=server_id,
         Id=item.group_key,
-        Type=_JF_TYPE_BY_ROW.get(item.type, "Series"),
+        Type=_JF_TYPE_BY_ROW.get(form, "Series"),
         ProductionYear=item.year,
         ParentId=_VIEW_ID_BY_TYPE[row.type],
     )
@@ -211,8 +292,120 @@ def _item_dto(row: HomeRow, item: HomeItem, server_id: str) -> BaseItemDto:
     return dto
 
 
+def _home_items() -> list[tuple[HomeRow, HomeItem]]:
+    """Every (row, item) pair in the cached home snapshot, or [].
+
+    Deliberately does NOT trigger a home build — a read that would fan
+    out to every provider belongs to the detail/list routes, not to
+    cheap snapshot lookups (poster, similar shelf).
+    """
+    home = get_home()
+    if home is None:
+        return []
+    return [(row, it) for row in home.rows for it in row.items]
+
+
+def _group_cards(group_key: str) -> list[SearchResult]:
+    """Every card the resolution map holds for a ``g2:`` item, or [].
+
+    Ticket #233: the #219/#220 fallbacks read the home snapshot, but a
+    search-found group is usually NOT in the 30-min home snapshot — only
+    in the shared group-key resolution map ``register_search_groups``
+    populated. The detail DTO falls back across BOTH sources so a
+    search-opened item renders the same metadata its own search card
+    surfaced.
+    """
+    per_provider = resolve_group(group_key)
+    if per_provider is None:
+        return []
+    return list(per_provider.values())
+
+
+def _genres_for_group(group_key: str) -> list[str]:
+    """The card's genres for a ``g2:`` item, or [] (ticket #219).
+
+    The card parser (#213) harvests genre labels that the content page
+    often does not repeat — ufdub's ``div.short-c`` lists them while the
+    detail page carries only a description. The detail DTO falls back to
+    this so the genre row renders where the data exists. First non-empty
+    card wins: the home snapshot's card, then any card the group's
+    resolution map holds (ticket #233).
+    """
+    for _row, it in _home_items():
+        if it.group_key == group_key and it.genres:
+            return list(it.genres)
+    for card in _group_cards(group_key):
+        if card.genres:
+            return list(card.genres)
+    return []
+
+
+def _year_for_group(group_key: str) -> int | None:
+    """The card's year for a ``g2:`` item, or None (ticket #220).
+
+    Mirrors ``_genres_for_group``: a provider whose content page lacks
+    the year meta block still gets the badge when the card carried a
+    year. The content page wins when it has one — the card is the cheap
+    guess. First year-ful card wins: the home snapshot's card, then any
+    card the group's resolution map holds (ticket #233).
+    """
+    for _row, it in _home_items():
+        if it.group_key == group_key and it.year is not None:
+            return it.year
+    for card in _group_cards(group_key):
+        if card.year is not None:
+            return card.year
+    return None
+
+
+def _card_for_group(group_key: str) -> HomeItem | None:
+    """The snapshot card for a ``g2:`` item, or None (ticket #224).
+
+    The degraded-detail lookup: when a card IS in the cached home but
+    its live resolution failed transiently (upstream blip), the card
+    itself still carries enough truth (title, year, genres, poster,
+    view) to answer the detail. None when the item is not in the
+    current home snapshot — a cold cache has no card, so the D2 404
+    stands.
+    """
+    for _row, it in _home_items():
+        if it.group_key == group_key:
+            return it
+    return None
+
+
+def _card_dto(group_key: str, card: HomeItem, server_id: str) -> BaseItemDto:
+    """Degraded detail built purely from the home snapshot card (#224).
+
+    The card-data counterpart of ``_content_dto``: a known card whose
+    live ``content()`` resolution failed transiently (run8: animeon
+    ``unreachable``/502 for the popular first card) still answers the
+    detail with the card's own data — title, type, year, genres,
+    poster tag, parent view — instead of a hard 404 that blanks the
+    whole page mid-run. Same lookups ``_content_dto`` falls back to
+    (#219 genres, #220 year, D9 poster). Deliberate 404s (cold cache,
+    gated, blocked, unknown ids, season suffixes) never reach here —
+    see ``is_hard_unavailable``.
+    """
+    dto = BaseItemDto(
+        Name=card.title,
+        ServerId=server_id,
+        Id=group_key,
+        Type="Movie" if card.form == "movie" else "Series",
+        ProductionYear=card.year,
+        Genres=list(card.genres),
+    )
+    parent = _view_id_for_item(group_key)
+    if parent is not None:
+        dto.ParentId = parent
+    poster = _poster_for(group_key)
+    if poster is not None:
+        dto.ImageTags = {"Primary": _poster_tag(poster)}
+    return dto
+
+
 def _poster_for(item_id: str) -> str | None:
-    """The canonical poster URL for a ``g1:`` item id, or None.
+    """The canonical poster URL for a ``g2:`` item id, or None.
 
     Resolution walks the cached home snapshot — the same lookup the
     native ``/api/content/{group_key}`` route uses — and takes the
@@ -232,7 +425,7 @@ def _poster_for(item_id: str) -> str | None:
 
 
 def _view_id_for_item(item_id: str) -> str | None:
-    """The view id that surfaced a ``g1:`` item, from the cached home.
+    """The view id that surfaced a ``g2:`` item, from the cached home.
 
     Wraps the same home walk `_poster_for` uses so a detail page can
     tell the client which library the item belongs to (D5). None when
@@ -256,17 +449,42 @@ def _content_dto(group_key: str, content: ContentResponse, server_id: str) -> Ba
     so the tag and the route always agree (a card with no art means no
     tag AND a 404 image, never a dangling tag). Translations stay
     server-side — the wire carries no translation surface. The item id
-    is the stateless ``g1:`` group key, so the client's bookmarks and
+    is the stateless ``g2:`` group key, so the client's bookmarks and
     the native route agree.
     """
     dto = BaseItemDto(
         Name=content.title,
         ServerId=server_id,
         Id=group_key,
-        Type="Movie" if content.type == "movie" else "Series",
-        ProductionYear=content.year,
+        Type="Movie" if content.form == "movie" else "Series",
+        # Ticket #220: the content page carries the year when the
+        # provider exposes one (ufdub's ``Рік:`` block); otherwise fall
+        # back to the snapshot card's year so the badge renders where
+        # either source has the data.
+        ProductionYear=content.year
+        if content.year is not None
+        else _year_for_group(group_key),
         Overview=content.description,
+        # Ticket #213: the detail page renders a genre row when present
+        # (Switchfin ``media_movie``/``media_series`` show labelGenres
+        # iff non-empty). Ticket #219: the content page often does NOT
+        # repeat the card's genres (ufdub lists them on the card only) —
+        # fall back to the snapshot card's genres so the row renders
+        # where the data exists.
+        Genres=list(content.genres or _genres_for_group(group_key)),
     )
+    # Ticket #221: the People rail renders from BaseItemDto.People —
+    # populated when the resolved provider's content page exposed cast
+    # (kinotron/uaserialspro actor lists, klontv JSON-LD). Empty people
+    # stays an empty list; Switchfin hides the rail then.
+    dto.People = [
+        PersonDto(Id=p.id, Name=p.name, Role=p.role) for p in content.people
+    ]
+    # Ticket #222: the rating badge renders from CommunityRating — set
+    # when the provider exposed a real score (klontv's JSON-LD
+    # aggregateRating); None stays omitted so the badge hides instead
+    # of showing 0.
+    dto.CommunityRating = content.rating
     parent = _view_id_for_item(group_key)
     if parent is not None:
         dto.ParentId = parent
@@ -336,6 +554,12 @@ def _episode_dto(
         SeriesName=series_name,
         IndexNumber=episode.number,
         ParentIndexNumber=season.number,
+        # Ticket #223: the app asks for these fields explicitly
+        # (``fields=...Overview``) — emit them when the provider's
+        # episode data carries them (animeon's ``aired``); otherwise
+        # omitted by ``response_model_exclude_none``.
+        Overview=episode.description or None,
+        PremiereDate=episode.premiere_date,
     )
 
 
@@ -349,6 +573,78 @@ async def _user_views() -> BaseItemDtoQueryResult:
     home = await load_home()
     server_id = _server_id()
     dtos = [_row_dto(row, server_id) for row in home.rows]
+    return BaseItemDtoQueryResult(Items=dtos, TotalRecordCount=len(dtos))
+
+
+def _search_group_dto(group: SearchGroup, server_id: str) -> BaseItemDto:
+    """One search-result card (ticket #106): the merged group in the same
+    listing shape as ``_item_dto`` (D5/D9) — ``g2:`` id, Movie/Series
+    Type from the group's canonical type, ``ImageTags.Primary`` present
+    *iff* the card has a poster.
+
+    No ``ParentId``: a searched card is not tied to a home row — search
+    covers the whole catalog, not a view.
+    """
+    dto = BaseItemDto(
+        Name=group.title,
+        ServerId=server_id,
+        Id=group.group_key,
+        Type=_JF_TYPE_BY_ROW.get(group.form, "Series"),
+        ProductionYear=group.year,
+    )
+    if group.poster is not None:
+        dto.ImageTags = {"Primary": _poster_tag(group.poster)}
+    return dto
+
+
+def _search_hint(group: SearchGroup) -> SearchHint:
+    """One search-box hint (ticket #106): the same merged card in the
+    ``SearchHint`` shape ``/Search/Hints`` serves."""
+    hint = SearchHint(
+        ItemId=group.group_key,
+        Id=group.group_key,
+        Name=group.title,
+        Type=_JF_TYPE_BY_ROW.get(group.form, "Series"),
+        ProductionYear=group.year,
+    )
+    if group.poster is not None:
+        hint.ImageTags = {"Primary": _poster_tag(group.poster)}
+    return hint
+
+
+async def _jf_search_groups(search_term: str) -> list[SearchGroup]:
+    """The merged search groups behind a facade search, or [] (ticket #106).
+
+    Feeds the shared ``merged_search`` (the exact fan-out the native
+    ``/api/search`` route runs — same per-provider failure attribution,
+    gated-item sweep, uakino skip, and 5-min cache), then registers the
+    groups into the shared group-key resolution map so a searched card
+    opens in the #105 detail surface (search covers the whole catalog;
+    most results are NOT in the 30-min home snapshot).
+
+    Degrades to an empty result on total failure (every provider timed
+    out — the native route's 502 ``search_timeout``) and on an empty
+    term: the Jellyfin-tolerant answer, the same a stale view parent
+    gets (D5).
+    """
+    term = search_term.strip()
+    if not term:
+        return []
+    try:
+        resp = await merged_search(term, provider="all", form=None, style_filter=None)
+    except HTTPException:
+        return []
+    register_search_groups(resp.groups)
+    return resp.groups
+
+
+async def _jf_search(search_term: str) -> BaseItemDtoQueryResult:
+    """Listing-shaped search result (ticket #106, D10): one card per
+    merged group, ``g2:`` ids, Movie/Series types matching the #105
+    detail surface."""
+    groups = await _jf_search_groups(search_term)
+    server_id = _server_id()
+    dtos = [_search_group_dto(g, server_id) for g in groups]
     return BaseItemDtoQueryResult(Items=dtos, TotalRecordCount=len(dtos))
 
 
@@ -524,15 +820,22 @@ async def user_views_server(user_id: str) -> BaseItemDtoQueryResult:
 async def items_listing(
     parent_id: str | None = Query(default=None, alias="parentId"),
     user_id: str | None = Query(default=None, alias="userId"),
+    search_term: str | None = Query(default=None, alias="searchTerm"),
+    start_index: int = Query(default=0, alias="startIndex"),
+    limit: int | None = Query(default=None),
+    genre_ids: str | None = Query(default=None, alias="genreIds"),
 ) -> BaseItemDtoQueryResult:
-    """Library listing for one view, OR children of a series/season
-    (ticket #105 hierarchy, D3).
+    """Library listing for one view, children of a series/season
+    (ticket #105 hierarchy, D3), OR a merged-catalog search
+    (ticket #106): when ``searchTerm`` is present, the listing is the
+    shared ``/api/search`` merged groups as cards (``g2:`` ids, same
+    Movie/Series shape as a view's cards).
 
     Two parent kinds are served by the same route:
 
       - ``parentId`` = a view's ``Id`` (echoed from ``/UserViews``) —
         the home-row cards, exactly the ticket #104 behaviour.
-      - ``parentId`` = a series' ``g1:`` group key → the season list
+      - ``parentId`` = a series' ``g2:`` group key → the season list
         (``Type: Season``). ``parentId`` = a ``<group_key>:S<n>`` season
         id → the season's episodes (``Type: Episode``).
 
@@ -541,19 +844,95 @@ async def items_listing(
     empty (a movie has no children, D3; episodes survive only under a
     resolved season).
     """
+    if search_term:
+        return await _jf_search(search_term)
     row_type = _VIEW_TYPE_BY_ID.get(parent_id or "")
     if row_type is None:
         return await _hierarchy(parent_id)
     home = await load_home()
     server_id = _server_id()
+    wanted_genres = _parse_genre_ids(genre_ids)
     for row in home.rows:
         if row.type == row_type:
-            dtos = [_item_dto(row, it, server_id) for it in row.items]
-            return BaseItemDtoQueryResult(Items=dtos, TotalRecordCount=len(dtos))
+            items = row.items
+            if wanted_genres is not None:
+                # Ticket #213: the genre shelf's tap round-trips as
+                # ``genreIds=<id>`` — filter the view's cards to those
+                # carrying at least one requested genre (genre ids ARE
+                # the names).
+                items = [
+                    it for it in items if wanted_genres & set(it.genres)
+                ]
+            dtos = [_item_dto(row, it, server_id) for it in items]
+            total = len(dtos)
+            end = None if limit is None else start_index + limit
+            # Honest slicing (device-driving B11): the real client requests
+            # ``startIndex``/``limit`` pages and stops when a page comes back
+            # short. Ignoring the params made page 2 repeat page 1, so the
+            # app's infinite scroll re-requested it forever.
+            return BaseItemDtoQueryResult(
+                Items=dtos[start_index:end],
+                TotalRecordCount=total,
+                StartIndex=start_index,
+            )
     # A valid view id whose row is currently absent (e.g. «Популярні
     # зараз» when no provider carries it) is an empty library, not an
     # error — same tolerant answer as an unknown parent.
     return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
+
+
+async def _resolve_playback_episode(
+    item_id: str,
+) -> tuple[BaseItemDto | None, BaseItemDto | None]:
+    """Map a played episode id to (its DTO, the next episode's DTO).
+
+    Episode wire ids look like ``ufdub:dorama-408-...:s1e1`` — the
+    ``provider:external`` prefix identifies the merged group (reverse
+    group lookup, #214), whose season hierarchy gives the episode list.
+    Returns ``(None, None)`` for a non-episode id or an unresolvable
+    group (cold cache / gated item).
+    """
+    # Episode wire ids end in ``:s1e1`` (ufdub-style) or ``:e5``
+    # (uakino/kinotron-style), or carry a base64 source blob AFTER the
+    # ``:eN`` tail (animeon-style ``animeon:918:e1:eyJ...`` — the blob
+    # itself can contain digits, so the tail is ``:e<N>`` followed by
+    # ``:`` or end-of-string, never ``:e<N>``+digits). The prefix before
+    # the tail is the ``provider:external`` composite that identifies
+    # the merged group.
+    match = re.search(r":(?:s\d+)?e\d+(?=:|$)", item_id)
+    if match is None:
+        return None, None
+    group_key = group_key_for_external(item_id[: match.start()])
+    if group_key is None:
+        return None, None
+    seasons = (await _hierarchy(group_key)).Items
+    for season in seasons:
+        if season.Id is None:
+            continue
+        episodes = (await _hierarchy(season.Id)).Items
+        for idx, episode in enumerate(episodes):
+            if episode.Id == item_id:
+                nxt = episodes[idx + 1] if idx + 1 < len(episodes) else None
+                return episode, nxt
+    return None, None
+
+
+async def _record_playback_from(request: Request) -> None:
+    """Best-effort store of the client's playback report (#214).
+
+    The @jellyfin/sdk posts PlaybackStartInfo/ProgressInfo/StopInfo
+    bodies here; ``ItemId`` + ``PositionTicks`` are what a resume shelf
+    needs. A malformed body is not an error — the report is advisory.
+    """
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — malformed report, keep the 204
+        log.debug("playback report body unreadable, ignoring")
+        return
+    item_id = body.get("ItemId")
+    position = body.get("PositionTicks")
+    if isinstance(item_id, str) and isinstance(position, (int, float)):
+        record_playback(item_id, int(position))
 
 
 @router.get(
@@ -562,13 +941,29 @@ async def items_listing(
     dependencies=[Depends(require_token)],
 )
 async def items_resume(user_id: str) -> BaseItemDtoQueryResult:
-    """Continue-watching rail — always empty.
+    """Continue-watching rail — items with a recorded position (#214).
 
-    The facade has no playback history (sessions are no-ops, D8), so
-    there is nothing to resume. Real Jellyfin answers an empty result,
-    not a 404; Switchfin renders the rail only when non-empty.
+    Movies report their ``g2:`` key (PlaybackInfo on the movie card);
+    episodes report the provider-scoped wire id, resolved through the
+    group map. Both come back with ``PlaybackPositionTicks`` so the
+    client renders the resume bar. ``user_id`` is not validated — the
+    facade has a single fixed user (D4).
     """
-    return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
+    dtos: list[BaseItemDto] = []
+    for item_id, position in playback_positions().items():
+        if item_id.startswith("g2:"):
+            try:
+                dto = await item_detail(item_id)
+            except HTTPException:
+                continue  # transiently unavailable item — skip, not fail
+            dto.PlaybackPositionTicks = position
+            dtos.append(dto)
+            continue
+        episode_dto, _ = await _resolve_playback_episode(item_id)
+        if episode_dto is not None:
+            episode_dto.PlaybackPositionTicks = position
+            dtos.append(episode_dto)
+    return BaseItemDtoQueryResult(Items=dtos, TotalRecordCount=len(dtos))
 
 
 @router.get(
@@ -577,12 +972,21 @@ async def items_resume(user_id: str) -> BaseItemDtoQueryResult:
     dependencies=[Depends(require_token)],
 )
 async def shows_next_up() -> BaseItemDtoQueryResult:
-    """Next-up shelf ("Continue watching" for series) — always empty.
+    """Next-up shelf: the next episode of each in-progress series (#214).
 
-    Same rationale as ``/Users/{user_id}/Items/Resume``: without
-    playback state there are no in-progress series to queue.
+    One entry per series (the most-progressed episode's next sibling),
+    in the same episode DTO shape the season rail hands out.
     """
-    return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
+    result: list[BaseItemDto] = []
+    seen_series: set[str] = set()
+    for item_id in playback_positions():
+        if item_id.startswith("g2:"):
+            continue  # a movie has no "next"
+        _, next_episode = await _resolve_playback_episode(item_id)
+        if next_episode is not None and next_episode.SeriesId not in seen_series:
+            seen_series.add(next_episode.SeriesId or "")
+            result.append(next_episode)
+    return BaseItemDtoQueryResult(Items=result, TotalRecordCount=len(result))
 
 
 @router.get(
@@ -641,7 +1045,14 @@ async def items_latest(
     on the console as a "302" — so the wire shape here is a list, while
     the content stays the same row lookup as ``/Items``.
     """
-    result = await items_listing(parent_id=parent_id, user_id=user_id)
+    result = await items_listing(
+        parent_id=parent_id,
+        user_id=user_id,
+        search_term=None,
+        start_index=0,
+        limit=None,
+        genre_ids=None,
+    )
     return result.Items
 
 
@@ -653,16 +1064,29 @@ async def items_latest(
 async def user_items_listing(
     user_id: str,
     parent_id: str | None = Query(default=None, alias="parentId"),
+    search_term: str | None = Query(default=None, alias="searchTerm"),
+    start_index: int = Query(default=0, alias="startIndex"),
+    limit: int | None = Query(default=None),
+    genre_ids: str | None = Query(default=None, alias="genreIds"),
 ) -> BaseItemDtoQueryResult:
     """Server-style spelling of the library listing (Switchfin).
 
     Switchfin paths every library call under the user — ``/Users/{id}/
     Items?parentId=…`` (``apiUserLibrary``) rather than the bare
     ``/Items`` the SDK would use. Same wire dto, same row/hierarchy
-    lookup as ``items_listing``; registered after ``Resume``/``Latest``
-    so those literal segments win over this parameterized route.
+    lookup as ``items_listing`` — including the ``searchTerm`` search
+    surface (ticket #106: the SDK's ``getItems({searchTerm})`` spells
+    exactly this URL); registered after ``Resume``/``Latest`` so those
+    literal segments win over this parameterized route.
     """
-    return await items_listing(parent_id=parent_id, user_id=user_id)
+    return await items_listing(
+        parent_id=parent_id,
+        user_id=user_id,
+        search_term=search_term,
+        start_index=start_index,
+        limit=limit,
+        genre_ids=genre_ids,
+    )
 
 
 @router.get(
@@ -680,19 +1104,80 @@ async def user_item_detail(user_id: str, item_id: str) -> BaseItemDto:
 
 
 @router.get(
+    "/Persons/{person_id:path}",
+    response_model=BaseItemDto, response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def person_detail(person_id: str) -> BaseItemDto:
+    """Person item — the People rail's tap target (ticket #221).
+
+    The rail's ``Id`` values are provider-scoped person keys that carry
+    the display name in the final path segment (kinotron's
+    ``/xfsearch/actors/<name>/`` and uaserialspro's ``/person/<id>-<slug>/``
+    links, decoded into the wire id; klontv ids are positional). The
+    name is recovered from the id for the DTO — the facade has no
+    per-person pages or portraits, so the DTO is identity-only. A
+    malformed id degrades to the id itself as the name rather than
+    erroring (a person tap must never break the detail page).
+    """
+    name = unquote(person_id.rsplit(":", 1)[-1])
+    return BaseItemDto(
+        Name=name,
+        ServerId=_server_id(),
+        Id=person_id,
+        Type="Person",
+    )
+
+
+@router.get(
     "/Genres",
     response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
-async def genres() -> BaseItemDtoQueryResult:
-    """Genre filter shelf (Switchfin ``apiGenres``).
+async def genres(
+    parent_id: str | None = Query(default=None, alias="parentId"),
+    include_item_types: str | None = Query(default=None, alias="includeItemTypes"),
+) -> BaseItemDtoQueryResult:
+    """Genre filter shelf (Switchfin ``apiGenres``, ticket #213).
 
-    The facade has no genre metadata — no provider exposes one — so the
-    shelf is deliberately empty. Switchfin parses the ``Genres`` wire via
-    ``NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT``; an empty
-    ``Result<T>`` renders an empty shelf rather than erroring.
+    Aggregates the ``genres`` metadata providers expose on their cards
+    (e.g. ufdub's ``div.short-c``) into a per-view shelf: every unique
+    genre across the view's cards, with ``ChildCount`` = how many cards
+    carry it. The client opens the shelf per library with
+    ``parentId=<view id>`` + ``includeItemTypes=<Movie|Series>``, so
+    both are honored (an absent parent → empty shelf, the pre-#213
+    behaviour real clients tolerated).
+
+    Genre wire shape (Switchfin ``jellyfin::Genres``): ``{Id, Name,
+    ImageTags, ChildCount}``. Id == Name, matching Jellyfin's own
+    convention (genre ids are the names) so the id round-trips as the
+    ``genreIds`` filter when the user taps a genre.
     """
-    return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
+    row_type = _VIEW_TYPE_BY_ID.get(parent_id or "")
+    if row_type is None:
+        return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
+    home = await load_home()
+    server_id = _server_id()
+    want_type = _parse_include_types(include_item_types)
+    counts: dict[str, int] = {}
+    for row in home.rows:
+        if row.type != row_type:
+            continue
+        for item in row.items:
+            if want_type is not None and item.form not in want_type:
+                continue
+            for genre in item.genres:
+                counts[genre] = counts.get(genre, 0) + 1
+    dtos = [
+        BaseItemDto(
+            Name=genre,
+            ServerId=server_id,
+            Id=genre,
+            ChildCount=count,
+        )
+        for genre, count in sorted(counts.items())
+    ]
+    return BaseItemDtoQueryResult(Items=dtos, TotalRecordCount=len(dtos))
 
 
 @router.get(
@@ -709,6 +1194,27 @@ async def display_preferences() -> DisplayPreferencesDto:
     return DisplayPreferencesDto()
 
 
+@router.get(
+    "/Search/Hints",
+    response_model=SearchHintResult, response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def search_hints(
+    search_term: str | None = Query(default=None, alias="searchTerm"),
+) -> SearchHintResult:
+    """Search-box hints (spec D10, ticket #106).
+
+    The alternate search surface clients hit for the global search box
+    (the web/desktop SDK's ``getSearchHints`` → ``/Search/Hints``) —
+    same merged groups as ``/Items?searchTerm=``, in hint shape with the
+    ``g2:`` ``ItemId`` the detail/image routes resolve. Missing or empty
+    term → empty hints, never an error.
+    """
+    groups = await _jf_search_groups(search_term or "")
+    hints = [_search_hint(g) for g in groups]
+    return SearchHintResult(SearchHints=hints, TotalRecordCount=len(hints))
+
+
 def _split_season_suffix(parent_id: str) -> tuple[str, int | None]:
     """(group_key, season_number) for a season id, else (as-is, None).
 
@@ -716,7 +1222,7 @@ def _split_season_suffix(parent_id: str) -> tuple[str, int | None]:
     carries an ``:S<n>`` tail, so ``rpartition`` cleanly separates the
     trailing season marker. A series/movie group key returns itself.
     """
-    if not parent_id.startswith("g1:"):
+    if not parent_id.startswith("g2:"):
         return parent_id, None
     head, sep, tail = parent_id.rpartition(":")
     if sep and tail.startswith("S") and tail[1:].isdigit():
@@ -763,23 +1269,34 @@ async def _hierarchy(parent_id: str | None) -> BaseItemDtoQueryResult:
     dependencies=[Depends(require_token)],
 )
 async def item_detail(item_id: str) -> BaseItemDto:
-    """Item detail (ticket #105, D2/D3): resolve a ``g1:`` key to its
+    """Item detail (ticket #105, D2/D3): resolve a ``g2:`` key to its
     ContentResponse via the shared resolution map, and return a
     Movie/Series DTO.
 
     Unresolvable ids 404 with the same "item unavailable" verdict as a
-    cold resolution cache (D2): ``g1:`` keys not in the cached home, and
+    cold resolution cache (D2): ``g2:`` keys not in the cached home, and
     episode ids — served through the season listing, not reverse-
     resolvable on their own.
     """
     # Episode wire ids (``p1:s1e1``) are not reverse-resolvable: there is
     # no group key in them. They are served exclusively through the
     # season hierarchy, so /Items/{id} answers 404 for them.
-    if not item_id.startswith("g1:"):
+    if not item_id.startswith("g2:"):
         raise HTTPException(status_code=404, detail="item_unavailable")
     group_key, season_number = _split_season_suffix(item_id)
     content = await resolve_group_content(group_key)
     if content is None:
+        # Ticket #224: a card that IS in the home snapshot but whose
+        # live resolution failed transiently (upstream blip/throttle)
+        # answers with the card's own data instead of a hard 404 — the
+        # same tolerant degradation _hierarchy gives an empty rail. The
+        # deliberate 404s are untouched: a season suffix, an unknown or
+        # cold-cache key, and a gated/blocked verdict (is_hard_unavailable)
+        # all still 404 exactly as D2 prescribes.
+        if season_number is None and not is_hard_unavailable(group_key):
+            card = _card_for_group(group_key)
+            if card is not None:
+                return _card_dto(group_key, card, _server_id())
         raise HTTPException(status_code=404, detail="item_unavailable")
 
     if season_number is not None:
@@ -839,7 +1356,7 @@ def _as_webp(poster_url: str, body: bytes, max_width: int | None) -> bytes:
     try:
         from PIL import Image, ImageOps
 
-        logo = Image.open(io.BytesIO(body))
+        logo: Image.Image = Image.open(io.BytesIO(body))
         if max_width and logo.width > max_width:
             logo = ImageOps.contain(logo, (max_width, max_width))
         out = io.BytesIO()
@@ -858,7 +1375,7 @@ async def _serve_item_image(
 ) -> Response:
     """The poster for ``item_id`` as an inline image response, or 404."""
     poster_url = _poster_for(item_id)
-    if poster_url is None and item_id.startswith("g1:"):
+    if poster_url is None and item_id.startswith("g2:"):
         # Item not in the home snapshot (surfaced via Latest/search);
         # resolve from the content cache which holds the poster URL.
         content = await resolve_group_content(item_id)
@@ -956,10 +1473,10 @@ async def _resolve_stream(item_id: str) -> StreamResponse | None:
     route does — same bare external ids, ``translation=None`` (default
     voice), same shared ``httpx`` client:
 
-      - a movie's ``g1:`` group key → the group's first-seen provider
+      - a movie's ``g2:`` group key → the group's first-seen provider
         (the same provider the detail page shows first), whose BARE
         external id is what stream() consumes. Playability is decided on
-        the content's FORM — ``content.type == "movie"`` — the same
+        the content's FORM — ``content.form == "movie"`` — the same
         verdict detail renders as ``Type="Movie"``, NOT the card's style
         literal (``SearchResult.type`` can say ``"anime"`` for an anime
         FILM; conflating style with form would 404 a film the client just
@@ -978,13 +1495,13 @@ async def _resolve_stream(item_id: str) -> StreamResponse | None:
     degrades to None → 404, the facade's standing "never 5xx" posture
     (D2), and the provider+health recording stays colocated with it.
     """
-    if item_id.startswith("g1:"):
+    if item_id.startswith("g2:"):
         # Series/season keys and cold groups: not playable on their own.
         group_key, season_number = _split_season_suffix(item_id)
         if season_number is not None:
             return None
         content = await resolve_group_content(group_key)
-        if content is None or content.type != "movie":
+        if content is None or content.form != "movie":
             return None
         per_provider = resolve_group(group_key)
         if per_provider is None:
@@ -1072,17 +1589,40 @@ async def playback_info(item_id: str) -> PlaybackInfoResponse:
     response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
-async def item_similar(item_id: str) -> BaseItemDtoQueryResult:
-    """Similar-shelf — always empty.
+async def item_similar(
+    item_id: str,
+    limit: int = Query(default=12),
+) -> BaseItemDtoQueryResult:
+    """Similar-shelf — same-genre cards from the cached snapshot (#218).
 
-    The facade has no similarity metadata, so the shelf is deliberately
-    empty. The answer is a full ``BaseItemDtoQueryResult`` envelope:
-    Switchfin parses every list response as ``Result<T>`` with
+    The app fires this on every movie/series detail page; it used to
+    answer a deliberately empty shelf. With genre metadata (#213) the
+    snapshot can answer it: cards sharing at least one genre with the
+    item, in the same Movie/Series + g2: + ImageTags shape as the view
+    grid, the item itself excluded, capped at ``limit`` (the client asks
+    for 12). A genre-less item or a cold snapshot stays an empty shelf.
+
+    The full ``BaseItemDtoQueryResult`` envelope is required: Switchfin
+    parses every list response as ``Result<T>`` with
     ``NLOHMANN_JSON_FROM`` (no defaults), so a missing ``StartIndex``
-    raised ``out_of_range.403`` on the console — this endpoint fired on
-    every movie/series detail page before the envelope was completed.
+    raised ``out_of_range.403`` on the console.
     """
-    return BaseItemDtoQueryResult()
+    wanted = set(_genres_for_group(item_id))
+    if not wanted:
+        return BaseItemDtoQueryResult()
+    server_id = _server_id()
+    dtos: list[BaseItemDto] = []
+    seen: set[str] = set()
+    for row, it in _home_items():
+        if it.group_key == item_id or it.group_key in seen:
+            continue
+        if not (set(it.genres) & wanted):
+            continue
+        seen.add(it.group_key)
+        dtos.append(_item_dto(row, it, server_id))
+        if len(dtos) >= limit:
+            break
+    return BaseItemDtoQueryResult(Items=dtos, TotalRecordCount=len(dtos))
 
 
 @router.get(
@@ -1117,7 +1657,7 @@ _MAX_PROXY_HOPS = 5
 #: — NOT the upstream URL, which stays ADR-0003's "never cached"
 #: (session-scoped/token-signed); the fresh ``stream()`` on expiry is
 #: exactly the "a miss costs one request" cost the ADR accepts.
-_STREAM_MEMO: dict[str, tuple[float, str, dict[str, str]]] = {}
+_STREAM_MEMO: dict[str, tuple[float, str, dict[str, str], frozenset[str]]] = {}
 _STREAM_MEMO_TTL_S = 15 * 60
 
 
@@ -1145,22 +1685,26 @@ def _registrable_domain(host: str) -> str:
     return ".".join(labels[-2:])
 
 
-def _stream_target_allowed(url: str, cdn_host: str) -> bool:
+def _stream_target_allowed(url: str, cdn_host: str, allowed: frozenset[str] = frozenset()) -> bool:
     """Whether the byte proxy may reach ``url``: a host on the same
     registrable domain as the CDN the provider selected for the item
-    (``cdn.example`` and its ``media.``/``api.`` siblings are one CDN).
+    (``cdn.example`` and its ``media.``/``api.`` siblings are one CDN),
+    or a registrable domain the provider explicitly sanctioned in
+    ``StreamResponse.allowed_domains`` (a 302 gateway may hand bytes to
+    a foreign CDN the provider picked, e.g. ufdub episodes on Dropbox).
 
     This is the stream proxy's standing posture: the facade fetches bytes
     only from the CDN a provider picked — a sibling subdomain of the same
-    domain is still the picked CDN, a foreign registrable domain is not,
-    and a client pointing the segment route at an arbitrary host fails
-    closed (mirrors the poster proxy's allowlist).
+    domain is still the picked CDN, a foreign registrable domain is not
+    (unless provider-sanctioned), and a client pointing the segment route
+    at an arbitrary host fails closed (mirrors the poster proxy's
+    allowlist).
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or parsed.hostname is None:
         return False
     host = parsed.hostname.lower()
-    return _registrable_domain(host) == _registrable_domain(cdn_host)
+    return _registrable_domain(host) == _registrable_domain(cdn_host) or _registrable_domain(host) in allowed
 
 
 def _is_hls_stream(stream: StreamResponse) -> bool:
@@ -1197,28 +1741,31 @@ def _rewrite_m3u8(body: str, manifest_url: str, item_id: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _memo_stream(item_id: str, cdn_host: str, headers: dict[str, str]) -> None:
+def _memo_stream(
+    item_id: str, cdn_host: str, headers: dict[str, str], allowed: frozenset[str]
+) -> None:
     """Writer for the segment memo. Values are returned by reference, so
     the store hands out copies — never the live provider dict."""
-    _STREAM_MEMO[item_id] = (time.monotonic(), cdn_host, dict(headers))
+    _STREAM_MEMO[item_id] = (time.monotonic(), cdn_host, dict(headers), allowed)
 
 
-async def _proxy_target(item_id: str) -> tuple[str, dict[str, str]] | None:
-    """(cdn_host, provider headers) the segment proxy must use.
+async def _proxy_target(item_id: str) -> tuple[str, dict[str, str], frozenset[str]] | None:
+    """(cdn_host, provider headers, allowed domains) the segment proxy
+    must use.
 
     Serves from the memo when fresh; otherwise re-resolves the stream
     once and memoizes. None → 404 (D2)."""
     hit = _STREAM_MEMO.get(item_id)
     if hit is not None and time.monotonic() - hit[0] < _STREAM_MEMO_TTL_S:
-        return hit[1], dict(hit[2])
+        return hit[1], dict(hit[2]), hit[3]
     stream = await _resolve_stream(item_id)
     if stream is None:
         return None
     cdn_host = _cdn_host(stream.url)
     if cdn_host is None:
         return None
-    _memo_stream(item_id, cdn_host, stream.headers)
-    return cdn_host, dict(stream.headers)
+    _memo_stream(item_id, cdn_host, stream.headers, stream.allowed_domains)
+    return cdn_host, dict(stream.headers), stream.allowed_domains
 
 
 async def _open_upstream(
@@ -1228,6 +1775,7 @@ async def _open_upstream(
     range_header: str | None,
     cdn_host: str,
     hops: int = 0,
+    allowed: frozenset[str] = frozenset(),
 ) -> tuple[httpx.Response, Callable[[], Awaitable[None]]] | None:
     """Open a validating byte stream to ``url``, following redirects by
     hand and re-validating EVERY hop against the item's CDN host.
@@ -1239,7 +1787,7 @@ async def _open_upstream(
     meaningfully relay, so it becomes the same 404 an unresolvable id
     gets.
     """
-    if hops > _MAX_PROXY_HOPS or not _stream_target_allowed(url, cdn_host):
+    if hops > _MAX_PROXY_HOPS or not _stream_target_allowed(url, cdn_host, allowed):
         return None
     req_headers = dict(headers)
     if range_header is not None:
@@ -1255,7 +1803,7 @@ async def _open_upstream(
         if location is None:
             return None
         return await _open_upstream(
-            http, urljoin(url, location), headers, range_header, cdn_host, hops + 1
+            http, urljoin(url, location), headers, range_header, cdn_host, hops + 1, allowed
         )
     if resp.status_code < 200 or resp.status_code >= 300:
         await cm.__aexit__(None, None, None)
@@ -1273,9 +1821,10 @@ async def _fetch_manifest(
     headers: dict[str, str],
     cdn_host: str,
     hops: int = 0,
+    allowed: frozenset[str] = frozenset(),
 ) -> httpx.Response | None:
     """Fetch a small HLS manifest with hop revalidation; only a 200 counts."""
-    if hops > _MAX_PROXY_HOPS or not _stream_target_allowed(url, cdn_host):
+    if hops > _MAX_PROXY_HOPS or not _stream_target_allowed(url, cdn_host, allowed):
         return None
     try:
         resp = await http.get(url, headers=headers)
@@ -1286,7 +1835,7 @@ async def _fetch_manifest(
         if location is None:
             return None
         return await _fetch_manifest(
-            http, urljoin(url, location), headers, cdn_host, hops + 1
+            http, urljoin(url, location), headers, cdn_host, hops + 1, allowed
         )
     if resp.status_code != 200:
         log.warning("jellyfin manifest non-200 url=%s status=%s", url, resp.status_code)
@@ -1346,11 +1895,13 @@ async def video_stream(item_id: str, request: Request) -> Response:
     cdn_host = _cdn_host(stream.url)
     if cdn_host is None:
         raise HTTPException(status_code=404, detail="item_unavailable")
-    _memo_stream(item_id, cdn_host, stream.headers)
+    _memo_stream(item_id, cdn_host, stream.headers, stream.allowed_domains)
     http = get_client()
 
     if _is_hls_stream(stream):
-        manifest = await _fetch_manifest(http, stream.url, stream.headers, cdn_host)
+        manifest = await _fetch_manifest(
+            http, stream.url, stream.headers, cdn_host, allowed=stream.allowed_domains
+        )
         if manifest is None:
             raise HTTPException(status_code=404, detail="item_unavailable")
         body = _rewrite_m3u8(
@@ -1363,7 +1914,12 @@ async def video_stream(item_id: str, request: Request) -> Response:
         return Response(content=body, media_type=_STREAM_CTYPE["m3u8"])
 
     opened = await _open_upstream(
-        http, stream.url, stream.headers, request.headers.get("range"), cdn_host
+        http,
+        stream.url,
+        stream.headers,
+        request.headers.get("range"),
+        cdn_host,
+        allowed=stream.allowed_domains,
     )
     if opened is None:
         raise HTTPException(status_code=404, detail="item_unavailable")
@@ -1390,11 +1946,11 @@ async def video_segment(item_id: str, url: str = Query(...)) -> Response:
     target = await _proxy_target(item_id)
     if target is None:
         raise HTTPException(status_code=404, detail="item_unavailable")
-    cdn_host, headers = target
+    cdn_host, headers, allowed = target
     http = get_client()
 
     if url.rstrip("/").lower().endswith(".m3u8"):
-        manifest = await _fetch_manifest(http, url, headers, cdn_host)
+        manifest = await _fetch_manifest(http, url, headers, cdn_host, allowed=allowed)
         if manifest is None:
             raise HTTPException(status_code=404, detail="item_unavailable")
         body = _rewrite_m3u8(
@@ -1402,7 +1958,7 @@ async def video_segment(item_id: str, url: str = Query(...)) -> Response:
         )
         return Response(content=body, media_type=_STREAM_CTYPE["m3u8"])
 
-    opened = await _open_upstream(http, url, headers, None, cdn_host)
+    opened = await _open_upstream(http, url, headers, None, cdn_host, allowed=allowed)
     if opened is None:
         raise HTTPException(status_code=404, detail="item_unavailable")
     upstream, closer = opened
@@ -1410,31 +1966,34 @@ async def video_segment(item_id: str, url: str = Query(...)) -> Response:
 
 
 @router.post("/Sessions/Playing", dependencies=[Depends(require_token)])
-async def sessions_playing() -> Response:
-    """Playback-start report (D8): accept, answer 204, store nothing.
+async def sessions_playing(request: Request) -> Response:
+    """Playback-start report (D8): accept, answer 204, record position.
 
     The @jellyfin/sdk posts a full PlaybackStartInfo body here the moment
-    playback starts (capture row 6). The facade has no session state and
-    keeps none — the response exists so the client's report lands.
+    playback starts (capture row 6); the position seeds the resume shelf
+    (ticket #214, in-memory only).
     """
+    await _record_playback_from(request)
     return Response(status_code=204)
 
 
 @router.post("/Sessions/Progress", dependencies=[Depends(require_token)])
 @router.post("/Sessions/Playing/Progress", dependencies=[Depends(require_token)])
-async def sessions_progress() -> Response:
-    """Playback-progress report (D8): accept, answer 204, store nothing."""
+async def sessions_progress(request: Request) -> Response:
+    """Playback-progress report (D8): accept, answer 204, record position.
+
+    Heartbeats update the stored position; the newest report wins.
+    """
+    await _record_playback_from(request)
     return Response(status_code=204)
 
 
 @router.post("/Sessions/Stopped", dependencies=[Depends(require_token)])
 @router.post("/Sessions/Playing/Stopped", dependencies=[Depends(require_token)])
-async def sessions_stopped() -> Response:
-    """Playback-stop report (D8): accept, answer 204, store nothing.
-
-    Resume/history are out of scope (D8) — this is where a real server
-    would persist the stop position; the facade forgets it on purpose.
-    """
+async def sessions_stopped(request: Request) -> Response:
+    """Playback-stop report (D8): accept, answer 204, record the stop
+    position — the final value the resume shelf shows (ticket #214)."""
+    await _record_playback_from(request)
     return Response(status_code=204)
 
 
@@ -1448,6 +2007,33 @@ async def sessions_logout() -> Response:
     none to drop.
     """
     return Response(status_code=204)
+
+
+@router.websocket("/socket")
+async def websocket_socket(websocket: WebSocket) -> None:
+    """Jellyfin WebSocket endpoint (``ws://host:port/socket``).
+
+    Official Jellyfin clients open a WebSocket to ``/socket`` during
+    connection validation — a strict handshake rejection surfaces as
+    ``Invalid HTTP request received`` in uvicorn and the client reports
+    "cannot connect". The token is enforced on the HTTP surface
+    (``require_token``); the real Jellyfin accepts the socket eagerly and
+    only pushes/ignores events, so the facade does the same: accept
+    unconditionally (D4 accept-any posture) and keep the socket open.
+    Incoming messages (presence/playback reports) are consumed and
+    ignored; no response is written. The connection is torn down only
+    when the client disconnects.
+    """
+    await websocket.accept()
+    try:
+        while True:
+            # Consume client messages (presence/playback reports) and
+            # ignore them — a real server would push session events here.
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        log.debug("websocket closed unexpectedly", exc_info=True)
 
 
 __all__ = ["require_token", "router"]

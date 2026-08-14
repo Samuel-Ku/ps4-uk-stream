@@ -3,22 +3,36 @@ from __future__ import annotations
 
 import json
 import re
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
 from bs4 import BeautifulSoup
 
 from ..country import extract_country
-from ..models import ContentResponse, Episode, SearchResult, Season, Section, StreamResponse, Translation, TranslationLevel
-from .base import BaseProvider, MediaTypeStr, ProviderError
+from ..http_client import safe_get
+from ..models import (
+    ContentResponse,
+    Episode,
+    SearchResult,
+    Season,
+    Section,
+    StreamResponse,
+    Translation,
+    TranslationLevel,
+)
+from .base import BaseProvider, MediaTypeStr, ProviderError, model_b_axes, parse_actor_list
 
 BASE_URL = "https://kinotron.tv"
+# Hosts the upstream may legally redirect to: the DLE CMS and the ashdi
+# player. A hostile CMS response must not be able to pivot either hop
+# to an attacker-controlled host.
+_ALLOWED_HOSTS: frozenset[str] = frozenset({"kinotron.tv", "ashdi.vip"})
 SECTIONS = (
-    Section(id="films", title="Фільми", type="movie"),
-    Section(id="serials", title="Серіали", type="series"),
-    Section(id="cartoons", title="Мультфільми", type="movie"),
-    Section(id="cartoon-series", title="Мультсеріали", type="cartoon"),
-    Section(id="anime", title="Аніме", type="anime"),
+    Section(id="films", title="Фільми", form="movie"),
+    Section(id="serials", title="Серіали", form="series"),
+    Section(id="cartoons", title="Мультфільми", form="movie"),
+    Section(id="cartoon-series", title="Мультсеріали", styles=frozenset({"cartoon"})),
+    Section(id="anime", title="Аніме", styles=frozenset({"anime"})),
 )
 
 # external_id is a numeric-prefixed slug (e.g. "10496-mesniki-..."). Gate
@@ -32,7 +46,7 @@ MOVIE_SUFFIX = ":__movie__"
 
 
 def _external_id(href: str) -> str:
-    match = re.search(r"/(\d+-[a-z0-9-]+?)(?:\.html)?/?$", href, re.I)
+    match = re.search(r"/(\d+-[a-z0-9-]+?)(?:\.html)?/?$", href, re.IGNORECASE)
     if not match:
         raise ProviderError("parse_failed", f"unrecognized url: {href}")
     return match.group(1)
@@ -63,10 +77,12 @@ def _parse_cards(html: str, provider: str, media_type: MediaTypeStr) -> list[Sea
         title = title_el.get_text(" ", strip=True) if title_el else link.get_text(" ", strip=True)
         year_match = re.search(r"\b(?:19|20)\d{2}\b", title)
         poster = urljoin(BASE_URL, str(image.get("data-src"))) if image and image.get("data-src") else None
+        mb_form, mb_styles = model_b_axes(media_type)
         results.append(SearchResult(
-            id=f"{provider}:{external_id}", provider=provider, type=media_type,
+            id=f"{provider}:{external_id}", provider=provider,
             title=title, year=int(year_match.group()) if year_match else None,
             poster=poster, url=urljoin(BASE_URL, str(link["href"])),
+            form=mb_form, styles=mb_styles,
         ))
     return results
 
@@ -76,6 +92,9 @@ class KinoTronProvider(BaseProvider):
     name = "KinoTron"
     types = ("movie", "series", "cartoon", "anime")
     sections = SECTIONS
+    #: ``content()`` gates trailer-only (youtube-only) pages (#163) so
+    #: the catalog sweep drops dead cards from home/search.
+    can_gate = True
 
     @staticmethod
     def _type_from_subtitle(subtitle: str) -> MediaTypeStr:
@@ -90,22 +109,38 @@ class KinoTronProvider(BaseProvider):
 
     @staticmethod
     def _player_url(soup: BeautifulSoup) -> str | None:
-        iframe = soup.select_one("div.video-box iframe")
-        if iframe is None or not iframe.get("data-src"):
-            return None
-        return urljoin(BASE_URL, str(iframe["data-src"]))
+        """First REAL (non-youtube) player iframe in the video box.
+
+        Trailer-only titles (issue #163) carry only a youtube embed in
+        ``div.video-box`` — upstream has no playable player — so a
+        youtube-only box yields None and ``content()`` gates the card.
+        """
+        for iframe in soup.select("div.video-box iframe"):
+            src = str(iframe.get("data-src") or "")
+            if not src:
+                continue
+            host = urlsplit(urljoin(BASE_URL, src)).hostname or ""
+            if "youtube.com" in host or host == "youtu.be":
+                continue
+            return urljoin(BASE_URL, src)
+        return None
 
     @staticmethod
     def _files(player_html: str) -> list[dict[str, object]]:
         scripts = BeautifulSoup(player_html, "lxml").select("script")
         text = next((item.get_text() for item in scripts if "file" in item.get_text()), "")
-        match = re.search(r"file\s*:\s*'([^']+)'", text)
+        # The player serves the payload in single *or* double quotes
+        # (`file:'[{...}]'` from ashdi serials vs `file:"https://..."`
+        # from zetvideo vod movies) — match either (live-gate: a movie
+        # was wrongly gated because only single quotes matched).
+        match = re.search(r"file\s*:\s*(?:\"([^\"]+)\"|'([^']+)')", text)
         if not match:
             return []
+        payload = match.group(1) or match.group(2)
         try:
-            raw = json.loads(match.group(1))
+            raw = json.loads(payload)
         except json.JSONDecodeError:
-            return [{"dub": "", "season": "", "title": "", "file": match.group(1)}]
+            return [{"dub": "", "season": "", "title": "", "file": payload}]
         files: list[dict[str, object]] = []
         for dub in raw if isinstance(raw, list) else []:
             for season in dub.get("folder", []) if isinstance(dub, dict) else []:
@@ -138,9 +173,25 @@ class KinoTronProvider(BaseProvider):
         if not self.has_section(section):
             raise ProviderError("not_found", f"unknown section: {section}")
         url = f"{BASE_URL}/{section}/page/{page}/"
-        response = await self._get(url, http)
+        # The upstream now 301-redirects the first page of most sections
+        # (`/serials/page/1/` -> `/serials/`), so fetch through the
+        # SSRF-safe `safe_get` helper (same host allowlist as the ashdi
+        # player) which follows allowed same-host redirects. Pages > 1
+        # still return 200 directly and are unaffected.
+        try:
+            response = await safe_get(http, url, allowed_hosts=set(_ALLOWED_HOSTS))
+        except httpx.HTTPError as error:
+            raise ProviderError("unreachable", str(error)) from error
+        if response.status_code != 200:
+            raise ProviderError("not_found", f"status {response.status_code}")
         soup = BeautifulSoup(response.text, "lxml")
-        section_type = next(item.type for item in self.sections if item.id == section)
+        # Contract #135: sections carry Model B axes, not the legacy
+        # ``type`` — the card classifier needs the legacy type string,
+        # derived from the axes (style wins, else form).
+        axes = next(item for item in self.sections if item.id == section)
+        section_type = (
+            min(axes.styles) if axes.styles else (axes.form or "series")
+        )
         results = _parse_cards(response.text, self.id, section_type)
         has_next = any(_page_number(str(a.get("href", ""))) > page for a in soup.select(".navigation a[href*='/page/']"))
         return results, has_next
@@ -158,6 +209,11 @@ class KinoTronProvider(BaseProvider):
         kind = self._type_from_subtitle(str(soup.select_one("div.fsubtitle") or ""))
         country: str | None = extract_country(soup)
         player_url = self._player_url(soup)
+        # Issue #163: a youtube-only video box is a trailer-only title —
+        # upstream has no playable player. Gate so the ADR-0002 sweep
+        # drops the dead card instead of failing only at play time.
+        if player_url is None:
+            raise ProviderError("gated", "trailer only — no playable player")
         seasons = None
         translations = [Translation(id="uk", label="Українська")]
         translations_level: TranslationLevel = "content"
@@ -190,10 +246,27 @@ class KinoTronProvider(BaseProvider):
                 for season_number, episodes in enumerate(grouped.values(), 1)
             ]
             translations_level = "episode"
+        else:
+            # Issue #167: a movie whose player page exposes no playable
+            # files (upstream migrated several titles to a dead
+            # zetvideo.net/vod/<id> page — nginx 404 body, observed live
+            # 2026-08-09) must be gated at content() time so the
+            # catalog sweep drops the dead card instead of failing only
+            # at play time.
+            player = await self._get(player_url, http)
+            if not self._files(player.text):
+                raise ProviderError("gated", "no playable files on player page")
         description_el = soup.select_one(".full-text")
-        return ContentResponse(id=f"{self.id}:{external_id}", type=kind, title=title_el.get_text(" ", strip=True),
+        # Ticket #221: the page's ``В ролях:`` li lists the cast with
+        # one ``/xfsearch/actors/<name>/`` anchor per person.
+        cast = parse_actor_list(
+            soup, "В ролях", self.id, re.compile(r"/actors/([^/]+)/?$")
+        )
+        mb_form, mb_styles = model_b_axes(kind)
+        return ContentResponse(id=f"{self.id}:{external_id}", title=title_el.get_text(" ", strip=True),
             description=description_el.get_text(" ", strip=True) if description_el else "",
-            poster=poster, translations=translations, seasons=seasons, translations_level=translations_level, country=country)
+            poster=poster, translations=translations, seasons=seasons, translations_level=translations_level, country=country,
+            form=mb_form, styles=mb_styles, people=cast)
 
     async def stream(self, content_id: str, translation: str | None, http: httpx.AsyncClient) -> StreamResponse:
         # `content_id` arrives from /api/stream with the `<provider>:`
@@ -231,7 +304,7 @@ class KinoTronProvider(BaseProvider):
                 raise ProviderError("not_found", "episode not found")
             matches = [item for item in season_files if str(item.get("title", "")).strip() == episode_titles[episode_number - 1]]
             selected = next((item for item in matches if str(item.get("dub", "")).strip() == translation), matches[0])
-        return StreamResponse(url=str(selected["file"]), type="m3u8", headers={"Referer": player_url, "User-Agent": "cs-uk-api/0.1"})
+        return StreamResponse(url=str(selected["file"]), type="m3u8", headers={"Referer": player_url, "User-Agent": "cs-uk-api/1.0"})
 
 
 __all__ = ["KinoTronProvider"]
