@@ -1052,6 +1052,23 @@ parsed — each fixed via TDD + live-verified:
   Пригоди, …]) is never asked. Closing this needs a "resolve the first
   provider with real metadata" (or merge-across-providers) change to
   `resolve_group_content` — deliberate, larger change.
+- **ufdub episodes stream 404 while PlaybackInfo answers 200 (FIXED,
+  #235)**. ufdub `stream()` returns the `VIDEOS.php` gateway URL;
+  movies 302 to `api.ufdub.com` (same registrable domain — admitted by
+  the dot-boundary CDN check) but series episodes 302 to
+  `dl.dropboxusercontent.com` — a FOREIGN registrable domain the D7
+  SSRF posture rejected, failing the byte proxy closed to 404. Wire
+  repro: PlaybackInfo on `ufdub:anime-6-komori-san-…:s1e1` → 200
+  (Container=mp4), `/Videos/…/stream` → 404; log showed the 302 to
+  Dropbox then an abort. Fix: `StreamResponse` gained `allowed_domains`
+  (provider-sanctioned registrable domains beyond the URL's own host),
+  ufdub declares `dropboxusercontent.com`, and
+  `_stream_target_allowed`/`_open_upstream`/`_fetch_manifest` + the
+  segment memo thread it through — undeclared foreign hosts still fail
+  closed. TDD red→green
+  (`test_stream_follows_redirect_to_provider_allowed_cdn`), 1017
+  passed. Live: episode stream 206 Partial Content via Dropbox (was
+  404). Commit `a135121`.
 
 ## Running the suite (2026-08-10, codified)
 
