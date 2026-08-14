@@ -1072,6 +1072,13 @@ parsed — each fixed via TDD + live-verified:
 
 ## Running the suite (2026-08-10, codified)
 
+> Wire-cheat-sheet: the episode rail is
+> `GET /Shows/{group}/Episodes?seasonId={group}:S{n}` — `seasonId`
+> goes in the QUERY, NOT the path (`/Shows/{season}/Episodes` returns
+> an empty rail because `season_id` defaults to None). A "episodes:
+> 0" probe result is nearly always this caller bug, not a backend
+> one.
+
 ```bash
 cd ps4-uk-stream
 backend/.venv/bin/python scripts/switchfin_test.py --skip-calibrate --port 8003
