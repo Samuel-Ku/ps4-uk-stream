@@ -1028,6 +1028,16 @@ parsed — each fixed via TDD + live-verified:
   Genres [Детективи, Трилери, Жахи]. TDD red→green
   (`test_search_detail_falls_back_to_group_card_metadata`), 1014
   passed. Commit `d0f9043`.
+- **search-only groups still miss genres (FOLLOW-UP, parked)**: a group
+  found ONLY via search (not in the home snapshot) — e.g. «Наруто» —
+  now renders its Year (2002, from the group card via #233) but still
+  empty Genres/People: search cards carry no genres (every provider's
+  search result has `genres=None` — the search pages don't expose them
+  in cards), and only the first-seen provider's `content()` is
+  resolved, so a data-rich sibling (animeon:913 has genres=[Бойовик,
+  Пригоди, …]) is never asked. Closing this needs a "resolve the first
+  provider with real metadata" (or merge-across-providers) change to
+  `resolve_group_content` — deliberate, larger change.
 
 ## Running the suite (2026-08-10, codified)
 
