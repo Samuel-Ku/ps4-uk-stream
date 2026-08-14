@@ -246,6 +246,7 @@ debounced on Progress heartbeats, flushed again on shutdown.
 | Restart | survives (the whole point — «Продовжити перегляд» persists) |
 | Finished-marking (#249) | position ≥ 95% of a known runtime drops the item from Resume + NextUp; items with no runtime are never auto-finished |
 | Cap (#249) | 50 entries LRU by `updated_at`; the row returns the ≤20 most recently updated, most recent first |
+| Runtime on the wire (#250) | Resume/NextUp DTOs carry `RunTimeTicks` (alongside `PlaybackPositionTicks`) from the recorded runtime when known; reports without a runtime stay position-only |
 | Wipe | `rm <path>` — clean state, documented operator story |
 
 ### Cache key format

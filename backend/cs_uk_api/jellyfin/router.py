@@ -45,8 +45,8 @@ from ..catalog_state import (
     load_home,
     merged_search,
     peek_group_content,
-    playback_positions,
-    recent_playback,
+    playback_entries,
+    recent_playback_entries,
     record_playback,
     register_search_groups,
     resolve_group,
@@ -958,18 +958,22 @@ async def items_resume(user_id: str) -> BaseItemDtoQueryResult:
     a single fixed user (D4).
     """
     dtos: list[BaseItemDto] = []
-    for item_id, position in recent_playback().items():
+    for item_id, (position, runtime) in recent_playback_entries().items():
         if item_id.startswith("g2:"):
             try:
                 dto = await item_detail(item_id)
             except HTTPException:
                 continue  # transiently unavailable item — skip, not fail
             dto.PlaybackPositionTicks = position
+            if runtime is not None:
+                dto.RunTimeTicks = runtime  # bar renders proportionally (#250)
             dtos.append(dto)
             continue
         episode_dto, _ = await _resolve_playback_episode(item_id)
         if episode_dto is not None:
             episode_dto.PlaybackPositionTicks = position
+            if runtime is not None:
+                episode_dto.RunTimeTicks = runtime
             dtos.append(episode_dto)
     return BaseItemDtoQueryResult(Items=dtos, TotalRecordCount=len(dtos))
 
@@ -987,12 +991,14 @@ async def shows_next_up() -> BaseItemDtoQueryResult:
     """
     result: list[BaseItemDto] = []
     seen_series: set[str] = set()
-    for item_id in playback_positions():
+    for item_id, (_position, runtime) in playback_entries().items():
         if item_id.startswith("g2:"):
             continue  # a movie has no "next"
         _, next_episode = await _resolve_playback_episode(item_id)
         if next_episode is not None and next_episode.SeriesId not in seen_series:
             seen_series.add(next_episode.SeriesId or "")
+            if runtime is not None:
+                next_episode.RunTimeTicks = runtime  # same wire shape as Resume (#250)
             result.append(next_episode)
     return BaseItemDtoQueryResult(Items=result, TotalRecordCount=len(result))
 

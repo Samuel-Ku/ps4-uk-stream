@@ -955,3 +955,52 @@ def test_resume_row_capped_at_20_most_recent(client: TestClient) -> None:
         assert resume[-1]["Name"] == "Серія 2"  # the oldest (Серія 1) is outside the 20
     finally:
         catalog_state._resume_store = original
+
+
+# ------------------------------------------------------------ runtime on the wire (#250)
+
+
+def test_resume_movie_carries_runtime(client: TestClient) -> None:
+    """#250: a movie stopped at ~40% comes back from Resume with both
+    PlaybackPositionTicks and RunTimeTicks, so the bar renders
+    proportionally."""
+    PROVIDERS["p1"] = _seed()
+    _auth(client)
+    gk = _movie_gk(client)
+
+    _post_playback_full(client, gk, 40_000_000_000, runtime=100_000_000_000)
+
+    item = _get(client, "/Users/user1/Items/Resume")["Items"][0]
+    assert item["Id"] == gk
+    assert item["PlaybackPositionTicks"] == 40_000_000_000
+    assert item["RunTimeTicks"] == 100_000_000_000
+
+
+def test_resume_without_runtime_position_only(client: TestClient) -> None:
+    """#250: a report without a runtime yields a position-only DTO — no
+    fabricated duration on the wire."""
+    PROVIDERS["p1"] = _seed()
+    _auth(client)
+    gk = _movie_gk(client)
+
+    _post_playback(client, gk, 40_000_000_000)
+
+    item = _get(client, "/Users/user1/Items/Resume")["Items"][0]
+    assert item["PlaybackPositionTicks"] == 40_000_000_000
+    assert "RunTimeTicks" not in item
+
+
+def test_nextup_carries_runtime(client: TestClient) -> None:
+    """#250: the NextUp episode DTO carries the recorded runtime the
+    same way as Resume."""
+    PROVIDERS["p1"] = _DetailStub(
+        cards=[_card("p1", "serial-1", "Сериалал серіал", "series", poster=_POSTER_SERIES)],
+        content_by_external={"serial-1": _episode_serial()},
+    )
+    _auth(client)
+
+    _post_playback_full(client, "p1:serial-1:s1e1", 600_000_000, runtime=1_000_000_000)
+
+    nxt = _get(client, "/Shows/NextUp")["Items"][0]
+    assert nxt["Id"] == "p1:serial-1:s1e2"
+    assert nxt["RunTimeTicks"] == 1_000_000_000

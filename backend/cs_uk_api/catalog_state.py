@@ -511,19 +511,20 @@ def record_playback(
     _store().record(item_id, position_ticks, runtime_ticks=runtime_ticks, flush=flush)
 
 
-def playback_positions() -> dict[str, int]:
-    """item_id -> position_ticks, most-progressed first (ticket #214).
-
-    NextUp reads this (spec #247 keeps its most-progressed-per-series
-    semantics unchanged).
+def playback_entries() -> dict[str, tuple[int, int | None]]:
+    """item_id -> (position_ticks, runtime_ticks|None), most-progressed
+    first (ticket #214). NextUp reads this (spec #247 keeps its
+    most-progressed-per-series semantics unchanged); the runtime rides
+    along so the DTO carries RunTimeTicks (#250).
     """
-    return _store().positions()
+    return _store().positions_entries()
 
 
-def recent_playback(limit: int = 20) -> dict[str, int]:
-    """item_id -> position_ticks, most recently updated first, capped at
-    ``limit`` — the resume row (ticket #249)."""
-    return _store().recent(limit)
+def recent_playback_entries(limit: int = 20) -> dict[str, tuple[int, int | None]]:
+    """item_id -> (position_ticks, runtime_ticks|None), most recently
+    updated first, capped at ``limit`` — the resume row (ticket #249),
+    with the runtime for the wire bar (#250)."""
+    return _store().recent_entries(limit)
 
 
 def clear_playback() -> None:

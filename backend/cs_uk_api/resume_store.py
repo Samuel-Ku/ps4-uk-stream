@@ -261,6 +261,30 @@ class ResumeStore:
         )
         return {key: int(entry["position_ticks"]) for key, entry in ordered[:limit]}
 
+    @staticmethod
+    def _pos_runtime(entry: dict[str, int | float]) -> tuple[int, int | None]:
+        """(position_ticks, runtime_ticks|None) — the wire pair (#250)."""
+        runtime = entry.get("runtime_ticks")
+        return int(entry["position_ticks"]), int(runtime) if runtime is not None else None
+
+    def positions_entries(self) -> dict[str, tuple[int, int | None]]:
+        """item_id -> (position_ticks, runtime_ticks|None), most-
+        progressed first — feeds NextUp (#250)."""
+        ordered = sorted(
+            self._items.items(), key=lambda kv: int(kv[1]["position_ticks"]), reverse=True
+        )
+        return {key: self._pos_runtime(entry) for key, entry in ordered}
+
+    def recent_entries(self, limit: int) -> dict[str, tuple[int, int | None]]:
+        """item_id -> (position_ticks, runtime_ticks|None), most recently
+        updated first, at most ``limit`` — feeds the resume row (#250)."""
+        ordered = sorted(
+            self._items.items(),
+            key=lambda kv: (float(kv[1].get("updated_at", 0.0)), kv[0]),
+            reverse=True,
+        )
+        return {key: self._pos_runtime(entry) for key, entry in ordered[:limit]}
+
     def clear(self) -> None:
         """Drop all recorded positions (test isolation, #214)."""
         if self._timer is not None:

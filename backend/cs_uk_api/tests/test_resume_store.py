@@ -197,6 +197,21 @@ def test_store_recent_most_recent_first_capped(tmp_path) -> None:
     assert list(store.recent(10).keys()) == ["c", "b", "a"]
 
 
+# ------------------------------------------------------------ T3 (#250)
+
+
+def test_store_entries_carry_runtime(tmp_path) -> None:
+    """#250: the entry reads expose (position, runtime) so the routes
+    can put RunTimeTicks on the wire; unknown runtime is None."""
+    _, now = _clock()
+    store = ResumeStore(str(tmp_path / "playback.json"), now=now)
+    store.record("e1", 100, runtime_ticks=200)
+    store.record("e2", 300)  # no runtime
+    assert store.positions_entries() == {"e2": (300, None), "e1": (100, 200)}
+    assert store.recent_entries(10) == {"e2": (300, None), "e1": (100, 200)}
+    assert store.recent_entries(1) == {"e2": (300, None)}
+
+
 def test_stopped_report_flushed_immediately(client: TestClient, tmp_path, monkeypatch) -> None:
     """Wire-level: a Stopped report writes the state file right away — a
     fresh store over the same path (a restarted process) sees the item
