@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import time
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -177,7 +178,7 @@ async def _warm_and_heartbeat() -> None:
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI):
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     global _warm_task, _watchdog_task, _catalog_warm_task
     if os.path.exists(DEFAULT_CHROMIUM):
         # Background warm+heartbeat (issue #193): uakino's browser session
@@ -234,7 +235,7 @@ app.include_router(jellyfin_router)
 
 
 @app.middleware("http")
-async def jellyfin_case_normalize(request: Request, call_next):
+async def jellyfin_case_normalize(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
     """Rewrite Jellyfin facade paths to canonical case.
 
     Real Jellyfin routes case-insensitively; FastAPI does not. A client
@@ -249,7 +250,7 @@ async def jellyfin_case_normalize(request: Request, call_next):
 
 
 @app.middleware("http")
-async def log_requests(request: Request, call_next):
+async def log_requests(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
     started = time.monotonic()
     response: Response = await call_next(request)
     latency_ms = int((time.monotonic() - started) * 1000)
@@ -670,6 +671,11 @@ async def stream(content_id: str, translation: str | None = None) -> StreamRespo
         try:
             allowed = await provider.episode_translations(rest, http)
         except Exception:
+            log.warning(
+                "episode_translations(%s) failed; accepting any translation",
+                provider_id,
+                exc_info=True,
+            )
             allowed = None
         if allowed is not None and translation not in allowed:
             raise HTTPException(

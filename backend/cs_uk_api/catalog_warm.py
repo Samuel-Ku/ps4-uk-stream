@@ -91,7 +91,7 @@ async def warm_catalog(
     resolve = _resolve if _resolve is not None else resolve_group_content
     try:
         home = await load_home()
-    except Exception:  # noqa: BLE001 — a warm failure must never crash startup
+    except Exception:
         log.exception("catalog warm: home build failed")
         state.status = "failed"
         state.failed = 1

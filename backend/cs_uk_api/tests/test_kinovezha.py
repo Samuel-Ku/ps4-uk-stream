@@ -217,7 +217,7 @@ async def test_kinovezha_content_series_shifted_genre_row_not_misclassified():
     content_html = _fixture("content_series.html")
     # Drop the «Списки:» li so Жанр shifts to index 1 (live shape),
     # and rename the Жанр tag to the singular «Мультсеріал».
-    content_html = re.sub(r"<li><span>Списки:</span>.*?</li>", "", content_html, flags=re.S)
+    content_html = re.sub(r"<li><span>Списки:</span>.*?</li>", "", content_html, flags=re.DOTALL)
     content_html = content_html.replace(">Серіали</a>", ">Мультсеріал</a>", 1)
     player_html = _fixture("player_series.html")
     with respx.mock(assert_all_called=True) as router:
@@ -321,11 +321,10 @@ async def test_kinovezha_stream_series_episode_resolves_to_m3u8():
 async def test_kinovezha_browse_unknown_section_raises():
     from cs_uk_api.providers.base import ProviderError
 
-    with respx.mock(assert_all_called=False):
-        with pytest.raises(ProviderError):
-            await KinoVezhaProvider().browse(
-                "nonexistent", 1, httpx.AsyncClient()
-            )
+    with respx.mock(assert_all_called=False), pytest.raises(ProviderError):
+        await KinoVezhaProvider().browse(
+            "nonexistent", 1, httpx.AsyncClient()
+        )
 
 
 @pytest.mark.asyncio

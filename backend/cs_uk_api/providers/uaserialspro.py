@@ -213,8 +213,6 @@ def _parse_search_card(a: Tag, provider_id: str) -> SearchResult | None:
         return None
     title_el = a.select_one(".uas-card__title")
     title = title_el.get_text(strip=True) if title_el else ""
-    orig_el = a.select_one(".uas-card__orig")
-    orig = orig_el.get_text(strip=True) if orig_el else ""
     img_el = a.select_one(".uas-card__img")
     poster_src: str | None = None
     if img_el is not None:

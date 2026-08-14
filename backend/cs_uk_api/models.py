@@ -238,14 +238,14 @@ class StreamResponse(BaseModel):
 
 #: Wire status literals (v3 spec §2.1.3/§3.4) — the single source of truth:
 #: health.py imports these; no second copy of the strings exists anywhere.
-STATUS_OK = "ok"
-STATUS_DEGRADED = "degraded"
-STATUS_DOWN = "down"
+STATUS_OK: Literal["ok"] = "ok"
+STATUS_DEGRADED: Literal["degraded"] = "degraded"
+STATUS_DOWN: Literal["down"] = "down"
 #: Transient "session is warming up" state (issue #193) — reported on
 #: /api/providers while uakino's browser session has not become ready.
-STATUS_WARMING = "warming"
+STATUS_WARMING: Literal["warming"] = "warming"
 
-HealthStatus = Literal[STATUS_OK, STATUS_DEGRADED, STATUS_DOWN, STATUS_WARMING]
+HealthStatus = Literal["ok", "degraded", "down", "warming"]
 
 
 class ProviderInfo(BaseModel):

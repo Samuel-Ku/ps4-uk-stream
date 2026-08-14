@@ -560,9 +560,8 @@ async def test_ufdub_sections_lists_six():
 async def test_ufdub_browse_unknown_section_raises():
     from cs_uk_api.providers.base import ProviderError
 
-    with respx.mock(assert_all_called=False):
-        with pytest.raises(ProviderError):
-            await UFDubProvider().browse("nonexistent", 1, httpx.AsyncClient())
+    with respx.mock(assert_all_called=False), pytest.raises(ProviderError):
+        await UFDubProvider().browse("nonexistent", 1, httpx.AsyncClient())
 
 
 @pytest.mark.asyncio

@@ -301,9 +301,8 @@ def test_serialno_sections_lists_one():
 
 @pytest.mark.asyncio
 async def test_serialno_browse_unknown_section_raises():
-    with respx.mock(assert_all_called=False):
-        with pytest.raises(ProviderError) as exc_info:
-            await SerialnoProvider().browse("films", 1, httpx.AsyncClient())
+    with respx.mock(assert_all_called=False), pytest.raises(ProviderError) as exc_info:
+        await SerialnoProvider().browse("films", 1, httpx.AsyncClient())
     assert exc_info.value.code == "not_found"
 
 

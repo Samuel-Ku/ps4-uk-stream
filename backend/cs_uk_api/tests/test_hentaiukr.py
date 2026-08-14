@@ -15,7 +15,6 @@ to the extractor, so for v2 we pick the highest-quality source.
 """
 from __future__ import annotations
 
-import json
 import pathlib
 
 import httpx
@@ -123,9 +122,8 @@ async def test_hentaiukr_browse_unknown_section_raises():
     the API returns 404 instead of leaking an empty page. The provider
     should validate the section id *before* hitting the manifest, so
     we don't register the objects.json route here."""
-    with respx.mock(assert_all_called=False):
-        with pytest.raises(ProviderError) as exc_info:
-            await HentaiUkrProvider().browse("does-not-exist", 1, httpx.AsyncClient())
+    with respx.mock(assert_all_called=False), pytest.raises(ProviderError) as exc_info:
+        await HentaiUkrProvider().browse("does-not-exist", 1, httpx.AsyncClient())
     assert exc_info.value.code == "not_found"
 
 
@@ -140,7 +138,7 @@ async def test_hentaiukr_sections_lists_one():
     assert sections[0].styles == frozenset({"anime"})
 
 
-def _objects_route(router: "respx.MockRouter") -> None:
+def _objects_route(router: respx.MockRouter) -> None:
     """Mock the upstream ``/search/objects.json`` manifest.
 
     The provider looks up the URL slug from this manifest every time
@@ -303,13 +301,12 @@ async def test_hentaiukr_stream_rejects_url_as_content_id():
     (``"159:1"``), NOT a URL. Passing a URL must not crash; it must
     be parsed as ``<id>:<episode>`` and (because the URL contains a
     slash that is not a colon) raise not_found."""
-    with respx.mock(assert_all_called=False):
-        with pytest.raises(ProviderError):
-            await HentaiUkrProvider().stream(
-                "https://hentaiukr.com/video/159_velychezni_tsyts_ky_nagaj/",
-                None,
-                httpx.AsyncClient(),
-            )
+    with respx.mock(assert_all_called=False), pytest.raises(ProviderError):
+        await HentaiUkrProvider().stream(
+            "https://hentaiukr.com/video/159_velychezni_tsyts_ky_nagaj/",
+            None,
+            httpx.AsyncClient(),
+        )
 
 
 @pytest.mark.asyncio

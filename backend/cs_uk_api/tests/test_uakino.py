@@ -453,7 +453,6 @@ async def test_uakino_stream_rejects_off_allowlist_stream_page():
     the ashdi.vip host allowlist. A playlist whose `data-file` points
     off-host cannot pivot the backend into a fresh SSRF surface."""
     import json
-
     from urllib.parse import quote
 
     payload = json.dumps(
@@ -471,7 +470,7 @@ async def test_uakino_stream_rejects_off_allowlist_stream_page():
     )
     with respx.mock(assert_all_called=False):
         async with httpx.AsyncClient() as http:
-            with pytest.raises(Exception):
+            with pytest.raises(ProviderError):
                 await _provider(session).stream("99999", None, http)
 
 

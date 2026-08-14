@@ -370,7 +370,7 @@ class CoaninetProvider(BaseProvider):
             type="m3u8",
             headers={
                 "Referer": f"{SITE_URL}/",
-                "User-Agent": "cs-uk-api/0.1",
+                "User-Agent": "cs-uk-api/1.0",
             },
         )
 

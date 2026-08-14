@@ -49,7 +49,6 @@ from ..models import (
     ContentResponse,
     Episode,
     MediaForm,
-    MediaStyle,
     SearchResult,
     Season,
     Section,
@@ -167,7 +166,7 @@ def _moon_decrypt(blob: str, xor_key: str) -> str:
 def _today_string() -> str:
     """Upstream passes ``EEE MMM dd yyyy`` to ``/api/stats/anime/`` —
     replicate the locale-stable English format."""
-    return datetime.now().strftime("%a %b %d %Y").replace(" 0", "  ")
+    return datetime.now().astimezone().strftime("%a %b %d %Y").replace(" 0", "  ")
 
 
 def _poster_url(preview: str | None) -> str | None:

@@ -46,7 +46,6 @@ from cs_uk_api.models import (
 from cs_uk_api.providers import PROVIDERS
 from cs_uk_api.providers.base import BaseProvider, model_b_axes
 
-
 # ---------------------------------------------------------------------------
 # Helpers + fixtures
 # ---------------------------------------------------------------------------

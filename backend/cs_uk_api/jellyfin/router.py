@@ -117,8 +117,8 @@ def normalize_jellyfin_path(path: str) -> str | None:
     for route in router.routes:
         compiled = getattr(route, "_jf_ci_regex", None)
         if compiled is None:
-            compiled = _compile_case_insensitive(route.path_format)
-            route._jf_ci_regex = compiled
+            compiled = _compile_case_insensitive(route.path_format)  # type: ignore[attr-defined]
+            route._jf_ci_regex = compiled  # type: ignore[attr-defined]
         m = compiled.fullmatch(path)
         if m is None:
             continue
@@ -133,9 +133,9 @@ def normalize_jellyfin_path(path: str) -> str | None:
         best_route, best_match = route, m
         if best_specificity == 0:
             break
-    if best_route is None:
+    if best_route is None or best_match is None:
         return None
-    canonical = best_route.path_format
+    canonical: str = best_route.path_format  # type: ignore[attr-defined]
     for name, value in best_match.groupdict().items():
         canonical = canonical.replace("{" + name + "}", value)
     return canonical
@@ -1356,7 +1356,7 @@ def _as_webp(poster_url: str, body: bytes, max_width: int | None) -> bytes:
     try:
         from PIL import Image, ImageOps
 
-        logo = Image.open(io.BytesIO(body))
+        logo: Image.Image = Image.open(io.BytesIO(body))
         if max_width and logo.width > max_width:
             logo = ImageOps.contain(logo, (max_width, max_width))
         out = io.BytesIO()
@@ -2032,8 +2032,8 @@ async def websocket_socket(websocket: WebSocket) -> None:
             await websocket.receive_text()
     except WebSocketDisconnect:
         pass
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception:
+        log.debug("websocket closed unexpectedly", exc_info=True)
 
 
 __all__ = ["require_token", "router"]

@@ -7,8 +7,6 @@ provider.
 """
 from __future__ import annotations
 
-import pytest
-
 from cs_uk_api.sweep_episode_rail import (
     FAIL,
     NO_EPISODES,
@@ -223,7 +221,7 @@ def test_render_report_no_episodes_is_warning_not_bug() -> None:
     assert "⚠️" in report
     # The bug glyph appears only in the header column label; the verdict
     # cell for a no-episodes provider must be the warning, not a bug.
-    data_row = [ln for ln in report.splitlines() if ln.startswith("| serialno")][0]
+    data_row = next(ln for ln in report.splitlines() if ln.startswith("| serialno"))
     assert "🐛" not in data_row
 
 

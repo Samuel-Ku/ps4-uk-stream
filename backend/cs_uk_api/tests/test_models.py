@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from cs_uk_api.models import ContentResponse, SearchResult, SearchResponse, StreamResponse
+from cs_uk_api.models import ContentResponse, SearchResponse, SearchResult, StreamResponse
 
 
 def test_search_result_round_trip():

@@ -77,7 +77,7 @@ async def test_uaflix_browse_section_page1(section_id, url, fixture_name):
     # Every result must be tagged with this provider.
     assert all(r.provider == "uaflix" for r in results)
     # The external_id encodes the URL's first path segment + slug.
-    assert all(r.id.startswith(f"uaflix:") for r in results)
+    assert all(r.id.startswith("uaflix:") for r in results)
 
 
 @pytest.mark.asyncio
@@ -416,9 +416,8 @@ async def test_uaflix_sections_lists_six():
 async def test_uaflix_browse_unknown_section_raises():
     from cs_uk_api.providers.base import ProviderError
 
-    with respx.mock(assert_all_called=False):
-        with pytest.raises(ProviderError):
-            await UAFlixProvider().browse("nonexistent", 1, httpx.AsyncClient())
+    with respx.mock(assert_all_called=False), pytest.raises(ProviderError):
+        await UAFlixProvider().browse("nonexistent", 1, httpx.AsyncClient())
 
 
 def test_uaflix_external_id_round_trips_to_url():

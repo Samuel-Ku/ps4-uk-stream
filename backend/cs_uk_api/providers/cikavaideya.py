@@ -226,7 +226,7 @@ def _load_player1(soup: BeautifulSoup) -> str | dict[str, Any]:
     if _removed_marker(soup):
         raise ProviderError("gated", "upstream content removed")
     player_json = _parse_player_json(soup)
-    player1 = player_json.get("Player1") if player_json else None
+    player1: str | dict[str, Any] | None = player_json.get("Player1") if player_json else None
     if player1 is None or not _is_playable(player1):
         raise ProviderError("gated", "no playable player on content page")
     return player1
@@ -463,7 +463,7 @@ class CikavaIdeyaProvider(BaseProvider):
         return StreamResponse(
             url=extracted.url,
             type=extracted.type,
-            headers={"Referer": ASHDI_REFERER, "User-Agent": "cs-uk-api/0.1"},
+            headers={"Referer": ASHDI_REFERER, "User-Agent": "cs-uk-api/1.0"},
         )
 
     @staticmethod

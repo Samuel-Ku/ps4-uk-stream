@@ -449,7 +449,7 @@ class DoramyWorldProvider(BaseProvider):
         return StreamResponse(
             url=extracted.url,
             type=extracted.type,
-            headers={"Referer": ASHDI_REFERER, "User-Agent": "cs-uk-api/0.1"},
+            headers={"Referer": ASHDI_REFERER, "User-Agent": "cs-uk-api/1.0"},
         )
 
     @staticmethod

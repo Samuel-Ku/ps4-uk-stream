@@ -256,13 +256,13 @@ async def load_home() -> HomeResponse:
     sweep: list[asyncio.Task[None]] = []
     for mapping in (newest_lists, popular_lists):
         for pid, items in list(mapping.items()):
-            provider = PROVIDERS.get(pid)
-            if items and provider is not None and provider.can_gate:
+            maybe_provider = PROVIDERS.get(pid)
+            if items and maybe_provider is not None and maybe_provider.can_gate:
                 sweep.append(asyncio.create_task(_sweep(mapping, pid)))
     for per_pid in type_lists.values():
         for pid, items in list(per_pid.items()):
-            provider = PROVIDERS.get(pid)
-            if items and provider is not None and provider.can_gate:
+            maybe_provider = PROVIDERS.get(pid)
+            if items and maybe_provider is not None and maybe_provider.can_gate:
                 sweep.append(asyncio.create_task(_sweep(per_pid, pid)))
     if sweep:
         _done, pending = await asyncio.wait(sweep, timeout=_GATE_CHECK_TIMEOUT_S)

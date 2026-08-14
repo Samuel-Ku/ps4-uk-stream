@@ -269,6 +269,5 @@ async def test_unimay_search_url_uses_query_param():
 
 @pytest.mark.asyncio
 async def test_unimay_browse_unknown_section_raises():
-    with respx.mock(assert_all_called=False):
-        with pytest.raises(ProviderError):
-            await UnimayProvider().browse("nonexistent", 1, httpx.AsyncClient())
+    with respx.mock(assert_all_called=False), pytest.raises(ProviderError):
+        await UnimayProvider().browse("nonexistent", 1, httpx.AsyncClient())

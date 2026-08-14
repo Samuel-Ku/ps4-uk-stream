@@ -10,7 +10,16 @@ from bs4 import BeautifulSoup
 
 from ..country import extract_country
 from ..http_client import safe_get
-from ..models import ContentResponse, Episode, SearchResult, Season, Section, StreamResponse, Translation, TranslationLevel
+from ..models import (
+    ContentResponse,
+    Episode,
+    SearchResult,
+    Season,
+    Section,
+    StreamResponse,
+    Translation,
+    TranslationLevel,
+)
 from .base import BaseProvider, MediaTypeStr, ProviderError, model_b_axes, parse_actor_list
 
 BASE_URL = "https://kinotron.tv"
@@ -37,7 +46,7 @@ MOVIE_SUFFIX = ":__movie__"
 
 
 def _external_id(href: str) -> str:
-    match = re.search(r"/(\d+-[a-z0-9-]+?)(?:\.html)?/?$", href, re.I)
+    match = re.search(r"/(\d+-[a-z0-9-]+?)(?:\.html)?/?$", href, re.IGNORECASE)
     if not match:
         raise ProviderError("parse_failed", f"unrecognized url: {href}")
     return match.group(1)
@@ -295,7 +304,7 @@ class KinoTronProvider(BaseProvider):
                 raise ProviderError("not_found", "episode not found")
             matches = [item for item in season_files if str(item.get("title", "")).strip() == episode_titles[episode_number - 1]]
             selected = next((item for item in matches if str(item.get("dub", "")).strip() == translation), matches[0])
-        return StreamResponse(url=str(selected["file"]), type="m3u8", headers={"Referer": player_url, "User-Agent": "cs-uk-api/0.1"})
+        return StreamResponse(url=str(selected["file"]), type="m3u8", headers={"Referer": player_url, "User-Agent": "cs-uk-api/1.0"})
 
 
 __all__ = ["KinoTronProvider"]

@@ -556,9 +556,8 @@ async def test_bambooua_sections_exclude_dead_world_bl():
 
 @pytest.mark.asyncio
 async def test_bambooua_browse_unknown_section_raises():
-    with respx.mock(assert_all_called=False):
-        with pytest.raises(ProviderError):
-            await BambooUAProvider().browse("nonexistent", 1, httpx.AsyncClient())
+    with respx.mock(assert_all_called=False), pytest.raises(ProviderError):
+        await BambooUAProvider().browse("nonexistent", 1, httpx.AsyncClient())
 
 
 @pytest.mark.asyncio

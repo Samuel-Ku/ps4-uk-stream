@@ -211,7 +211,8 @@ def _extract_people(soup: BeautifulSoup) -> list[Person]:
             name = a.get_text(strip=True)
             if not name:
                 continue
-            href = a.get("href") or ""
+            _href = a.get("href")
+            href = _href if isinstance(_href, str) else ""
             marker = "/xfsearch/"
             idx = href.find(marker)
             slug = href[idx + len(marker) :].rstrip("/") if idx >= 0 else name.lower()
@@ -475,7 +476,7 @@ class UFDubProvider(BaseProvider):
         return StreamResponse(
             url=media_url,
             type="mp4",
-            headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/0.1"},
+            headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/1.0"},
             allowed_domains=frozenset({"dropboxusercontent.com"}),
         )
 

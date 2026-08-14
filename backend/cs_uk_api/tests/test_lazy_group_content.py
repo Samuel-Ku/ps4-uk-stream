@@ -57,7 +57,6 @@ from cs_uk_api.models import (
 from cs_uk_api.providers import PROVIDERS
 from cs_uk_api.providers.base import BaseProvider, model_b_axes
 
-
 # ---------------------------------------------------------------------------
 # Helpers + fixtures
 # ---------------------------------------------------------------------------
@@ -83,14 +82,7 @@ def _make_item(
 
 
 from collections.abc import Iterator
-from typing import Any, cast
-
-from cs_uk_api.main import (
-    _home_cache,
-    _home_sources_cache,
-    _search_cache,
-    app,
-)
+from typing import Any, ClassVar, cast
 
 
 @pytest.fixture(autouse=True)
@@ -139,7 +131,7 @@ def _both_pid(
         name = pid.title()
         types = ("movie",)
         newest_section = "page"
-        content_calls: list[str] = []
+        content_calls: ClassVar[list[str]] = []
 
         async def search(self, q, http):  # type: ignore[no-untyped-def]
             return [search_item]
@@ -272,7 +264,7 @@ def test_content_by_group_key_lazy_strips_provider_prefix_for_strict_content(
         name = "Strict"
         types = ("movie",)
         newest_section = "page"
-        content_calls: list[str] = []
+        content_calls: ClassVar[list[str]] = []
 
         async def search(self, q, http):  # type: ignore[no-untyped-def]
             return [_make_item("strict", "Дюна", year=2021, n="s-1")]

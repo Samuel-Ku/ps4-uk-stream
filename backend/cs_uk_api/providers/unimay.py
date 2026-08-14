@@ -301,7 +301,7 @@ class UnimayProvider(BaseProvider):
         return StreamResponse(
             url=str(url),
             type="m3u8",
-            headers={"Referer": f"{MAIN_URL}/", "User-Agent": "cs-uk-api/0.1"},
+            headers={"Referer": f"{MAIN_URL}/", "User-Agent": "cs-uk-api/1.0"},
         )
 
 

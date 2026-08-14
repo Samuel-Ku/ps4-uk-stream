@@ -101,7 +101,7 @@ async def test_cikavaideya_browse_cartoon_section_classifies_by_subtitle():
         async with httpx.AsyncClient() as http:
             results, has_next = await CikavaIdeyaProvider().browse("cartoon", 1, http)
     assert len(results) == 18
-    type_counts = {t: sum(1 for r in results if r.form == t) for t in {"movie", "series"}}
+    type_counts = {t: sum(1 for r in results if r.form == t) for t in ("movie", "series")}
     # Regression: longest-prefix-first classification must put "Фільми"
     # ahead of "Анімаційні" — at least one card in this section is
     # tagged "Фільми / Анімаційні" and should classify as `movie`.
@@ -296,9 +296,8 @@ async def test_cikavaideya_sections_lists_four():
 async def test_cikavaideya_browse_unknown_section_raises():
     from cs_uk_api.providers.base import ProviderError
 
-    with respx.mock(assert_all_called=False):
-        with pytest.raises(ProviderError):
-            await CikavaIdeyaProvider().browse("nonexistent", 1, httpx.AsyncClient())
+    with respx.mock(assert_all_called=False), pytest.raises(ProviderError):
+        await CikavaIdeyaProvider().browse("nonexistent", 1, httpx.AsyncClient())
 
 
 @pytest.mark.asyncio

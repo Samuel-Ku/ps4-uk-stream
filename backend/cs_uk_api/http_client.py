@@ -15,7 +15,7 @@ def get_client() -> httpx.AsyncClient:
     if _client is None:
         _client = httpx.AsyncClient(
             timeout=httpx.Timeout(SETTINGS.upstream_timeout_s),
-            headers={"User-Agent": "cs-uk-api/0.1 (+https://github.com/)"},
+            headers={"User-Agent": "cs-uk-api/1.0 (+https://github.com/)"},
             follow_redirects=False,
         )
     return _client

@@ -533,7 +533,7 @@ class BambooUAProvider(BaseProvider):
         return StreamResponse(
             url=urljoin(BASE_URL, media_url),
             type=stream_type,
-            headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/0.1"},
+            headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/1.0"},
         )
 
     @staticmethod

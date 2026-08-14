@@ -355,7 +355,8 @@ def _serial_media_url(html: str, ep_suffix: str) -> str | None:
     episode = int(m.group(2))
     try:
         data = json.loads(raw)
-        return data[0]["folder"][season - 1]["folder"][episode - 1]["file"]
+        value = data[0]["folder"][season - 1]["folder"][episode - 1]["file"]
+        return value if isinstance(value, str) else None
     except (KeyError, IndexError, TypeError, json.JSONDecodeError):
         return None
 
@@ -725,7 +726,7 @@ class UAFlixProvider(BaseProvider):
         return StreamResponse(
             url=extracted.url,
             type=extracted.type,
-            headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/0.1"},
+            headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/1.0"},
         )
 
     @staticmethod

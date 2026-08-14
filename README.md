@@ -29,3 +29,40 @@ design and `CONTEXT.md` for the domain model.
    `http://<host-ip>:<port>` (the backend's Jellyfin facade). Any
    username/password completes the handshake — the facade is accept-any
    and stateless (ADR-0002).
+
+## Deploy (systemd, single LAN host)
+
+A ready-to-edit unit ships in `backend/deploy/cs-uk-api.service`:
+
+```bash
+sudo cp backend/deploy/cs-uk-api.service /etc/systemd/system/
+# edit User= / WorkingDirectory= / ExecStart= paths to this host
+sudo systemctl daemon-reload
+sudo systemctl enable --now cs-uk-api
+journalctl -u cs-uk-api -f   # warm-up: uakino reports "warming" until its
+                             # browser session is ready, then "ok"
+```
+
+The service is LAN-only by design (ADR-0003: one host, one uvicorn
+process, no auth). Tunable knobs: `CS_UK_CACHE_SEARCH`,
+`CS_UK_CACHE_CONTENT`, `CS_UK_CACHE_POSTER`,
+`CS_UK_POSTER_DISK_TTL`, `UAKINO_CHROMIUM` — see `CONTEXT.md` §Cache
+contract.
+
+## Release gate
+
+```bash
+cd backend && . .venv/bin/activate
+pytest cs_uk_api/tests -q      # 1020 tests, fixtures only (no live I/O)
+ruff check cs_uk_api           # clean
+mypy cs_uk_api                 # strict on the package (tests excluded in pyproject)
+```
+
+Live smoke against real upstreams (optional, needs internet):
+
+```bash
+uvicorn cs_uk_api.main:app --host 127.0.0.1 --port 8000 &
+curl -s localhost:8000/api/providers        # 19 providers; uakino "warming" then "ok"
+curl -s "localhost:8000/api/search?q=Дюна"  # groups + no failures
+curl -s "localhost:8000/api/stream/<id>"    # live m3u8/mp4 URL, plays in mpv
+```

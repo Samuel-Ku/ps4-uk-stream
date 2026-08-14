@@ -465,7 +465,7 @@ class KinoVezhaProvider(BaseProvider):
             raise ProviderError("parse_failed", f"no stream url for {ep_suffix!r}")
         return StreamResponse(url=stream_url, type="m3u8", headers={
             "Referer": BASE_URL + "/",
-            "User-Agent": "cs-uk-api/0.1",
+            "User-Agent": "cs-uk-api/1.0",
         })
 
     @staticmethod

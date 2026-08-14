@@ -45,7 +45,7 @@ from .base import BaseProvider, ProviderError, model_b_axes
 BASE_URL = "https://serialno.tv"
 
 
-def _parse_fmeta(soup: BeautifulSoup) -> tuple[int | None, list[Person]]:
+def _parse_fmeta(soup: BeautifulSoup) -> tuple[int | None, list[str], list[Person]]:
     """Year + people from the `.flist` info rows.
 
     The DLE template renders `<li><span>Рік:</span> <a>2023</a> …`,
@@ -435,7 +435,7 @@ class SerialnoProvider(BaseProvider):
         return StreamResponse(
             url=stream_url,
             type="m3u8",
-            headers={"Referer": BASE_URL + "/", "User-Agent": "cs-uk-api/0.1"},
+            headers={"Referer": BASE_URL + "/", "User-Agent": "cs-uk-api/1.0"},
         )
 
     @staticmethod

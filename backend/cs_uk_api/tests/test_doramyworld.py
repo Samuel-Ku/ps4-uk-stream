@@ -22,8 +22,8 @@ import httpx
 import pytest
 import respx
 
-from cs_uk_api.providers.doramyworld import DoramyWorldProvider
 from cs_uk_api.providers.base import ProviderError
+from cs_uk_api.providers.doramyworld import DoramyWorldProvider
 
 FIX = pathlib.Path(__file__).parent / "fixtures" / "doramyworld"
 
@@ -325,30 +325,27 @@ async def test_doramyworld_sections_lists_three():
 
 @pytest.mark.asyncio
 async def test_doramyworld_browse_unknown_section_raises():
-    with respx.mock(assert_all_called=False):
-        with pytest.raises(ProviderError):
-            await DoramyWorldProvider().browse(
-                "nonexistent", 1, httpx.AsyncClient()
-            )
+    with respx.mock(assert_all_called=False), pytest.raises(ProviderError):
+        await DoramyWorldProvider().browse(
+            "nonexistent", 1, httpx.AsyncClient()
+        )
 
 
 @pytest.mark.asyncio
 async def test_doramyworld_content_bad_slug_raises_not_found():
     """REGRESSION: external_id must be validated at the boundary."""
-    with respx.mock(assert_all_called=False):
-        with pytest.raises(ProviderError) as exc:
-            await DoramyWorldProvider().content(
-                "../../etc/passwd", httpx.AsyncClient()
-            )
+    with respx.mock(assert_all_called=False), pytest.raises(ProviderError) as exc:
+        await DoramyWorldProvider().content(
+            "../../etc/passwd", httpx.AsyncClient()
+        )
     assert exc.value.code == "not_found"
 
 
 @pytest.mark.asyncio
 async def test_doramyworld_stream_bad_slug_raises_not_found():
     """REGRESSION: stream() must validate the external_id portion."""
-    with respx.mock(assert_all_called=False):
-        with pytest.raises(ProviderError) as exc:
-            await DoramyWorldProvider().stream(
-                "../bad:slug", None, httpx.AsyncClient()
-            )
+    with respx.mock(assert_all_called=False), pytest.raises(ProviderError) as exc:
+        await DoramyWorldProvider().stream(
+            "../bad:slug", None, httpx.AsyncClient()
+        )
     assert exc.value.code == "not_found"

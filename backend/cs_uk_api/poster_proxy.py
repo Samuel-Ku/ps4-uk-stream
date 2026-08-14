@@ -199,9 +199,10 @@ async def fetch(u: str, http: httpx.AsyncClient) -> tuple[bytes, str] | None:
     except httpx.HTTPError:
         resp = None
     if resp is None or resp.status_code != 200:
-        body, ctype = await _browser_fetch_bytes(u) or (None, None)
-        if body is None:
+        fetched = await _browser_fetch_bytes(u)
+        if fetched is None:
             return None
+        body, ctype = fetched
     else:
         if len(resp.content) > SETTINGS.poster_size_cap_bytes:
             return None

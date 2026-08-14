@@ -183,7 +183,6 @@ async def test_coaninet_sections_lists_two():
 async def test_coaninet_browse_unknown_section_raises():
     """Unknown section ids must raise ProviderError("not_found") without
     hitting the network."""
-    with respx.mock(assert_all_called=False):
-        with pytest.raises(ProviderError) as exc_info:
-            await CoaninetProvider().browse("nonexistent", 1, httpx.AsyncClient())
+    with respx.mock(assert_all_called=False), pytest.raises(ProviderError) as exc_info:
+        await CoaninetProvider().browse("nonexistent", 1, httpx.AsyncClient())
     assert exc_info.value.code == "not_found"

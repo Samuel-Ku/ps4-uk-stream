@@ -558,7 +558,7 @@ class UakinoProvider(BaseProvider):
         return StreamResponse(
             url=m3u8_url,
             type="m3u8",
-            headers={"Referer": _CDN_REFERER, "User-Agent": "cs-uk-api/0.1"},
+            headers={"Referer": _CDN_REFERER, "User-Agent": "cs-uk-api/1.0"},
         )
 
     async def browse(

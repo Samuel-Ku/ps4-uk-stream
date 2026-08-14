@@ -479,7 +479,6 @@ async def test_eneyida_dead_embed_playback_info_404_health_ok(
     not a provider failure (ADR-0002 amendment)."""
     import contextlib
     import importlib
-    from collections.abc import Iterator
     from pathlib import Path
 
     import httpx

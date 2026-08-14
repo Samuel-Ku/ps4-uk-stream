@@ -198,8 +198,7 @@ def _slug_from_href(href: str) -> str | None:
     if not last:
         return None
     # Strip `.html` if present.
-    if last.endswith(".html"):
-        last = last[:-5]
+    last = last.removesuffix(".html")
     return last or None
 
 
@@ -237,7 +236,7 @@ def _is_season_href(href: str) -> bool:
     if not last:
         return False
     m = _SEASON_RE.search(last)
-    return bool(m) and m.end() == len(last)
+    return m is not None and m.end() == len(last)
 
 
 def _clean_title(text: str) -> str:
@@ -636,7 +635,7 @@ class SimpsonsUATvProvider(BaseProvider):
         if parsed.netloc not in (BASE_URL_HOST, f"www.{BASE_URL_HOST}"):
             raise ProviderError("not_found", f"bad content_id: {content_id!r}")
         segments = [s for s in parsed.path.split("/") if s]
-        check_segments = [s[:-5] if s.endswith(".html") else s for s in segments]
+        check_segments = [s.removesuffix(".html") for s in segments]
         if not check_segments or not all(
             _EXTERNAL_ID_RE.fullmatch(s) for s in check_segments
         ):
@@ -694,7 +693,7 @@ class SimpsonsUATvProvider(BaseProvider):
         return StreamResponse(
             url=m3u8,
             type="m3u8",
-            headers={"Referer": ASHDI_REFERER, "User-Agent": "cs-uk-api/0.1"},
+            headers={"Referer": ASHDI_REFERER, "User-Agent": "cs-uk-api/1.0"},
         )
 
 

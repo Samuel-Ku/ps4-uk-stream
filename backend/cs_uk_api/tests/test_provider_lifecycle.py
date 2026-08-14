@@ -26,7 +26,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from cs_uk_api.main import _search_cache, app
-from cs_uk_api.models import Section, SearchResult
+from cs_uk_api.models import SearchResult, Section
 from cs_uk_api.providers import PROVIDERS
 from cs_uk_api.providers.base import BaseProvider
 

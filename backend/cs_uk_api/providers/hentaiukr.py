@@ -256,7 +256,7 @@ class HentaiUkrProvider(BaseProvider):
         return StreamResponse(
             url=urljoin(content_url, str(best["src"])),
             type="mp4",
-            headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/0.1"},
+            headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/1.0"},
         )
 
 

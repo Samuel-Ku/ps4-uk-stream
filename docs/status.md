@@ -6,7 +6,11 @@ followed the plan at
 
 ## Delivered
 
-### Backend (FastAPI, Python) -- 719 tests passing (2026-08-08)
+### Backend (FastAPI, Python) -- 1020 tests passing (2026-08-14)
+
+Release gate (2026-08-14, v1.0.0): `pytest` 1020 passed; `ruff check
+cs_uk_api` clean; `mypy cs_uk_api` strict-clean on the shipped package
+(test files excluded via `pyproject.toml` `exclude`).
 
 Diagnostics + fix pass (2026-08-08, see `docs/diagnostics-2026-08-08.md`
 and GitHub issues #112–#125): live-gate review of all 19 providers

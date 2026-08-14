@@ -417,7 +417,7 @@ def sweep_home(
     return results
 
 
-def _http_client_request(base_url: str, token: str) -> "Callable[[str, dict[str, str], str], HopResult]":
+def _http_client_request(base_url: str, token: str) -> Callable[[str, dict[str, str], str], HopResult]:
     """Build a ``request`` bound to a live server (uses urllib, no dep).
 
     ``method`` selects GET/POST; PlaybackInfo is exercised as POST (the
@@ -492,8 +492,10 @@ def _main(argv: list[str]) -> int:
             print(f"FATAL: cannot fetch /api/home: {e}", file=__import__("sys").stderr)
             return 1
 
-        from .providers import _registry  # noqa: F401  (runs register() bootstrap)
-        from .providers import PROVIDERS
+        from .providers import (
+            PROVIDERS,
+            _registry,  # noqa: F401  (runs register() bootstrap)
+        )
 
         results = sweep_home(
             home,
