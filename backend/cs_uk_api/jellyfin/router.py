@@ -893,9 +893,13 @@ async def _resolve_playback_episode(
     group (cold cache / gated item).
     """
     # Episode wire ids end in ``:s1e1`` (ufdub-style) or ``:e5``
-    # (uakino/kinotron-style); the prefix before the tail is the
-    # ``provider:external`` composite that identifies the merged group.
-    match = re.search(r":(?:s\d+)?e\d+$", item_id)
+    # (uakino/kinotron-style), or carry a base64 source blob AFTER the
+    # ``:eN`` tail (animeon-style ``animeon:918:e1:eyJ...`` — the blob
+    # itself can contain digits, so the tail is ``:e<N>`` followed by
+    # ``:`` or end-of-string, never ``:e<N>``+digits). The prefix before
+    # the tail is the ``provider:external`` composite that identifies
+    # the merged group.
+    match = re.search(r":(?:s\d+)?e\d+(?=:|$)", item_id)
     if match is None:
         return None, None
     group_key = group_key_for_external(item_id[: match.start()])

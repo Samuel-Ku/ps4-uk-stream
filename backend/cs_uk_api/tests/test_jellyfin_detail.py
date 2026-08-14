@@ -689,6 +689,89 @@ def test_playback_report_seeds_resume_and_nextup(client: TestClient) -> None:
     assert nxt["SeriesId"] == gk
 
 
+def test_playback_report_episode_with_nonmatching_prefix_seeds_resume(
+    client: TestClient,
+) -> None:
+    """#214: real providers' episode wire ids do NOT carry the group's
+    SearchResult id as prefix — uakino emits ``{provider}:{news_id}:eN``
+    while its card id is ``{provider}:{section}:{news_id}-{slug}``, and
+    animeon appends a base64 blob (``:e1:eyJ...``). Resume/NextUp must
+    still resolve the group: item-id fuzzy match + tolerate the blob
+    tail."""
+    serial = _serial()
+    serial.seasons = [
+        Season(
+            number=1,
+            episodes=[
+                # uakino-style: bare numeric prefix, NOT the card id.
+                Episode(number=1, id="p1:6268:e1", title="Серія 1"),
+                Episode(number=2, id="p1:6268:e2", title="Серія 2"),
+            ],
+        )
+    ]
+    stub = _DetailStub(
+        cards=[
+            _card(
+                "p1", "anime-series:6268-narutto-1-sezon",
+                "Наруто", "series", poster=_POSTER_SERIES,
+            )
+        ],
+        content_by_external={"anime-series:6268-narutto-1-sezon": serial},
+    )
+    PROVIDERS["p1"] = stub
+    _auth(client)
+
+    _post_playback(client, "p1:6268:e1", 600_000_000)
+
+    resume = _get(client, "/Users/user1/Items/Resume")
+    assert len(resume["Items"]) == 1
+    assert resume["Items"][0]["Id"] == "p1:6268:e1"
+    assert resume["Items"][0]["PlaybackPositionTicks"] == 600_000_000
+
+    nextup = _get(client, "/Shows/NextUp")
+    assert len(nextup["Items"]) == 1
+    assert nextup["Items"][0]["Id"] == "p1:6268:e2"
+
+
+def test_playback_report_animeon_encoded_episode_seeds_resume(
+    client: TestClient,
+) -> None:
+    """#214: animeon's episode wire id appends a base64 source blob after
+    the ``:eN`` suffix (``animeon:918:e1:eyJ...``). The episode-tail regex
+    must tolerate the trailing blob, and the numeric prefix must resolve
+    the group."""
+    import base64 as _b64
+
+    blob = _b64.b64encode(b'{"id":918,"episode":1,"sources":[]}').decode()
+    serial = _serial()
+    serial.seasons = [
+        Season(
+            number=1,
+            episodes=[
+                Episode(number=1, id=f"p1:918:e1:{blob}", title="Серія 1"),
+                Episode(number=2, id=f"p1:918:e2:{blob}", title="Серія 2"),
+            ],
+        )
+    ]
+    stub = _DetailStub(
+        cards=[_card("p1", "918", "Наруто", "series", poster=_POSTER_SERIES)],
+        content_by_external={"918": serial},
+    )
+    PROVIDERS["p1"] = stub
+    _auth(client)
+
+    _post_playback(client, f"p1:918:e1:{blob}", 600_000_000)
+
+    resume = _get(client, "/Users/user1/Items/Resume")
+    assert len(resume["Items"]) == 1
+    assert resume["Items"][0]["Id"] == f"p1:918:e1:{blob}"
+    assert resume["Items"][0]["PlaybackPositionTicks"] == 600_000_000
+
+    nextup = _get(client, "/Shows/NextUp")
+    assert len(nextup["Items"]) == 1
+    assert nextup["Items"][0]["Id"] == f"p1:918:e2:{blob}"
+
+
 def test_playback_report_movie_seeds_resume(client: TestClient) -> None:
     """#214: a movie reports its g2 key, so Resume carries the movie
     card with its position (no NextUp — a movie has no successor)."""

@@ -444,6 +444,15 @@ def group_key_for_external(composite: str) -> str | None:
     (``ufdub:dorama-408-...:s1e1``), whose ``provider:external`` prefix
     identifies the merged group (ticket #214). Built from the same
     ``sources_cache`` map ``resolve_group`` reads.
+
+    Ticket #234: the episode prefix is NOT always the card's composite
+    id. uakino's episode wire id carries only the bare numeric news id
+    (``uakino:6268:e1``) while its search card id is the full
+    ``uakino:anime-series:6268-narutto-1-sezon`` — the exact match
+    misses and the resume rail would drop the episode. Fall back to a
+    same-provider item-id match: the numeric segment (``6268``) appears
+    as the ``{section}:{item_id}-{slug}`` shape of one of the group's
+    cards.
     """
     per_provider: dict[str, dict[str, SearchResult]] = cast(
         dict[str, dict[str, SearchResult]], sources_cache.get(_SOURCES_KEY) or {}
@@ -452,6 +461,19 @@ def group_key_for_external(composite: str) -> str | None:
         for result in providers.values():
             if result.id == composite:
                 return group_key
+    provider_id, _, item_seg = composite.partition(":")
+    if not provider_id or not item_seg.isdigit():
+        return None
+    for group_key, providers in per_provider.items():
+        for result in providers.values():
+            if result.provider != provider_id:
+                continue
+            # ``{section}:{item_id}-{slug}`` (uakino) or ``{item_id}``
+            # (animeon) — the numeric id is a segment boundary, never
+            # part of a longer number.
+            for part in result.id.split(":"):
+                if part == item_seg or part.startswith(f"{item_seg}-"):
+                    return group_key
     return None
 
 
