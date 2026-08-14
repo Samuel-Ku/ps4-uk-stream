@@ -228,6 +228,12 @@ class StreamResponse(BaseModel):
     url: str
     type: StreamType = "mp4"
     headers: dict[str, str] = Field(default_factory=dict)
+    #: Registrable domains the provider sanctions beyond ``url``'s own
+    #: host: a 302 gateway (e.g. ufdub's VIDEOS.php) may hand bytes to a
+    #: foreign CDN the provider picked (Dropbox). The stream proxy's CDN
+    #: check (D7 SSRF posture) honours these in addition to the
+    #: dot-boundary rule — undeclared hosts still fail closed.
+    allowed_domains: frozenset[str] = Field(default_factory=frozenset)
 
 
 #: Wire status literals (v3 spec §2.1.3/§3.4) — the single source of truth:

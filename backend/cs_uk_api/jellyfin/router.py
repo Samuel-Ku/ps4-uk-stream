@@ -1657,7 +1657,7 @@ _MAX_PROXY_HOPS = 5
 #: — NOT the upstream URL, which stays ADR-0003's "never cached"
 #: (session-scoped/token-signed); the fresh ``stream()`` on expiry is
 #: exactly the "a miss costs one request" cost the ADR accepts.
-_STREAM_MEMO: dict[str, tuple[float, str, dict[str, str]]] = {}
+_STREAM_MEMO: dict[str, tuple[float, str, dict[str, str], frozenset[str]]] = {}
 _STREAM_MEMO_TTL_S = 15 * 60
 
 
@@ -1685,22 +1685,26 @@ def _registrable_domain(host: str) -> str:
     return ".".join(labels[-2:])
 
 
-def _stream_target_allowed(url: str, cdn_host: str) -> bool:
+def _stream_target_allowed(url: str, cdn_host: str, allowed: frozenset[str] = frozenset()) -> bool:
     """Whether the byte proxy may reach ``url``: a host on the same
     registrable domain as the CDN the provider selected for the item
-    (``cdn.example`` and its ``media.``/``api.`` siblings are one CDN).
+    (``cdn.example`` and its ``media.``/``api.`` siblings are one CDN),
+    or a registrable domain the provider explicitly sanctioned in
+    ``StreamResponse.allowed_domains`` (a 302 gateway may hand bytes to
+    a foreign CDN the provider picked, e.g. ufdub episodes on Dropbox).
 
     This is the stream proxy's standing posture: the facade fetches bytes
     only from the CDN a provider picked — a sibling subdomain of the same
-    domain is still the picked CDN, a foreign registrable domain is not,
-    and a client pointing the segment route at an arbitrary host fails
-    closed (mirrors the poster proxy's allowlist).
+    domain is still the picked CDN, a foreign registrable domain is not
+    (unless provider-sanctioned), and a client pointing the segment route
+    at an arbitrary host fails closed (mirrors the poster proxy's
+    allowlist).
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or parsed.hostname is None:
         return False
     host = parsed.hostname.lower()
-    return _registrable_domain(host) == _registrable_domain(cdn_host)
+    return _registrable_domain(host) == _registrable_domain(cdn_host) or _registrable_domain(host) in allowed
 
 
 def _is_hls_stream(stream: StreamResponse) -> bool:
@@ -1737,28 +1741,31 @@ def _rewrite_m3u8(body: str, manifest_url: str, item_id: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _memo_stream(item_id: str, cdn_host: str, headers: dict[str, str]) -> None:
+def _memo_stream(
+    item_id: str, cdn_host: str, headers: dict[str, str], allowed: frozenset[str]
+) -> None:
     """Writer for the segment memo. Values are returned by reference, so
     the store hands out copies — never the live provider dict."""
-    _STREAM_MEMO[item_id] = (time.monotonic(), cdn_host, dict(headers))
+    _STREAM_MEMO[item_id] = (time.monotonic(), cdn_host, dict(headers), allowed)
 
 
-async def _proxy_target(item_id: str) -> tuple[str, dict[str, str]] | None:
-    """(cdn_host, provider headers) the segment proxy must use.
+async def _proxy_target(item_id: str) -> tuple[str, dict[str, str], frozenset[str]] | None:
+    """(cdn_host, provider headers, allowed domains) the segment proxy
+    must use.
 
     Serves from the memo when fresh; otherwise re-resolves the stream
     once and memoizes. None → 404 (D2)."""
     hit = _STREAM_MEMO.get(item_id)
     if hit is not None and time.monotonic() - hit[0] < _STREAM_MEMO_TTL_S:
-        return hit[1], dict(hit[2])
+        return hit[1], dict(hit[2]), hit[3]
     stream = await _resolve_stream(item_id)
     if stream is None:
         return None
     cdn_host = _cdn_host(stream.url)
     if cdn_host is None:
         return None
-    _memo_stream(item_id, cdn_host, stream.headers)
-    return cdn_host, dict(stream.headers)
+    _memo_stream(item_id, cdn_host, stream.headers, stream.allowed_domains)
+    return cdn_host, dict(stream.headers), stream.allowed_domains
 
 
 async def _open_upstream(
@@ -1768,6 +1775,7 @@ async def _open_upstream(
     range_header: str | None,
     cdn_host: str,
     hops: int = 0,
+    allowed: frozenset[str] = frozenset(),
 ) -> tuple[httpx.Response, Callable[[], Awaitable[None]]] | None:
     """Open a validating byte stream to ``url``, following redirects by
     hand and re-validating EVERY hop against the item's CDN host.
@@ -1779,7 +1787,7 @@ async def _open_upstream(
     meaningfully relay, so it becomes the same 404 an unresolvable id
     gets.
     """
-    if hops > _MAX_PROXY_HOPS or not _stream_target_allowed(url, cdn_host):
+    if hops > _MAX_PROXY_HOPS or not _stream_target_allowed(url, cdn_host, allowed):
         return None
     req_headers = dict(headers)
     if range_header is not None:
@@ -1795,7 +1803,7 @@ async def _open_upstream(
         if location is None:
             return None
         return await _open_upstream(
-            http, urljoin(url, location), headers, range_header, cdn_host, hops + 1
+            http, urljoin(url, location), headers, range_header, cdn_host, hops + 1, allowed
         )
     if resp.status_code < 200 or resp.status_code >= 300:
         await cm.__aexit__(None, None, None)
@@ -1813,9 +1821,10 @@ async def _fetch_manifest(
     headers: dict[str, str],
     cdn_host: str,
     hops: int = 0,
+    allowed: frozenset[str] = frozenset(),
 ) -> httpx.Response | None:
     """Fetch a small HLS manifest with hop revalidation; only a 200 counts."""
-    if hops > _MAX_PROXY_HOPS or not _stream_target_allowed(url, cdn_host):
+    if hops > _MAX_PROXY_HOPS or not _stream_target_allowed(url, cdn_host, allowed):
         return None
     try:
         resp = await http.get(url, headers=headers)
@@ -1826,7 +1835,7 @@ async def _fetch_manifest(
         if location is None:
             return None
         return await _fetch_manifest(
-            http, urljoin(url, location), headers, cdn_host, hops + 1
+            http, urljoin(url, location), headers, cdn_host, hops + 1, allowed
         )
     if resp.status_code != 200:
         log.warning("jellyfin manifest non-200 url=%s status=%s", url, resp.status_code)
@@ -1886,11 +1895,13 @@ async def video_stream(item_id: str, request: Request) -> Response:
     cdn_host = _cdn_host(stream.url)
     if cdn_host is None:
         raise HTTPException(status_code=404, detail="item_unavailable")
-    _memo_stream(item_id, cdn_host, stream.headers)
+    _memo_stream(item_id, cdn_host, stream.headers, stream.allowed_domains)
     http = get_client()
 
     if _is_hls_stream(stream):
-        manifest = await _fetch_manifest(http, stream.url, stream.headers, cdn_host)
+        manifest = await _fetch_manifest(
+            http, stream.url, stream.headers, cdn_host, allowed=stream.allowed_domains
+        )
         if manifest is None:
             raise HTTPException(status_code=404, detail="item_unavailable")
         body = _rewrite_m3u8(
@@ -1903,7 +1914,12 @@ async def video_stream(item_id: str, request: Request) -> Response:
         return Response(content=body, media_type=_STREAM_CTYPE["m3u8"])
 
     opened = await _open_upstream(
-        http, stream.url, stream.headers, request.headers.get("range"), cdn_host
+        http,
+        stream.url,
+        stream.headers,
+        request.headers.get("range"),
+        cdn_host,
+        allowed=stream.allowed_domains,
     )
     if opened is None:
         raise HTTPException(status_code=404, detail="item_unavailable")
@@ -1930,11 +1946,11 @@ async def video_segment(item_id: str, url: str = Query(...)) -> Response:
     target = await _proxy_target(item_id)
     if target is None:
         raise HTTPException(status_code=404, detail="item_unavailable")
-    cdn_host, headers = target
+    cdn_host, headers, allowed = target
     http = get_client()
 
     if url.rstrip("/").lower().endswith(".m3u8"):
-        manifest = await _fetch_manifest(http, url, headers, cdn_host)
+        manifest = await _fetch_manifest(http, url, headers, cdn_host, allowed=allowed)
         if manifest is None:
             raise HTTPException(status_code=404, detail="item_unavailable")
         body = _rewrite_m3u8(
@@ -1942,7 +1958,7 @@ async def video_segment(item_id: str, url: str = Query(...)) -> Response:
         )
         return Response(content=body, media_type=_STREAM_CTYPE["m3u8"])
 
-    opened = await _open_upstream(http, url, headers, None, cdn_host)
+    opened = await _open_upstream(http, url, headers, None, cdn_host, allowed=allowed)
     if opened is None:
         raise HTTPException(status_code=404, detail="item_unavailable")
     upstream, closer = opened

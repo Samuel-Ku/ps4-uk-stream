@@ -466,10 +466,17 @@ class UFDubProvider(BaseProvider):
             _title, media_url = episodes[episode - 1]
         else:
             _title, media_url = episodes[0]
+        # The VIDEOS.php gateway 302s to the real bytes: movies to
+        # ``api.ufdub.com`` (same registrable domain as the gateway — the
+        # proxy's dot-boundary rule already admits it) but series
+        # episodes to ``dl.dropboxusercontent.com``, a foreign domain the
+        # provider sanctions. Declare it so the stream proxy follows the
+        # hop (D7 SSRF posture: only provider-declared hosts pass).
         return StreamResponse(
             url=media_url,
             type="mp4",
             headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/0.1"},
+            allowed_domains=frozenset({"dropboxusercontent.com"}),
         )
 
     @staticmethod
