@@ -122,6 +122,30 @@ async def test_uaflix_content_movie_parses_title_poster_player():
 
 
 @pytest.mark.asyncio
+async def test_uaflix_content_movie_parses_year_genres_people():
+    """The content page carries schema.org itemprop metadata
+    (dateCreated / genre / actor / director) that the parser never
+    read — every uaflix detail showed no year, no genres and an empty
+    People rail (Ticket #228)."""
+    content_html = _fixture("content_movie.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://uafix.net/films/djuna-1984/").respond(
+            200, text=content_html
+        )
+        async with httpx.AsyncClient() as http:
+            c = await UAFlixProvider().content("films-djuna-1984", http)
+    assert c.year == 1984
+    assert "екшн" in c.genres
+    assert "фантастика" in c.genres
+    actors = [p for p in c.people if p.role == "Actor"]
+    directors = [p for p in c.people if p.role == "Director"]
+    assert len(actors) == 4
+    assert len(directors) == 1
+    assert actors[0].name == "Кайл Маклоклен"
+    assert directors[0].name == "Девід Лінч"
+
+
+@pytest.mark.asyncio
 async def test_uaflix_content_series_parses_seasons():
     content_html = _fixture("content_series.html")
     with respx.mock(assert_all_called=True) as router:

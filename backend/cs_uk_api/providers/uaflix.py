@@ -22,6 +22,7 @@ from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
+    Person,
     SearchResult,
     Season,
     Section,
@@ -29,6 +30,55 @@ from ..models import (
     Translation,
 )
 from .base import BaseProvider, ProviderError, model_b_axes
+
+
+def _itemprop_values(soup: BeautifulSoup, name: str) -> list[str]:
+    """All values for a schema.org ``itemprop`` on the content page.
+
+    The template mixes two shapes: `<meta itemprop=... content="…">`
+    (serials) and `<span itemprop=...>…</span>` (movies). Returns
+    stripped non-empty values in document order.
+    """
+    out: list[str] = []
+    for el in soup.select(f'[itemprop="{name}"]'):
+        value = str(el.get("content") or "").strip()
+        if not value:
+            value = el.get_text(" ", strip=True)
+        if value:
+            out.append(value)
+    return out
+
+
+def _parse_itemprop_meta(soup: BeautifulSoup) -> tuple[int | None, list[str], list[Person]]:
+    """Year / genres / people from the page's schema.org itemprop
+    metadata (ticket #228).
+
+    The parser ignored the block entirely — every uaflix detail showed
+    no year, no genres and an empty People rail while the page carried
+    ``dateCreated`` / ``genre`` / ``actor`` / ``director``. People ids
+    follow the ``uaflix:<role>:<name>`` convention so /Persons/{id}
+    round-trips.
+    """
+    year: int | None = None
+    for raw in _itemprop_values(soup, "dateCreated"):
+        m = re.search(r"(19\d{2}|20\d{2})", raw)
+        if m:
+            year = int(m.group(1))
+            break
+    genres = [g for g in _itemprop_values(soup, "genre") if g]
+    people: list[Person] = []
+    for role, label in (("director", "Director"), ("actor", "Actor")):
+        for name in _itemprop_values(soup, role):
+            # A serial's director meta is a comma-joined string; a
+            # movie's span is a single name (spaces are part of it).
+            for part in re.split(r"\s*,\s*", name):
+                part = part.strip()
+                if part:
+                    people.append(
+                        Person(id=f"uaflix:{role}:{part}", name=part, role=label)
+                    )
+    return year, genres, people
+
 
 # Captured-fixture domain. The live site mirrors `uaflix.org` to
 # `uafix.net`; the markup is identical, so routing the provider
@@ -488,6 +538,7 @@ class UAFlixProvider(BaseProvider):
         poster = _parse_poster(soup)
         desc_el = soup.select_one("#serial-kratko, .fdesc.full-text")
         description = desc_el.get_text(" ", strip=True) if desc_el else ""
+        year_int, genres, people = _parse_itemprop_meta(soup)
         country: str | None = extract_country(soup)
         media_type = _type_from_url(url)
         seasons: list[Season] | None = None
@@ -525,7 +576,10 @@ class UAFlixProvider(BaseProvider):
             id=f"uaflix:{external_id}",
             title=title,
             description=description,
+            year=year_int,
             poster=poster,
+            genres=genres,
+            people=people,
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
             country=country,
