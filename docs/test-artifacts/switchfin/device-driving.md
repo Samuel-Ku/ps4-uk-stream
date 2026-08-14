@@ -730,6 +730,20 @@ app restart, the phone's Home renders **Continue Watching (1)** and **Next Up
 (1)** rails with the Kamen Rider cards — the exact flow that was empty in the
 probe. Tests: 931 pass, ruff/mypy clean (only pre-existing findings).
 
+**#234 (2026-08-14, FIXED, `6015681`): the reverse group lookup only
+worked for providers whose episode wire id prefix EXACTLY equals the
+card id — so Continue watching stayed empty for the two biggest
+providers.** uakino emits `{provider}:{news_id}:eN` while its card id
+is the full `{provider}:{section}:{news_id}-{slug}` composite
+(`uakino:6268:e1` vs `uakino:anime-series:6268-narutto-1-sezon`), and
+animeon appends a base64 source blob AFTER the `:eN` tail so the
+episode-tail regex `:(?:s\d+)?e\d+$` never matched. Fixed by tolerating
+the blob in the tail regex (`(?=:|$)`) and falling back to a
+same-provider numeric item-id segment match in `group_key_for_external`.
+Live wire: played `uakino:6268:e1` → Resume returns it with
+PlaybackPositionTicks=36000000000, NextUp returns `uakino:6268:e2`
+(both empty before). Tests: 1016 pass (+2 new).
+
 ## Detail-screen unfilled-data probe (2026-08-11, runs 12 + manual) — ufdub description + People rail FIXED (#225)
 
 Continued the unfilled-data pass on the live device after run12 (third
