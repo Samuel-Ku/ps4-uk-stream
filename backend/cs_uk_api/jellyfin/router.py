@@ -60,6 +60,7 @@ from ..models import (
     HomeItem,
     HomeRow,
     SearchGroup,
+    SearchResult,
     Season,
     StreamResponse,
 )
@@ -304,31 +305,56 @@ def _home_items() -> list[tuple[HomeRow, HomeItem]]:
     return [(row, it) for row in home.rows for it in row.items]
 
 
+def _group_cards(group_key: str) -> list[SearchResult]:
+    """Every card the resolution map holds for a ``g2:`` item, or [].
+
+    Ticket #233: the #219/#220 fallbacks read the home snapshot, but a
+    search-found group is usually NOT in the 30-min home snapshot — only
+    in the shared group-key resolution map ``register_search_groups``
+    populated. The detail DTO falls back across BOTH sources so a
+    search-opened item renders the same metadata its own search card
+    surfaced.
+    """
+    per_provider = resolve_group(group_key)
+    if per_provider is None:
+        return []
+    return list(per_provider.values())
+
+
 def _genres_for_group(group_key: str) -> list[str]:
-    """The snapshot card's genres for a ``g2:`` item, or [] (ticket #219).
+    """The card's genres for a ``g2:`` item, or [] (ticket #219).
 
     The card parser (#213) harvests genre labels that the content page
     often does not repeat — ufdub's ``div.short-c`` lists them while the
     detail page carries only a description. The detail DTO falls back to
-    this so the genre row renders where the data exists.
+    this so the genre row renders where the data exists. First non-empty
+    card wins: the home snapshot's card, then any card the group's
+    resolution map holds (ticket #233).
     """
     for _row, it in _home_items():
-        if it.group_key == group_key:
+        if it.group_key == group_key and it.genres:
             return list(it.genres)
+    for card in _group_cards(group_key):
+        if card.genres:
+            return list(card.genres)
     return []
 
 
 def _year_for_group(group_key: str) -> int | None:
-    """The snapshot card's year for a ``g2:`` item, or None (ticket #220).
+    """The card's year for a ``g2:`` item, or None (ticket #220).
 
     Mirrors ``_genres_for_group``: a provider whose content page lacks
     the year meta block still gets the badge when the card carried a
     year. The content page wins when it has one — the card is the cheap
-    guess.
+    guess. First year-ful card wins: the home snapshot's card, then any
+    card the group's resolution map holds (ticket #233).
     """
     for _row, it in _home_items():
-        if it.group_key == group_key:
+        if it.group_key == group_key and it.year is not None:
             return it.year
+    for card in _group_cards(group_key):
+        if card.year is not None:
+            return card.year
     return None
 
 

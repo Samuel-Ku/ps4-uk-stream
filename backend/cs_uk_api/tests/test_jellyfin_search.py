@@ -322,6 +322,38 @@ def test_search_result_opens_in_movie_detail(client: TestClient) -> None:
     assert set(detail["ImageTags"].keys()) == {"Primary"}
 
 
+def test_search_detail_falls_back_to_group_card_metadata(client: TestClient) -> None:
+    """#233: a search-found group whose winning provider's content page
+    carries no year/genres still renders them — the group's own cards in
+    the resolution map hold the listing metadata (live case: uakino card
+    with year=2016 wins the resolution but its content page lacks the
+    meta block, and the group is NOT in the 30-min home snapshot, so the
+    #220 fallback finds nothing today)."""
+    card = _result("p1", "dune-1", "Дюна", "movie", year=2021, poster=_POSTER_MOVIE)
+    card.genres = ["Фантастика", "Екшн"]
+    PROVIDERS["p1"] = _SearchStub(
+        "p1",
+        [card],
+        content_by_external={
+            "dune-1": ContentResponse(
+                id="p1:dune-1",
+                form="movie",
+                title="Дюна",
+                year=None,
+                translations=[Translation(id="uk", label="Дубляж")],
+            )
+        },
+    )
+    items = _search_items(client, "дюна")
+    dune = next(i for i in items if i["Name"] == "Дюна")
+    # the search card surfaces the card metadata
+    assert dune["ProductionYear"] == 2021
+    detail = _detail(client, dune["Id"])
+    # the detail must fall back to the group's card metadata too
+    assert detail["ProductionYear"] == 2021
+    assert set(detail["Genres"]) == {"Фантастика", "Екшн"}
+
+
 def test_search_result_series_hierarchy_resolves(client: TestClient) -> None:
     PROVIDERS["p1"] = _seed()
     serial_id = next(
