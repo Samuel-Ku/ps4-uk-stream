@@ -1194,6 +1194,20 @@ One manual checklist line for the on-device pass — deliberately NOT a
       before the next sweep run** (`view_recent_series_x` at the
       second grid slot; `view_popular_x` moved to the third).
 
+- [ ] Netflix parity round 2 (spec #267): on a detail screen, the
+      «Схожі» shelf is populated with ranked cards for an item with
+      warm content profiles (a genre-less item with signal is no longer
+      empty — profile scorer, #268; wire-verified on the backend).
+- [ ] Restart the backend host process: the first facade open after the
+      restart answers INSTANTLY from the persisted home snapshot
+      (`home-snapshot.json` next to `playback.json`, knob
+      `CS_UK_SNAPSHOT_PATH`) while the rebuild heals in the background
+      (#269; wire-verified cold-start serve, no fan-out).
+- [ ] Watch a series episode, return home: «Нові серії» appears at
+      position 3 of the home (after the two recent rows, before
+      «Популярні зараз») and its card opens like any other row (#270,
+      `new_episodes` view; wire-verified).
+
 - [x] User state (spec #257, verified 2026-08-14): on a detail screen tap
       the heart — it lights and stays lit after an app relaunch (toggle
       answers UserDataResult, mark persists in `user-state.json`, and the

@@ -41,6 +41,7 @@ from pydantic import BaseModel
 from ..catalog_state import (
     episode_group_key,
     get_home,
+    get_profiles,
     is_favorite,
     is_hard_unavailable,
     is_played,
@@ -73,6 +74,7 @@ from ..models import (
 from ..poster_proxy import fetch as fetch_poster_bytes
 from ..providers import PROVIDERS
 from ..providers.base import ProviderError
+from ..recommend import similarity
 from .auth import require_token
 from .models import (
     AuthenticationResult,
@@ -288,6 +290,8 @@ _COLLECTION_TYPE_BY_ROW = {
     # else (series-form recent, mixed genre rails) is episodic-ish.
     "recent_movie": "movies",
     "recent_series": "tvshows",
+    # spec #267: «Нові серії» is a series-form recent row.
+    "new_episodes": "tvshows",
 }
 
 #: Home-row kind → Jellyfin item Type. Only Movie/Series are expressible
@@ -1759,25 +1763,50 @@ async def item_similar(
     item_id: str,
     limit: int = Query(default=12),
 ) -> BaseItemDtoQueryResult:
-    """Similar-shelf — same-genre cards from the cached snapshot (#218).
+    """Similar-shelf — profile-ranked "more like this" (spec #267 T1).
 
     The app fires this on every movie/series detail page; it used to
-    answer a deliberately empty shelf. With genre metadata (#213) the
-    snapshot can answer it: cards sharing at least one genre with the
-    item, in the same Movie/Series + g2: + ImageTags shape as the view
-    grid, the item itself excluded, capped at ``limit`` (the client asks
-    for 12). A genre-less item or a cold snapshot stays an empty shelf.
+    answer a deliberately empty shelf, then (with genre metadata,
+    #213) matched listing-card genres and stayed empty for providers
+    that don't ship them. Now every home-snapshot group with a warm
+    content profile is scored against the item's profile with the SAME
+    weighted cosine the recommendation rows use (#252) and the shelf is
+    ranked by that score — the item itself excluded, capped at
+    ``limit`` (the client asks for 12). A cold profile store (or an
+    item with no profile) falls back to the genre-matching shelf so
+    the pre-#267 behaviour is preserved.
 
     The full ``BaseItemDtoQueryResult`` envelope is required: Switchfin
     parses every list response as ``Result<T>`` with
     ``NLOHMANN_JSON_FROM`` (no defaults), so a missing ``StartIndex``
     raised ``out_of_range.403`` on the console.
     """
+    server_id = _server_id()
+    item_profile = get_profiles().get(item_id)
+    if item_profile is not None:
+        scored: list[tuple[float, HomeRow, HomeItem]] = []
+        scored_seen: set[str] = set()
+        for row, it in _home_items():
+            if it.group_key == item_id or it.group_key in scored_seen:
+                continue
+            cand = get_profiles().get(it.group_key)
+            if cand is None:
+                continue
+            score = similarity(item_profile, cand)
+            if score <= 0:
+                continue
+            scored_seen.add(it.group_key)
+            scored.append((score, row, it))
+        if scored:
+            scored.sort(key=lambda t: t[0], reverse=True)
+            dtos = [_item_dto(row, it, server_id) for _, row, it in scored[:limit]]
+            return BaseItemDtoQueryResult(Items=dtos, TotalRecordCount=len(dtos))
+
+    # Fallback: the genre-matching shelf (pre-#267 behaviour).
     wanted = set(_genres_for_group(item_id))
     if not wanted:
         return BaseItemDtoQueryResult()
-    server_id = _server_id()
-    dtos: list[BaseItemDto] = []
+    dtos = []
     seen: set[str] = set()
     for row, it in _home_items():
         if it.group_key == item_id or it.group_key in seen:

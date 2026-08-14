@@ -493,6 +493,145 @@ def test_items_similar_unknown_item_is_empty(client: TestClient) -> None:
     assert r.json() == {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
 
 
+def _seed_similar_profiles(client: TestClient, profiles: dict[str, Any]) -> dict[str, str]:
+    """Warm the profile store for the snapshot groups (spec #267 T1).
+
+    Returns the ``title -> g2: group key`` map so tests can address the
+    Similar route. The background profile warm is off in the suite, so
+    this mirrors exactly what ``_warm_profiles`` would have stored.
+    """
+    import cs_uk_api.catalog_state as cs
+    from cs_uk_api.recommend import ItemProfile
+
+    _home_cache.clear()
+    _auth(client)
+    home = cs.get_home()
+    assert home is not None
+    cs._profiles.clear()
+    by_title = {}
+    for row in home.rows:
+        for it in row.items:
+            by_title[it.title] = it.group_key
+            p = profiles.get(it.title)
+            if p is not None:
+                cs._profiles[it.group_key] = ItemProfile(**p)
+    _home_cache.clear()
+    _auth(client)
+    return by_title
+
+
+def test_items_similar_ranks_by_profile_similarity(client: TestClient) -> None:
+    """#268 T1: with warm content profiles the shelf is ranked by the
+    weighted similarity score, NOT by listing order — the closest match
+    first, the item itself excluded.
+
+    Seed: Дюна is the query item. Війна shares a genre AND a person
+    (score ≈ 1.0·cos(екшн) + 0.9·cos(people) + year window) — strictly
+    closer than Інтерстеллар (only the shared «Фантастика» genre), so
+    Війна must lead even though Інтерстеллар comes later in the
+    listing. The genre-fallback shelf (pre-#267) had no notion of this
+    ordering."""
+    PROVIDERS["animeon"] = _genres_seed()
+    _auth(client)
+    by_title = _seed_similar_profiles(
+        client,
+        {
+            "Дюна": {
+                "genres": frozenset(["екшн", "фантастика"]),
+                "people": frozenset(["денис вілленів"]),
+                "year": 2021,
+                "form": "movie",
+                "styles": frozenset(),
+            },
+            "Війна": {
+                "genres": frozenset(["екшн"]),
+                "people": frozenset(["денис вілленів"]),
+                "year": 2019,
+                "form": "movie",
+                "styles": frozenset(),
+            },
+            "Інтерстеллар": {
+                "genres": frozenset(["фантастика"]),
+                "people": frozenset(),
+                "year": 2014,
+                "form": "movie",
+                "styles": frozenset(),
+            },
+        },
+    )
+
+    r = client.get(
+        f"/Items/{by_title['Дюна']}/Similar",
+        headers={"X-Emby-Token": TOKEN},
+    )
+    assert r.status_code == 200
+    names = [i["Name"] for i in r.json()["Items"]]
+    # Війна shares a genre AND a person — strictly closer than
+    # Інтерстеллар, so it leads despite the listing order.
+    assert names == ["Війна", "Інтерстеллар"]
+    assert "Дюна" not in names
+
+
+def test_items_similar_genre_less_item_with_profile_gets_cards(
+    client: TestClient,
+) -> None:
+    """#268 T1 AC3: a genre-less item WITH a warm content profile is no
+    longer stuck with an empty shelf — the profile scorer (people/year)
+    ranks it against the snapshot. The pre-#267 genre fallback could
+    never serve Сокіл (no genres); the profile path can."""
+    PROVIDERS["animeon"] = _genres_seed()
+    _auth(client)
+    by_title = _seed_similar_profiles(
+        client,
+        {
+            "Дюна": {
+                "genres": frozenset(["екшн", "фантастика"]),
+                "people": frozenset(["денис вілленів"]),
+                "year": 2021,
+                "form": "movie",
+                "styles": frozenset(),
+            },
+            # Сокіл is genre-less (the listing carries no genres) but
+            # its content page shares the director — enough signal.
+            "Сокіл": {
+                "genres": frozenset(),
+                "people": frozenset(["денис вілленів"]),
+                "year": 2019,
+                "form": "movie",
+                "styles": frozenset(),
+            },
+        },
+    )
+
+    r = client.get(
+        f"/Items/{by_title['Сокіл']}/Similar",
+        headers={"X-Emby-Token": TOKEN},
+    )
+    assert r.status_code == 200
+    names = [i["Name"] for i in r.json()["Items"]]
+    # Дюна shares the director; Війна has no profile (not seeded) and
+    # the genre fallback is irrelevant here — only the scored Дюна.
+    assert names == ["Дюна"]
+
+
+def test_items_similar_cold_profiles_fall_back_to_genres(client: TestClient) -> None:
+    """#268 T1: a cold profile store (no warm profiles yet) falls back
+    to the pre-#267 genre-matching shelf — never an empty 200 during
+    the warm-up window."""
+    import cs_uk_api.catalog_state as cs
+
+    cs._profiles.clear()
+    PROVIDERS["animeon"] = _genres_seed()
+    _auth(client)
+    movie_view = _view_id("Фільми", _views(client))
+    by_name = {i["Name"]: i for i in _items(client, movie_view)}
+    dune_gk = by_name["Дюна"]["Id"]
+
+    r = client.get(f"/Items/{dune_gk}/Similar", headers={"X-Emby-Token": TOKEN})
+    assert r.status_code == 200
+    names = {i["Name"] for i in r.json()["Items"]}
+    assert names == {"Війна", "Інтерстеллар"}
+
 def test_detail_genres_fall_back_to_snapshot_card(client: TestClient) -> None:
     """#219: the detail DTO's Genres fall back to the snapshot card's
     genres when the resolved content page carries none — the genre row
@@ -840,6 +979,59 @@ def _seed_genre_profiles(client: TestClient) -> None:
             )
     _home_cache.clear()
     _auth(client)
+
+
+def test_new_episodes_row_is_a_view(client: TestClient) -> None:
+    """#270 AC4: a watched series in the recent listings forms the
+    «Нові серії» row at position 3, and its cards open through the
+    existing view/items route — same envelope as any other row.
+
+    The playback store maps the episode wire id (``animeon:1:s1e1``) to
+    the merged group via the sources map, so the row appears even
+    though the card itself is a series, not an episode."""
+
+    from cs_uk_api.catalog_state import clear_playback, record_playback
+
+    PROVIDERS["animeon"] = _ViewsStub(
+        "animeon",
+        newest_section="page",
+        newest=[
+            _item("animeon", "Серіал А", "series", 2023, n="1", poster=_POSTER_SERIES),
+            _item("animeon", "Серіал Б", "series", 2022, n="2", poster=_POSTER_SERIES),
+            _item("animeon", "Фільм В", "movie", 2021, n="3", poster=_POSTER_MOVIE),
+        ],
+        sections=(Section(id="series", title="Серіали", form="series"),),
+        by_section={
+            "series": [
+                _item("animeon", "Серіал А", "series", 2023, n="1", poster=_POSTER_SERIES),
+                _item("animeon", "Серіал Б", "series", 2022, n="2", poster=_POSTER_SERIES),
+            ]
+        },
+    )
+    _auth(client)
+    clear_playback()
+    try:
+        # The viewer watches Серіал А — its episode wire id resolves to
+        # the merged group ``animeon:1`` through the sources map.
+        record_playback("animeon:1:s1e1", 1_000)
+        _home_cache.clear()
+
+        home = client.get("/api/home").json()
+        row_types = [r["type"] for r in home["rows"]]
+        assert "new_episodes" in row_types
+        assert row_types.index("new_episodes") == 2  # position 3
+        new_ep = next(r for r in home["rows"] if r["type"] == "new_episodes")
+        assert new_ep["title"] == "Нові серії"
+        assert [i["title"] for i in new_ep["items"]] == ["Серіал А"]
+
+        # The row is a view like any other: open its grid via /Items.
+        views = _views(client)
+        view = next(v for v in views if v["Name"] == "Нові серії")
+        items = _items(client, view["Id"])
+        assert {i["Name"] for i in items} == {"Серіал А"}
+        assert all(i["Type"] == "Series" for i in items)
+    finally:
+        clear_playback()
 
 
 def test_genre_view_id_lists_its_cards(client: TestClient) -> None:

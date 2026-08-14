@@ -22,3 +22,9 @@ os.environ.setdefault("CS_UK_RESUME_PATH", "")
 # keep it memory-only; persistence is exercised by dedicated
 # UserStateStore tests over tmp paths.
 os.environ.setdefault("CS_UK_USER_STATE_PATH", "")
+
+# Same for the home snapshot store (ticket #269): the default suite
+# must not write/read a real snapshot file; persistence is exercised by
+# dedicated SnapshotStore tests and the cold-start wire test over tmp
+# paths.
+os.environ.setdefault("CS_UK_SNAPSHOT_PATH", "")

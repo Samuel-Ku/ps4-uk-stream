@@ -73,6 +73,13 @@ class Settings:
     #: explicit empty string disables the disk layer (memory-only — the
     #: test-suite default via conftest).
     user_state_path: str | None = None
+    #: Path of the persisted home snapshot (spec #267 / ticket #269):
+    #: the last successful home build, served on a cold start at any
+    #: age (instant first open after a restart). Default:
+    #: ``home-snapshot.json`` next to the resume file. Override via
+    #: ``CS_UK_SNAPSHOT_PATH``; an explicit empty string disables the
+    #: disk layer (memory-only — the test-suite default via conftest).
+    snapshot_path: str | None = None
     #: Startup catalog warm (tickets #204/#210): build the home snapshot
     #: and warm each view's first-card detail chain in the background so
     #: a real client's first requests never hit a cold 17-21s scrape.
@@ -121,6 +128,26 @@ def _load_user_state_path() -> str | None:
     return raw
 
 
+def _load_snapshot_path() -> str | None:
+    """Resolve the home snapshot file path (ticket #269, spec #267).
+
+    ``CS_UK_SNAPSHOT_PATH`` unset → ``home-snapshot.json`` next to the
+    resume file (which itself defaults next to the poster disk cache);
+    explicit empty string → memory-only (no disk layer); otherwise the
+    given path.
+    """
+    raw = os.environ.get("CS_UK_SNAPSHOT_PATH")
+    if raw is None:
+        resume = _load_resume_path()
+        if resume is not None:
+            return os.path.join(os.path.dirname(resume), "home-snapshot.json")
+        base = os.environ.get("CS_UK_POSTER_CACHE_DIR", "") or os.path.expanduser("~/.cache/cs-uk-api/posters")
+        return os.path.join(os.path.dirname(base), "home-snapshot.json")
+    if raw == "":
+        return None
+    return raw
+
+
 def load_settings() -> Settings:
     raw = os.environ.get("CS_UK_PROVIDERS", "uakino")
     providers = tuple(p.strip() for p in raw.split(",") if p.strip())
@@ -154,6 +181,7 @@ def load_settings() -> Settings:
         poster_disk_ttl_s=int(os.environ.get("CS_UK_POSTER_DISK_TTL", str(7 * 24 * 3600))),
         resume_path=_load_resume_path(),
         user_state_path=_load_user_state_path(),
+        snapshot_path=_load_snapshot_path(),
         providers=providers or ("uakino",),
         block_russian=os.environ.get("CS_UK_BLOCK_RUSSIAN", "1") == "1",
         # v3 (issue #70): per-row cap for «Новинки» + type rows.

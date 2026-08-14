@@ -78,6 +78,15 @@ def item(
     )
 
 
+def _group_key(pid: str, title: str) -> str:
+    """The merged group key the builder sees for a seeded series item
+    (spec #267 T3) — same derivation as ``item_group_key`` over the
+    item the helper builds."""
+    from cs_uk_api.merge import item_group_key
+
+    return item_group_key(item(pid, title, media_type="series", n="1"))
+
+
 @pytest.fixture(autouse=True)
 def reset_state() -> Iterator[None]:
     # /api/home fans out to every provider in ``PROVIDERS``; tests that
@@ -608,6 +617,105 @@ def test_build_home_rows_orders_rows_recent_popular_then_types() -> None:
         "Аніме",
         "Дорами",
     ]
+
+
+def test_build_home_rows_watched_series_get_own_row_position_3() -> None:
+    """#270 T3: with ``watched_series`` the series-form NEWEST items the
+    viewer watches form a dedicated «Нові серії» row at position 3 —
+    right after the two form-split recent rows, before «Популярні
+    зараз». Movies in the watched set are NOT eligible (it's a
+    series-only row)."""
+    rows = build_home_rows(
+        newest={
+            "p1": [
+                item("p1", "Новий серіал", media_type="series"),
+                item("p1", "Новий фільм"),
+                item("p1", "Інший серіал", media_type="series", n="2"),
+            ]
+        },
+        popular={"animeon": [item("animeon", "P", media_type="anime")]},
+        by_type={},
+        newest_limit=20,
+        watched_series={_group_key("p1", "Новий серіал")},
+    )
+    assert [r.type for r in rows] == [
+        "recent_movie",
+        "recent_series",
+        "new_episodes",
+        "popular",
+    ]
+    new_ep = rows[2]
+    assert new_ep.title == "Нові серії"
+    assert [it.title for it in new_ep.items] == ["Новий серіал"]
+    # The unwatched series stays in the recent row, not in this one.
+    assert [it.title for it in rows[1].items] == ["Новий серіал", "Інший серіал"]
+
+
+def test_build_home_rows_watched_series_row_omitted_when_empty() -> None:
+    """#270 T3: «Нові серії» is omitted when the watched set matches no
+    series-form newest item — and NEVER appears when ``watched_series``
+    is None (the pure builder's default keeps legacy output unchanged)."""
+    rows = build_home_rows(
+        newest={"p1": [item("p1", "Серіал", media_type="series")]},
+        popular={},
+        by_type={},
+        newest_limit=20,
+        watched_series={_group_key("p1", "Невідомий")},
+    )
+    assert "new_episodes" not in [r.type for r in rows]
+
+    rows_default = build_home_rows(
+        newest={"p1": [item("p1", "Серіал", media_type="series")]},
+        popular={},
+        by_type={},
+        newest_limit=20,
+    )
+    assert "new_episodes" not in [r.type for r in rows_default]
+
+
+def test_build_home_rows_watched_series_ranked_by_listing_position() -> None:
+    """#270 T3: within «Нові серії» the items are ranked by listing
+    position (round-robin across providers preserves newest-first), and
+    capped at ``newest_limit``."""
+    watched = {
+        _group_key("p1", f"Серіал {i}") for i in range(1, 6)
+    } | {
+        _group_key("p2", f"Серіал {i}") for i in range(6, 11)
+    }
+    rows = build_home_rows(
+        newest={
+            "p1": [
+                item("p1", f"Серіал {i}", media_type="series", n=str(i)) for i in range(1, 6)
+            ],
+            "p2": [
+                item("p2", f"Серіал {i}", media_type="series", n=str(i)) for i in range(6, 11)
+            ],
+        },
+        popular={},
+        by_type={},
+        newest_limit=3,
+        watched_series=watched,
+    )
+    new_ep = next(r for r in rows if r.type == "new_episodes")
+    # Round-robin: p1 first item, p2 first item, p1 second item — then cap.
+    assert [it.title for it in new_ep.items] == ["Серіал 1", "Серіал 6", "Серіал 2"]
+
+
+def test_build_home_rows_watched_series_deduped_by_group_key() -> None:
+    """#270 T3: the same series contributed by two providers appears once
+    in «Нові серії» (aggregated by group key), not twice."""
+    rows = build_home_rows(
+        newest={
+            "p1": [item("p1", "Спільний серіал", media_type="series")],
+            "p2": [item("p2", "Спільний серіал", media_type="series")],
+        },
+        popular={},
+        by_type={},
+        newest_limit=20,
+        watched_series={_group_key("p1", "Спільний серіал")},
+    )
+    new_ep = next(r for r in rows if r.type == "new_episodes")
+    assert [it.title for it in new_ep.items] == ["Спільний серіал"]
 
 
 # ---------------------------------------------------------------------------

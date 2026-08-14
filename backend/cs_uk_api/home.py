@@ -44,6 +44,7 @@ present.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from collections.abc import Set as AbstractSet
 
 from .merge import item_group_key, merge_results
 from .models import HomeItem, HomeRow, SearchResult, Section
@@ -93,6 +94,13 @@ _RECENT_ROWS: tuple[tuple[str, str, str], ...] = (
 GENRE_RAILS_TOP_N = 6
 GENRE_RAILS_MIN_ITEMS = 3
 GENRE_RAILS_LIMIT = 20
+
+#: «Нові серії» (spec #267 T3): the series the viewer watches whose
+#: groups appear in the providers' newest listings — ranked by listing
+#: position, capped at the standard row cap, omitted when the viewer
+#: has no such series. Position 3 in the decided order (after the two
+#: form-split recent rows, before «Популярні зараз»).
+_NEW_EPISODES_ROW = ("Нові серії", "new_episodes")
 
 
 def round_robin_dedup(
@@ -249,6 +257,7 @@ def build_home_rows(
     popular: Mapping[str, Sequence[SearchResult]],
     by_type: Mapping[str, Mapping[str, Sequence[SearchResult]]],
     newest_limit: int = 20,
+    watched_series: AbstractSet[str] | None = None,
 ) -> list[HomeRow]:
     """Assemble the HomeResponse rows from pre-collected per-provider data.
 
@@ -266,6 +275,13 @@ def build_home_rows(
     (spec #263): providers' newest listings are filtered by form and
     round-robin-deduped; a row under the cap is topped up from the
     form-section page-1 items (Netflix-style overlap accepted).
+
+    Position 3 is «Нові серії» (spec #267 T3): when ``watched_series``
+    (the group keys behind the viewer's playback history) is provided,
+    the series-form newest listings that the viewer watches form a
+    dedicated row ranked by listing position, omitted when empty. With
+    ``watched_series=None`` the row never appears (the pure builder's
+    default keeps every existing caller's output unchanged).
 
     Within each row, items are round-robin-deduped and capped at
     ``newest_limit`` (the spec's «Новинки» ceiling, reused for the
@@ -308,6 +324,31 @@ def build_home_rows(
                     title=label,
                     type=row_type,
                     items=aggregate_by_group_key(items_row),
+                )
+            )
+
+    # «Нові серії» (spec #267 T3) — position 3, right after the two
+    # form-split rows: the series-form NEWEST listings (no section
+    # top-up — "recently added" is the point) whose group keys the
+    # viewer watches, ranked by listing position, capped, omitted when
+    # the viewer has no such series (or no watched set was provided).
+    if watched_series is not None:
+        watched_per_pid = {
+            pid: [
+                it
+                for it in items
+                if it.form == "series" and item_group_key(it) in watched_series
+            ]
+            for pid, items in newest.items()
+        }
+        watched_items = round_robin_dedup(watched_per_pid, newest_limit)
+        if watched_items:
+            label, row_type = _NEW_EPISODES_ROW
+            rows.append(
+                HomeRow(
+                    title=label,
+                    type=row_type,
+                    items=aggregate_by_group_key(watched_items),
                 )
             )
 

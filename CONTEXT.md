@@ -289,6 +289,14 @@ rows when popular is absent), before the type rows — each row is just
 another home-row kind (`recommended` / `similar`), so the facade serves
 them through the existing view mechanism with zero client changes.
 
+The detail screen's «Схожі» shelf (`/Items/{gk}/Similar`, spec #267
+T1) uses the SAME scorer: with warm profiles it ranks the snapshot's
+groups against the item's profile (deduped by group key, the item
+itself excluded, capped at the client's limit) — so a genre-less item
+whose content page carries signal is no longer stuck with an empty
+shelf. A cold profile store falls back to the pre-#267
+genre-matching shelf.
+
 ### Home composition (spec #263)
 
 «Новинки» was retired (2026-08-14) in favour of a Netflix-style home:
@@ -300,6 +308,12 @@ them through the existing view mechanism with zero client changes.
   items (the same data the type rows use) when under the cap — overlap
   between a recent row and its type row is accepted, Netflix-style. A
   row is omitted when its form has no data anywhere.
+- **«Нові серії»** (`new_episodes`, spec #267 T3) — position 3, right
+  after the two form-split rows: the series-form NEWEST listings
+  (no section top-up) whose group keys sit in the viewer's playback
+  history, ranked by listing position, ≤20, omitted when empty. Fed
+  `watched_series` = the episode wire ids' merged groups from the
+  persisted resume store (`_watched_group_keys`).
 - **Genre rails** — the top-6 genres by profile-store coverage across
   the snapshot become rows (`genre:<slug>` view kinds, Ukrainian
   labels, ≤20 items each, recency-ranked, deduped by group key);
@@ -316,6 +330,26 @@ Trade-off of the retirement: the old «Новинки» view id
 (`ac357d43…`) no longer resolves — a client that cached it gets the
 tolerant empty library until it refreshes its view list. Accepted: the
 client re-lists views on every cold launch.
+
+### Persisted home snapshot (ticket #269, spec #267 T2)
+
+The last successful home build (rows + the group resolution map) is
+mirrored to a single versioned JSON file
+(`{"v": 1, "rows": [...], "sources": {...}}`) next to the resume
+file, written atomically (temp + rename) after every successful build.
+On a cold start `load_home` serves the persisted snapshot **at ANY
+age** — stale is accepted, dead-poster risk on a very old file is
+accepted — while a background task rebuilds and overwrites it. A
+corrupt / version-mismatched / unparseable file degrades to a fresh
+build with a logged warning, never a crash.
+
+| Aspect | Value |
+| --- | --- |
+| Location | `home-snapshot.json` next to the resume file |
+| Env knob | `CS_UK_SNAPSHOT_PATH` (explicit empty string → memory-only) |
+| Corruption / version mismatch | warn + fresh build, API keeps serving |
+| Restart | survives (cold start answers instantly, heals in background) |
+| Wipe | `rm ~/.cache/cs-uk-api/home-snapshot.json` (or `CS_UK_SNAPSHOT_PATH`) |
 
 ### Cache key format
 

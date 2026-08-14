@@ -55,6 +55,7 @@ from .recommend import (
     profile_from_content,
 )
 from .resume_store import ResumeStore
+from .snapshot_store import SnapshotStore
 from .uakino_browser import get_session
 from .user_state import UserStateStore
 
@@ -169,13 +170,38 @@ async def load_home() -> HomeResponse:
 
     This is the single load path for BOTH the native ``/api/home`` route
     and the Jellyfin facade. On a hit no provider is re-invoked; on a
-    miss the full provider fan-out runs under the shared search budget
-    (same behaviour the native route documented).
+    miss the persisted snapshot (ticket #269) serves instantly at ANY
+    age while the full fan-out rebuild runs in the background; with no
+    persisted snapshot the build runs inline under the shared search
+    budget (the pre-#269 cold-start behaviour).
     """
     cached = home_cache.get(_HOME_KEY)
     if cached is not None:
         return cast(HomeResponse, cached)
 
+    store = _snapshot_store()
+    persisted, sources = store.load()
+    if persisted is not None:
+        # Instant cold start: serve the stale snapshot immediately, heal
+        # it in the background. Sources restored so group resolution for
+        # the persisted rows works without any provider call.
+        home_cache.set(_HOME_KEY, persisted)
+        if sources is not None:
+            sources_cache.set(_SOURCES_KEY, sources)
+        asyncio.create_task(_build_home())
+        return persisted
+    return await _build_home()
+
+
+async def _build_home() -> HomeResponse:
+    """The full provider fan-out → rows → cache + persist (ticket #269).
+
+    The heavy path behind ``load_home``: fetches every provider's
+    newest/popular/type sections under the shared search budget, runs
+    the subscription-gate sweep, and hands the collected listings to
+    ``_cache_home``. On success the snapshot is persisted so the NEXT
+    process start skips this cost entirely.
+    """
     http = get_client()
     newest_lists: dict[str, list[SearchResult]] = {}
     popular_lists: dict[str, list[SearchResult]] = {}
@@ -287,34 +313,13 @@ async def load_home() -> HomeResponse:
             # caller gets the fast (partially-swept) home.
             async def _finish_sweep(tasks: set[asyncio.Task[None]]) -> None:
                 await asyncio.wait(tasks)
-                rows = _with_recommendation_rows(
-                    build_home_rows(
-                        newest=newest_lists,
-                        popular=popular_lists,
-                        by_type=type_lists,
-                        newest_limit=_config.SETTINGS.home_row_limit,
-                    )
-                )
-                resp = HomeResponse(rows=rows)
-                home_cache.set(_HOME_KEY, resp)
-                sources_cache.set(
-                    _SOURCES_KEY,
-                    _build_sources_map(newest_lists, popular_lists, type_lists),
-                )
+                resp = _cache_home(newest_lists, popular_lists, type_lists)
+                if _config.SETTINGS.catalog_warm_enabled:
+                    asyncio.create_task(_warm_profiles(resp))
 
             asyncio.create_task(_finish_sweep(pending))
 
-    rows = _with_recommendation_rows(
-        build_home_rows(
-            newest=newest_lists,
-            popular=popular_lists,
-            by_type=type_lists,
-            newest_limit=_config.SETTINGS.home_row_limit,
-        )
-    )
-    resp = HomeResponse(rows=rows)
-    home_cache.set(_HOME_KEY, resp)
-    sources_cache.set(_SOURCES_KEY, _build_sources_map(newest_lists, popular_lists, type_lists))
+    resp = _cache_home(newest_lists, popular_lists, type_lists)
     # Recommendation profiles warm in the background (spec #252): the
     # same bounded-concurrency pattern as the gate sweep, piggybacking
     # the content cache. Gated on ``catalog_warm_enabled`` so tests
@@ -324,9 +329,76 @@ async def load_home() -> HomeResponse:
     return resp
 
 
+def _watched_group_keys() -> set[str]:
+    """Every group behind a recorded playback position (spec #267 T3).
+
+    The same resolution the NextUp shelf uses: an episode wire id's
+    ``provider:external`` prefix identifies its merged group.
+    """
+    return {
+        gk
+        for item_id in playback_entries()
+        if (gk := episode_group_key(item_id)) is not None
+    }
+
+
+def _cache_home(
+    newest: Mapping[str, Sequence[SearchResult]],
+    popular: Mapping[str, Sequence[SearchResult]],
+    type_lists: Mapping[str, Mapping[str, Sequence[SearchResult]]],
+) -> HomeResponse:
+    """Build the rows from the collected listings; cache + persist.
+
+    The single place a successful home build lands: computes the
+    personalized rows (spec #252) and the «Нові серії» row (spec #267
+    T3, from the playback store's watched groups), caches the snapshot
+    and the group resolution map, and persists both to the versioned
+    snapshot file (ticket #269) so the next cold start serves instantly.
+    """
+    rows = _with_recommendation_rows(
+        build_home_rows(
+            newest=newest,
+            popular=popular,
+            by_type=type_lists,
+            newest_limit=_config.SETTINGS.home_row_limit,
+            watched_series=_watched_group_keys(),
+        )
+    )
+    resp = HomeResponse(rows=rows)
+    home_cache.set(_HOME_KEY, resp)
+    sources = _build_sources_map(newest, popular, type_lists)
+    sources_cache.set(_SOURCES_KEY, sources)
+    _snapshot_store().save(resp, sources)
+    return resp
+
+
 def get_home() -> HomeResponse | None:
     """Cached home snapshot without triggering a build (None on cold cache)."""
     return cast(HomeResponse, home_cache.get(_HOME_KEY))
+
+
+def _snapshot_store() -> SnapshotStore:
+    """The module-level snapshot store (memory-only in the test suite)."""
+    return _snapshot_store_ref
+
+
+def clear_snapshot_store() -> None:
+    """Re-instantiate the store from the current ``SETTINGS.snapshot_path``
+    (tests that flip the path knob)."""
+    global _snapshot_store_ref
+    _snapshot_store_ref = SnapshotStore(_config.SETTINGS.snapshot_path)
+
+
+_snapshot_store_ref: SnapshotStore = SnapshotStore(_config.SETTINGS.snapshot_path)
+
+
+def get_profiles() -> Mapping[str, ItemProfile]:
+    """Read-only view of the warm content profiles (spec #252).
+
+    The Similar shelf (spec #267 T1) scores home candidates against
+    these; a cold store (empty) falls back to the genre-matching shelf.
+    """
+    return _profiles
 
 
 # ---------------------------------------------------------- recommendations (#252)

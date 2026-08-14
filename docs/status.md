@@ -133,6 +133,19 @@ boundary validation is `fullmatch` everywhere; uakino movies without a
   `recent_series` (tap-coords re-calibration pending on-device). Test
   counts: 1109 passing (was 1096; +13 — form-split/genre-rail unit
   tests, genre-view wire tests, the invalidation-race regression).
+- **Netflix parity round 2 (spec #267, tickets #268–#271,
+  2026-08-14).** (1) The detail «Схожі» shelf ranks the home snapshot
+  by the #252 content-similarity scorer (deduped, item excluded, cold
+  profiles fall back to genre matching) — genre-less items with a warm
+  profile are no longer stuck empty. (2) The home snapshot persists to
+  a versioned `home-snapshot.json` (knob `CS_UK_SNAPSHOT_PATH`, atomic
+  writes, corrupt file → fresh build) so a cold start serves instantly
+  at ANY age and heals in the background — the third ADR-0003
+  persistence exception. (3) A «Нові серії» row at position 3 lists
+  the series-form recent items whose merged groups appear in the
+  viewer's playback history. Test counts: 1129 passing (was 1109;
+  +20 — Similar profile tests, «Нові серії» builder/view tests,
+  SnapshotStore unit + cold-start wire tests).
 
 Run the backend:
 
