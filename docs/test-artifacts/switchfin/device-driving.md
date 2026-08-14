@@ -949,6 +949,39 @@ Bulk scan of detail responses across 18 providers for unfilled fields
 - **hentaiukr `#about` empty — expected.** Only an 18+ stub exists on
   those pages; nothing to parse.
 
+## Field-coverage sweep round 2 (2026-08-14, wire level)
+
+Second bulk scan (browse first section × 6 items per provider, checking
+description/year/people). Providers with data on the page but nothing
+parsed — each fixed via TDD + live-verified:
+
+- **serialno — no year, empty People rail (FIXED, #227)**. The DLE
+  `.flist` block carries `<span>Рік:</span>`, `<span>Режисер:</span>`,
+  `<span>В ролях:</span>` rows with real data, never read. New
+  `_parse_fmeta()` extracts the year and Person entries (ids
+  `serialno:<name>`, round-trippable through /Persons). Live: «1670»
+  year=2023 people=8, «Хроніки кращих часів» year=2004 people=9.
+  Commit `95cc9c7`.
+- **uaflix — no year/genres/people (FIXED, #228)**. The page's
+  schema.org itemprop metadata (`dateCreated`/`genre`/`actor`/
+  `director` — `<meta>` for serials, `<span>` for movies) was never
+  read. New `_parse_itemprop_meta()` handles both shapes and
+  comma-joined director lists. Live: «Останній дім» year=2026
+  genres=3 people=6, «Супергірл» year=2026 people=6. Commit
+  `cfce153`.
+- **animeon `description: None` — upstream data gap, NOT a bug.** The
+  canonical API object for «Зоряні Війни: Видіння» (and Naruto/One
+  Piece/Attack on Titan probes) carries `description: None` and the
+  HTML has only the generic site description. The bare-id redirect IS
+  handled (`_load_content_info` resolves the slug; redirect fixtures
+  exist).
+- **unimay `actors` — upstream data gap.** The API exposes an `actors`
+  field but returns `[]` for the probed releases; nothing to parse.
+- **simpsonsuatv — episode cards in the `updates`/`page` sections
+  whose detail URL 404s** (card url is `…/sezon-1/<episode-slug>`, but
+  `content()` builds `BASE/<slug>.html`). Follow-up needed; the
+  «Президент Кертіс» user report is separately tracked as B25/#215.
+
 ## Running the suite (2026-08-10, codified)
 
 ```bash
