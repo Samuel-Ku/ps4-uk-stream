@@ -1165,6 +1165,11 @@ One manual checklist line for the on-device pass — deliberately NOT a
       a card's context menu mark an item played/unplayed — the
       checkmark appears on the card; the Remote and Live TV tabs open
       without errors (graceful empties).
+- [ ] User state (spec #257, AC4): on one detail screen tap
+      Download — expect a `GET /Videos/{id}/stream` request in the
+      backend log and a file landing in the app's Download folder;
+      record the outcome in the report (pass, or a follow-up ticket
+      for the route work — verification only, no fix here).
 
 Backend-side verification of the same behaviour (no device needed):
 `POST /Sessions/Playing/Stopped` with `PositionTicks`+`RunTimeTicks`
