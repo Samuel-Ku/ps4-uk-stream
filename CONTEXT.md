@@ -308,6 +308,13 @@ tolerant empty result. No new scraping — the #252 profiles already
 carry people per title. Person portraits stay placeholder (accepted,
 no upstream data).
 
+**Source/dub memory is a CLIENT limitation, not a backend gap (spec
+#272).** The player picks the dub inside Switchfin and never reports
+the choice back (no `Sessions/Playing` field carries it), so the
+backend cannot record which dub a viewer watched. Evaluated and
+rejected for parity round 3 — documented so no future round re-proposes
+it.
+
 ### Home composition (spec #263)
 
 «Новинки» was retired (2026-08-14) in favour of a Netflix-style home:
