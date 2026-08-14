@@ -380,10 +380,18 @@ class AnimeONProvider(BaseProvider):
         image = info.get("image") or {}
         poster = _poster_url(image.get("preview"))
         description = str(info.get("description") or "")
+        # Ticket #232: the upstream genres[] carries {nameEn, nameUa,
+        # slug} — surface the Ukrainian names so the detail page's
+        # genre row renders (was never parsed).
+        genres = [
+            str(g.get("nameUa") or "").strip()
+            for g in (info.get("genres") or [])
+            if isinstance(g, dict) and str(g.get("nameUa") or "").strip()
+        ]
 
         if str(info.get("type") or "").strip().lower() == "movie":
             return await self._movie_content(
-                anime_id, external_id, title, year_int, description, poster, http
+                anime_id, external_id, title, year_int, description, poster, genres, http
             )
 
         episodes_by_num = await self._collect_episode_map(anime_id, http)
@@ -416,6 +424,7 @@ class AnimeONProvider(BaseProvider):
             year=year_int,
             description=description,
             poster=poster,
+            genres=genres,
             translations=[
                 Translation(id=name, label=name) for name in all_translations
             ],
@@ -464,6 +473,7 @@ class AnimeONProvider(BaseProvider):
         year: int | None,
         description: str,
         poster: str | None,
+        genres: list[str],
         http: httpx.AsyncClient,
     ) -> ContentResponse:
         """Movies have no episode list upstream (``/api/player/<id>/
@@ -493,6 +503,7 @@ class AnimeONProvider(BaseProvider):
             year=year,
             description=description,
             poster=poster,
+            genres=genres,
             translations=[Translation(id=name, label=name) for name in names],
             form=mb_form,
             styles=mb_styles,
@@ -521,10 +532,12 @@ class AnimeONProvider(BaseProvider):
         raw_year = info.get("releaseDate")
         year_int: int | None = None
         if isinstance(raw_year, str) and raw_year:
-            try:
-                year_int = datetime.strptime(raw_year[:10], "%Y-%m-%d").year
-            except ValueError:
-                year_int = None
+            # The upstream sends either a full ISO date ("2002-10-03")
+            # or a bare year ("2002") — both must surface as the
+            # ProductionYear (ticket #232).
+            m = re.search(r"(19\d{2}|20\d{2})", raw_year)
+            if m:
+                year_int = int(m.group(1))
         return info, year_int
 
     async def _episode_info(

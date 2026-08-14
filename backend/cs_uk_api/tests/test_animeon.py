@@ -283,6 +283,12 @@ async def test_content_parses_title_description_and_translations():
     assert c.poster.startswith("https://animeon.club/api/uploads/images/")
     # Description must be a non-empty Ukrainian string.
     assert c.description
+    # The upstream releaseDate is a bare year ("2002") — it must
+    # surface as ProductionYear, and the genres[] nameUa list must
+    # surface as genres (Ticket #232).
+    assert c.year == 2002
+    assert "Бойовик" in c.genres
+    assert "Фентезі" in c.genres
     # Per-episode translations because each translation is a separate
     # studio and the JSON gives one player per translation.
     assert c.translations_level == "episode"
