@@ -1066,6 +1066,18 @@ parsed — each fixed via TDD + live-verified:
   Наруто Year 2002/Rating 8.4/Genres 2/People 8. TDD red→green
   (`test_uakino_content_parses_metadata_from_suffixed_fi_item_rows`),
   1018 passed. Commit `865f5e2`.
+- **klontv — Year/Genres blank when klontv wins the group (FIXED,
+  #237)**. `content()` parsed only rating/cast from the JSON-LD; the
+  page's `table-info__item` rows (`Рік:` link `/year/2000/`, `Жанр:`
+  links `/dramy/`, `/boyovyky/`, …) were never read, so groups whose
+  FIRST provider is klontv rendered Year=None/Genres=[] even when a
+  sibling (uakino) carried the data. New `_table_info_year_genres()`
+  parses the rows, excluding the section link (Серіали/Фільми — a
+  section, not a genre). Live: «Тихий притулок» (g2:59c2427fc3a49420)
+  → Year 2016 + Genres [Детективи, Жахи, Трилери] (was blank),
+  Rating 3.4, People 17. TDD red→green
+  (`test_klontv_content_parses_year_and_genres`), 1019 passed.
+  Commit `10b38fe`.
 - **ufdub episodes stream 404 while PlaybackInfo answers 200 (FIXED,
   #235)**. ufdub `stream()` returns the `VIDEOS.php` gateway URL;
   movies 302 to `api.ufdub.com` (same registrable domain — admitted by
