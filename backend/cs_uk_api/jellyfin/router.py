@@ -46,6 +46,7 @@ from ..catalog_state import (
     merged_search,
     peek_group_content,
     playback_positions,
+    recent_playback,
     record_playback,
     register_search_groups,
     resolve_group,
@@ -951,11 +952,13 @@ async def items_resume(user_id: str) -> BaseItemDtoQueryResult:
     Movies report their ``g2:`` key (PlaybackInfo on the movie card);
     episodes report the provider-scoped wire id, resolved through the
     group map. Both come back with ``PlaybackPositionTicks`` so the
-    client renders the resume bar. ``user_id`` is not validated — the
-    facade has a single fixed user (D4).
+    client renders the resume bar. The row returns the most recently
+    updated items first, at most 20 (#249) — finished items were already
+    dropped by the store. ``user_id`` is not validated — the facade has
+    a single fixed user (D4).
     """
     dtos: list[BaseItemDto] = []
-    for item_id, position in playback_positions().items():
+    for item_id, position in recent_playback().items():
         if item_id.startswith("g2:"):
             try:
                 dto = await item_detail(item_id)

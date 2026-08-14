@@ -43,7 +43,8 @@ from typing import Any, cast
 import pytest
 from fastapi.testclient import TestClient
 
-from cs_uk_api.catalog_state import clear_playback
+from cs_uk_api import catalog_state
+from cs_uk_api.catalog_state import clear_playback, record_playback
 from cs_uk_api.config import SETTINGS
 from cs_uk_api.main import (
     _blocklist_cache,
@@ -61,6 +62,7 @@ from cs_uk_api.models import (
 )
 from cs_uk_api.providers import PROVIDERS
 from cs_uk_api.providers.base import BaseProvider, ProviderError, model_b_axes
+from cs_uk_api.resume_store import ResumeStore
 
 TOKEN = SETTINGS.jellyfin_token
 USER = "fdc808859fc45eb8ac5aa6faddc12c72"
@@ -835,3 +837,121 @@ def test_playback_report_for_unknown_item_is_ignored(client: TestClient) -> None
     assert resume["Items"] == []
     nextup = _get(client, "/Shows/NextUp")
     assert nextup["Items"] == []
+
+
+# ------------------------------------------------------------ finished + cap (#249)
+
+
+def _post_playback_full(
+    client: TestClient, item_id: str, position: int, runtime: int | None = None
+) -> None:
+    body: dict[str, Any] = {"ItemId": item_id, "PositionTicks": position}
+    if runtime is not None:
+        body["RunTimeTicks"] = runtime
+    r = client.post(
+        "/Sessions/Playing/Stopped",
+        json=body,
+        headers={"X-Emby-Token": TOKEN},
+    )
+    assert r.status_code == 204
+
+
+def _episode_serial() -> ContentResponse:
+    serial = _serial()
+    serial.seasons = [
+        Season(
+            number=1,
+            episodes=[
+                Episode(number=1, id="p1:serial-1:s1e1", title="Серія 1"),
+                Episode(number=2, id="p1:serial-1:s1e2", title="Серія 2"),
+            ],
+        )
+    ]
+    return serial
+
+
+def test_finished_episode_clears_resume_and_nextup(client: TestClient) -> None:
+    """#249: a Stopped report at >=95% of the runtime removes the
+    episode from Resume and it stops feeding NextUp."""
+    PROVIDERS["p1"] = _DetailStub(
+        cards=[_card("p1", "serial-1", "Сериалал серіал", "series", poster=_POSTER_SERIES)],
+        content_by_external={"serial-1": _episode_serial()},
+    )
+    _auth(client)
+
+    _post_playback_full(client, "p1:serial-1:s1e1", 950, runtime=1000)
+
+    assert _get(client, "/Users/user1/Items/Resume")["Items"] == []
+    assert _get(client, "/Shows/NextUp")["Items"] == []
+
+
+def test_finished_movie_clears_resume(client: TestClient) -> None:
+    """#249: the finished rule applies to movies (g2: keys) exactly as
+    to episodes."""
+    PROVIDERS["p1"] = _seed()
+    _auth(client)
+    gk = _movie_gk(client)
+
+    _post_playback_full(client, gk, 950, runtime=1000)
+
+    assert _get(client, "/Users/user1/Items/Resume")["Items"] == []
+
+
+def test_report_without_runtime_never_finished(client: TestClient) -> None:
+    """#249: a big position with no known runtime keeps the item on the
+    shelf — items without a runtime are never auto-finished."""
+    PROVIDERS["p1"] = _DetailStub(
+        cards=[_card("p1", "serial-1", "Сериалал серіал", "series", poster=_POSTER_SERIES)],
+        content_by_external={"serial-1": _episode_serial()},
+    )
+    _auth(client)
+
+    _post_playback(client, "p1:serial-1:s1e1", 1_000_000_000)
+
+    resume = _get(client, "/Users/user1/Items/Resume")
+    assert len(resume["Items"]) == 1
+    assert resume["Items"][0]["PlaybackPositionTicks"] == 1_000_000_000
+
+
+def test_resume_row_capped_at_20_most_recent(client: TestClient) -> None:
+    """#249: the resume read returns at most the 20 most recently
+    updated items, most recent first — the row stays scannable. Uses a
+    store with an injected clock so recency is deterministic. Episodes
+    (provider wire ids) resolve through the group map, so 21 distinct
+    items need only one home card."""
+    n = 21
+    serial = _serial()
+    serial.seasons = [
+        Season(
+            number=1,
+            episodes=[
+                Episode(number=i, id=f"p1:serial-1:s1e{i}", title=f"Серія {i}")
+                for i in range(1, n + 1)
+            ],
+        )
+    ]
+    PROVIDERS["p1"] = _DetailStub(
+        cards=[_card("p1", "serial-1", "Сериалал серіал", "series", poster=_POSTER_SERIES)],
+        content_by_external={"serial-1": serial},
+    )
+    _auth(client)
+
+    episode_ids = [f"p1:serial-1:s1e{i}" for i in range(1, n + 1)]
+
+    clock = {"t": 1000.0}
+
+    def _now() -> float:
+        clock["t"] += 1.0
+        return clock["t"]
+
+    original = catalog_state._resume_store
+    catalog_state._resume_store = ResumeStore(None, now=_now)
+    try:
+        for ep_id in episode_ids:
+            record_playback(ep_id, 1000)
+        resume = _get(client, "/Users/user1/Items/Resume")["Items"]
+        assert len(resume) == 20
+        assert resume[0]["Name"] == "Серія 21"  # most recent first
+        assert resume[-1]["Name"] == "Серія 2"  # the oldest (Серія 1) is outside the 20
+    finally:
+        catalog_state._resume_store = original

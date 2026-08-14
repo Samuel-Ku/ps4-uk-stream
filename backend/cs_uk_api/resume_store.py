@@ -28,6 +28,7 @@ import logging
 import os
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 log = logging.getLogger("cs_uk_api.resume")
@@ -40,6 +41,14 @@ RESUME_VERSION = 1
 #: heartbeats roughly every 10 s — match that cadence instead of writing
 #: per packet. Stopped reports bypass the debounce entirely.
 _DEBOUNCE_S = 5.0
+
+#: Finished-marking threshold (spec #247 §7): a position at or above
+#: 95% of the item's runtime counts as watched to the end and leaves the
+#: shelves.
+FINISHED_FRACTION = 0.95
+
+#: Store cap (spec #247): 50 entries, least-recently-updated evicted.
+MAX_ITEMS = 50
 
 
 class ResumeStore:
@@ -54,9 +63,15 @@ class ResumeStore:
     semantics exactly.
     """
 
-    def __init__(self, path: str | None, debounce_s: float = _DEBOUNCE_S) -> None:
+    def __init__(
+        self,
+        path: str | None,
+        debounce_s: float = _DEBOUNCE_S,
+        now: Callable[[], float] = time.time,
+    ) -> None:
         self._path = path
         self._debounce_s = debounce_s
+        self._now = now
         self._items: dict[str, dict[str, int | float]] = {}
         self._timer: asyncio.TimerHandle | None = None
         self._load()
@@ -152,12 +167,25 @@ class ResumeStore:
         """
         if position_ticks <= 0:
             return
-        entry = dict(self._items.get(item_id) or {})
+        existing = self._items.get(item_id) or {}
+        # Finished-marking (#249, spec #247 §7): a position at >=95% of a
+        # KNOWN runtime counts as watched to the end and leaves the
+        # shelves (Resume + NextUp). The runtime comes from the report or,
+        # when the report omits it (Progress heartbeats), from the entry
+        # an earlier report stored. Items with no known runtime are never
+        # auto-finished.
+        runtime = runtime_ticks if runtime_ticks is not None else existing.get("runtime_ticks")
+        if runtime is not None and position_ticks >= FINISHED_FRACTION * runtime:
+            self._items.pop(item_id, None)
+            self._schedule_write(immediate=flush)
+            return
+        entry = dict(existing)
         entry["position_ticks"] = position_ticks
-        entry["updated_at"] = time.time()
+        entry["updated_at"] = self._now()
         if runtime_ticks is not None:
             entry["runtime_ticks"] = runtime_ticks
         self._items[item_id] = entry
+        self._cap()
         self._schedule_write(immediate=flush)
 
     def _schedule_write(self, *, immediate: bool) -> None:
@@ -195,12 +223,26 @@ class ResumeStore:
         """item_id -> entry map ({position_ticks, runtime_ticks?, updated_at})."""
         return dict(self._items)
 
+    def _cap(self) -> None:
+        """LRU-50 (#249): evict the least-recently-updated entry.
+
+        Ties on ``updated_at`` (records within one clock tick) break on
+        the key so eviction stays deterministic.
+        """
+        if len(self._items) <= MAX_ITEMS:
+            return
+        oldest = min(
+            self._items.items(),
+            key=lambda kv: (float(kv[1].get("updated_at", 0.0)), kv[0]),
+        )
+        del self._items[oldest[0]]
+
     def positions(self) -> dict[str, int]:
         """item_id -> position_ticks, most-progressed first (#214).
 
-        Ordering by recency (spec #247 user story 14) belongs to the
-        later tranche that also adds the LRU cap; this keeps the #214
-        read-route behaviour byte-identical.
+        NextUp reads this: the spec keeps its "next sibling of the
+        most-progressed episode per series" semantics unchanged. The
+        resume ROW orders by recency — see ``recent()``.
         """
         return {
             key: int(entry["position_ticks"])
@@ -208,6 +250,16 @@ class ResumeStore:
                 self._items.items(), key=lambda kv: int(kv[1]["position_ticks"]), reverse=True
             )
         }
+
+    def recent(self, limit: int) -> dict[str, int]:
+        """item_id -> position_ticks, most recently updated first, at
+        most ``limit`` entries (the resume row, #249)."""
+        ordered = sorted(
+            self._items.items(),
+            key=lambda kv: (float(kv[1].get("updated_at", 0.0)), kv[0]),
+            reverse=True,
+        )
+        return {key: int(entry["position_ticks"]) for key, entry in ordered[:limit]}
 
     def clear(self) -> None:
         """Drop all recorded positions (test isolation, #214)."""

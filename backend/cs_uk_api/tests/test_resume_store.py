@@ -121,6 +121,82 @@ def test_store_flush_persists_debounced_record(tmp_path) -> None:
     assert asyncio.run(scenario()) == {"g2:abc": 100}
 
 
+# ------------------------------------------------------------ T2 (#249)
+
+
+def _clock(start: float = 1000.0) -> tuple[dict[str, float], callable[[], float]]:
+    """Deterministic fake clock: each call advances by 1.0."""
+    state = {"t": start}
+
+    def now() -> float:
+        state["t"] += 1.0
+        return state["t"]
+
+    return state, now
+
+
+def test_store_finished_at_threshold_dropped(tmp_path) -> None:
+    """#249: a report at >=95% of the runtime removes the item from the
+    record/read pair, and the drop persists across a restart."""
+    _, now = _clock()
+    store = ResumeStore(str(tmp_path / "playback.json"), now=now)
+    store.record("e1", 950, runtime_ticks=1000)
+    store.flush()
+    assert store.positions() == {}
+    assert _fresh(str(tmp_path / "playback.json")).positions() == {}
+
+
+def test_store_below_threshold_kept(tmp_path) -> None:
+    """#249: 94.9% is not finished — the entry stays."""
+    _, now = _clock()
+    store = ResumeStore(str(tmp_path / "playback.json"), now=now)
+    store.record("e1", 949, runtime_ticks=1000)
+    assert store.positions() == {"e1": 949}
+
+
+def test_store_without_runtime_never_finished(tmp_path) -> None:
+    """#249: an item whose runtime is unknown is never auto-finished."""
+    _, now = _clock()
+    store = ResumeStore(str(tmp_path / "playback.json"), now=now)
+    store.record("e1", 10**12)
+    assert store.positions() == {"e1": 10**12}
+
+
+def test_store_finished_uses_stored_runtime(tmp_path) -> None:
+    """#249: a later report without a runtime still finishes against the
+    runtime an earlier report stored."""
+    _, now = _clock()
+    store = ResumeStore(str(tmp_path / "playback.json"), now=now)
+    store.record("e1", 100, runtime_ticks=200)
+    store.record("e1", 195)  # >= 95% of the stored 200, no runtime on the report
+    assert store.positions() == {}
+
+
+def test_store_cap_evicts_least_recently_updated(tmp_path) -> None:
+    """#249: the 51st distinct item evicts the least-recently-updated
+    entry (LRU-50)."""
+    _, now = _clock()
+    store = ResumeStore(str(tmp_path / "playback.json"), now=now)
+    for i in range(51):
+        store.record(f"item{i}", 1000 + i)
+    positions = store.positions()
+    assert len(positions) == 50
+    assert "item0" not in positions
+    assert "item50" in positions
+
+
+def test_store_recent_most_recent_first_capped(tmp_path) -> None:
+    """#249: ``recent(limit)`` returns the most recently updated items
+    first, capped at ``limit``."""
+    _, now = _clock()
+    store = ResumeStore(str(tmp_path / "playback.json"), now=now)
+    store.record("a", 10)
+    store.record("b", 20)
+    store.record("c", 30)
+    assert list(store.recent(2).keys()) == ["c", "b"]
+    assert list(store.recent(10).keys()) == ["c", "b", "a"]
+
+
 def test_stopped_report_flushed_immediately(client: TestClient, tmp_path, monkeypatch) -> None:
     """Wire-level: a Stopped report writes the state file right away — a
     fresh store over the same path (a restarted process) sees the item

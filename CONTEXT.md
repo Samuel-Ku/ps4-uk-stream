@@ -244,6 +244,8 @@ debounced on Progress heartbeats, flushed again on shutdown.
 | Env knob | `CS_UK_RESUME_PATH` (explicit empty string → memory-only) |
 | Corruption / version mismatch | warn + empty resume, API keeps serving |
 | Restart | survives (the whole point — «Продовжити перегляд» persists) |
+| Finished-marking (#249) | position ≥ 95% of a known runtime drops the item from Resume + NextUp; items with no runtime are never auto-finished |
+| Cap (#249) | 50 entries LRU by `updated_at`; the row returns the ≤20 most recently updated, most recent first |
 | Wipe | `rm <path>` — clean state, documented operator story |
 
 ### Cache key format

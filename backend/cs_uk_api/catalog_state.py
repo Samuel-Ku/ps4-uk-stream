@@ -512,8 +512,18 @@ def record_playback(
 
 
 def playback_positions() -> dict[str, int]:
-    """item_id -> position_ticks, most-progressed first (ticket #214)."""
+    """item_id -> position_ticks, most-progressed first (ticket #214).
+
+    NextUp reads this (spec #247 keeps its most-progressed-per-series
+    semantics unchanged).
+    """
     return _store().positions()
+
+
+def recent_playback(limit: int = 20) -> dict[str, int]:
+    """item_id -> position_ticks, most recently updated first, capped at
+    ``limit`` — the resume row (ticket #249)."""
+    return _store().recent(limit)
 
 
 def clear_playback() -> None:
