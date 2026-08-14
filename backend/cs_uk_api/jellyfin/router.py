@@ -39,8 +39,8 @@ from fastapi.responses import RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from ..catalog_state import (
+    episode_group_key,
     get_home,
-    group_key_for_external,
     is_hard_unavailable,
     load_home,
     merged_search,
@@ -173,7 +173,19 @@ def _server_id() -> str:
 #: A view's ``Id`` is a deterministic uuid5 of one of these keys, so the
 #: mapping is reversible (``_view_type_by_id``) and stable across
 #: restarts — a client's cached library list keeps working.
-_VIEW_TYPES = ("newest", "popular", "movie", "series", "anime", "cartoon", "dorama")
+_VIEW_TYPES = (
+    "newest",
+    "popular",
+    # spec #252: the personalized rows are just more home-row kinds —
+    # each becomes its own view, zero client changes.
+    "recommended",
+    "similar",
+    "movie",
+    "series",
+    "anime",
+    "cartoon",
+    "dorama",
+)
 
 _VIEW_ID_BY_TYPE = {
     t: uuid.uuid5(uuid.NAMESPACE_URL, f"cs-uk-api-view:{t}").hex for t in _VIEW_TYPES
@@ -192,6 +204,8 @@ _COLLECTION_TYPE_BY_ROW = {
     "dorama": "tvshows",
     "newest": "tvshows",
     "popular": "tvshows",
+    "recommended": "tvshows",
+    "similar": "tvshows",
 }
 
 #: Home-row kind → Jellyfin item Type. Only Movie/Series are expressible
@@ -893,17 +907,10 @@ async def _resolve_playback_episode(
     Returns ``(None, None)`` for a non-episode id or an unresolvable
     group (cold cache / gated item).
     """
-    # Episode wire ids end in ``:s1e1`` (ufdub-style) or ``:e5``
-    # (uakino/kinotron-style), or carry a base64 source blob AFTER the
-    # ``:eN`` tail (animeon-style ``animeon:918:e1:eyJ...`` — the blob
-    # itself can contain digits, so the tail is ``:e<N>`` followed by
-    # ``:`` or end-of-string, never ``:e<N>``+digits). The prefix before
-    # the tail is the ``provider:external`` composite that identifies
-    # the merged group.
-    match = re.search(r":(?:s\d+)?e\d+(?=:|$)", item_id)
-    if match is None:
-        return None, None
-    group_key = group_key_for_external(item_id[: match.start()])
+    # The ``provider:external`` prefix before the episode tail
+    # (``:s1e1`` / ``:e5`` / ``:eN:<blob>``) identifies the merged group
+    # (shared helper, spec #252).
+    group_key = episode_group_key(item_id)
     if group_key is None:
         return None, None
     seasons = (await _hierarchy(group_key)).Items

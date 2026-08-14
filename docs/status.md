@@ -99,8 +99,17 @@ boundary validation is `fullmatch` everywhere; uakino movies without a
   capped at 50 entries with a ≤20-item row, and the resume/NextUp DTOs
   carry `RunTimeTicks` so the bar renders proportionally. The store is
   the first persisted domain object — ADR-0003's version-token rule
-  applies (see the ADR note). `docs/status.md` test counts: 1046
-  passing (was 1020 at v1.0.0).
+  applies (see the ADR note).
+- **Personalized home rows (spec #252, 2026-08-14).** «Рекомендовано
+  для тебе» (≤20) and «Схоже на X» (≤10) rank the home snapshot by a
+  pure weighted-cosine content similarity over genre/people/year/form/
+  style profiles (background warm, bounded concurrency, piggybacks the
+  content cache), fed by the ≤3 most recent watched items and ≤50
+  recent search queries (persisted beside the playback state, resume
+  file schema v2). Watched items are excluded, signal-less rows are
+  omitted, and each row is a plain home-row kind — the facade serves
+  them through the existing view mechanism with zero client changes.
+  `docs/status.md` test counts: 1063 passing (was 1020 at v1.0.0).
 
 Run the backend:
 

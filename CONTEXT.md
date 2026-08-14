@@ -249,6 +249,24 @@ debounced on Progress heartbeats, flushed again on shutdown.
 | Runtime on the wire (#250) | Resume/NextUp DTOs carry `RunTimeTicks` (alongside `PlaybackPositionTicks`) from the recorded runtime when known; reports without a runtime stay position-only |
 | Wipe | `rm <path>` — clean state, documented operator story |
 
+### Recommendations (spec #252)
+
+Two personalized home rows — «Рекомендовано для тебе» (≤20) and
+«Схоже на X» (≤10) — rank the home snapshot's groups by content
+similarity to the viewer's taste. The scorer is a pure weighted cosine
+in `cs_uk_api/recommend.py` (genres 1.0, people 0.9, styles 0.4, year
+proximity 0.3 within |Δyear| ≤ 2; a form mismatch halves the total;
+query matches add a fixed boost) — the pluggable seam for a future LLM
+ranker. Profiles are built from providers' content pages by a
+background warm with bounded concurrency (piggybacks the 30-min content
+cache; in-memory, keyed by group). Taste anchors are the ≤3 most recent
+watched items (from the persisted resume store) plus the ≤50 recent
+search queries (persisted beside the playback state, resume-file schema
+v2). Watched items are excluded; rows are omitted when there is no
+signal. Each row is just another home-row kind (`recommended` /
+`similar`) — the facade serves them through the existing view
+mechanism, zero client changes.
+
 ### Cache key format
 
 Flat, colon-joined `{namespace}:{discriminants…}` strings, one store per namespace:

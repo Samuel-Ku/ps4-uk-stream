@@ -35,7 +35,18 @@ log = logging.getLogger("cs_uk_api.resume")
 
 #: Format version of the resume state file (spec #247). Bump whenever the
 #: on-disk shape changes; a file with a different version is ignored.
-RESUME_VERSION = 1
+#: v2 (spec #252) adds the ``queries`` section; v1 files are still
+#: readable (positions load, queries start empty) so an upgrade never
+#: wipes the shelf.
+RESUME_VERSION = 2
+
+#: Versions ``_load`` accepts. Anything else is ignored (warn + empty).
+_SUPPORTED_VERSIONS = (1, 2)
+
+#: Search queries persisted beside the playback state (spec #252):
+#: newest first, deduped, bounded at 50 — the «Рекомендовано для тебе»
+#: taste signal.
+MAX_QUERIES = 50
 
 #: Debounce window for Progress-heartbeat writes (spec #247): the client
 #: heartbeats roughly every 10 s — match that cadence instead of writing
@@ -73,6 +84,7 @@ class ResumeStore:
         self._debounce_s = debounce_s
         self._now = now
         self._items: dict[str, dict[str, int | float]] = {}
+        self._queries: list[str] = []
         self._timer: asyncio.TimerHandle | None = None
         self._load()
 
@@ -95,7 +107,7 @@ class ResumeStore:
             return
         try:
             payload = json.loads(raw)
-            if not isinstance(payload, dict) or payload.get("v") != RESUME_VERSION:
+            if not isinstance(payload, dict) or payload.get("v") not in _SUPPORTED_VERSIONS:
                 log.warning(
                     "resume state ignored: version mismatch or bad shape at %s (expected v%d)",
                     self._path,
@@ -120,6 +132,11 @@ class ResumeStore:
                         kept[field] = value
                 cleaned[key] = kept
             self._items = cleaned
+            # v2 queries section — v1 files simply have none (spec #252:
+            # degrade to "no queries", never crash).
+            queries = payload.get("queries", [])
+            if isinstance(queries, list):
+                self._queries = [q for q in queries if isinstance(q, str)][:MAX_QUERIES]
         except Exception:  # a bad file must never crash startup
             log.warning("resume state unreadable, starting empty: %s", self._path, exc_info=True)
 
@@ -137,7 +154,11 @@ class ResumeStore:
             fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".playback-", suffix=".tmp")
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    json.dump({"v": RESUME_VERSION, "items": self._items}, fh, ensure_ascii=False)
+                    json.dump(
+                        {"v": RESUME_VERSION, "items": self._items, "queries": self._queries},
+                        fh,
+                        ensure_ascii=False,
+                    )
                 os.replace(tmp, path)
             except Exception:
                 try:
@@ -285,9 +306,27 @@ class ResumeStore:
         )
         return {key: self._pos_runtime(entry) for key, entry in ordered[:limit]}
 
+    def record_query(self, query: str) -> None:
+        """Record a search query (spec #252): newest first, deduped (a
+        repeat moves to the front), bounded at ``MAX_QUERIES``. Blank
+        queries are ignored. The write is debounced like a Progress
+        heartbeat — queries share the state file.
+        """
+        q = query.strip()
+        if not q:
+            return
+        self._queries = [q] + [x for x in self._queries if x != q]
+        del self._queries[MAX_QUERIES:]
+        self._schedule_write(immediate=False)
+
+    def recent_queries(self) -> list[str]:
+        """Search queries, newest first (spec #252)."""
+        return list(self._queries)
+
     def clear(self) -> None:
-        """Drop all recorded positions (test isolation, #214)."""
+        """Drop all recorded positions + queries (test isolation, #214)."""
         if self._timer is not None:
             self._timer.cancel()
             self._timer = None
         self._items.clear()
+        self._queries.clear()

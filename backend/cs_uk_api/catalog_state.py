@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Mapping, Sequence
 from typing import cast
 
@@ -36,6 +37,7 @@ from .models import (
     ContentResponse,
     ErrorResponse,
     HomeResponse,
+    HomeRow,
     MediaForm,
     MediaStyle,
     ProviderFailure,
@@ -45,6 +47,13 @@ from .models import (
 )
 from .providers import PROVIDERS
 from .providers.base import BaseProvider, ProviderError
+from .recommend import (
+    ANCHOR_WEIGHTS,
+    MAX_ANCHORS,
+    ItemProfile,
+    build_recommendation_rows,
+    profile_from_content,
+)
 from .resume_store import ResumeStore
 from .uakino_browser import get_session
 
@@ -277,11 +286,13 @@ async def load_home() -> HomeResponse:
             # caller gets the fast (partially-swept) home.
             async def _finish_sweep(tasks: set[asyncio.Task[None]]) -> None:
                 await asyncio.wait(tasks)
-                rows = build_home_rows(
-                    newest=newest_lists,
-                    popular=popular_lists,
-                    by_type=type_lists,
-                    newest_limit=_config.SETTINGS.home_row_limit,
+                rows = _with_recommendation_rows(
+                    build_home_rows(
+                        newest=newest_lists,
+                        popular=popular_lists,
+                        by_type=type_lists,
+                        newest_limit=_config.SETTINGS.home_row_limit,
+                    )
                 )
                 resp = HomeResponse(rows=rows)
                 home_cache.set(_HOME_KEY, resp)
@@ -292,21 +303,174 @@ async def load_home() -> HomeResponse:
 
             asyncio.create_task(_finish_sweep(pending))
 
-    rows = build_home_rows(
-        newest=newest_lists,
-        popular=popular_lists,
-        by_type=type_lists,
-        newest_limit=_config.SETTINGS.home_row_limit,
+    rows = _with_recommendation_rows(
+        build_home_rows(
+            newest=newest_lists,
+            popular=popular_lists,
+            by_type=type_lists,
+            newest_limit=_config.SETTINGS.home_row_limit,
+        )
     )
     resp = HomeResponse(rows=rows)
     home_cache.set(_HOME_KEY, resp)
     sources_cache.set(_SOURCES_KEY, _build_sources_map(newest_lists, popular_lists, type_lists))
+    # Recommendation profiles warm in the background (spec #252): the
+    # same bounded-concurrency pattern as the gate sweep, piggybacking
+    # the content cache. Gated on ``catalog_warm_enabled`` so tests
+    # (which disable it) never trigger real content scrapes.
+    if _config.SETTINGS.catalog_warm_enabled:
+        asyncio.create_task(_warm_profiles(resp))
     return resp
 
 
 def get_home() -> HomeResponse | None:
     """Cached home snapshot without triggering a build (None on cold cache)."""
     return cast(HomeResponse, home_cache.get(_HOME_KEY))
+
+
+# ---------------------------------------------------------- recommendations (#252)
+
+#: Content-page taste profiles of the home-snapshot groups (spec #252),
+#: keyed by ``g2:`` group key. Built in the background by
+#: ``_warm_profiles``; in-memory only — a restart re-warms (bounded by
+#: the content cache).
+_profiles: dict[str, ItemProfile] = {}
+
+#: Bounded concurrency for the background profile warm (spec #252: the
+#: same bounded-concurrency pattern as the gate sweep).
+_PROFILE_CONCURRENCY = 8
+
+#: Episode wire ids end in ``:s1e1`` (ufdub-style) or ``:e5``
+#: (uakino/kinotron-style), or carry a base64 source blob AFTER the
+#: ``:eN`` tail (animeon-style). The tail is ``:e<N>`` (optionally with
+#: a season prefix) followed by ``:`` or end-of-string, never digits.
+_EPISODE_TAIL_RE = re.compile(r":(?:s\d+)?e\d+(?=:|$)")
+
+
+def episode_group_key(item_id: str) -> str | None:
+    """The merged group key behind a played item id (spec #252).
+
+    Movies report their ``g2:`` key; episodes report the provider-scoped
+    wire id (``ufdub:dorama-408-...:s1e1``), whose ``provider:external``
+    prefix identifies the merged group (reverse lookup, #214).
+    """
+    if item_id.startswith("g2:"):
+        return item_id
+    match = _EPISODE_TAIL_RE.search(item_id)
+    if match is None:
+        return None
+    return group_key_for_external(item_id[: match.start()])
+
+
+async def _warm_profiles(home: HomeResponse) -> None:
+    """Background content-profile build for the home groups (spec #252).
+
+    Bounded concurrency, piggybacking the shared content cache — only
+    cold groups cost a fetch. On completion, if any NEW profile landed,
+    the home cache is invalidated so the next read rebuilds the
+    snapshot WITH the recommendation rows (they are computed at build
+    time). A warm that adds nothing (steady state) never invalidates,
+    so the rebuild→warm loop terminates. A failed profile is just a
+    missing signal — never an error.
+    """
+    groups = sorted({it.group_key for row in home.rows for it in row.items})
+    if not groups:
+        return
+    sem = asyncio.Semaphore(_PROFILE_CONCURRENCY)
+    added = False
+
+    async def _one(group_key: str) -> None:
+        nonlocal added
+        if group_key in _profiles:
+            return
+        per_provider = resolve_group(group_key)
+        if per_provider is None:
+            return
+        provider_id, item = next(iter(per_provider.items()))
+        cache_key = _gate_cache_key(item)
+        if gated_cache.get(cache_key) is True:
+            return
+        cached = content_cache.get(cache_key)
+        if cached is None:
+            provider = PROVIDERS.get(provider_id)
+            if provider is None:
+                return
+            async with sem:
+                try:
+                    _, _, external = item.id.partition(":")
+                    cached = await provider.content(external, get_client())
+                    content_cache.set(cache_key, cached)
+                except Exception as e:  # noqa: BLE001 — a failed profile is just a missing signal
+                    log.debug("profile warm failed group=%s err=%s", group_key, e)
+                    return
+        _profiles[group_key] = profile_from_content(cast(ContentResponse, cached))
+        added = True
+
+    tasks = [asyncio.create_task(_one(gk)) for gk in groups]
+    await asyncio.wait(tasks, timeout=_config.SETTINGS.search_total_timeout_s)
+    if added:
+        home_cache.clear()
+
+
+def _recommendation_rows(rows: Sequence[HomeRow]) -> list[HomeRow]:
+    """«Рекомендовано для тебе» + «Схоже на X» from the current taste
+    signal (spec #252).
+
+    Candidates are the snapshot's groups with a warm profile, excluding
+    already-watched groups; anchors are the up-to-3 most recently
+    watched items (recency-weighted); the similar row anchors on the
+    single most recent in-progress title. Rows are omitted when there
+    is no signal (no anchors, no queries) — empty rows don't ship.
+    """
+    home_items = [it for row in rows for it in row.items]
+    if not home_items or not _profiles:
+        return []
+    home_by_key = {it.group_key: it for it in home_items}
+    watched: set[str] = set()
+    anchors: list[tuple[ItemProfile, float]] = []
+    similar: tuple[ItemProfile, str] | None = None
+    recency = 0
+    for item_id in recent_playback_entries(MAX_ANCHORS):
+        group_key = episode_group_key(item_id)
+        if group_key is None:
+            continue
+        watched.add(group_key)
+        prof = _profiles.get(group_key)
+        if prof is None:
+            continue
+        if recency < len(ANCHOR_WEIGHTS):
+            anchors.append((prof, ANCHOR_WEIGHTS[recency]))
+        recency += 1
+        item = home_by_key.get(group_key)
+        if similar is None and item is not None:
+            similar = (prof, item.title)
+    queries = recent_search_queries()
+    if not anchors and not queries:
+        return []
+    return build_recommendation_rows(
+        home_items=home_items,
+        profiles=_profiles,
+        watched=watched,
+        anchors=anchors,
+        similar_anchor=similar,
+        queries=queries,
+    )
+
+
+def _with_recommendation_rows(rows: list[HomeRow]) -> list[HomeRow]:
+    """Insert the recommendation rows after «Популярні зараз» (or
+    «Новинки» when popular is absent), before the type rows (#252).
+    """
+    rec = _recommendation_rows(rows)
+    if not rec:
+        return rows
+    out = list(rows)
+    insert_at = 0
+    for i, row in enumerate(out):
+        if row.type in ("newest", "popular"):
+            insert_at = i + 1
+    out[insert_at:insert_at] = rec
+    return out
 
 
 #: Cap on concurrent content-page fetches during the gate sweep, and
@@ -535,6 +699,16 @@ def clear_playback() -> None:
 def flush_playback() -> None:
     """Flush pending playback state to disk (lifespan shutdown, #248)."""
     _store().flush()
+
+
+def record_search_query(query: str) -> None:
+    """Record a search query as taste signal (spec #252)."""
+    _store().record_query(query)
+
+
+def recent_search_queries() -> list[str]:
+    """Search queries, newest first (spec #252)."""
+    return _store().recent_queries()
 
 
 def peek_group_content(group_key: str) -> ContentResponse | None:
@@ -799,6 +973,11 @@ async def merged_search(
         # boundary; the facade guards its own SearchTerm, so an empty query
         # never reaches the fan-out.
         return SearchResponse(query=q, groups=[])
+    # Taste signal (spec #252): every search — from BOTH surfaces — feeds
+    # «Рекомендовано для тебе». Deduped + bounded in the store, so a
+    # repeat search from back-navigation just moves the query to the
+    # front.
+    record_search_query(q)
     # Fan-out skip (issue #193): while uakino's browser session is not
     # ready (warming) or pinned down, drop it from the ``provider=all``
     # fan-out instead of letting it burn the search budget on a session

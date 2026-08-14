@@ -62,6 +62,7 @@ from cs_uk_api.models import (
 )
 from cs_uk_api.providers import PROVIDERS
 from cs_uk_api.providers.base import BaseProvider, ProviderError, model_b_axes
+from cs_uk_api.recommend import profile_from_content
 from cs_uk_api.resume_store import ResumeStore
 
 TOKEN = SETTINGS.jellyfin_token
@@ -1004,3 +1005,80 @@ def test_nextup_carries_runtime(client: TestClient) -> None:
     nxt = _get(client, "/Shows/NextUp")["Items"][0]
     assert nxt["Id"] == "p1:serial-1:s1e2"
     assert nxt["RunTimeTicks"] == 1_000_000_000
+
+
+# ------------------------------------------------------------ recommendations (#252)
+
+
+def _movie_content(ext: str, title: str, genres: list[str], year: int) -> ContentResponse:
+    return ContentResponse(
+        id=f"p1:{ext}",
+        form="movie",
+        title=title,
+        year=year,
+        poster=_POSTER_MOVIE,
+        translations=[Translation(id="uk", label="Дубляж")],
+        genres=genres,
+    )
+
+
+def test_recommendation_views_serve_rows(client: TestClient) -> None:
+    """#252: the personalized rows surface as facade views and serve
+    ranked cards through the existing view mechanism — zero client
+    changes. A watched item is excluded; a matching query boosts a
+    candidate into the row."""
+    action1 = _movie_content("action-1", "Боєвик", ["Бойовик"], 2021)
+    action2 = _movie_content("action-2", "Боєвик 2", ["Бойовик"], 2022)
+    drama = _movie_content("drama-1", "Драма", ["Драма"], 1990)
+    stub = _DetailStub(
+        cards=[
+            _card("p1", "action-1", "Боєвик", "movie", poster=_POSTER_MOVIE),
+            _card("p1", "action-2", "Боєвик 2", "movie", poster=_POSTER_MOVIE),
+            _card("p1", "drama-1", "Драма", "movie", poster=_POSTER_MOVIE),
+        ],
+        content_by_external={"action-1": action1, "action-2": action2, "drama-1": drama},
+    )
+    PROVIDERS["p1"] = stub
+    _auth(client)
+
+    home = _get(client, "/api/home")
+    gk = {item["title"]: item["group_key"] for row in home["rows"] for item in row["items"]}
+    # The background profile warm is off in tests — pre-populate the
+    # profiles the same shape it would produce.
+    catalog_state._profiles = {
+        gk["Боєвик"]: profile_from_content(action1),
+        gk["Боєвик 2"]: profile_from_content(action2),
+        gk["Драма"]: profile_from_content(drama),
+    }
+    try:
+        # Taste signal: «Боєвик» was watched; «Драма» was searched.
+        record_playback(gk["Боєвик"], 1_000_000_000)
+        catalog_state.record_search_query("Драма")
+        # Rebuild the snapshot so the recommendation rows bake in.
+        _home_cache.clear()
+
+        views = _get(client, "/Users/user1/Views")["Items"]
+        names = [v["Name"] for v in views]
+        assert "Рекомендовано для тебе" in names
+        assert "Схоже на Боєвик" in names
+
+        rec = next(v for v in views if v["Name"] == "Рекомендовано для тебе")
+        items = _get(client, "/Items", parentId=rec["Id"], userId=USER)["Items"]
+        # «Боєвик 2» scores on the anchor; «Драма» rides the query boost;
+        # the watched «Боєвик» is excluded.
+        assert [i["Name"] for i in items] == ["Боєвик 2", "Драма"]
+
+        sim = next(v for v in views if v["Name"] == "Схоже на Боєвик")
+        sim_items = _get(client, "/Items", parentId=sim["Id"], userId=USER)["Items"]
+        assert [i["Name"] for i in sim_items] == ["Боєвик 2"]
+    finally:
+        catalog_state._profiles = {}
+
+
+def test_search_records_query_for_taste(client: TestClient) -> None:
+    """#252: a facade search records the query as taste signal (both
+    surfaces feed the shared ``merged_search``)."""
+    PROVIDERS["p1"] = _seed()
+    _auth(client)
+    _get(client, "/Search/Hints", searchTerm="Дюна")
+    assert catalog_state.recent_search_queries() == ["Дюна"]

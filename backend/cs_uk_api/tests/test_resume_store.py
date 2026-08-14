@@ -103,7 +103,7 @@ def test_store_atomic_write_round_trips(tmp_path) -> None:
     assert os.path.exists(str(path))
     assert [p for p in os.listdir(tmp_path) if p.endswith(".tmp")] == []
     data = json.loads(path.read_text(encoding="utf-8"))
-    assert data["v"] == 1
+    assert data["v"] == 2
     assert data["items"]["g2:abc"]["position_ticks"] == 100
     assert data["items"]["g2:abc"]["runtime_ticks"] == 200
 
@@ -195,6 +195,70 @@ def test_store_recent_most_recent_first_capped(tmp_path) -> None:
     store.record("c", 30)
     assert list(store.recent(2).keys()) == ["c", "b"]
     assert list(store.recent(10).keys()) == ["c", "b", "a"]
+
+
+# ------------------------------------------------------------ v2 queries (#252)
+
+
+def test_store_v1_file_loads_items_without_queries(tmp_path) -> None:
+    """#252: a v1 file (no queries section) still loads its positions;
+    the queries list is empty — never a crash on upgrade."""
+    path = tmp_path / "playback.json"
+    path.write_text(
+        json.dumps({"v": 1, "items": {"g2:abc": {"position_ticks": 100}}}), encoding="utf-8"
+    )
+    store = _fresh(str(path))
+    assert store.positions() == {"g2:abc": 100}
+    assert store.recent_queries() == []
+
+
+def test_store_queries_round_trip(tmp_path) -> None:
+    """#252: recorded queries persist — newest first — across a fresh
+    store over the same file (restart)."""
+    path = str(tmp_path / "playback.json")
+    first = _fresh(path)
+    first.record_query("Дюна")
+    first.record_query("Наруто")
+    first.flush()
+    second = _fresh(path)
+    assert second.recent_queries() == ["Наруто", "Дюна"]
+
+
+def test_store_queries_dedup_and_cap(tmp_path) -> None:
+    """#252: queries are deduped (a repeat moves to the front) and the
+    list is bounded at 50, newest first."""
+    store = _fresh(str(tmp_path / "playback.json"))
+    for i in range(55):
+        store.record_query(f"query{i}")
+    qs = store.recent_queries()
+    assert len(qs) == 50
+    assert qs[0] == "query54"
+    # a repeat moves to the front without growing the list
+    store.record_query("query10")
+    qs = store.recent_queries()
+    assert qs[0] == "query10"
+    assert len(qs) == 50
+
+
+def test_store_blank_query_ignored(tmp_path) -> None:
+    """#252: a blank query is not recorded."""
+    store = _fresh(str(tmp_path / "playback.json"))
+    store.record_query("   ")
+    assert store.recent_queries() == []
+
+
+def test_store_queries_flush_with_state(tmp_path) -> None:
+    """#252: items and queries share one atomic file — a flush persists
+    both."""
+    path = str(tmp_path / "playback.json")
+    store = _fresh(path)
+    store.record("g2:abc", 100)
+    store.record_query("Дюна")
+    store.flush()
+    data = json.loads((tmp_path / "playback.json").read_text(encoding="utf-8"))
+    assert data["v"] == 2
+    assert data["items"]["g2:abc"]["position_ticks"] == 100
+    assert data["queries"] == ["Дюна"]
 
 
 # ------------------------------------------------------------ T3 (#250)

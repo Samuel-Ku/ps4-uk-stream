@@ -1152,6 +1152,12 @@ One manual checklist line for the on-device pass — deliberately NOT a
       the row still shows it after the restart (disk-backed store, #248;
       the state file is `~/.cache/cs-uk-api/playback.json` unless
       `CS_UK_RESUME_PATH` overrides it).
+- [ ] Recommendations (spec #252): watch an item (or search a couple of
+      titles), return home, and the personalized rows appear —
+      «Рекомендовано для тебе» and «Схоже на <title>» — positioned
+      after «Популярні зараз», and opening a card works like any other
+      row. They are just new home-row kinds served through the existing
+      view mechanism (zero client changes).
 
 Backend-side verification of the same behaviour (no device needed):
 `POST /Sessions/Playing/Stopped` with `PositionTicks`+`RunTimeTicks`
