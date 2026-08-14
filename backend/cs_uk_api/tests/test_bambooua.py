@@ -210,6 +210,25 @@ async def test_bambooua_content_free_movie_parses_title_poster():
 
 
 @pytest.mark.asyncio
+async def test_bambooua_content_free_movie_parses_jsonld_description():
+    """The JSON-LD block uses the standard `@graph` key; the model must
+    alias it so the description survives. Regression: every bambooua
+    detail rendered a blank description because `graph` stayed []
+    (Ticket #226)."""
+    content_html = _fixture("content_movie_free.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://bambooua.com/cinema/1041-you-are-the-apple-of-my-eye.html"
+        ).respond(200, text=content_html)
+        async with httpx.AsyncClient() as http:
+            c = await BambooUAProvider().content(
+                "cinema/1041-you-are-the-apple-of-my-eye", http
+            )
+    assert c.description
+    assert "перших симпатій" in c.description
+
+
+@pytest.mark.asyncio
 async def test_bambooua_content_single_file_movie_prefixes_episode_id():
     """A movie whose playlist group carries a single folder entry is
     surfaced as season 1, episode 1. The episode id must be prefixed

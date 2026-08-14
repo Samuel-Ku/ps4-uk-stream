@@ -14,7 +14,7 @@ from urllib.parse import quote, urljoin
 
 import httpx
 from bs4 import BeautifulSoup, Tag
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..country import extract_country
 from ..models import (
@@ -248,8 +248,16 @@ class _GraphNode(BaseModel):
 
 
 class _JSONModel(BaseModel):
-    context: str | None = None
-    graph: list[_GraphNode] = []
+    """JSON-LD document model.
+
+    The upstream emits standard JSON-LD keys (`@context`/`@graph`);
+    without aliases pydantic ignored them and `graph` stayed [] — every
+    bambooua detail rendered a blank description (Ticket #226)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    context: str | None = Field(default=None, alias="@context")
+    graph: list[_GraphNode] = Field(default_factory=list, alias="@graph")
 
 
 class _PlaylistEpisode(BaseModel):
