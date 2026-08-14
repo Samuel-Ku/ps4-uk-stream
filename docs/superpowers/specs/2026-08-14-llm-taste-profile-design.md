@@ -26,7 +26,7 @@ local llama.cpp/ollama server — no vendor code.
 ## Data flow
 
 1. Signals are collected: the most recent playback-history items
-   (title, genres, year, form; bounded to the top N), the persisted
+   (title, genres, year, form; bounded to the top 10), the persisted
    search queries, and the catalog's genre vocabulary.
 2. One prompt is sent (single request, timeout, no retries).
 3. The response must be strict JSON; it is validated with a Pydantic
@@ -49,7 +49,7 @@ local llama.cpp/ollama server — no vendor code.
 ```
 
 - `genre_weights`: multipliers applied to the genre term of
-  `similarity()` (default 1.0; clamped to a sane band).
+  `similarity()` (default 1.0; clamped to 0.2–2.0).
 - `theme_tags`: token boosts, reusing the `query_boost` mechanism.
 - `row_ideas`: at most 2; `genres` MUST intersect the catalog's known
   genre vocabulary — an unknown genre discards the idea; the row is
@@ -58,7 +58,9 @@ local llama.cpp/ollama server — no vendor code.
 
 ## Cadence and persistence
 
-- Background generation once per day plus an on-demand admin trigger.
+- Background generation once per day plus an on-demand admin trigger
+  (a token-gated route like every other facade route; LAN-only by the
+  deployment assumption).
 - No persistence: the profile is regenerated on demand and after
   restarts; until the first successful run the pure scorer is active.
 
