@@ -1159,7 +1159,17 @@ One manual checklist line for the on-device pass — deliberately NOT a
       row. They are just new home-row kinds served through the existing
       view mechanism (zero client changes).
 
+- [ ] User state (spec #257): on a detail screen tap the heart — it
+      lights and stays lit after an app relaunch (the toggle answers
+      UserDataResult and the mark persists in `user-state.json`); from
+      a card's context menu mark an item played/unplayed — the
+      checkmark appears on the card; the Remote and Live TV tabs open
+      without errors (graceful empties).
+
 Backend-side verification of the same behaviour (no device needed):
 `POST /Sessions/Playing/Stopped` with `PositionTicks`+`RunTimeTicks`
 → `GET /Users/{user}/Items/Resume` and `GET /Shows/NextUp` (see the
-`test_resume_store.py` / `test_jellyfin_detail.py` #248–#250 tests).
+`test_resume_store.py` / `test_jellyfin_detail.py` #248–#250 tests);
+`POST/DELETE /Users/{user}/FavoriteItems/{id}` and `/PlayedItems/{id}`
+→ UserDataResult, and `UserData` on card/detail/episode DTOs (see
+`test_user_state.py` / `test_jellyfin_detail.py` #257 tests).

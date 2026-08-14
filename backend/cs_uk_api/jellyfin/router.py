@@ -41,7 +41,9 @@ from pydantic import BaseModel
 from ..catalog_state import (
     episode_group_key,
     get_home,
+    is_favorite,
     is_hard_unavailable,
+    is_played,
     load_home,
     merged_search,
     peek_group_content,
@@ -51,6 +53,8 @@ from ..catalog_state import (
     register_search_groups,
     resolve_group,
     resolve_group_content,
+    set_favorite,
+    set_played,
 )
 from ..config import SETTINGS
 from ..health import TRACKER
@@ -80,6 +84,7 @@ from .models import (
     SearchHint,
     SearchHintResult,
     SystemInfoPublic,
+    UserDataResult,
     UserDto,
 )
 
@@ -266,6 +271,32 @@ def _poster_tag(poster_url: str) -> str:
     return hashlib.sha256(poster_url.encode()).hexdigest()[:16]
 
 
+def _user_data(item_id: str | None) -> UserDataResult | None:
+    """The UserDataResult for an item id (spec #257).
+
+    IsFavorite/Played come from the persisted user-state store;
+    PlaybackPositionTicks from the playback store; PlayedPercentage
+    derives from the position/runtime when known, else 100 when played
+    and 0 otherwise. None when there is no id to look up (a view row,
+    a season without a concrete item).
+    """
+    if item_id is None:
+        return None
+    result = UserDataResult(IsFavorite=is_favorite(item_id), Played=is_played(item_id))
+    pos = playback_entries().get(item_id)
+    if pos is not None:
+        position, runtime = pos
+        result.PlaybackPositionTicks = position
+        if runtime and runtime > 0:
+            result.PlayedPercentage = round(min(100.0, position / runtime * 100), 2)
+        elif result.Played:
+            result.PlayedPercentage = 100.0
+    elif result.Played:
+        result.PlayedPercentage = 100.0
+    result.PlayCount = 1 if result.Played else 0
+    return result
+
+
 def _row_dto(row: HomeRow, server_id: str) -> BaseItemDto:
     """One virtual library (D5): a ``CollectionFolder`` whose ``Id`` the
     client echoes back as ``parentId`` on ``/Items``."""
@@ -301,6 +332,8 @@ def _item_dto(row: HomeRow, item: HomeItem, server_id: str) -> BaseItemDto:
         Type=_JF_TYPE_BY_ROW.get(form, "Series"),
         ProductionYear=item.year,
         ParentId=_VIEW_ID_BY_TYPE[row.type],
+        # Spec #257: hearts/played checkmarks/progress render from UserData.
+        UserData=_user_data(item.group_key),
     )
     if item.poster is not None:
         dto.ImageTags = {"Primary": _poster_tag(item.poster)}
@@ -508,6 +541,8 @@ def _content_dto(group_key: str, content: ContentResponse, server_id: str) -> Ba
         poster = content.poster
     if poster is not None:
         dto.ImageTags = {"Primary": _poster_tag(poster)}
+    # Spec #257: the detail screen's heart reads UserData.
+    dto.UserData = _user_data(group_key)
     return dto
 
 
@@ -575,6 +610,8 @@ def _episode_dto(
         # omitted by ``response_model_exclude_none``.
         Overview=episode.description or None,
         PremiereDate=episode.premiere_date,
+        # Spec #257: the played checkmark on episode rows reads UserData.
+        UserData=_user_data(_episode_wire_id(provider_id, episode.id)),
     )
 
 
@@ -1984,6 +2021,84 @@ async def video_segment(item_id: str, url: str = Query(...)) -> Response:
         raise HTTPException(status_code=404, detail="item_unavailable")
     upstream, closer = opened
     return _streaming_response(upstream, closer, "application/octet-stream")
+
+
+# ------------------------------------------------------------ user state (#257)
+
+
+@router.post(
+    "/Users/{user_id}/FavoriteItems/{item_id}",
+    response_model=UserDataResult, response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def favorite_add(user_id: str, item_id: str) -> UserDataResult:
+    """Favorite an item (spec #257).
+
+    The RESPONSE is the UserDataResult — Switchfin updates its heart
+    button from the response's ``IsFavorite``, so a bare 204 would
+    leave the button stuck. State is single-user (D4) and persists in
+    the versioned user-state file.
+    """
+    set_favorite(item_id, True)
+    return _user_data(item_id)  # type: ignore[return-value]
+
+
+@router.delete(
+    "/Users/{user_id}/FavoriteItems/{item_id}",
+    response_model=UserDataResult, response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def favorite_remove(user_id: str, item_id: str) -> UserDataResult:
+    """Un-favorite an item (spec #257) — same response contract."""
+    set_favorite(item_id, False)
+    return _user_data(item_id)  # type: ignore[return-value]
+
+
+@router.post(
+    "/Users/{user_id}/PlayedItems/{item_id}",
+    response_model=UserDataResult, response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def played_add(user_id: str, item_id: str) -> UserDataResult:
+    """Mark an item played (spec #257) — the context-menu affordance."""
+    set_played(item_id, True)
+    return _user_data(item_id)  # type: ignore[return-value]
+
+
+@router.delete(
+    "/Users/{user_id}/PlayedItems/{item_id}",
+    response_model=UserDataResult, response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def played_remove(user_id: str, item_id: str) -> UserDataResult:
+    """Mark an item unplayed (spec #257) — same response contract."""
+    set_played(item_id, False)
+    return _user_data(item_id)  # type: ignore[return-value]
+
+
+@router.get("/Sessions", dependencies=[Depends(require_token)])
+async def sessions_list() -> list[dict[str, object]]:
+    """Remote tab (spec #257): an empty session list — not a 404.
+
+    No session store exists (D8) and no second clients exist (out of
+    scope), so the honest answer is an empty list; Switchfin's Remote
+    tab renders it without errors.
+    """
+    return []
+
+
+@router.get(
+    "/LiveTv/Channels",
+    response_model=BaseItemDtoQueryResult, response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def live_tv_channels() -> BaseItemDtoQueryResult:
+    """Live TV tab (spec #257): an empty channel listing — not a 404.
+
+    There is no live source (out of scope), so the channel list is
+    honestly empty; Switchfin's Live TV tab renders it without errors.
+    """
+    return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
 
 
 @router.post("/Sessions/Playing", dependencies=[Depends(require_token)])

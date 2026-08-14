@@ -249,6 +249,27 @@ debounced on Progress heartbeats, flushed again on shutdown.
 | Runtime on the wire (#250) | Resume/NextUp DTOs carry `RunTimeTicks` (alongside `PlaybackPositionTicks`) from the recorded runtime when known; reports without a runtime stay position-only |
 | Wipe | `rm <path>` — clean state, documented operator story |
 
+### User state (ticket #258, spec #257)
+
+Favorites and played marks — tapped on Switchfin's detail screen (heart)
+and card context menu (mark played/unplayed) — are persisted domain
+state like the resume store, deliberately in a SEPARATE versioned file
+so the two specs' version bumps never collide. One JSON file,
+`{"v": 1, "favorites": [...], "played": [...]}`, written atomically
+(temp + rename) synchronously on every toggle, so the UserDataResult
+response always reflects durable state.
+
+| Aspect | Value |
+| --- | --- |
+| Location | `user-state.json` next to the resume file |
+| Env knob | `CS_UK_USER_STATE_PATH` (explicit empty string → memory-only) |
+| Corruption / version mismatch | warn + empty state, API keeps serving |
+| Restart | survives (hearts and checkmarks persist) |
+| Cap | bounded lists with dedupe (256 each) |
+| Ids stored | whatever wire id the client sends — `g2:` keys, episode wire ids, season ids — stored verbatim |
+| Wire surface | `POST/DELETE /Users/{uid}/FavoriteItems/{id}` and `/PlayedItems/{id}` answer the `UserDataResult` object (client reads `IsFavorite`/`Played` from the response); card/detail/episode DTOs carry `UserData` |
+| Wipe | `rm ~/.cache/cs-uk-api/user-state.json` (or `CS_UK_USER_STATE_PATH`) |
+
 ### Recommendations (spec #252)
 
 Two personalized home rows — «Рекомендовано для тебе» (≤20) and

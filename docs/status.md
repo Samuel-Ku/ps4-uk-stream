@@ -110,6 +110,15 @@ boundary validation is `fullmatch` everywhere; uakino movies without a
   omitted, and each row is a plain home-row kind — the facade serves
   them through the existing view mechanism with zero client changes.
   `docs/status.md` test counts: 1072 passing (was 1020 at v1.0.0).
+- **Favorites + played + UserData (spec #257, 2026-08-14).** The heart
+  and the context-menu "mark played/unplayed" now work end-to-end:
+  `POST/DELETE /Users/{uid}/FavoriteItems/{id}` and
+  `/PlayedItems/{id}` answer the `UserDataResult` the client reads
+  back, card/detail/episode DTOs carry `UserData` (favorite badge,
+  played checkmark, progress bar), and the marks persist in a separate
+  versioned `user-state.json` (knob `CS_UK_USER_STATE_PATH`, atomic
+  writes, corrupt file → empty). The Remote and Live TV tabs answer
+  graceful empties instead of 404s. Test counts: 1090 passing.
 
 Run the backend:
 

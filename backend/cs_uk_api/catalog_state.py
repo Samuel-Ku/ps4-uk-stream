@@ -56,6 +56,7 @@ from .recommend import (
 )
 from .resume_store import ResumeStore
 from .uakino_browser import get_session
+from .user_state import UserStateStore
 
 log = logging.getLogger("cs_uk_api.catalog_state")
 
@@ -705,6 +706,42 @@ def clear_playback() -> None:
 def flush_playback() -> None:
     """Flush pending playback state to disk (lifespan shutdown, #248)."""
     _store().flush()
+
+
+# ---------------------------------------------------------- user state (#257)
+
+#: Favorites + played marks (spec #257): separate versioned store so the
+#: two specs' version bumps never collide. ``SETTINGS.user_state_path``
+#: is None in the test suite (conftest), keeping the memory-only
+#: semantics there.
+_user_state_store: UserStateStore = UserStateStore(_config.SETTINGS.user_state_path)
+
+
+def user_state_store() -> UserStateStore:
+    return _user_state_store
+
+
+def set_favorite(item_id: str, is_favorite: bool) -> None:
+    """Mark or unmark an item as favorite (spec #257)."""
+    _user_state_store.set_favorite(item_id, is_favorite)
+
+
+def set_played(item_id: str, played: bool) -> None:
+    """Mark or unmark an item as played (spec #257)."""
+    _user_state_store.set_played(item_id, played)
+
+
+def is_favorite(item_id: str) -> bool:
+    return _user_state_store.is_favorite(item_id)
+
+
+def is_played(item_id: str) -> bool:
+    return _user_state_store.is_played(item_id)
+
+
+def clear_user_state() -> None:
+    """Drop all favorites/played marks (test isolation, #257)."""
+    _user_state_store.clear()
 
 
 def record_search_query(query: str) -> None:

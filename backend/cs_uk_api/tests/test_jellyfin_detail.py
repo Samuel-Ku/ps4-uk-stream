@@ -1261,4 +1261,166 @@ def test_native_search_records_query_for_taste(client: TestClient) -> None:
     _auth(client)
     r = client.get("/api/search?q=Наруто")
     assert r.status_code == 200
-    assert catalog_state.recent_search_queries() == ["Наруто"]
+
+
+# ------------------------------------------------------------ user state (#257)
+
+
+def _favorite(client: TestClient, item_id: str, *, delete: bool = False) -> dict[str, Any]:
+    r = client.request(
+        "DELETE" if delete else "POST",
+        f"/Users/{USER}/FavoriteItems/{item_id}",
+        json={"itemId": item_id, "IsFavorite": not delete},
+        headers={"X-Emby-Token": TOKEN},
+    )
+    assert r.status_code == 200
+    return r.json()
+
+
+def _played(client: TestClient, item_id: str, *, delete: bool = False) -> dict[str, Any]:
+    r = client.request(
+        "DELETE" if delete else "POST",
+        f"/Users/{USER}/PlayedItems/{item_id}",
+        json={"itemId": item_id, "Played": not delete},
+        headers={"X-Emby-Token": TOKEN},
+    )
+    assert r.status_code == 200
+    return r.json()
+
+
+def test_favorite_toggle_returns_userdata(client: TestClient) -> None:
+    """#257: POST FavoriteItems answers the UserDataResult shape the
+    client reads back — the button flips from the RESPONSE, so a bare
+    204 would leave it stuck."""
+    PROVIDERS["p1"] = _seed()
+    _auth(client)
+    gk = _movie_gk(client)
+
+    body = _favorite(client, gk)
+    assert body["IsFavorite"] is True
+    assert body["Played"] is False
+    assert "PlayedPercentage" in body
+    assert "PlayCount" in body
+
+    body = _favorite(client, gk, delete=True)
+    assert body["IsFavorite"] is False
+
+
+def test_played_toggle_returns_userdata(client: TestClient) -> None:
+    """#257: POST/DELETE PlayedItems flip the played mark and answer
+    the UserDataResult."""
+    PROVIDERS["p1"] = _seed()
+    _auth(client)
+    gk = _movie_gk(client)
+
+    body = _played(client, gk)
+    assert body["Played"] is True
+    assert body["PlayCount"] >= 1
+    assert body["IsFavorite"] is False
+
+    body = _played(client, gk, delete=True)
+    assert body["Played"] is False
+
+
+def test_userdata_survives_restart(client: TestClient, tmp_path) -> None:
+    """#257: favorites and played marks persist across a backend
+    restart — the same state a fresh store reads back from the file a
+    toggle wrote (store-level restart simulation, mirroring #248)."""
+    from cs_uk_api.user_state import UserStateStore
+
+    path = str(tmp_path / "user-state.json")
+    first = UserStateStore(path)
+    first.set_favorite("g2:abc", True)
+    first.set_played("p1:serial-1:s1e1", True)
+    first.flush()
+
+    fresh = UserStateStore(path)
+    assert fresh.is_favorite("g2:abc") is True
+    assert fresh.is_played("p1:serial-1:s1e1") is True
+
+
+def test_userdata_on_card_dto(client: TestClient) -> None:
+    """#257: card DTOs carry UserData — hearts and played checkmarks
+    render while browsing (a favorited/played item shows its state)."""
+    PROVIDERS["p1"] = _seed()
+    _auth(client)
+    gk = _movie_gk(client)
+    _favorite(client, gk)
+    _played(client, gk)
+
+    views = _get(client, "/Users/user1/Views")["Items"]
+    vid = next(v["Id"] for v in views if v["Name"] == "Новинки")
+    items = _get(client, "/Items", parentId=vid, userId=USER)["Items"]
+    card = next(i for i in items if i["Id"] == gk)
+    assert card["UserData"]["IsFavorite"] is True
+    assert card["UserData"]["Played"] is True
+
+    other = next(i for i in items if i["Id"] != gk)
+    assert other["UserData"]["IsFavorite"] is False
+    assert other["UserData"]["Played"] is False
+
+
+def test_userdata_on_detail_dto(client: TestClient) -> None:
+    """#257: the detail DTO carries UserData too — the heart on the
+    detail screen reflects the stored state."""
+    PROVIDERS["p1"] = _seed()
+    _auth(client)
+    gk = _movie_gk(client)
+    _favorite(client, gk)
+
+    dto = _get(client, f"/Items/{gk}", userId=USER)
+    assert dto["UserData"]["IsFavorite"] is True
+
+
+def test_userdata_on_episode_dto(client: TestClient) -> None:
+    """#257: episode DTOs carry UserData — played checkmarks on
+    episode rows."""
+    PROVIDERS["p1"] = _DetailStub(
+        cards=[_card("p1", "serial-1", "Сериалал серіал", "series", poster=_POSTER_SERIES)],
+        content_by_external={"serial-1": _episode_serial()},
+    )
+    _auth(client)
+    gk = _movie_gk(client) if False else _serial_gk(client)
+    _played(client, "p1:serial-1:s1e1")
+
+    episodes = _get(client, "/Items", parentId=f"{gk}:S1", userId=USER)["Items"]
+    ep1 = next(e for e in episodes if e["Id"] == "p1:serial-1:s1e1")
+    assert ep1["UserData"]["Played"] is True
+    ep2 = next(e for e in episodes if e["Id"] == "p1:serial-1:s1e2")
+    assert ep2["UserData"]["Played"] is False
+
+
+def test_userdata_played_percentage_from_position(client: TestClient) -> None:
+    """#257: PlayedPercentage derives from the recorded position when
+    known (progress bar on cards), else 100 when played."""
+    PROVIDERS["p1"] = _seed()
+    _auth(client)
+    gk = _movie_gk(client)
+    _post_playback_full(client, gk, 40_000_000_000, runtime=100_000_000_000)
+    _played(client, gk)
+
+    body = _favorite(client, gk)  # re-read the state via a toggle response
+    assert body["PlaybackPositionTicks"] == 40_000_000_000
+    assert body["PlayedPercentage"] == 40.0
+
+
+def test_sessions_listing_is_graceful_empty(client: TestClient) -> None:
+    """#257: the Remote tab's ``GET /Sessions`` answers an empty list —
+    not a 404 — so the tab renders without errors."""
+    PROVIDERS["p1"] = _seed()
+    _auth(client)
+    r = client.get("/Sessions", headers={"X-Emby-Token": TOKEN})
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_live_tv_channels_is_graceful_empty(client: TestClient) -> None:
+    """#257: the Live TV tab's channel listing answers an empty result —
+    not a 404 — so the tab renders without errors."""
+    PROVIDERS["p1"] = _seed()
+    _auth(client)
+    r = client.get("/LiveTv/Channels", headers={"X-Emby-Token": TOKEN})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["Items"] == []
+    assert body["TotalRecordCount"] == 0

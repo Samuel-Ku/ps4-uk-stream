@@ -46,8 +46,8 @@ journalctl -u cs-uk-api -f   # warm-up: uakino reports "warming" until its
 The service is LAN-only by design (ADR-0003: one host, one uvicorn
 process, no auth). Tunable knobs: `CS_UK_CACHE_SEARCH`,
 `CS_UK_CACHE_CONTENT`, `CS_UK_CACHE_POSTER`,
-`CS_UK_POSTER_DISK_TTL`, `CS_UK_RESUME_PATH`, `UAKINO_CHROMIUM` — see
-`CONTEXT.md` §Cache contract.
+`CS_UK_POSTER_DISK_TTL`, `CS_UK_RESUME_PATH`, `CS_UK_USER_STATE_PATH`,
+`UAKINO_CHROMIUM` — see `CONTEXT.md` §Cache contract.
 
 **Continue watching («Продовжити перегляд»)** persists playback
 positions in one versioned JSON file, by default
@@ -57,6 +57,13 @@ disables the disk layer (memory-only). Wipe the shelf with a single
 command — `rm ~/.cache/cs-uk-api/playback.json` — or remove the file at
 whatever path `CS_UK_RESUME_PATH` points to (see `CONTEXT.md` §Resume
 state).
+
+**Favorites and played marks (spec #257)** — the heart and the
+context-menu "mark played/unplayed" on Switchfin's screens persist in a
+versioned `user-state.json` (default next to the resume file, override
+with `CS_UK_USER_STATE_PATH`; wipe with `rm ~/.cache/cs-uk-api/user-state.json`).
+The Remote and Live TV tabs answer graceful empties instead of errors
+(see `CONTEXT.md` §User state).
 
 **Personalized rows (spec #252)** — «Рекомендовано для тебе» (≤20)
 and «Схоже на <title>» (≤10) — appear on home once there is history

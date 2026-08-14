@@ -120,6 +120,10 @@ class BaseItemDto(BaseModel):
     #: when the provider exposes them. Omitted (None) otherwise.
     PremiereDate: str | None = None
     RunTimeTicks: int | None = None
+    #: User state (spec #257): hearts, played checkmarks and the card
+    #: progress bar read this. Populated on card/detail/episode DTOs;
+    #: omitted (None) when the DTO has no id to look up.
+    UserData: UserDataResult | None = None
 
 
 class PersonDto(BaseModel):
@@ -135,6 +139,26 @@ class PersonDto(BaseModel):
     Id: str
     Name: str
     Role: str = "Actor"
+
+
+class UserDataResult(BaseModel):
+    """The ``UserData`` object Switchfin reads for hearts, played
+    checkmarks and card progress bars (spec #257).
+
+    Wire contract is exact (from the Switchfin 0.9.3 source):
+    ``IsFavorite`` / ``Played`` drive the button states, and
+    ``PlayedPercentage`` + ``PlaybackPositionTicks`` drive the card
+    progress bar. ``PlayCount`` counts played-markings (saturating —
+    the spec says it is not a real statistic). ``PlayedPercentage``
+    derives from the recorded position/runtime when known, else 100
+    when played and 0 otherwise.
+    """
+
+    IsFavorite: bool = False
+    PlayCount: int = 0
+    PlaybackPositionTicks: int | None = None
+    PlayedPercentage: float = 0.0
+    Played: bool = False
 
 
 class BaseItemDtoQueryResult(BaseModel):

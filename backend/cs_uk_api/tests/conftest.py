@@ -17,3 +17,8 @@ os.environ.setdefault("CS_UK_CATALOG_WARM", "0")
 # construct stores over tmp paths. An explicit empty string disables the
 # disk layer (see config._load_resume_path).
 os.environ.setdefault("CS_UK_RESUME_PATH", "")
+
+# Same for the user-state store (favorites/played, ticket #258): tests
+# keep it memory-only; persistence is exercised by dedicated
+# UserStateStore tests over tmp paths.
+os.environ.setdefault("CS_UK_USER_STATE_PATH", "")
