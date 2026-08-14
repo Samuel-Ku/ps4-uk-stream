@@ -73,10 +73,17 @@ class Expect:
 
 @dataclass(frozen=True)
 class PlayTap:
-    """One tap of a play sequence, with the requests it must trigger."""
+    """One tap of a play sequence, with the requests it must trigger.
+
+    ``scroll_before``: an optional hold-drag ``(x1, y1, x2, y2, ms)`` the
+    runner executes once before the tap retry loop. The series detail
+    screen renders its seasons row below the fold; the drag scrolls it
+    into the position the calibrated ``tap`` coordinates expect.
+    """
 
     tap: str
     expects: tuple[Expect, ...]
+    scroll_before: tuple[int, int, int, int, int] | None = None
 
 
 @dataclass(frozen=True)

@@ -118,6 +118,14 @@ NAV_MAX_BACKS = 6
 NAV_SETTLE_S = 1.5
 #: Extra settle after the relaunched app's first reconnect request.
 APP_SETTLE_S = 2.0
+#: Log-quiet duration that marks the relaunched app as settled (see the
+#: quiet-wait in ``restart_app``): the client drops taps issued while it
+#: is still fetching home posters (device-driving input table).
+QUIET_SETTLE_S = 3.0
+#: Settle between a sidebar-folders tap and its grid-verification shot.
+GRID_SETTLE_S = 1.5
+#: Settle before the single retap that recovers a dropped tap.
+RETAP_SETTLE_S = 2.5
 
 #: HTTP timeout for the runner's own handshake requests. The first
 #: ``/UserViews`` call builds the home cache by scraping every provider, so
@@ -158,9 +166,11 @@ def _expect(raw: dict[str, Any]) -> Expect:
 
 
 def _play_tap(raw: dict[str, Any]) -> PlayTap:
+    scroll = raw.get("scroll_before")
     return PlayTap(
         tap=raw["tap"],
         expects=tuple(_expect(e) for e in raw.get("expect", [])),
+        scroll_before=tuple(int(v) for v in scroll) if scroll else None,
     )
 
 
@@ -819,31 +829,52 @@ class Runner:
             notes.append(
                 f"app did not reconnect within {RESTART_READY_TIMEOUT_S:.0f}s"
             )
+        # Quiet-wait BEFORE the sidebar tap: the relaunched app keeps
+        # fetching home posters for seconds after its first reconnect, and
+        # taps issued during those busy frame polls are dropped by the
+        # Qt/SDL client (device-driving input table). The home screen polls
+        # /Items/Resume and /Shows/NextUp every ~0.7s forever, so those two
+        # paths do NOT count as activity — "quiet" means everything else
+        # (posters, listings, metadata) has settled.
+        def _quiet_lines() -> list[str]:
+            return [
+                ln
+                for ln in self._tailer.all_lines()
+                if " /Items/Resume" not in ln and " /Shows/NextUp" not in ln
+            ]
+
+        quiet_deadline = time.monotonic() + RESTART_READY_TIMEOUT_S
+        while time.monotonic() < quiet_deadline:
+            last = len(_quiet_lines())
+            time.sleep(QUIET_SETTLE_S)
+            if len(_quiet_lines()) == last:
+                break
         time.sleep(APP_SETTLE_S)
         # B21: land on the Views grid so the view_*_x taps find the tiles.
         grid = self._taps.get("sidebar_folders")
         if grid is not None:
-            scan_from = len(self._tailer.all_lines())
-            failure = self._safe_tap(grid, note_prefix="sidebar_folders")
-            if failure is not None:
-                notes.append(failure)
-            else:
-                views_re = re.compile(r"GET /UserViews|GET /Users/[^ ]+/Views")
-                deadline = time.monotonic() + RESTART_READY_TIMEOUT_S
-                while time.monotonic() < deadline:
-                    if any(
-                        views_re.search(line)
-                        for line in self._tailer.all_lines()[scan_from:]
-                    ):
-                        return StepResult(
-                            step.name,
-                            step.phase,
-                            step.view,
-                            ok=True,
-                            note=" ".join(notes),
-                        )
-                    time.sleep(POLL_INTERVAL_S)
-                notes.append("Views grid did not open within 120s")
+            # The home screen also fetches /Users/{u}/Views (its sidebar),
+            # so a Views request alone proves nothing. Verify the GRID with
+            # the screenshot classifier (same one the nav steps use) and
+            # retap the sidebar icon when the tap was dropped (device
+            # frame-poll miss, seen in run #14).
+            opened = False
+            for _attempt in range(4):
+                failure = self._safe_tap(grid, note_prefix="sidebar_folders")
+                if failure is not None:
+                    notes.append(failure)
+                    break
+                time.sleep(GRID_SETTLE_S)
+                try:
+                    png = self._adb.screenshot_png()
+                except (OSError, subprocess.CalledProcessError) as exc:
+                    notes.append(f"adb screenshot failed: {exc}")
+                    break
+                if png and find_views_grid(png):
+                    opened = True
+                    break
+            if not opened:
+                notes.append("Views grid not visible after sidebar taps")
         else:
             notes.append("no calibration for 'sidebar_folders'; run --calibrate")
         return StepResult(
@@ -1082,6 +1113,15 @@ class Runner:
                 note=failure,
             )
         ok = self._wait_for_expects(step.expects, scan_from)
+        if not ok:
+            # The Qt/SDL client drops taps issued between frame polls
+            # (device-driving input table). One retap after a settle
+            # recovers the drop; the expects window stays anchored to the
+            # first tap so either tap satisfies the step.
+            time.sleep(RETAP_SETTLE_S)
+            failure = self._safe_tap(coords, note_prefix="retap")
+            if failure is None:
+                ok = self._wait_for_expects(step.expects, scan_from)
         return StepResult(
             step.name,
             step.phase,
@@ -1137,6 +1177,16 @@ class Runner:
             if coords is None:
                 notes.append(f"{play_tap.tap}: no calibration")
                 continue
+            if play_tap.scroll_before is not None:
+                # The series detail renders its seasons row below the fold;
+                # the calibrated season-card tap assumes the scrolled state
+                # (measured: one 700px hold-drag from the scroll top).
+                try:
+                    self._adb.swipe(*play_tap.scroll_before)
+                    time.sleep(1.0)
+                except (OSError, subprocess.CalledProcessError) as exc:
+                    notes.append(f"{play_tap.tap}: scroll failed: {exc}")
+                    continue
             scan_from = len(self._tailer.all_lines())
             # #205/B13: the season/episode rows may not be rendered when
             # the tap lands (the item's detail is still cold-scraping), so a
@@ -1264,6 +1314,12 @@ class Runner:
         the expects in a short window -> repeat. Any attempt's matched line
         counts (``scan_from`` is fixed). ``False`` on timeout or a device
         that vanished mid-run.
+
+        The per-attempt window is sized for the real play chain: a tap on an
+        episode row fires PlaybackInfo, then the stream range GET, then
+        Sessions/Playing — measured ~2.3 s end-to-end on device. The old
+        2 s window cut the chain mid-flight, the retap then landed on the
+        already-open player and the step flailed until its deadline.
         """
         deadline = time.monotonic() + timeout_s
         while True:
@@ -1274,7 +1330,7 @@ class Runner:
             if remaining <= 0:
                 return False
             if self._wait_for_expects(
-                play_tap.expects, scan_from, window_s=min(2.0, remaining)
+                play_tap.expects, scan_from, window_s=min(10.0, remaining)
             ):
                 return True
             time.sleep(0.4)

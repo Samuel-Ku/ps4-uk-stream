@@ -944,6 +944,59 @@ async def test_stream_ashdi_returns_m3u8():
 
 
 @pytest.mark.asyncio
+async def test_stream_ashdi_playlist_fallback_when_episode_has_no_urls():
+    """Upstream drift regression (2026-08-14, show 7333 «Реінкарнація
+    безробітного 3»): the episodes endpoint stopped embedding
+    ``videoUrl``/``fileUrl`` in its rows, so the encoded source list has
+    null urls. ``stream()`` must fall back to the direct player endpoint
+    and pick the episode's m3u8 from the ashdi serial page's Playerjs
+    playlist (translation folder -> ``Серія N`` entry)."""
+    translations_json = _fixture("translations_7333.json")
+    direct_json = _fixture("direct_7333.json")
+    serial_html = _fixture("player_ashdi_serial_7333.html")
+    ep_blob = json.dumps(
+        {
+            "id": 7333,
+            "episode": 1,
+            "sources": [
+                {
+                    "translation_name": "FanVoxUA",
+                    "player_name": "Ashdi",
+                    "video_url": None,
+                    "file_url": None,
+                },
+                {
+                    "translation_name": "Glass Moon",
+                    "player_name": "Moon",
+                    "video_url": None,
+                    "file_url": None,
+                },
+            ],
+        },
+        separators=(",", ":"),
+    )
+    encoded_ep_id = (
+        f"7333:e1:{base64.b64encode(ep_blob.encode('utf-8')).decode('ascii')}"
+    )
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://animeon.club/api/player/7333/translations").respond(
+            200, text=translations_json
+        )
+        router.get("https://animeon.club/api/player/8130/1093").respond(
+            200, text=direct_json
+        )
+        router.get("https://ashdi.vip/serial/1477?season=3&player=animeon.club").respond(
+            200, text=serial_html
+        )
+        async with httpx.AsyncClient() as http:
+            s = await AnimeONProvider().stream(encoded_ep_id, None, http)
+    assert s.type == "m3u8"
+    assert s.url.startswith("https://ashdi.vip/video14/2/serials/")
+    assert s.url.endswith("/index.m3u8")
+    assert s.headers["Referer"].startswith("https://ashdi.vip")
+
+
+@pytest.mark.asyncio
 async def test_stream_moon_decodes_iframe_to_m3u8():
     """For the QTV AI Remaster Moon player, `fileUrl` is empty so we
     have to fetch the iframe HTML, run the ``moonOuterDecode`` XOR on
