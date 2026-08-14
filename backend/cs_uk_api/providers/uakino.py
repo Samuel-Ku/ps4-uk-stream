@@ -56,6 +56,12 @@ _SKIP_SECTIONS = frozenset(
     {"news", "franchise", "anonsi", "find", "year", "tag", "genre", "page", "ua"}
 )
 
+# Section titles the upstream prepends to the Жанр row (a section
+# is not a genre — must be filtered out of ContentResponse.genres).
+_SECTION_TITLES: frozenset[str] = frozenset(
+    s.title for s in UAKINO_SECTIONS
+)
+
 # Stream pages on the ashdi.vip CDN embed the playlist URL as
 # `file: "https://ashdi.vip/video02/.../index.m3u8"` inside a <script>.
 _FILE_RE = re.compile(r"""file\s*:\s*["']([^"']+)["']""")
@@ -344,7 +350,14 @@ class UakinoProvider(BaseProvider):
             if "Рік виходу" in label_text:
                 year = _parse_year(value.get_text())
             elif label_text.startswith("Жанр"):
-                tags = [t.strip() for t in value.get_text().split(",") if t.strip()]
+                # The upstream row opens with the SECTION name
+                # (e.g. `Серіали , Драма , Пригоди , Фантастика` on a
+                # series page) — a section is not a genre, drop it.
+                tags = [
+                    t.strip()
+                    for t in value.get_text().split(",")
+                    if t.strip() and t.strip() not in _SECTION_TITLES
+                ]
             elif "Країна" in label_text:
                 links = value.select("a")
                 raw = links[0].get_text(strip=True) if links else value.get_text(strip=True)

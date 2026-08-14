@@ -185,6 +185,30 @@ async def test_uakino_content_parses_metadata_from_suffixed_fi_item_rows():
 
 
 @pytest.mark.asyncio
+async def test_uakino_content_excludes_section_from_genres():
+    """The Жанр row on live uakino pages opens with the SECTION name
+    (e.g. `Серіали , Драма , Пригоди , Фантастика` on a series page) —
+    a section is not a genre and must be filtered out so the genre row
+    doesn't render «Серіали»."""
+    html = _fixture("content_movie.html").replace(
+        '<a href="https://uakino.best/filmy/genre-action/">Екшн</a> , '
+        '<a href="https://uakino.best/filmy/genre_adventure/">Пригоди</a>',
+        '<a href="https://uakino.best/seriesss/">Серіали</a> , '
+        '<a href="https://uakino.best/filmy/genre_adventure/">Пригоди</a>',
+    )
+    session = FakeSession(
+        **{
+            "/seriesss/12567-dyuna.html": (200, html),
+            "/engine/ajax/playlists.php": (200, _fixture("playlists_series.json")),
+        }
+    )
+    async with httpx.AsyncClient() as http:
+        c = await _provider(session).content("seriesss:12567-dyuna", http)
+    assert "Серіали" not in c.genres
+    assert "Пригоди" in c.genres
+
+
+@pytest.mark.asyncio
 async def test_uakino_content_movie_without_voice_uses_default_translation():
     """Regression (issue #123, D2): a movie whose playlist rows carry no
     `data-voice` used to produce an empty translations list, which the
