@@ -49,11 +49,20 @@ process, no auth). Tunable knobs: `CS_UK_CACHE_SEARCH`,
 `CS_UK_POSTER_DISK_TTL`, `CS_UK_RESUME_PATH`, `UAKINO_CHROMIUM` — see
 `CONTEXT.md` §Cache contract.
 
+**Continue watching («Продовжити перегляд»)** persists playback
+positions in one versioned JSON file, by default
+`~/.cache/cs-uk-api/playback.json` (next to the poster disk cache).
+Point it elsewhere with `CS_UK_RESUME_PATH`; an explicit empty string
+disables the disk layer (memory-only). Wipe the shelf with a single
+command — `rm ~/.cache/cs-uk-api/playback.json` — or remove the file at
+whatever path `CS_UK_RESUME_PATH` points to (see `CONTEXT.md` §Resume
+state).
+
 ## Release gate
 
 ```bash
 cd backend && . .venv/bin/activate
-pytest cs_uk_api/tests -q      # 1020 tests, fixtures only (no live I/O)
+pytest cs_uk_api/tests -q      # 1046 tests, fixtures only (no live I/O)
 ruff check cs_uk_api           # clean
 mypy cs_uk_api                 # strict on the package (tests excluded in pyproject)
 ```

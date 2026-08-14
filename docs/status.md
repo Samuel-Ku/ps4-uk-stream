@@ -91,6 +91,16 @@ boundary validation is `fullmatch` everywhere; uakino movies without a
   unchanged; on-device confirmation is still pending (no device attached).
 - Live smoke test confirmed `/api/providers` returns all registered
   providers and the validation/404 paths behave correctly.
+- **Resume / Continue watching now persists (v1.1 increment, spec
+  #247, tickets #248–#250, 2026-08-14).** Playback positions survive a
+  backend restart from a single versioned JSON file (default
+  `~/.cache/cs-uk-api/playback.json`, knob `CS_UK_RESUME_PATH`), items
+  watched to ≥95% of their runtime leave the shelves, the store is
+  capped at 50 entries with a ≤20-item row, and the resume/NextUp DTOs
+  carry `RunTimeTicks` so the bar renders proportionally. The store is
+  the first persisted domain object — ADR-0003's version-token rule
+  applies (see the ADR note). `docs/status.md` test counts: 1046
+  passing (was 1020 at v1.0.0).
 
 Run the backend:
 

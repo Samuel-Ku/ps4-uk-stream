@@ -1134,3 +1134,26 @@ over WiFi adb (`192.168.2.143:38631`). Lessons:
   launch).
 - **Python buffers stdout when redirected** — pass `-u` to see step
   progress in the run log.
+
+## Resume observation step (spec #247 / ticket #251, manual sweep)
+
+One manual checklist line for the on-device pass — deliberately NOT a
+`steps.yaml` step definition (it needs an app kill + relaunch mid-flow):
+
+- [ ] Play a movie/series to ~40% on the device, then kill the app
+      (not just stop playback) and relaunch it: «Продовжити перегляд»
+      shows the item with a proportionally-filled resume bar
+      (`/Items/Resume` serves `PlaybackPositionTicks` + `RunTimeTicks`
+      — wire-verified on the backend, #248–#250).
+- [ ] Watch the same item to the end (≥95% of runtime): it leaves
+      «Продовжити перегляд» and no longer feeds «Далі» (`/Shows/
+      NextUp`) — finished-marking, #249.
+- [ ] Restart the backend host process while an item is in-progress:
+      the row still shows it after the restart (disk-backed store, #248;
+      the state file is `~/.cache/cs-uk-api/playback.json` unless
+      `CS_UK_RESUME_PATH` overrides it).
+
+Backend-side verification of the same behaviour (no device needed):
+`POST /Sessions/Playing/Stopped` with `PositionTicks`+`RunTimeTicks`
+→ `GET /Users/{user}/Items/Resume` and `GET /Shows/NextUp` (see the
+`test_resume_store.py` / `test_jellyfin_detail.py` #248–#250 tests).
