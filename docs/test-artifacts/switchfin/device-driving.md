@@ -1075,9 +1075,19 @@ parsed — each fixed via TDD + live-verified:
   parses the rows, excluding the section link (Серіали/Фільми — a
   section, not a genre). Live: «Тихий притулок» (g2:59c2427fc3a49420)
   → Year 2016 + Genres [Детективи, Жахи, Трилери] (was blank),
-  Rating 3.4, People 17. TDD red→green
+  Rating 3.4, People 17.  TDD red→green
   (`test_klontv_content_parses_year_and_genres`), 1019 passed.
   Commit `10b38fe`.
+- **uakino — section name leaks into Genres row (FIXED, #238)**. The
+  upstream Жанр row opens with the SECTION name (`'Серіали , Драма ,
+  Пригоди , Фантастика'` on series pages) and content()'s
+  `split(",")` kept it as a genre — series details rendered
+  «Серіали» in the Genres row (same class as #237). Fix: filter the
+  UAKINO_SECTIONS titles out of the parsed tags. Live: «Дюна 1
+  сезон» (g2:c3200c673b15493a) → Genres [Драма, Пригоди,
+  Фантастика] (was [Серіали, Драма, …]). TDD red→green
+  (`test_uakino_content_excludes_section_from_genres`), 1020 passed.
+  Commit `f9479b7`.
 - **ufdub episodes stream 404 while PlaybackInfo answers 200 (FIXED,
   #235)**. ufdub `stream()` returns the `VIDEOS.php` gateway URL;
   movies 302 to `api.ufdub.com` (same registrable domain — admitted by
