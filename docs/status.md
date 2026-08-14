@@ -109,7 +109,7 @@ boundary validation is `fullmatch` everywhere; uakino movies without a
   file schema v2). Watched items are excluded, signal-less rows are
   omitted, and each row is a plain home-row kind — the facade serves
   them through the existing view mechanism with zero client changes.
-  `docs/status.md` test counts: 1063 passing (was 1020 at v1.0.0).
+  `docs/status.md` test counts: 1072 passing (was 1020 at v1.0.0).
 
 Run the backend:
 

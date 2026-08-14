@@ -58,11 +58,19 @@ command — `rm ~/.cache/cs-uk-api/playback.json` — or remove the file at
 whatever path `CS_UK_RESUME_PATH` points to (see `CONTEXT.md` §Resume
 state).
 
+**Personalized rows (spec #252)** — «Рекомендовано для тебе» (≤20)
+and «Схоже на <title>» (≤10) — appear on home once there is history
+(watched items and/or recent searches) and are omitted otherwise. They
+are fully offline by design: content profiles are built from the
+providers' own pages by a bounded background warm, similarity is a
+pure weighted-cosine function, and nothing leaves the LAN — no API
+keys, no external services (see `CONTEXT.md` §Recommendations).
+
 ## Release gate
 
 ```bash
 cd backend && . .venv/bin/activate
-pytest cs_uk_api/tests -q      # 1046 tests, fixtures only (no live I/O)
+pytest cs_uk_api/tests -q      # 1072 tests, fixtures only (no live I/O)
 ruff check cs_uk_api           # clean
 mypy cs_uk_api                 # strict on the package (tests excluded in pyproject)
 ```

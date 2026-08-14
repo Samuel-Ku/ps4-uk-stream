@@ -263,9 +263,10 @@ cache; in-memory, keyed by group). Taste anchors are the ≤3 most recent
 watched items (from the persisted resume store) plus the ≤50 recent
 search queries (persisted beside the playback state, resume-file schema
 v2). Watched items are excluded; rows are omitted when there is no
-signal. Each row is just another home-row kind (`recommended` /
-`similar`) — the facade serves them through the existing view
-mechanism, zero client changes.
+signal. Placement: after «Популярні зараз» (or «Новинки» when popular
+is absent), before the type rows — each row is just another home-row
+kind (`recommended` / `similar`), so the facade serves them through the
+existing view mechanism with zero client changes.
 
 ### Cache key format
 
