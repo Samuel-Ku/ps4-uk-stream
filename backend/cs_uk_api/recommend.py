@@ -188,7 +188,11 @@ def build_recommendation_rows(
             pool.append((item, profiles[item.group_key]))
     rows: list[HomeRow] = []
 
-    if anchors and pool:
+    # Any signal — watched-anchor taste OR a recent search query — can
+    # surface the row (spec #252 user story 3: "things I looked for but
+    # didn't watch also surface"). With no anchors, taste_score is 0 and
+    # only query-matching candidates score above zero.
+    if (anchors or queries) and pool:
         scored = [
             (item, taste_score(prof, anchors) + query_boost(prof, item.title, queries))
             for item, prof in pool

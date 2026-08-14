@@ -107,6 +107,27 @@ def test_recommended_row_ranks_and_excludes_watched() -> None:
     assert all(it.group_key != "g2:w" for it in row.items)
 
 
+def test_recommended_row_surfaces_from_query_only_signal() -> None:
+    """#255: user story 3 — recent searches alone must surface items
+    ("things I looked for but didn't watch"). No anchors, only a query
+    that matches a candidate: the row appears, ranked by the boost."""
+    rows = build_recommendation_rows(
+        home_items=[_item("g2:a", "Екшн"), _item("g2:d", "Драма")],
+        profiles={
+            "g2:a": _prof(genres=frozenset({"боєвик"}), form="movie"),
+            "g2:d": _prof(genres=frozenset({"драма"}), form="movie"),
+        },
+        watched=set(),
+        anchors=[],
+        similar_anchor=None,
+        queries=["боєвик"],
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.type == "recommended"
+    assert [it.group_key for it in row.items] == ["g2:a"]
+
+
 def test_recommended_row_omitted_without_signal() -> None:
     """#252: no anchors and no queries → the row is omitted (empty rows
     don't ship)."""

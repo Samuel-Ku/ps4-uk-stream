@@ -1169,6 +1169,80 @@ def test_home_recommended_row_signal_and_no_fetch(client: TestClient) -> None:
         catalog_state._profiles = {}
 
 
+def test_similar_row_omitted_without_in_progress(client: TestClient) -> None:
+    """#255 AC2: «Схоже на X» is omitted when nothing is in progress —
+    queries alone (which feed the recommended row) don't anchor it."""
+    action = _movie_content("action-1", "Боєвик", ["Бойовик"], 2021)
+    drama = _movie_content("drama-1", "Драма", ["Драма"], 1990)
+    PROVIDERS["p1"] = _DetailStub(
+        cards=[
+            _card("p1", "action-1", "Боєвик", "movie", poster=_POSTER_MOVIE),
+            _card("p1", "drama-1", "Драма", "movie", poster=_POSTER_MOVIE),
+        ],
+        content_by_external={"action-1": action, "drama-1": drama},
+    )
+    _auth(client)
+    home = _get(client, "/api/home")
+    gk = {item["title"]: item["group_key"] for row in home["rows"] for item in row["items"]}
+    catalog_state._profiles = {
+        gk["Боєвик"]: profile_from_content(action),
+        gk["Драма"]: profile_from_content(drama),
+    }
+    try:
+        # A query gives the recommended row a signal, but there is no
+        # in-progress item — «Схоже на X» must stay off home.
+        catalog_state.record_search_query("Бойовик")
+        _home_cache.clear()
+
+        home = _get(client, "/api/home")
+        types = [r["type"] for r in home["rows"]]
+        assert "recommended" in types
+        assert "similar" not in types
+    finally:
+        catalog_state._profiles = {}
+
+
+def test_similar_row_anchor_finished_removes_row(client: TestClient) -> None:
+    """#255 AC3: finishing the anchor (>=95% of its runtime) removes
+    «Схоже на X» on the next home cycle — the finished entry leaves the
+    store, so there is no in-progress anchor left."""
+    action1 = _movie_content("action-1", "Боєвик", ["Бойовик"], 2021)
+    action2 = _movie_content("action-2", "Боєвик 2", ["Бойовик"], 2022)
+    PROVIDERS["p1"] = _DetailStub(
+        cards=[
+            _card("p1", "action-1", "Боєвик", "movie", poster=_POSTER_MOVIE),
+            _card("p1", "action-2", "Боєвик 2", "movie", poster=_POSTER_MOVIE),
+        ],
+        content_by_external={"action-1": action1, "action-2": action2},
+    )
+    _auth(client)
+    home = _get(client, "/api/home")
+    gk = {item["title"]: item["group_key"] for row in home["rows"] for item in row["items"]}
+    catalog_state._profiles = {
+        gk["Боєвик"]: profile_from_content(action1),
+        gk["Боєвик 2"]: profile_from_content(action2),
+    }
+    try:
+        # Anchor: «Боєвик» watched to 40% (in progress). The similar
+        # candidate «Боєвик 2» shares the genre, so it scores > 0.
+        _post_playback_full(client, gk["Боєвик"], 40_000_000_000, runtime=100_000_000_000)
+        _home_cache.clear()
+        home = _get(client, "/api/home")
+        similar = [r for r in home["rows"] if r["type"] == "similar"]
+        assert len(similar) == 1
+        assert similar[0]["title"] == "Схоже на Боєвик"
+        assert [it["title"] for it in similar[0]["items"]] == ["Боєвик 2"]
+
+        # Finish it: 97% >= 95% → the entry leaves the store.
+        _post_playback_full(client, gk["Боєвик"], 97_000_000_000, runtime=100_000_000_000)
+        _home_cache.clear()
+        home = _get(client, "/api/home")
+        types = [r["type"] for r in home["rows"]]
+        assert "similar" not in types
+    finally:
+        catalog_state._profiles = {}
+
+
 def test_search_records_query_for_taste(client: TestClient) -> None:
     """#252: a facade search records the query as taste signal (both
     surfaces feed the shared ``merged_search``)."""
