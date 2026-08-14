@@ -1042,16 +1042,30 @@ parsed — each fixed via TDD + live-verified:
   Genres [Детективи, Трилери, Жахи]. TDD red→green
   (`test_search_detail_falls_back_to_group_card_metadata`), 1014
   passed. Commit `d0f9043`.
-- **search-only groups still miss genres (FOLLOW-UP, parked)**: a group
-  found ONLY via search (not in the home snapshot) — e.g. «Наруто» —
-  now renders its Year (2002, from the group card via #233) but still
-  empty Genres/People: search cards carry no genres (every provider's
-  search result has `genres=None` — the search pages don't expose them
-  in cards), and only the first-seen provider's `content()` is
-  resolved, so a data-rich sibling (animeon:913 has genres=[Бойовик,
-  Пригоди, …]) is never asked. Closing this needs a "resolve the first
-  provider with real metadata" (or merge-across-providers) change to
-  `resolve_group_content` — deliberate, larger change.
+- **search-only groups still miss genres (FOLLOW-UP, partially closed
+  by #236)**: a group found ONLY via search (not in the home snapshot)
+  — e.g. «Наруто» — used to render empty Genres/People because search
+  cards carry no genres AND the first-seen provider's `content()`
+  silently returned empty metadata. #236 revealed the second half was
+  uakino's own bug (template renamed its meta rows to `fi-item-s`);
+  with that fixed, uakino-first search groups now surface Year+Genres+
+  Rating+People from `content()`. What REMAINS: a group whose FIRST
+  provider is metadata-poor while a sibling is rich (e.g. an animeon
+  sibling with genres=[Бойовик, Пригоди, …]) — the first-seen
+  provider is still the only one asked. Closing THAT needs a "resolve
+  the first provider with real metadata" (or merge-across-providers)
+  change to `resolve_group_content` — deliberate, larger change.
+- **uakino detail loses ALL metadata — upstream renamed `fi-item` rows
+  to `fi-item-s` (FIXED, #236)**. The uakino template renamed its
+  metadata rows from `fi-item clearfix` to `fi-item-s clearfix` (live
+  on anime-series pages), so the parser's `div.fi-item` selector
+  matched NOTHING on new-template pages: year/genres/rating/people all
+  silently went empty. Unit fixtures still carried the old class — the
+  suite stayed green. Fix: selector matches both spellings. Live:
+  Беймакс Year 2022/Rating 7.2/Genres 2/People 9 (was 0/0/0/0);
+  Наруто Year 2002/Rating 8.4/Genres 2/People 8. TDD red→green
+  (`test_uakino_content_parses_metadata_from_suffixed_fi_item_rows`),
+  1018 passed. Commit `865f5e2`.
 - **ufdub episodes stream 404 while PlaybackInfo answers 200 (FIXED,
   #235)**. ufdub `stream()` returns the `VIDEOS.php` gateway URL;
   movies 302 to `api.ufdub.com` (same registrable domain — admitted by
