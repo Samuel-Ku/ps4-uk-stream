@@ -1477,6 +1477,21 @@ def test_sessions_listing_is_graceful_empty(client: TestClient) -> None:
     assert r.json() == []
 
 
+def test_sessions_listing_tolerates_client_query_params(client: TestClient) -> None:
+    """#260 AC1: the Remote tab's SDK call carries query params
+    (``ControllableByUserId``) — the route must keep answering the empty
+    envelope instead of 422ing on an undeclared param."""
+    PROVIDERS["p1"] = _seed()
+    _auth(client)
+    r = client.get(
+        "/Sessions",
+        params={"ControllableByUserId": USER},
+        headers={"X-Emby-Token": TOKEN},
+    )
+    assert r.status_code == 200
+    assert r.json() == []
+
+
 def test_live_tv_channels_is_graceful_empty(client: TestClient) -> None:
     """#257: the Live TV tab's channel listing answers an empty result —
     not a 404 — so the tab renders without errors."""
