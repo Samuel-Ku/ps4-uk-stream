@@ -181,6 +181,30 @@ class ContentResponse(BaseModel):
 
 For `"episode"` content, an episode whose `translations=None` falls back to `content.translations`. This is the existing `episode_translations()` contract in `base.py`.
 
+### Named translation picker + dub memory (spec #276)
+
+PlaybackInfo serves ONE MediaSource per translation when the item has
+more than one (cap 8, deduped by label, first player per label), each
+carrying an audio `MediaStream` with `Index` + `DisplayTitle` = the
+translation label — the client's named source picker becomes real
+instead of mpv's unnamed demuxed tracks. The source `Id` encodes
+`<item_id>::<translation_id>`; the stream route decodes it (split on
+the LAST `::`) and streams THAT translation.
+
+- **Dynamic index.** The response's source order re-ranks per request:
+  the source matching the echoed `AudioStreamIndex` goes FIRST (the
+  client plays `MediaSources[0]`), otherwise the REMEMBERED dub goes
+  first, otherwise provider order. `Index` values are 1..N in the
+  response order (the client's default selected index is 1).
+- **Dub memory** (per-series, `UserStateStore.dub_memory`, persisted in
+  `user-state.json`): the label of the last streamed translation is
+  remembered for the SERIES (resolved from the episode wire id via the
+  #214 reverse lookup), LRU-bounded at 50, newest pick wins. The next
+  PlaybackInfo of that series defaults to it. **Movies are never
+  remembered** (v3 decision) — films always start on the default dub.
+- **Single-translation items are untouched**: one thin source, no
+  picker, no memory recording (D6 path).
+
 ### Deliberate non-features (each rejected with alternatives evaluated)
 
 - **No `language` / `kind` / `studio` fields** — providers come from the wild; no consistent language taxonomy upstream. Display label only.

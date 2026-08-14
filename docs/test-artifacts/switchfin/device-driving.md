@@ -1219,6 +1219,15 @@ One manual checklist line for the on-device pass — deliberately NOT a
       зараз»), and tapping the card opens the item (#272; wire-
       verified finished-included row + view).
 
+- [ ] Dub round-trip (spec #276): play a series episode with several
+      dubs — the picker lists REAL dub names (one MediaSource per
+      translation, `DisplayTitle`); pick a non-default dub, then
+      restart the app and play the same series again — the picker
+      defaults to the remembered dub (per-series memory in
+      `user-state.json`, LRU 50, movies never remembered; wire-verified
+      multi-source PlaybackInfo + `mediaSourceId` stream switch on the
+      backend).
+
 - [x] User state (spec #257, verified 2026-08-14): on a detail screen tap
       the heart — it lights and stays lit after an app relaunch (toggle
       answers UserDataResult, mark persists in `user-state.json`, and the

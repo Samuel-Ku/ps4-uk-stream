@@ -206,10 +206,15 @@ class MediaStreamInfo(BaseModel):
     Deliberately ONLY ``{"Type": "Video"}`` — no codec, resolution, or
     bitrate fields. Lying about codecs risks forcing a transcode path
     the facade cannot serve; ``IsDirectStream: true`` tells the client
-    the bytes are what they are.
+    the bytes are what they are. Spec #276: an AUDIO stream carries the
+    translation label so the client's named source picker can render
+    it (``Index`` = the source's index within the response, the value
+    the picker echoes back as ``AudioStreamIndex``).
     """
 
     Type: str = "Video"
+    Index: int | None = None
+    DisplayTitle: str | None = None
 
 
 class MediaSourceInfo(BaseModel):
@@ -219,6 +224,9 @@ class MediaSourceInfo(BaseModel):
     episode wire id); ``Container`` = the provider's ``StreamResponse``
     type (mp4/m3u8/hls); ``Path`` is a FICTITIOUS stable string — the
     bytes always come from ``/Videos/{id}/stream``, never from Path.
+    Spec #276: with multiple translations the route emits one source
+    per translation — ``DisplayTitle`` = the dub label, ``Id`` encodes
+    item + translation so the stream route can decode it.
     """
 
     Id: str
@@ -230,6 +238,7 @@ class MediaSourceInfo(BaseModel):
     SupportsTranscoding: bool = False
     Path: str
     PlaySessionId: str
+    DisplayTitle: str | None = None
 
 
 class PlaybackInfoResponse(BaseModel):

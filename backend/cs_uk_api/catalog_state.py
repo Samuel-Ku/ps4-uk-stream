@@ -842,6 +842,21 @@ def is_played(item_id: str) -> bool:
     return _user_state_store.is_played(item_id)
 
 
+def remember_dub(series_group_key: str, translation_label: str) -> None:
+    """Record the viewer's dub choice for a series (spec #276)."""
+    _user_state_store.remember_dub(series_group_key, translation_label)
+
+
+def dub_for(series_group_key: str) -> str | None:
+    """The remembered dub label for a series (spec #276), or None."""
+    return _user_state_store.dub_for(series_group_key)
+
+
+def dub_memory() -> dict[str, str]:
+    """The whole dub memory (group key → label), for tests (spec #276)."""
+    return _user_state_store.dub_memory()
+
+
 def clear_user_state() -> None:
     """Drop all favorites/played marks (test isolation, #257)."""
     _user_state_store.clear()

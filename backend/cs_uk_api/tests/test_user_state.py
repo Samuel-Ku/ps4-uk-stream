@@ -140,3 +140,43 @@ def test_env_knob_unset_defaults_next_to_resume(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("CS_UK_USER_STATE_PATH")
     monkeypatch.setenv("CS_UK_RESUME_PATH", str(tmp_path / "state" / "playback.json"))
     assert _load_user_state_path() == str(tmp_path / "state" / "user-state.json")
+
+
+# ------------------------------------------------------- dub memory (#276)
+
+
+def test_dub_remember_reads_back_and_newest_wins(tmp_path) -> None:
+    """#276 T2: remembering a dub for a series reads back; a later pick
+    for the same series overwrites (newest wins)."""
+    store = _fresh(str(tmp_path / "user-state.json"))
+    store.remember_dub("g2:ser", "Дубляж")
+    assert store.dub_for("g2:ser") == "Дубляж"
+    store.remember_dub("g2:ser", "Оригінал")
+    assert store.dub_for("g2:ser") == "Оригінал"
+
+
+def test_dub_memory_bounded_lru(tmp_path) -> None:
+    """#276 T2: dub memory is bounded — the oldest entries are dropped
+    first when the cap is exceeded."""
+    from cs_uk_api.user_state import MAX_DUB_MEMORY
+
+    store = _fresh(str(tmp_path / "user-state.json"))
+    for i in range(MAX_DUB_MEMORY + 5):
+        store.remember_dub(f"g2:s{i}", f"dub-{i}")
+    mem = store.dub_memory()
+    assert len(mem) == MAX_DUB_MEMORY
+    # The first five are evicted (oldest first); the newest five survive.
+    assert all(f"g2:s{i}" not in mem for i in range(5))
+    assert all(f"g2:s{i}" in mem for i in range(5, MAX_DUB_MEMORY + 5))
+
+
+def test_dub_memory_persists_restart(tmp_path) -> None:
+    """#276 T2: the dub memory survives a restart (fresh store over the
+    same file keeps it), and clear() drops it."""
+    path = str(tmp_path / "user-state.json")
+    _fresh(path).remember_dub("g2:ser", "Субтитри")
+
+    again = _fresh(path)
+    assert again.dub_for("g2:ser") == "Субтитри"
+    again.clear()
+    assert again.dub_memory() == {}

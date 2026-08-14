@@ -39,6 +39,7 @@ from fastapi.responses import RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from ..catalog_state import (
+    dub_for,
     episode_group_key,
     get_home,
     get_profiles,
@@ -52,6 +53,7 @@ from ..catalog_state import (
     recent_playback_entries,
     record_playback,
     register_search_groups,
+    remember_dub,
     resolve_group,
     resolve_group_content,
     set_favorite,
@@ -70,6 +72,7 @@ from ..models import (
     SearchResult,
     Season,
     StreamResponse,
+    Translation,
 )
 from ..poster_proxy import fetch as fetch_poster_bytes
 from ..providers import PROVIDERS
@@ -82,6 +85,7 @@ from .models import (
     BaseItemDtoQueryResult,
     DisplayPreferencesDto,
     MediaSourceInfo,
+    MediaStreamInfo,
     PersonDto,
     PlaybackInfoResponse,
     SearchHint,
@@ -1708,13 +1712,16 @@ async def item_auxiliary_image(item_id: str, index: int = 0) -> Response:
     return await _serve_item_image(item_id)
 
 
-async def _resolve_stream(item_id: str) -> StreamResponse | None:
+async def _resolve_stream(
+    item_id: str, translation_id: str | None = None
+) -> StreamResponse | None:
     """The upstream ``StreamResponse`` behind a playable item id, or None.
 
     Resolves the two playable id families (D2/D3) to their provider, then
     runs ``provider.stream()`` exactly as the native ``/api/stream/{id}``
-    route does — same bare external ids, ``translation=None`` (default
-    voice), same shared ``httpx`` client:
+    route does — same bare external ids, ``translation`` (None = default
+    voice, or the picked dub id, spec #276), same shared ``httpx``
+    client:
 
       - a movie's ``g2:`` group key → the group's first-seen provider
         (the same provider the detail page shows first), whose BARE
@@ -1761,7 +1768,7 @@ async def _resolve_stream(item_id: str) -> StreamResponse | None:
     provider = PROVIDERS[provider_id]
     http = get_client()
     try:
-        stream = await provider.stream(external_id, None, http)
+        stream = await provider.stream(external_id, translation_id, http)
         TRACKER.record(provider_id, ok=True)
         return stream
     except ProviderError as e:
@@ -1795,6 +1802,169 @@ def _container_from_type(stream_type: str) -> str:
     return stream_type
 
 
+async def _record_dub_choice(item_id: str, translation_id: str) -> None:
+    """Record the viewer's dub pick as per-series memory (spec #276).
+
+    The series group key is resolved from the played item (episode wire
+    ids via the NextUp-style reverse lookup; movies are skipped — v3
+    decision). The label is what PlaybackInfo reorders by, so the id is
+    translated through the content page's translations before storing.
+    A best-effort record: resolution failures just skip the memory.
+    """
+    if item_id.startswith(_MOVIE_PREFIX):
+        return
+    # The translation list must be the same the picker rendered (the
+    # episode's own dubs, falling back to the content's) so the label
+    # matches what PlaybackInfo reorders by — content-level translations
+    # would miss episode-scoped dubs.
+    translations, _ = await _translations_for(item_id)
+    label = _translation_label_for(translations, translation_id)
+    if label is None:
+        return
+    group_key = episode_group_key(item_id)
+    if group_key is not None:
+        remember_dub(group_key, label)
+
+
+#: Multi-source cap (spec #276): at most 8 translations surface as
+#: picker sources — providers with many dubs don't bloat the response.
+_MAX_TRANSLATION_SOURCES = 8
+
+#: Dub-memory only applies to SERIES (spec #276 v3: movies always start
+#: on the default dub).
+_MOVIE_PREFIX = "g2:"
+
+
+def _translation_source_id(item_id: str, translation_id: str) -> str:
+    """MediaSource.Id for one translation (spec #276).
+
+    The source id must survive the round trip: the client echoes it as
+    ``mediaSourceId`` on the stream request and the stream route decodes
+    it back to item + translation. ``item_id`` itself can contain ``:``
+    (episode wire ids), so the separator is ``::`` and the decode splits
+    on the LAST occurrence (the item id is the prefix).
+    """
+    return f"{item_id}::{translation_id}"
+
+
+def _decode_translation_source(source_id: str) -> tuple[str, str] | None:
+    """Inverse of ``_translation_source_id``: ``(item_id, translation_id)``
+    or None for a plain (single-translation) item id."""
+    if "::" not in source_id:
+        return None
+    item_id, _, translation_id = source_id.rpartition("::")
+    if not item_id or not translation_id:
+        return None
+    return item_id, translation_id
+
+
+def _translation_label_for(
+    translations: list[Translation], translation_id: str | None
+) -> str | None:
+    """The label for a translation id, or None (spec #276: the picker
+    renders labels; the memory stores labels)."""
+    if translation_id is None:
+        return None
+    for t in translations:
+        if t.id == translation_id:
+            return t.label
+    return None
+
+
+def _multi_source_sources(
+    item_id: str,
+    translations: list[Translation],
+    remembered: str | None,
+    picked_index: int | None,
+) -> list[MediaSourceInfo]:
+    """One MediaSource per translation (spec #276).
+
+    Ordering rules: the source matching the request's ``AudioStreamIndex``
+    goes first (the switch path — the client plays ``MediaSources[0]``);
+    with the default index the REMEMBERED dub goes first so a replay
+    defaults to it. Index is dynamic per response: first = 1, the rest
+    2..N (the client's default selected index is 1). Dedup by label,
+    first player per label; capped at ``_MAX_TRANSLATION_SOURCES``.
+    """
+    deduped: list[Translation] = []
+    seen_labels: set[str] = set()
+    for t in translations:
+        if t.label in seen_labels:
+            continue
+        seen_labels.add(t.label)
+        deduped.append(t)
+        if len(deduped) >= _MAX_TRANSLATION_SOURCES:
+            break
+
+    def _rank(t: Translation, idx: int) -> tuple[int, int]:
+        # (order group, stable tiebreak): picked/remembered first.
+        if picked_index is not None and idx == picked_index:
+            return (0, idx)
+        if picked_index is None and remembered is not None and t.label == remembered:
+            return (0, idx)
+        return (1, idx)
+
+    ordered = sorted(
+        enumerate(deduped, start=1), key=lambda pair: _rank(pair[1], pair[0])
+    )
+    sources: list[MediaSourceInfo] = []
+    for new_index, (orig_index, t) in enumerate(ordered, start=1):
+        sources.append(
+            MediaSourceInfo(
+                Id=_translation_source_id(item_id, t.id),
+                Container="m3u8",
+                MediaStreams=[
+                    MediaStreamInfo(Type="Video"),
+                    MediaStreamInfo(Type="Audio", Index=new_index, DisplayTitle=t.label),
+                ],
+                Path=f"/Videos/{item_id}/stream",
+                PlaySessionId="",
+                DisplayTitle=t.label,
+            )
+        )
+    return sources
+
+
+async def _translations_for(
+    item_id: str,
+) -> tuple[list[Translation], str | None]:
+    """(translations, remembered dub label) for a playable item (spec
+    #276). The translation list comes from the episode blob (no network)
+    or the content page (already fetched); the remembered label comes
+    from the user-state dub memory keyed by the SERIES group key.
+    Movies are never remembered (v3 decision) — their group key is the
+    memory key only for episodes.
+    """
+    remembered: str | None = None
+    if item_id.startswith(_MOVIE_PREFIX):
+        # Movie: content translations; no dub memory.
+        content = await resolve_group_content(item_id)
+        if content is None:
+            return [], None
+        return list(content.translations), None
+
+    # Episode wire id: resolve the merged group → the content page → the
+    # episode's own translations (fall back to the content's).
+    group_key = episode_group_key(item_id)
+    if group_key is None:
+        return [], None
+    content = await resolve_group_content(group_key)
+    if content is None:
+        return [], None
+    provider_id = next(iter(content.id.split(":")), "")
+    episode_tail = item_id[len(provider_id) + 1 :] if item_id.startswith(f"{provider_id}:") else item_id
+    translations = list(content.translations)
+    if content.seasons:
+        for season in content.seasons:
+            for ep in season.episodes:
+                if ep.id == episode_tail or ep.id == item_id:
+                    if ep.translations:
+                        translations = list(ep.translations)
+                    break
+    remembered = dub_for(group_key)
+    return translations, remembered
+
+
 @router.get(
     "/Items/{item_id:path}/PlaybackInfo",
     response_model=PlaybackInfoResponse,
@@ -1807,8 +1977,14 @@ def _container_from_type(stream_type: str) -> str:
     response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
-async def playback_info(item_id: str) -> PlaybackInfoResponse:
-    """PlaybackInfo: one thin MediaSource per playable item (D6).
+async def playback_info(
+    item_id: str,
+    request: Request,
+    audio_stream_index: int | None = Query(default=None, alias="AudioStreamIndex"),
+) -> PlaybackInfoResponse:
+    """PlaybackInfo: one thin MediaSource per playable item (D6), and
+    with multiple translations (spec #276) ONE MediaSource per dub — the
+    client's named source picker becomes real.
 
     The @jellyfin/sdk hits this with POST (capture row 6) and the spec
     declares GET; both spellings serve the identical envelope. The
@@ -1817,18 +1993,53 @@ async def playback_info(item_id: str) -> PlaybackInfoResponse:
     for ``/api/stream``. ``Path`` is fictitious (bytes always come from
     ``/Videos/{id}/stream``); ``PlaySessionId`` is a fresh UUID. Unplayed
     ids 404 (D2); a series/season card is not playable and 404s too.
+
+    Multi-source (spec #276): when the item exposes more than one
+    translation, the response lists one MediaSource per translation
+    (cap 8, deduped by label, first player per label), each with an
+    audio MediaStream carrying ``Index`` + ``DisplayTitle`` so the
+    picker renders names. ``AudioStreamIndex`` (POST body or query) is
+    the picker's selection — the matching source goes FIRST (the client
+    plays MediaSources[0]); with the default index the remembered dub
+    (spec #276) goes first, so a replay of the series defaults to it.
+    Single-translation items stay exactly as before: one source, no
+    picker.
     """
-    stream = await _resolve_stream(item_id)
-    if stream is None:
-        raise HTTPException(status_code=404, detail="item_unavailable")
-    play_session_id = str(uuid.uuid4())
-    source = MediaSourceInfo(
-        Id=item_id,
-        Container=_container_from_type(stream.type),
-        Path=f"/Videos/{item_id}/stream",
-        PlaySessionId=play_session_id,
+    # The body carries AudioStreamIndex (and MediaSourceId) on the
+    # source-switch path; the query spelling covers GET.
+    picked_index = audio_stream_index
+    if picked_index is None and request.method == "POST":
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — a malformed body keeps the default
+            body = {}
+        if isinstance(body, dict):
+            raw = body.get("AudioStreamIndex")
+            if isinstance(raw, int):
+                picked_index = raw
+
+    translations, remembered = await _translations_for(item_id)
+    if len(translations) <= 1:
+        # Single-translation path (D6, unchanged): one thin source.
+        stream = await _resolve_stream(item_id)
+        if stream is None:
+            raise HTTPException(status_code=404, detail="item_unavailable")
+        play_session_id = str(uuid.uuid4())
+        source = MediaSourceInfo(
+            Id=item_id,
+            Container=_container_from_type(stream.type),
+            Path=f"/Videos/{item_id}/stream",
+            PlaySessionId=play_session_id,
+        )
+        return PlaybackInfoResponse(MediaSources=[source], PlaySessionId=play_session_id)
+
+    sources = _multi_source_sources(
+        item_id, translations, remembered, picked_index
     )
-    return PlaybackInfoResponse(MediaSources=[source], PlaySessionId=play_session_id)
+    play_session_id = str(uuid.uuid4())
+    for src in sources:
+        src.PlaySessionId = play_session_id
+    return PlaybackInfoResponse(MediaSources=sources, PlaySessionId=play_session_id)
 
 
 @router.get(
@@ -2151,7 +2362,11 @@ def _streaming_response(
 
 
 @router.get("/Videos/{item_id:path}/stream")
-async def video_stream(item_id: str, request: Request) -> Response:
+async def video_stream(
+    item_id: str,
+    request: Request,
+    media_source_id: str | None = Query(default=None, alias="mediaSourceId"),
+) -> Response:
     """Conditional stream handler (D7): redirect, or the byte proxy.
 
     ``StreamResponse`` with no header map → 302 straight to the CDN URL
@@ -2161,10 +2376,24 @@ async def video_stream(item_id: str, request: Request) -> Response:
     the provider's headers), every segment/``URI=`` reference rewritten to
     ``/Videos/{id}/segment``, and served as the mpegurl content type — so
     the client's segments stay behind the facade too.
+
+    Spec #276: ``mediaSourceId`` is the dub source echoed from
+    PlaybackInfo (``<item_id>::<translation_id>``) — it switches the
+    stream to that translation and records the pick as per-series dub
+    memory (series only; movies never remember, v3). The plain item id
+    (single-translation path) stays exactly as before.
     """
-    stream = await _resolve_stream(item_id)
+    translation_id: str | None = None
+    decoded = _decode_translation_source(media_source_id) if media_source_id else None
+    if decoded is not None:
+        # The echoed source id wins over the path item id — the client
+        # plays the FIRST source, whose item part is the same item.
+        item_id, translation_id = decoded
+    stream = await _resolve_stream(item_id, translation_id)
     if stream is None:
         raise HTTPException(status_code=404, detail="item_unavailable")
+    if translation_id is not None:
+        await _record_dub_choice(item_id, translation_id)
     if not stream.headers:
         return RedirectResponse(stream.url, status_code=302)
 

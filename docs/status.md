@@ -159,6 +159,21 @@ boundary validation is `fullmatch` everywhere; uakino movies without a
   (was 1129; +13 — PersonIds filmography wire tests, «Нещодавно
   переглянуто» builder + view + finished-included tests, finished-
   history store tests).
+- **Named dub picker + dub memory (spec #276, tickets #277–#279,
+  2026-08-14).** (1) PlaybackInfo now serves ONE MediaSource per
+  translation (cap 8, deduped by label) with an audio MediaStream
+  carrying `Index` + `DisplayTitle` = the dub label — the client's
+  named source picker replaces mpv's unnamed tracks for
+  multi-translation content (issue #243 narrowed to single-
+  translation dual-audio muxes only). Source order is dynamic: the
+  picked `AudioStreamIndex` goes first, else the remembered dub.
+  (2) The stream route accepts `mediaSourceId` (`<item>::<translation>`)
+  and streams THAT translation — picking a source really switches the
+  stream. (3) Per-series dub memory (LRU 50, newest wins, persisted in
+  `user-state.json`; movies never remembered) makes the next play of a
+  series default to the viewer's last dub. Test counts: 1151 passing
+  (was 1142; +9 — multi-source PlaybackInfo wire tests, source-switch
+  + memory tests, dub-memory store unit tests).
 
 Run the backend:
 

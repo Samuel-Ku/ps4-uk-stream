@@ -207,6 +207,70 @@ def _seeded(req: TestClient) -> tuple[_PlaybackStub, str, str]:
     return stub, movie_gk, "p1:s1e1"
 
 
+def _multi_serial() -> ContentResponse:
+    """A series whose episodes carry several dubs (spec #276): the
+    picker must list them as named sources."""
+    return ContentResponse(
+        id="p1:serial-1",
+        form="series",
+        title="Сериалал серіал",
+        year=2023,
+        description="Детективний серіал.",
+        poster=_POSTER_SERIES,
+        translations=[Translation(id="uk", label="Дубляж")],
+        seasons=[
+            Season(
+                number=1,
+                episodes=[
+                    Episode(
+                        number=1,
+                        id="serial-1:s1e1",
+                        title="Серія 1",
+                        translations=[
+                            Translation(id="uk", label="Дубляж"),
+                            Translation(id="vo", label="Оригінал"),
+                            Translation(id="sub", label="Субтитри"),
+                            Translation(id="duplicate", label="Дубляж"),  # dedup
+                        ],
+                    ),
+                ],
+            )
+        ],
+    )
+
+
+def _multi_seed() -> _PlaybackStub:
+    """The movie (single translation) + the multi-dub series."""
+    return _PlaybackStub(
+        cards=[
+            _card("p1", "dune-1", "Дюна", "movie", poster=_POSTER_MOVIE),
+            _card("p1", "serial-1", "Сериалал серіал", "series", poster=_POSTER_SERIES),
+        ],
+        content_by_external={"dune-1": _dune(), "serial-1": _multi_serial()},
+        streams={
+            "dune-1": _movie_stream(),
+            "serial-1:s1e1": _episode_stream(),
+        },
+    )
+
+
+def _seeded_multi(req: TestClient) -> tuple[_PlaybackStub, str, str]:
+    """Register the multi-dub seed, warm the home, return
+    (stub, movie_gk, episode_wire_id)."""
+    stub = _multi_seed()
+    PROVIDERS["p1"] = stub
+    r = req.get("/api/home")
+    assert r.status_code == 200
+    home = cast("dict[str, Any]", r.json())
+    movie_gk = ""
+    for row in home["rows"]:
+        for item in row["items"]:
+            if item["title"] == "Дюна":
+                movie_gk = cast(str, item["group_key"])
+    assert movie_gk
+    return stub, movie_gk, "p1:serial-1:s1e1"
+
+
 @pytest.fixture(autouse=True)
 def _isolate() -> Iterator[None]:
     """Snapshot + restore PROVIDERS and every cache the facade reads so no
@@ -525,3 +589,131 @@ async def test_eneyida_dead_embed_playback_info_404_health_ok(
     # regression. Only `record(ok=False)` sets `_errors`.
     assert TRACKER.status("eneyida") == "ok"
     assert TRACKER.last_error_at("eneyida") is None
+
+
+# ------------------------------------------------------ multi-source dubs (#276)
+
+
+def test_playback_info_multi_source_lists_named_dubs(client: TestClient) -> None:
+    """#276 T1: a series with several dubs returns one MediaSource per
+    translation — each with an audio MediaStream carrying Index +
+    DisplayTitle (the picker renders names), deduped by label, capped.
+    The movie (single translation) stays a single thin source."""
+    _stub, movie_gk, ep_id = _seeded_multi(client)
+
+    ep_body = _post(client, f"/Items/{ep_id}/PlaybackInfo")
+    sources = ep_body["MediaSources"]
+    # uk, vo, sub — the duplicate label collapses.
+    assert [s["DisplayTitle"] for s in sources] == ["Дубляж", "Оригінал", "Субтитри"]
+    for src in sources:
+        audio = next(m for m in src["MediaStreams"] if m["Type"] == "Audio")
+        assert audio["DisplayTitle"] == src["DisplayTitle"]
+        # Index = the source's position in the response (1-based), the
+        # value the picker echoes back as AudioStreamIndex.
+        assert audio["Index"] == sources.index(src) + 1
+        assert src["Id"].startswith(f"{ep_id}::")
+        assert src["Container"] == "m3u8"
+    # First source is the default (remembered or first) — Index 1.
+    assert sources[0]["MediaStreams"][1]["Index"] == 1
+
+    movie_body = _post(client, f"/Items/{movie_gk}/PlaybackInfo")
+    assert len(movie_body["MediaSources"]) == 1
+    assert movie_body["MediaSources"][0]["Id"] == movie_gk
+    assert "DisplayTitle" not in movie_body["MediaSources"][0]
+
+
+def test_playback_info_picked_index_source_goes_first(client: TestClient) -> None:
+    """#276 T1: the picker echoes its selection as AudioStreamIndex; the
+    matching source goes FIRST (the client plays MediaSources[0]) — the
+    switch path."""
+    _stub, _movie_gk, ep_id = _seeded_multi(client)
+
+    body = _post(client, f"/Items/{ep_id}/PlaybackInfo", AudioStreamIndex="3")
+    sources = body["MediaSources"]
+    # Index 3 in the default ordering = «Субтитри» (1 Дубляж, 2
+    # Оригінал, 3 Субтитри) — now first.
+    assert sources[0]["DisplayTitle"] == "Субтитри"
+
+
+def test_playback_info_remembered_dub_orders_first(client: TestClient) -> None:
+    """#276 T2: after a dub is remembered for a series, the next
+    PlaybackInfo defaults to it — the remembered source is first and
+    carries Index 1 (the client's default selected index)."""
+    import cs_uk_api.catalog_state as cs
+
+    _stub, _movie_gk, ep_id = _seeded_multi(client)
+    # Remember «Оригінал» for the series (the group behind the episode).
+    gk = cs.episode_group_key(ep_id)
+    assert gk is not None
+    cs.remember_dub(gk, "Оригінал")
+    try:
+        body = _post(client, f"/Items/{ep_id}/PlaybackInfo")
+        sources = body["MediaSources"]
+        assert sources[0]["DisplayTitle"] == "Оригінал"
+        assert sources[0]["MediaStreams"][1]["Index"] == 1
+        # The rest follow, indexes 2..N.
+        assert [s["MediaStreams"][1]["Index"] for s in sources] == [1, 2, 3]
+    finally:
+        cs.clear_user_state()
+
+
+def test_stream_source_id_switches_translation(client: TestClient) -> None:
+    """#276 T2: a stream request echoing a multi-source id resolves that
+    translation — the provider's stream() receives the picked translation
+    id, and the series dub choice is remembered."""
+    import cs_uk_api.catalog_state as cs
+
+    stub, _movie_gk, ep_id = _seeded_multi(client)
+    cs.clear_user_state()
+    source_id = f"{ep_id}::vo"
+
+    r = client.get(
+        f"/Videos/{ep_id}/stream",
+        params={"mediaSourceId": source_id},
+        headers={"X-Emby-Token": TOKEN},
+        follow_redirects=False,
+    )
+    assert r.status_code == 302
+    assert ("serial-1:s1e1", "vo") in stub.stream_calls
+    # The series dub is remembered («Оригінал» = id "vo").
+    gk = cs.episode_group_key(ep_id)
+    assert gk is not None
+    assert cs.dub_for(gk) == "Оригінал"
+
+
+def test_stream_plain_id_keeps_default_and_no_memory(client: TestClient) -> None:
+    """#276 T2: the plain item id (single-translation path) streams the
+    default translation and records nothing — unchanged D6 behaviour."""
+    import cs_uk_api.catalog_state as cs
+
+    stub, _movie_gk, ep_id = _seeded_multi(client)
+    cs.clear_user_state()
+    r = client.get(
+        f"/Videos/{ep_id}/stream",
+        headers={"X-Emby-Token": TOKEN},
+        follow_redirects=False,
+    )
+    assert r.status_code == 302
+    assert ("serial-1:s1e1", None) in stub.stream_calls
+    assert cs.dub_memory() == {}
+
+
+def test_stream_movie_never_records_dub(client: TestClient) -> None:
+    """#276 v3: a movie stream with a source id never records dub memory
+    — films always start on the default dub."""
+    import cs_uk_api.catalog_state as cs
+
+    stub, movie_gk, _ep_id = _seeded_multi(client)
+    cs.clear_user_state()
+    source_id = f"{movie_gk}::uk"
+
+    r = client.get(
+        f"/Videos/{movie_gk}/stream",
+        params={"mediaSourceId": source_id},
+        headers={"X-Emby-Token": TOKEN},
+        follow_redirects=False,
+    )
+    assert r.status_code == 302
+    # The movie resolved the group's first-seen provider, bare external.
+    assert ("dune-1", "uk") in stub.stream_calls
+    assert cs.dub_memory() == {}

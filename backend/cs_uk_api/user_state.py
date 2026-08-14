@@ -36,6 +36,10 @@ USER_STATE_VERSION = 1
 #: client can't grow the file without limit.
 MAX_MARKS = 256
 
+#: Dub-memory cap (spec #276): at most 50 remembered series dubs,
+#: least-recently-picked evicted (a repeat pick moves to the front).
+MAX_DUB_MEMORY = 50
+
 
 class UserStateStore:
     """Favorites + played marks as in-memory sets mirrored to a JSON
@@ -53,6 +57,9 @@ class UserStateStore:
         self._path = path
         self._favorites: set[str] = set()
         self._played: set[str] = set()
+        # Dub memory (spec #276): series group key -> translation label,
+        # most-recently-picked first (newest wins on a repeat).
+        self._dub_memory: dict[str, str] = {}
         self._load()
 
     # -- persistence ----------------------------------------------------
@@ -83,6 +90,15 @@ class UserStateStore:
                 return
             self._favorites = self._clean_list(payload.get("favorites"))
             self._played = self._clean_list(payload.get("played"))
+            # v1 dub-memory section (spec #276) — additive: older files
+            # simply have none, never a crash on upgrade.
+            dubs = payload.get("dub_memory")
+            if isinstance(dubs, dict):
+                self._dub_memory = {
+                    str(k): str(v)
+                    for k, v in dubs.items()
+                    if isinstance(k, str) and isinstance(v, str)
+                }
         except Exception:  # a bad file must never crash startup
             log.warning("user state unreadable, starting empty: %s", self._path, exc_info=True)
 
@@ -111,6 +127,7 @@ class UserStateStore:
                             "v": USER_STATE_VERSION,
                             "favorites": sorted(self._favorites),
                             "played": sorted(self._played),
+                            "dub_memory": self._dub_memory,
                         },
                         fh,
                         ensure_ascii=False,
@@ -164,6 +181,28 @@ class UserStateStore:
     def played(self) -> list[str]:
         return sorted(self._played)
 
+    def remember_dub(self, series_group_key: str, translation_label: str) -> None:
+        """Record the viewer's dub choice for a series (spec #276):
+        newest pick wins, bounded at ``MAX_DUB_MEMORY`` (least-recently-
+        picked evicted). Synchronous write — the stream request that
+        records the choice has already answered by the time the next
+        PlaybackInfo for the series reads it.
+        """
+        self._dub_memory.pop(series_group_key, None)
+        self._dub_memory[series_group_key] = translation_label
+        while len(self._dub_memory) > MAX_DUB_MEMORY:
+            oldest = next(iter(self._dub_memory))
+            self._dub_memory.pop(oldest, None)
+        self._write_now()
+
+    def dub_for(self, series_group_key: str) -> str | None:
+        """The remembered dub label for a series, or None."""
+        return self._dub_memory.get(series_group_key)
+
+    def dub_memory(self) -> dict[str, str]:
+        """Full dub-memory map (spec #276), most-recently-picked first."""
+        return dict(self._dub_memory)
+
     def flush(self) -> None:
         """Write any pending state now (lifespan shutdown symmetry).
 
@@ -173,6 +212,7 @@ class UserStateStore:
         self._write_now()
 
     def clear(self) -> None:
-        """Drop all marks (test isolation)."""
+        """Drop all marks + dub memory (test isolation)."""
         self._favorites.clear()
         self._played.clear()
+        self._dub_memory.clear()
