@@ -1000,6 +1000,17 @@ parsed — each fixed via TDD + live-verified:
   classification only; serialno's `_parse_fmeta` skipped the row).
   Live: serialno genres=['Комедія'], uakino
   genres=['Детективи','Трилери','Жахи']. Commit `dd5b277`.
+- **uakino — no rating badge (FIXED, #231)**. The label-less `.fi-item`
+  row carries the IMDb-style `<score>/<votes>` (8.0/1118360 for Дюна)
+  but the empty label hit the loop's continue guard. Parse it and wire
+  `rating` → CommunityRating (#222 pattern). Live: «Всередині
+  скандалу» 6.8, «Тихий притулок» 3.4, «Сусіди зверху» 7.8. Commit
+  `b549a94`.
+- **animeon — no year/genres (FIXED, #232)**. releaseDate is a bare
+  year (`"2026"`/`"2002"`) and `strptime('%Y-%m-%d')` ValueError'd →
+  year always None; the `genres[]` (nameUa) list was never read. Parse
+  the first 4-digit year and map nameUa. Live: «Ми з тобою» year=2026
+  genres=4, «Військова історія» year=2026 genres=4. Commit `e2e80cd`.
 
 ## Running the suite (2026-08-10, codified)
 
