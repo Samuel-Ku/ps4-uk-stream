@@ -118,7 +118,8 @@ boundary validation is `fullmatch` everywhere; uakino movies without a
   played checkmark, progress bar), and the marks persist in a separate
   versioned `user-state.json` (knob `CS_UK_USER_STATE_PATH`, atomic
   writes, corrupt file → empty). The Remote and Live TV tabs answer
-  graceful empties instead of 404s. Test counts: 1090 passing.
+  graceful empties instead of 404s. Test counts: 1096 passing (was
+  1090 at ship; +6 from the Gap T1–T4 verification passes #258–#261).
 
 Run the backend:
 
