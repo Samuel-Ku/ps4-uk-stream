@@ -43,3 +43,8 @@ exclude = ["cs_uk_api/tests/"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.setuptools]
+# The deploy/ directory broke setuptools' flat-layout auto-discovery
+# ("Multiple top-level packages discovered") — pin the package list.
+packages = ["cs_uk_api"]
