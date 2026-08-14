@@ -977,10 +977,23 @@ parsed — each fixed via TDD + live-verified:
   exist).
 - **unimay `actors` — upstream data gap.** The API exposes an `actors`
   field but returns `[]` for the probed releases; nothing to parse.
-- **simpsonsuatv — episode cards in the `updates`/`page` sections
-  whose detail URL 404s** (card url is `…/sezon-1/<episode-slug>`, but
-  `content()` builds `BASE/<slug>.html`). Follow-up needed; the
-  «Президент Кертіс» user report is separately tracked as B25/#215.
+- **simpsonsuatv — NOT a bug (re-checked).** The earlier 404 was an
+  artifact of my probe (no follow-redirects): `content()` resolves
+  the `.html` fallback (301 → canonical season page) fine. The page
+  has no year/people data at all — upstream data gap. The «Президент
+  Кертіс» user report is separately tracked as B25/#215.
+- **unimay/coaninet/doramyworld/eneyida/kinovezha — upstream data
+  gaps.** Probed live pages/APIs: no actor/director rows and no
+  datePublished to parse (eneyida/kinovezha pages carry no year at
+  all). Not parser bugs.
+
+## Field-coverage sweep round 3 (2026-08-14, wire level)
+
+- **uakino — empty People rail (FIXED, #229)**. The `.fi-item` block
+  carries Режисер/Актори rows with real `<a>` links, but content()
+  only read Рік/Жанр/Країна. Added the two branches (Person ids
+  `uakino:<name>`). Live: «Тихий притулок» actors=6 directors=1,
+  «Сусіди зверху» actors=6 directors=1. Commit `cf31523`.
 
 ## Running the suite (2026-08-10, codified)
 
