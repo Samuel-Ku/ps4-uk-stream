@@ -145,6 +145,9 @@ async def test_uakino_content_parses_director_and_cast():
     # genres (the data is on the page but was dropped).
     assert c.genres
     assert "Фантастика" in c.genres or "фантастика" in c.genres
+    # The label-less fi-item carries an IMDb-style `8.0/1118360`
+    # score — it must surface as rating (Ticket #231).
+    assert c.rating == 8.0
     assert [(t.id, t.label) for t in c.translations] == [
         ("Postmodern", "Postmodern"),
         ("DniproFilm", "DniproFilm"),

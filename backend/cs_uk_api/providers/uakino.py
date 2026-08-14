@@ -319,6 +319,7 @@ class UakinoProvider(BaseProvider):
         year: int | None = None
         tags: list[str] = []
         country: str | None = None
+        rating: float | None = None
         people: list[Person] = []
         for item in soup.select("div.fi-item"):
             label = item.select_one("div.fi-label")
@@ -326,6 +327,16 @@ class UakinoProvider(BaseProvider):
             if label is None or value is None:
                 continue
             label_text = label.get_text(strip=True)
+            if not label_text:
+                # The label-less fi-item carries the IMDb-style
+                # `<score>/<vote-count>` rating (e.g. 8.0/1118360).
+                m = re.match(r"(\d+(?:\.\d+)?)/\d+", value.get_text(strip=True))
+                if m:
+                    try:
+                        rating = float(m.group(1))
+                    except ValueError:
+                        rating = None
+                continue
             if "Рік виходу" in label_text:
                 year = _parse_year(value.get_text())
             elif label_text.startswith("Жанр"):
@@ -399,6 +410,7 @@ class UakinoProvider(BaseProvider):
                 poster=poster,
                 genres=tags,
                 people=people,
+                rating=rating,
                 translations=translations,
                 seasons=seasons,
                 translations_level="episode",
@@ -437,6 +449,7 @@ class UakinoProvider(BaseProvider):
             poster=poster,
             genres=tags,
             people=people,
+            rating=rating,
             translations=translations,
             seasons=None,
             country=country,
