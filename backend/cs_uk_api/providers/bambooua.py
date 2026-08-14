@@ -241,6 +241,7 @@ class _GraphNode(BaseModel):
     name: str | None = None
     headline: str | None = None
     description: str | None = None
+    datePublished: str | None = None
     image: list[str] | None = None
     publisher: _Publisher | None = None
     mainEntityOfPage: _MainEntity | None = None
@@ -430,6 +431,11 @@ class BambooUAProvider(BaseProvider):
         description = (
             (meta.graph[0].description or "") if meta and meta.graph else ""
         )
+        year_int: int | None = None
+        if meta and meta.graph and meta.graph[0].datePublished:
+            yyyy = meta.graph[0].datePublished[:4]
+            if yyyy.isdigit():
+                year_int = int(yyyy)
         country: str | None = extract_country(soup)
         groups = _extract_playlist(resp.text)
         _require_playlist(groups)
@@ -443,6 +449,7 @@ class BambooUAProvider(BaseProvider):
             id=f"bambooua:{external_id}",
             title=title.strip(),
             description=description,
+            year=year_int,
             poster=poster,
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
