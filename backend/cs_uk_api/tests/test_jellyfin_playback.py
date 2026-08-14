@@ -116,6 +116,7 @@ class _PlaybackStub(BaseProvider):
         self._content_by_external = content_by_external
         self._streams = streams
         self.stream_calls: list[tuple[str, str | None]] = []
+        self.content_calls: list[str] = []
         self.sections: tuple[Any, ...] = ()
 
     async def search(self, query: str, http: Any) -> list[SearchResult]:
@@ -129,6 +130,7 @@ class _PlaybackStub(BaseProvider):
         return [], False
 
     async def content(self, external_id: str, http: Any) -> ContentResponse:
+        self.content_calls.append(external_id)
         content = self._content_by_external.get(external_id)
         if content is None:
             raise ProviderError("not_found", f"no canned content for {external_id}")
@@ -717,3 +719,26 @@ def test_stream_movie_never_records_dub(client: TestClient) -> None:
     # The movie resolved the group's first-seen provider, bare external.
     assert ("dune-1", "uk") in stub.stream_calls
     assert cs.dub_memory() == {}
+
+
+def test_playback_info_translation_list_needs_no_extra_fetch(client: TestClient) -> None:
+    """#276 T1 AC5: the multi-source translation list comes from the
+    episode blob / already-fetched content — a second PlaybackInfo for
+    the same item performs NO extra provider.content() call (the
+    content cache serves it)."""
+    stub, _movie_gk, ep_id = _seeded_multi(client)
+
+    # First PlaybackInfo warms the content cache (one content fetch).
+    _post(client, f"/Items/{ep_id}/PlaybackInfo")
+    first_fetches = list(stub.content_calls)
+    assert first_fetches, "the first PlaybackInfo must have resolved content"
+
+    # Second PlaybackInfo: same translation list, zero new content fetches.
+    stub.content_calls.clear()
+    body = _post(client, f"/Items/{ep_id}/PlaybackInfo")
+    assert stub.content_calls == []
+    assert [s["DisplayTitle"] for s in body["MediaSources"]] == [
+        "Дубляж",
+        "Оригінал",
+        "Субтитри",
+    ]
