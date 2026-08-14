@@ -994,6 +994,12 @@ parsed — each fixed via TDD + live-verified:
   only read Рік/Жанр/Країна. Added the two branches (Person ids
   `uakino:<name>`). Live: «Тихий притулок» actors=6 directors=1,
   «Сусіди зверху» actors=6 directors=1. Commit `cf31523`.
+- **uakino + serialno — empty Genres row (FIXED, #230)**. Both
+  providers parsed the Жанр data but never passed it to
+  ContentResponse (uakino kept `tags` for the anime/movie
+  classification only; serialno's `_parse_fmeta` skipped the row).
+  Live: serialno genres=['Комедія'], uakino
+  genres=['Детективи','Трилери','Жахи']. Commit `dd5b277`.
 
 ## Running the suite (2026-08-10, codified)
 
