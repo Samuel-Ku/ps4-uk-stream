@@ -18,7 +18,7 @@ User=rorschach
 WorkingDirectory=/home/rorschach/UA flims/ps4-uk-stream/backend
 # LAN-only service (ADR-0003 deployment assumption: one host, one process).
 # Paths with spaces must stay quoted (systemd splits ExecStart on whitespace).
-ExecStart="/home/rorschach/UA flims/ps4-uk-stream/backend/.venv/bin/uvicorn" cs_uk_api.main:app --host 0.0.0.0 --port 8000
+ExecStart="/home/rorschach/UA flims/ps4-uk-stream/backend/.venv/bin/uvicorn" cs_uk_api.main:app --host 0.0.0.0 --port 8003
 Restart=on-failure
 RestartSec=5
 

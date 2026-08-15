@@ -12,7 +12,7 @@ design and `CONTEXT.md` for the domain model.
 
 ## Network addresses (home LAN)
 
-- Backend host `openclaw-home`: `http://192.168.2.223:8000` (LAN IP, `enp1s0`).
+- Backend host `openclaw-home`: `http://192.168.2.166:8003` (LAN IP, `wlan0` — wireless, DHCP/dynamic).
 - PS4 FTP (GoldHEN): `192.168.2.105:2121` (for PKG install / payload transfer).
 
 ## Quick start
@@ -24,7 +24,7 @@ design and `CONTEXT.md` for the domain model.
    runs a headless browser session for that one provider
    (see `backend/cs_uk_api/scripts/README.md`).
 1. Run the backend on a Linux host in the same LAN as the PS4:
-   `cd backend && uvicorn cs_uk_api.main:app --host 0.0.0.0 --port 8000`
+   `cd backend && uvicorn cs_uk_api.main:app --host 0.0.0.0 --port 8003`
 2. On the PS4, open Switchfin and add a server at
    `http://<host-ip>:<port>` (the backend's Jellyfin facade). Any
    username/password completes the handshake — the facade is accept-any
@@ -148,8 +148,8 @@ mypy cs_uk_api                 # strict on the package (tests excluded in pyproj
 Live smoke against real upstreams (optional, needs internet):
 
 ```bash
-uvicorn cs_uk_api.main:app --host 127.0.0.1 --port 8000 &
-curl -s localhost:8000/api/providers        # 19 providers; uakino "warming" then "ok"
-curl -s "localhost:8000/api/search?q=Дюна"  # groups + no failures
-curl -s "localhost:8000/api/stream/<id>"    # live m3u8/mp4 URL, plays in mpv
+uvicorn cs_uk_api.main:app --host 127.0.0.1 --port 8003 &
+curl -s localhost:8003/api/providers        # 19 providers; uakino "warming" then "ok"
+curl -s "localhost:8003/api/search?q=Дюна"  # groups + no failures
+curl -s "localhost:8003/api/stream/<id>"    # live m3u8/mp4 URL, plays in mpv
 ```
