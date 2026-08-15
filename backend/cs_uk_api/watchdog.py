@@ -110,6 +110,16 @@ class WedgedClientWatchdog:
         )
         return True
 
+    def reset(self) -> None:
+        """Clear the cooldown/counter state (ticket #330).
+
+        Test seam for order-independent suites: the counters are
+        process-wide, so a reset observed by one test must not leak
+        into another's assertions.
+        """
+        self._last_reset_at = None
+        self.reset_count = 0
+
     @property
     def last_reset_at(self) -> float | None:
         return self._last_reset_at
