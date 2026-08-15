@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
@@ -60,6 +59,7 @@ from .resume_store import ResumeStore
 from .snapshot_store import SnapshotStore
 from .uakino_browser import get_session
 from .user_state import UserStateStore
+from .wire_identity import is_group_key, project_group, provider_union, split_episode_tail
 
 log = logging.getLogger("cs_uk_api.catalog_state")
 
@@ -165,11 +165,11 @@ def _build_sources_map(
                 all_items.append(it)
                 _add_listing_to_sources_map(out, it)
     for mg in merge_results(all_items):
-        union: dict[str, SearchResult] = {}
-        for s in mg.sources:
-            union.setdefault(s.provider, s)
-        member_keys = list(dict.fromkeys(item_group_key(s) for s in mg.sources))
-        for key in member_keys:
+        # Single projection (spec #309): canonical fields + member keys
+        # + the first-seen provider union — no longer re-derived here.
+        proj = project_group(mg)
+        union = provider_union(proj.sources)
+        for key in proj.member_keys:
             # Replace (not setdefault): the union is built from the same
             # first-seen walk order, so this keeps the exact provider
             # order the home row surfaces.
@@ -599,26 +599,21 @@ _profiles: dict[str, ItemProfile] = {}
 #: same bounded-concurrency pattern as the gate sweep).
 _PROFILE_CONCURRENCY = 8
 
-#: Episode wire ids end in ``:s1e1`` (ufdub-style) or ``:e5``
-#: (uakino/kinotron-style), or carry a base64 source blob AFTER the
-#: ``:eN`` tail (animeon-style). The tail is ``:e<N>`` (optionally with
-#: a season prefix) followed by ``:`` or end-of-string, never digits.
-_EPISODE_TAIL_RE = re.compile(r":(?:s\d+)?e\d+(?=:|$)")
-
-
 def episode_group_key(item_id: str) -> str | None:
     """The merged group key behind a played item id (spec #252).
 
     Movies report their ``g2:`` key; episodes report the provider-scoped
     wire id (``ufdub:dorama-408-...:s1e1``), whose ``provider:external``
-    prefix identifies the merged group (reverse lookup, #214).
+    prefix identifies the merged group (reverse lookup, #214). The
+    tail grammar lives in ``wire_identity`` (spec #309).
     """
-    if item_id.startswith("g2:"):
+    if is_group_key(item_id):
         return item_id
-    match = _EPISODE_TAIL_RE.search(item_id)
-    if match is None:
+    split = split_episode_tail(item_id)
+    if split is None:
         return None
-    return group_key_for_external(item_id[: match.start()])
+    composite, _tail = split
+    return group_key_for_external(composite)
 
 
 async def _warm_profiles(home: HomeResponse) -> None:
@@ -1582,24 +1577,19 @@ async def merged_search(
     # each carrying the full per-provider ``sources`` list.
     groups = [
         SearchGroup(
-            group_key=mg.key,
-            title=mg.sources[0].title,
-            year=mg.sources[0].year,
-            poster=mg.sources[0].poster,
-            # Model B (contract #135): first-seen-wins, like the other
-            # canonical fields.
-            form=mg.sources[0].form,
-            styles=mg.sources[0].styles,
-            genres=list(mg.sources[0].genres),
-            sources=list(mg.sources),
-            # Issue #89: every per-item group key that contributed to
-            # this merged card. Deduped, first-seen order. The canonical
-            # ``group_key`` is the yearful-preferred-min; the client
-            # matches a resume entry against ANY member key, not only
-            # ``group_key``.
-            member_keys=list(dict.fromkeys(item_group_key(s) for s in mg.sources)),
+            # Single projection (spec #309): canonical fields + member
+            # keys from one place instead of re-deriving them here.
+            group_key=proj.key,
+            title=proj.title,
+            year=proj.year,
+            poster=proj.poster,
+            form=proj.form,
+            styles=proj.styles,
+            genres=list(proj.genres),
+            sources=list(proj.sources),
+            member_keys=list(proj.member_keys),
         )
-        for mg in merge_results(out_results)
+        for proj in (project_group(mg) for mg in merge_results(out_results))
     ]
     if failures:
         resp = SearchResponse(query=q, groups=groups, failures=failures)
@@ -1630,9 +1620,7 @@ def register_search_groups(groups: Sequence[SearchGroup]) -> None:
     )
     changed = False
     for g in groups:
-        union: dict[str, SearchResult] = {}
-        for s in g.sources:
-            union.setdefault(s.provider, s)
+        union = provider_union(g.sources)
         keys = g.member_keys or [g.group_key]
         for key in keys:
             current = existing.get(key)

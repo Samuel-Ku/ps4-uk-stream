@@ -83,6 +83,7 @@ from ..poster_proxy import fetch as fetch_poster_bytes
 from ..providers import PROVIDERS
 from ..providers.base import ProviderError
 from ..recommend import similarity
+from ..wire_identity import is_group_key
 from .auth import require_token
 from .models import (
     ActivityLogEntryQueryResult,
@@ -558,7 +559,7 @@ def _is_series_key(group_key: str) -> bool:
     card = _card_for_group(group_key)
     if card is not None:
         return card.form != "movie"
-    return not group_key.startswith("g2:") or True
+    return not is_group_key(group_key) or True
 
 
 def _folder_storage(path: str) -> FolderStorageDto:
@@ -1330,7 +1331,7 @@ async def items_resume(user_id: str) -> BaseItemDtoQueryResult:
     """
     dtos: list[BaseItemDto] = []
     for item_id, (position, runtime) in recent_playback_entries().items():
-        if item_id.startswith("g2:"):
+        if is_group_key(item_id):
             try:
                 dto = await item_detail(item_id)
             except HTTPException:
@@ -1364,7 +1365,7 @@ async def shows_next_up() -> BaseItemDtoQueryResult:
     result: list[BaseItemDto] = []
     seen_series: set[str] = set()
     for item_id, (_position, runtime) in playback_entries().items():
-        if item_id.startswith("g2:"):
+        if is_group_key(item_id):
             continue  # a movie has no "next"
         _, next_episode = await _resolve_playback_episode(item_id)
         if next_episode is not None and next_episode.SeriesId not in seen_series:
@@ -1625,7 +1626,7 @@ def _split_season_suffix(parent_id: str) -> tuple[str, int | None]:
     carries an ``:S<n>`` tail, so ``rpartition`` cleanly separates the
     trailing season marker. A series/movie group key returns itself.
     """
-    if not parent_id.startswith("g2:"):
+    if not is_group_key(parent_id):
         return parent_id, None
     head, sep, tail = parent_id.rpartition(":")
     if sep and tail.startswith("S") and tail[1:].isdigit():
@@ -1706,7 +1707,7 @@ async def item_detail(item_id: str) -> BaseItemDto:
     # Episode wire ids (``p1:s1e1``) are not reverse-resolvable: there is
     # no group key in them. They are served exclusively through the
     # season hierarchy, so /Items/{id} answers 404 for them.
-    if not item_id.startswith("g2:"):
+    if not is_group_key(item_id):
         raise HTTPException(status_code=404, detail="item_unavailable")
     group_key, season_number = _split_season_suffix(item_id)
     content = await resolve_group_content(group_key)
@@ -1800,7 +1801,7 @@ async def _serve_item_image(
 ) -> Response:
     """The poster for ``item_id`` as an inline image response, or 404."""
     poster_url = _poster_for(item_id)
-    if poster_url is None and item_id.startswith("g2:"):
+    if poster_url is None and is_group_key(item_id):
         # Item not in the home snapshot (surfaced via Latest/search);
         # resolve from the content cache which holds the poster URL.
         content = await resolve_group_content(item_id)
@@ -1923,7 +1924,7 @@ async def _resolve_stream(
     degrades to None → 404, the facade's standing "never 5xx" posture
     (D2), and the provider+health recording stays colocated with it.
     """
-    if item_id.startswith("g2:"):
+    if is_group_key(item_id):
         # Series/season keys and cold groups: not playable on their own.
         group_key, season_number = _split_season_suffix(item_id)
         if season_number is not None:
@@ -1989,7 +1990,7 @@ async def _record_dub_choice(item_id: str, translation_id: str) -> None:
     translated through the content page's translations before storing.
     A best-effort record: resolution failures just skip the memory.
     """
-    if item_id.startswith(_MOVIE_PREFIX):
+    if is_group_key(item_id):
         return
     # The translation list must be the same the picker rendered (the
     # episode's own dubs, falling back to the content's) so the label
@@ -2007,11 +2008,6 @@ async def _record_dub_choice(item_id: str, translation_id: str) -> None:
 #: Multi-source cap (spec #276): at most 8 translations surface as
 #: picker sources — providers with many dubs don't bloat the response.
 _MAX_TRANSLATION_SOURCES = 8
-
-#: Dub-memory only applies to SERIES (spec #276 v3: movies always start
-#: on the default dub).
-_MOVIE_PREFIX = "g2:"
-
 
 def _translation_source_id(item_id: str, translation_id: str) -> str:
     """MediaSource.Id for one translation (spec #276).
@@ -2114,7 +2110,7 @@ async def _translations_for(
     memory key only for episodes.
     """
     remembered: str | None = None
-    if item_id.startswith(_MOVIE_PREFIX):
+    if is_group_key(item_id):
         # Movie: content translations; no dub memory.
         content = await resolve_group_content(item_id)
         if content is None:

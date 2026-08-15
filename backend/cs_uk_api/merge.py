@@ -16,7 +16,6 @@ B ``form`` (movie|series) — the legacy ``type`` axis is gone (contract
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 import re
 import unicodedata
@@ -24,14 +23,16 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from .models import SearchResult
+from .wire_identity import group_key
 
 log = logging.getLogger("cs_uk_api.merge")
 
 #: Model B contract step (#135): the identity axis changed from the
 #: legacy ``MediaType`` to ``form``, so keys are regenerated under a new
 #: version. A style-tagged title now keys on its FORM (e.g. an anime
-#: film and a plain film with the same name+year merge).
-_KEY_VERSION = "g2"
+#: film and a plain film with the same name+year merge). The ``gN:``
+#: prefix itself lives in ``wire_identity`` (spec #309) — a version
+#: bump edits one file.
 
 #: DLE-style sites sprinkle codec/quality labels into titles.
 _QUALITY_TAGS = re.compile(
@@ -96,12 +97,6 @@ def normalize_title(raw: str) -> str:
     """Canonical normalized form of a title (its primary alias)."""
     aliases = title_aliases(raw)
     return aliases[0] if aliases else ""
-
-
-def group_key(alias: str, form: str, year: int | None) -> str:
-    """Stateless versioned group identity."""
-    digest = hashlib.sha1(f"{alias}|{form}|{year or ''}".encode()).hexdigest()
-    return f"{_KEY_VERSION}:{digest[:16]}"
 
 
 def effective_year(title: str, year: int | None) -> int | None:

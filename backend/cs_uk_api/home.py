@@ -49,6 +49,7 @@ from collections.abc import Set as AbstractSet
 from .merge import item_group_key, merge_results
 from .models import HomeItem, HomeRow, SearchResult, Section
 from .recommend import ItemProfile
+from .wire_identity import project_group
 
 #: Five-row type-row order, per the issue #70 spec. Anything else in
 #: ``by_type`` is ignored (defensive — the route layer only buckets
@@ -160,36 +161,27 @@ def round_robin_dedup(
     groups = merge_results(collected)
 
     # Project MergeGroup → HomeItem, preserving the merge core's
-    # first-seen order. Cap at ``limit``.
+    # first-seen order. Cap at ``limit``. The projection (canonical
+    # fields + member keys + provider union) is the single
+    # ``wire_identity.project_group`` (spec #309).
     items: list[HomeItem] = []
     for mg in groups:
         if len(items) >= limit:
             break
-        sample = mg.sources[0]
-        # Provider union, first-seen order (the merge core preserves
-        # sources in bucket-order = first-seen order).
-        providers = list(dict.fromkeys(s.provider for s in mg.sources))
-        # Issue #89: every per-item group key that contributed to this
-        # merged row. Deduped, first-seen-preserved order. The canonical
-        # ``mg.key`` is the yearful-preferred-min of these — the client
-        # matches a resume entry against ANY member key, not only
-        # ``group_key``. Dedup keeps the payload bounded when one
-        # provider surfaces multiple listings for the same group
-        # (same title+type+year, different upstream ids).
-        member_keys = list(dict.fromkeys(item_group_key(s) for s in mg.sources))
+        proj = project_group(mg)
         items.append(
             HomeItem(
-                group_key=mg.key,
-                title=sample.title,
-                year=sample.year,
-                poster=sample.poster,
+                group_key=proj.key,
+                title=proj.title,
+                year=proj.year,
+                poster=proj.poster,
                 # Model B (contract #135): first-seen-wins, like the
                 # other canonical fields.
-                form=sample.form,
-                styles=sample.styles,
-                genres=list(sample.genres),
-                providers=providers,
-                member_keys=member_keys,
+                form=proj.form,
+                styles=proj.styles,
+                genres=list(proj.genres),
+                providers=list(proj.providers),
+                member_keys=list(proj.member_keys),
             )
         )
     return items

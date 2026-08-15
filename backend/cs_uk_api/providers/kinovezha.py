@@ -34,6 +34,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
+from ..wire_identity import MOVIE_SUFFIX
 from ._tortuga import decode as _tor_decrypt
 from .base import BaseProvider, ProviderError, model_b_axes
 
@@ -102,8 +103,8 @@ _PAGINATION_LINK = re.compile(r"/page/(\d+)/?")
 _FILE_RE = re.compile(r"""file\s*:\s*["']([^"']+)["']""")
 
 # Episode-id suffix for movies (whose Player iframe is a single URL
-# rather than a season/episode map).
-MOVIE_SUFFIX = ":__movie__"
+# rather than a season/episode map; defined once in ``wire_identity``,
+# spec #309).
 
 # external_id is a numeric-prefixed slug (e.g. "2831-enn-droyid"). Gate
 # both content() and stream() against values that could escape the URL

@@ -27,6 +27,7 @@ from ..models import (
     StreamType,
     Translation,
 )
+from ..wire_identity import MOVIE_SUFFIX
 from .base import BaseProvider, ProviderError, model_b_axes
 
 BASE_URL = "https://bambooua.com"
@@ -63,8 +64,8 @@ _PATH_TYPE: tuple[tuple[str, str], ...] = (
 )
 
 # Sentinel episode-id suffix for movies (whose playlist has a single
-# file URL rather than a season/episode map).
-MOVIE_SUFFIX = ":__movie__"
+# file URL rather than a season/episode map; defined once in
+# ``wire_identity``, spec #309).
 
 #: The site's subscription-gate placeholder: gated titles ("Для
 #: підписників") are served this sponsor promo clip instead of the real

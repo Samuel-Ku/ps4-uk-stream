@@ -20,6 +20,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
+from ..wire_identity import MOVIE_SUFFIX
 from .base import BaseProvider, ProviderError, model_b_axes
 
 BASE_URL = "https://ufdub.com"
@@ -93,8 +94,8 @@ def _split_external_id(external_id: str) -> tuple[str, str] | None:
 _EPISODE_ROW_RE = re.compile(r"\[\s*'([^']*)'\s*,\s*'[^']*'\s*,\s*'([^']*)'\s*\]")
 
 # Sentinel episode-id suffix used by other providers for movies; kept
-# here so stream() treats a bare id and an explicit movie suffix alike.
-MOVIE_SUFFIX = ":__movie__"
+# here so stream() treats a bare id and an explicit movie suffix alike
+# (the sentinel itself is defined once in ``wire_identity``, spec #309).
 
 
 def _type_from_url(href: str) -> str:

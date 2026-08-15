@@ -20,6 +20,7 @@ from ..models import (
     Translation,
     TranslationLevel,
 )
+from ..wire_identity import MOVIE_SUFFIX
 from .base import BaseProvider, MediaTypeStr, ProviderError, model_b_axes, parse_actor_list
 
 BASE_URL = "https://kinotron.tv"
@@ -41,8 +42,8 @@ SECTIONS = (
 _SLUG_RE = re.compile(r"\d+-[a-z0-9][a-z0-9-]*")
 
 # Sentinel episode-id suffix for movies (whose player iframe is a single
-# URL rather than a season/episode map).
-MOVIE_SUFFIX = ":__movie__"
+# URL rather than a season/episode map; defined once in
+# ``wire_identity``, spec #309).
 
 
 def _external_id(href: str) -> str:

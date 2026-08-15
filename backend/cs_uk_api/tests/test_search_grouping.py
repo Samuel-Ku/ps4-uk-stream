@@ -37,6 +37,7 @@ from cs_uk_api.models import (
 )
 from cs_uk_api.providers import PROVIDERS
 from cs_uk_api.providers.base import BaseProvider
+from cs_uk_api.wire_identity import project_group
 
 # ---------------------------------------------------------------------------
 # Helpers + fixtures
@@ -171,14 +172,16 @@ def test_search_group_has_group_key_title_year_type_poster_sources() -> None:
     ]
     groups = merge_results(items)
     assert len(groups) == 1
-    mg = groups[0]
+    # The projection (spec #309) is what the route uses — the test stops
+    # reproducing the rules by hand (US5).
+    proj = project_group(groups[0])
     sg = SearchGroup(
-        group_key=mg.key,
-        title=mg.sources[0].title,
-        year=mg.sources[0].year,
-        form=mg.sources[0].form,
-        poster=mg.sources[0].poster,
-        sources=list(mg.sources),
+        group_key=proj.key,
+        title=proj.title,
+        year=proj.year,
+        form=proj.form,
+        poster=proj.poster,
+        sources=list(proj.sources),
     )
     assert sg.group_key.startswith("g2:")
     assert sg.title == "Дюна"
@@ -205,23 +208,23 @@ def test_search_group_member_keys_includes_all_member_group_keys() -> None:
     ]
     groups = merge_results(items)
     assert len(groups) == 1
-    mg = groups[0]
-    member_keys = [item_group_key(s) for s in mg.sources]
+    proj = project_group(groups[0])
     # Both per-item keys present in the member_keys set.
-    assert set(member_keys) == {item_group_key(items[0]), item_group_key(items[1])}
+    assert set(proj.member_keys) == {item_group_key(items[0]), item_group_key(items[1])}
     # The canonical ``group_key`` is the yearful-preferred-min (the
     # yearful key wins on tie).
-    assert mg.key == item_group_key(items[0])
-    # The route should expose both keys — projection in main.py builds
-    # the same list it built here, deduped first-seen-preserved.
+    assert proj.key == item_group_key(items[0])
+    # The route should expose both keys — the projection (spec #309)
+    # builds the same list this test used to reproduce by hand,
+    # deduped first-seen-preserved.
     sg = SearchGroup(
-        group_key=mg.key,
-        title=mg.sources[0].title,
-        year=mg.sources[0].year,
-        form=mg.sources[0].form,
-        poster=mg.sources[0].poster,
-        sources=list(mg.sources),
-        member_keys=list(dict.fromkeys(member_keys)),
+        group_key=proj.key,
+        title=proj.title,
+        year=proj.year,
+        form=proj.form,
+        poster=proj.poster,
+        sources=list(proj.sources),
+        member_keys=list(proj.member_keys),
     )
     assert set(sg.member_keys) == {item_group_key(items[0]), item_group_key(items[1])}
     assert sg.group_key in sg.member_keys

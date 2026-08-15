@@ -22,6 +22,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
+from ..wire_identity import MOVIE_SUFFIX
 from .base import BaseProvider, ProviderError, model_b_axes
 
 BASE_URL = "https://cikava-ideya.top"
@@ -79,8 +80,8 @@ _REMOVED_MARKER = "Видалено на прохання правовласни
 _ASHDI_NOT_FOUND = "Файл не знайдено"
 
 # Sentinel episode-id suffix for movies (whose Player1 is a single URL
-# rather than a season/episode map).
-MOVIE_SUFFIX = ":__movie__"
+# rather than a season/episode map; defined once in ``wire_identity``,
+# spec #309).
 
 
 def _page_number(href: str) -> int:

@@ -51,6 +51,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
+from ..wire_identity import MOVIE_SUFFIX
 from ._crypto_uaserialspro import decrypt_player_data
 from ._tortuga import decode as _tortuga_decode
 from .base import BaseProvider, ProviderError, model_b_axes, parse_actor_list
@@ -85,8 +86,8 @@ _EXTERNAL_ID_RE = re.compile(r"\d+-[a-z0-9-]+")
 _EP_SUFFIX_RE = re.compile(r"s(\d+)e(\d+)$")
 
 # Sentinel episode-id suffix for movies (whose player file is a single
-# m3u8 URL rather than a season/episode map).
-MOVIE_SUFFIX = ":__movie__"
+# m3u8 URL rather than a season/episode map; defined once in
+# ``wire_identity``, spec #309).
 
 # Upstream Kotlin regex for the `file: '...'` value on the Tortuga
 # player page. Matches single- or double-quoted strings.

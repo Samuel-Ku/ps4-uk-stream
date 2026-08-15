@@ -71,6 +71,7 @@ from .service import split_content_id as _split_content_id
 from .service import stream_provider_error as _stream_provider_error
 from .service import upstream_guard as _upstream_guard
 from .uakino_browser import DEFAULT_CHROMIUM, get_session
+from .wire_identity import is_group_key
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("cs_uk_api")
@@ -552,7 +553,7 @@ async def content(
     legacy ``GroupContentResponse{item, providers}`` shape is returned
     (preserved for backwards compatibility).
     """
-    if content_id.startswith("g2:"):
+    if is_group_key(content_id):
         if source is not None:
             return await _content_by_group_key_and_source(content_id, source)
         return await _content_by_group_key(content_id)

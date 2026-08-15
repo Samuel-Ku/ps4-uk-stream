@@ -34,6 +34,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
+from ..wire_identity import MOVIE_SUFFIX
 from .base import BaseProvider, ProviderError, model_b_axes
 
 
@@ -163,8 +164,8 @@ _PATH_TYPE: tuple[tuple[tuple[str, ...], str], ...] = (
 )
 
 # Sentinel episode-id suffix for movies (whose Player1 is a single
-# `file: "https://...m3u8"` URL rather than a season/episode map).
-MOVIE_SUFFIX = ":__movie__"
+# `file: "https://...m3u8"` URL rather than a season/episode map;
+# defined once in ``wire_identity``, spec #309).
 
 
 def _page_number(href: str) -> int:

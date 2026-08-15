@@ -21,6 +21,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
+from ..wire_identity import MOVIE_SUFFIX
 from .base import BaseProvider, MediaTypeStr, ProviderError, model_b_axes
 
 BASE_URL = "https://eneyida.tv"
@@ -33,7 +34,6 @@ _PATH_TYPE: tuple[tuple[tuple[str, ...], str], ...] = (
     (("serials", "series"), "series"),
     (("films",), "movie"),
 )
-MOVIE_SUFFIX = ":__movie__"
 _SLUG_RE = re.compile(r"\d+-[a-z0-9-]+")
 # Upstream's deliberate-unavailable embed page: «Контент недоступний»
 # (captured live 2026-08-08 — 1441 bytes, the phrase in <title> and <h1>,
