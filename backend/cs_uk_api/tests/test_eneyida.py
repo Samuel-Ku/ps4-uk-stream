@@ -30,6 +30,40 @@ PLAYER_SERIES_HTML = '<html><body><script>file: \'[{"folder":[{"folder":[{"file"
 # series-structured folder array (seasons → dubs → episodes) — upstream
 # serves multi-episode titles under /films/ too.
 PLAYER_FILM_WITH_SERIES_HTML = '<html><body><script>file: \'[{"title":"1 сезон","folder":[{"title":"HDrezka Studio","folder":[{"title":"1 серія","file":"https://s11.hdvbua.pro/media/content/stream/2025/1011322/1/1/11108778/index.m3u8"}]}]}]\'</script></body></html>'
+# Ticket #331: a per-season series page whose player payload carries one
+# top folder PER DUBBING TRACK (live 2026-08-15, «Дім Дракона»: folders
+# titled Цікава Ідея / HDrezka Studio / MGG / BaibaKoTV, each holding
+# the SAME season-1 episodes in that voiceover). These are translations,
+# NOT seasons — the facade must show ONE season, not four.
+PLAYER_MULTI_DUB_HTML = (
+    "<html><body><script>file: '["
+    '{"folder":['
+    '{"title":"Цікава Ідея","folder":['
+    '{"title":"1 серія","file":"https://s30.hdvbua.pro/media1/hls/serials/hotd.s01e01.ci/index.m3u8"},'
+    '{"title":"2 серія","file":"https://s30.hdvbua.pro/media1/hls/serials/hotd.s01e02.ci/index.m3u8"}]},'
+    '{"title":"HDrezka Studio","folder":['
+    '{"title":"1 серія","file":"https://s30.hdvbua.pro/media2/hls/serials/hotd.s01e01.rezka/index.m3u8"},'
+    '{"title":"2 серія","file":"https://s30.hdvbua.pro/media2/hls/serials/hotd.s01e02.rezka/index.m3u8"}]},'
+    '{"title":"MGG","folder":['
+    '{"title":"1 серія","file":"https://s30.hdvbua.pro/media3/hls/serials/hotd.s01e01.mgg/index.m3u8"},'
+    '{"title":"2 серія","file":"https://s30.hdvbua.pro/media3/hls/serials/hotd.s01e02.mgg/index.m3u8"}]},'
+    '{"title":"BaibaKoTV","folder":['
+    '{"title":"1 серія","file":"https://s30.hdvbua.pro/media4/hls/serials/hotd.s01e01.baibko/index.m3u8"},'
+    '{"title":"2 серія","file":"https://s30.hdvbua.pro/media4/hls/serials/hotd.s01e02.baibko/index.m3u8"}]}'
+    "]}]'</script></body></html>"
+)
+# Ticket #331 companion shape: the TRUE multi-season payload (top
+# entries titled «N сезон», each season -> dubs -> episodes) must still
+# parse into N seasons, not dubs.
+PLAYER_TWO_SEASON_HTML = (
+    "<html><body><script>file: '["
+    '{"title":"1 сезон","folder":[{"title":"HDrezka Studio","folder":['
+    '{"title":"1 серія","file":"https://s30.hdvbua.pro/media1/hls/serials/silo.s01e01/index.m3u8"},'
+    '{"title":"2 серія","file":"https://s30.hdvbua.pro/media1/hls/serials/silo.s01e02/index.m3u8"}]}]},'
+    '{"title":"2 сезон","folder":[{"title":"MGG","folder":['
+    '{"title":"1 серія","file":"https://s30.hdvbua.pro/media2/hls/serials/silo.s02e01/index.m3u8"}]}]}'
+    "]'</script></body></html>"
+)
 # Issue #159: upstream template bug — the first iframe's src attribute
 # has a doubled quote (`src="data-src="https://...`) which makes
 # BeautifulSoup parse the real URL as junk attributes.
@@ -342,6 +376,85 @@ async def test_eneyida_stream_dead_embed_raises_gated_not_parse_failed() -> None
 
 def test_eneyida_sections_lists_two():
     assert [section.id for section in EneyidaProvider().sections] == ["films", "series"]
+
+
+@pytest.mark.asyncio
+async def test_eneyida_content_multi_dub_payload_collapses_to_one_season() -> None:
+    """Ticket #331: per-dub top folders are translations, not seasons.
+
+    Live 2026-08-15 «Дім Дракона»: the player payload has four folders
+    titled by dubbing studio, each holding the same S1 episodes in that
+    voiceover. The facade must see ONE season whose translations list
+    the studios — not four phantom seasons (and certainly not "the
+    wrong series" when the client drills into a dub folder).
+    """
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://eneyida.tv/series/7878-dim-drakona-2022-v2.html").respond(
+            200, text=_fixture("content_series.html")
+        )
+        router.get("https://hdvbua.pro/embed/9549").respond(200, text=PLAYER_MULTI_DUB_HTML)
+        async with httpx.AsyncClient() as http:
+            content = await EneyidaProvider().content("series/7878-dim-drakona-2022-v2", http)
+    assert content.seasons is not None and len(content.seasons) == 1
+    assert [e.number for e in content.seasons[0].episodes] == [1, 2]
+    assert content.seasons[0].episodes[0].id == "eneyida:series/7878-dim-drakona-2022-v2:s1e1"
+    assert [t.label for t in content.translations] == [
+        "Цікава Ідея",
+        "HDrezka Studio",
+        "MGG",
+        "BaibaKoTV",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_eneyida_stream_multi_dub_suffix_indexes_dub_folder() -> None:
+    """Ticket #331: legacy ``:s<i>e<j>`` wire ids keep their dub-folder
+    semantics — ``s3e2`` plays episode 2 of the THIRD dub (MGG), so
+    already-recorded playback positions keep working after the collapse."""
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://eneyida.tv/series/7878-dim-drakona-2022-v2.html").respond(
+            200, text=_fixture("content_series.html")
+        )
+        router.get("https://hdvbua.pro/embed/9549").respond(200, text=PLAYER_MULTI_DUB_HTML)
+        async with httpx.AsyncClient() as http:
+            stream = await EneyidaProvider().stream(
+                "series/7878-dim-drakona-2022-v2:s3e2", None, http
+            )
+    assert stream.url.endswith("hotd.s01e02.mgg/index.m3u8")
+
+
+@pytest.mark.asyncio
+async def test_eneyida_content_multi_season_payload_parses_seasons() -> None:
+    """Ticket #331 companion: top entries titled «N сезон» (season ->
+    dubs -> episodes) stay N real seasons, first dub's episodes."""
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://eneyida.tv/series/8550-taiemnycia-bunkera.html").respond(
+            200, text=_fixture("content_series.html")
+        )
+        router.get("https://hdvbua.pro/embed/9549").respond(200, text=PLAYER_TWO_SEASON_HTML)
+        async with httpx.AsyncClient() as http:
+            content = await EneyidaProvider().content("series/8550-taiemnycia-bunkera", http)
+    assert content.seasons is not None
+    assert [s.number for s in content.seasons] == [1, 2]
+    assert content.seasons[0].episodes[0].id == "eneyida:series/8550-taiemnycia-bunkera:s1e1"
+    assert content.seasons[1].episodes[0].id == "eneyida:series/8550-taiemnycia-bunkera:s2e1"
+    assert [t.label for t in content.seasons[0].episodes[0].translations or []] == ["HDrezka Studio"]
+
+
+@pytest.mark.asyncio
+async def test_eneyida_stream_multi_season_suffix_navigates_season() -> None:
+    """Ticket #331 companion: ``s2e1`` on a real multi-season payload
+    resolves season 2's first dub, episode 1."""
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://eneyida.tv/series/8550-taiemnycia-bunkera.html").respond(
+            200, text=_fixture("content_series.html")
+        )
+        router.get("https://hdvbua.pro/embed/9549").respond(200, text=PLAYER_TWO_SEASON_HTML)
+        async with httpx.AsyncClient() as http:
+            stream = await EneyidaProvider().stream(
+                "series/8550-taiemnycia-bunkera:s2e1", None, http
+            )
+    assert stream.url.endswith("silo.s02e01/index.m3u8")
 
 
 @pytest.mark.asyncio

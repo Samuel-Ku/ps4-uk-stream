@@ -137,6 +137,15 @@ def _file_url(html: str) -> str | None:
     return url
 
 
+#: A top folder title like «1 сезон» marks a REAL season (ticket #331);
+#: anything else (dubbing-studio names) marks a translation track.
+_SEASON_TITLE_RE = re.compile(r"сезон|season", re.IGNORECASE)
+
+
+def _is_season_titled(entry: dict[str, Any] | None) -> bool:
+    return bool(entry and _SEASON_TITLE_RE.search(str(entry.get("title", ""))))
+
+
 #: hdvbua player URLs inside an iframe tag — recovery path for the
 #: upstream's doubled-quote template bug (the regex runs against the
 #: RAW tag HTML, where the URL is intact).
@@ -267,7 +276,7 @@ class EneyidaProvider(BaseProvider):
         if not player:
             raise ProviderError(ProviderErrorCode.PARSE_FAILED, "player missing")
         typ: MediaTypeStr = "series" if kind == "series" else "movie"
-        seasons = await self._seasons(player, external_id, http)
+        seasons, dub_translations = await self._seasons(player, external_id, http)
         if seasons:
             # Issue #165: a /films/ page can carry a series-structured
             # player payload (a folder array with seasons/episodes —
@@ -291,36 +300,100 @@ class EneyidaProvider(BaseProvider):
             id=f"{self.id}:{external_id}",
             title=h1.get_text(strip=True),
             poster=urljoin(BASE_URL, str(img.get("src"))) if img else None,
-            translations=[Translation(id="uk", label="Українська")],
+            translations=dub_translations or [Translation(id="uk", label="Українська")],
             seasons=seasons,
             country=country,
             form=mb_form,
             styles=mb_styles,
         )
 
-    async def _seasons(self, player: str, ext: str, http: httpx.AsyncClient) -> list[Season] | None:
+    async def _seasons(
+        self, player: str, ext: str, http: httpx.AsyncClient
+    ) -> tuple[list[Season] | None, list[Translation]]:
         try:
             r = await self.guarded_get(http, player)
         except httpx.HTTPError:
-            return None
+            return None, []
         if r.status_code == 200 and _content_unavailable(r.text):
             raise ProviderError(ProviderErrorCode.GATED, "upstream content removed")
         raw = _file_url(r.text) if r.status_code == 200 else None
         try:
             data = cast(list[dict[str, Any]], json.loads(raw or "[]"))
-            folders = data[0].get("folder", [])
-        except (json.JSONDecodeError, IndexError, AttributeError):
-            return None
-        return [
-            Season(
-                number=i,
-                episodes=[
-                    Episode(number=j, id=f"{self.id}:{ext}:s{i}e{j}", title=str(e.get("title", "")).strip())
-                    for j, e in enumerate(s.get("folder", []), 1)
-                ],
+        except (json.JSONDecodeError, TypeError):
+            return None, []
+        if not data or not isinstance(data[0], dict):
+            return None, []
+        first = data[0]
+        if _is_season_titled(first):
+            # Season-top payload: every top entry is one season
+            # (season -> dubs -> episodes).
+            season_entries = data
+        else:
+            # Wrapper payload: data[0]["folder"] holds either the
+            # seasons (titled «N сезон») or the dubbing tracks.
+            season_entries = first.get("folder", []) or []
+        if not season_entries:
+            return None, []
+        # Ticket #331: when the entries are NOT titled like seasons,
+        # they are dubbing tracks of ONE season (live: «Дім Дракона»
+        # carries four folders titled by studio, each with the same S1
+        # episodes in that voiceover). Collapse to one season whose
+        # translations are the studio names — the facade must not show
+        # phantom seasons for dubs.
+        if not any(_is_season_titled(e) for e in season_entries if isinstance(e, dict)):
+            dubs = [e for e in season_entries if isinstance(e, dict)]
+            episodes: list[Episode] = []
+            first_dub_folder = dubs[0].get("folder", []) if dubs else []
+            episodes = [
+                Episode(
+                    number=j,
+                    id=f"{self.id}:{ext}:s1e{j}",
+                    title=str(e.get("title", "")).strip(),
+                )
+                for j, e in enumerate(first_dub_folder, 1)
+                if isinstance(e, dict)
+            ]
+            if not episodes:
+                return None, []
+            dub_titles = [str(d.get("title", "")).strip() for d in dubs if str(d.get("title", "")).strip()]
+            translations = [Translation(id=t, label=t) for t in dub_titles]
+            return [Season(number=1, episodes=episodes)], translations
+
+        seasons: list[Season] = []
+        season_dub_titles: list[str] = []
+        for i, s in enumerate(season_entries, 1):
+            if not isinstance(s, dict):
+                continue
+            dubs = [d for d in s.get("folder", []) if isinstance(d, dict)]
+            if not dubs:
+                continue
+            # 3-level (season -> dubs -> episodes): episodes live under
+            # the first dub; 2-level (season -> episodes): the folder
+            # items ARE the episodes.
+            first_dub = dubs[0]
+            eps = (
+                first_dub.get("folder", [])
+                if isinstance(first_dub, dict) and "folder" in first_dub
+                else dubs
             )
-            for i, s in enumerate(folders, 1)
-        ]
+            episode_dubs = [str(d.get("title", "")).strip() for d in dubs if str(d.get("title", "")).strip()]
+            if i == 1 and episode_dubs:
+                season_dub_titles = episode_dubs
+            episodes = [
+                Episode(
+                    number=j,
+                    id=f"{self.id}:{ext}:s{i}e{j}",
+                    title=str(e.get("title", "")).strip(),
+                    translations=[Translation(id=t, label=t) for t in episode_dubs] or None,
+                )
+                for j, e in enumerate(eps, 1)
+                if isinstance(e, dict)
+            ]
+            if episodes:
+                seasons.append(Season(number=i, episodes=episodes))
+        if not seasons:
+            return None, []
+        return seasons, [Translation(id=t, label=t) for t in season_dub_titles]
 
     async def stream(
         self, content_id: str, translation: str | None, http: httpx.AsyncClient
@@ -351,8 +424,19 @@ class EneyidaProvider(BaseProvider):
             m = re.fullmatch(r"s(\d+)e(\d+)", suffix)
             if not m:
                 raise ProviderError(ProviderErrorCode.PARSE_FAILED, "bad episode")
+            s_idx, e_idx = int(m[1]) - 1, int(m[2]) - 1
             try:
-                raw = json.loads(raw)[0]["folder"][int(m[1]) - 1]["folder"][int(m[2]) - 1]["file"]
+                payload = cast(list[dict[str, Any]], json.loads(raw))
+                first = payload[0]
+                if _is_season_titled(first):
+                    # Season-top payload: season index at the top level,
+                    # first dub's episode list (ticket #331 companion).
+                    raw = payload[s_idx]["folder"][0]["folder"][e_idx]["file"]
+                else:
+                    # Wrapper payload: index into data[0]["folder"] (the
+                    # season OR dub track — for the multi-dub shape this
+                    # keeps legacy ``:s<i>e<j>`` dub semantics).
+                    raw = payload[0]["folder"][s_idx]["folder"][e_idx]["file"]
             except (KeyError, IndexError, TypeError, json.JSONDecodeError) as e:
                 raise ProviderError(ProviderErrorCode.PARSE_FAILED, "episode missing") from e
         else:
