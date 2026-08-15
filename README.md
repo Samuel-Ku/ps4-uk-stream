@@ -73,6 +73,34 @@ providers' own pages by a bounded background warm, similarity is a
 pure weighted-cosine function, and nothing leaves the LAN — no API
 keys, no external services (see `CONTEXT.md` §Recommendations).
 
+**LLM taste-profile layer (spec #290, OPTIONAL)** — an optional
+enrichment of the personalized rows against any OpenAI-compatible
+endpoint (OpenAI, OpenRouter, Groq, or a local llama.cpp/ollama
+server). A single daily background call turns the watch history and
+recent searches into a structured taste profile — per-genre weights
+(re-rank «Рекомендовано для тебе»), theme tags (token boosts), and up
+to two extra personalized rows with Ukrainian titles («Похмурі драми
+для тебе») served through the existing facade views. Enable it with
+the three knobs:
+
+```bash
+CS_UK_LLM_BASE_URL=https://api.openai.com/v1   # any OpenAI-compatible base
+CS_UK_LLM_KEY=sk-…                              # never commit this
+CS_UK_LLM_MODEL=gpt-4o-mini
+```
+
+All three must be set to activate; without them (or on ANY failure —
+network error, non-JSON answer, invalid profile) the layer is
+invisible and the pure scorer runs unchanged — a broken model can
+never hurt home. Refresh on demand (token-gated, operator action):
+
+```bash
+curl -X POST http://host:8003/ScheduledTasks/Running/llm-profile \
+  -H "X-Emby-Token: $TOKEN"   # 204 on success, 200 + note otherwise
+```
+
+See `CONTEXT.md` §LLM taste profile.
+
 **Upstream drift monitor (spec #285)** — providers drift (animeon
 lost card URLs, anitubeinua moved its listing page — both found by
 this monitor). A detached nightly probe sweeps every plain-HTTP

@@ -1285,3 +1285,87 @@ def test_genre_view_id_survives_home_cache_invalidation(client: TestClient) -> N
     _home_sources_cache.clear()
     items = _items(client, genre_view["Id"])
     assert {i["Name"] for i in items} == {"Фільм А", "Фільм Б"}
+
+
+# ---------------------------------------------------------------------------
+# LLM idea rows (#293)
+# ---------------------------------------------------------------------------
+
+
+def test_llm_idea_kinds_registered_in_facade_view_vocabulary() -> None:
+    """#293 AC5: the fixed idea-row slots join the facade view
+    vocabulary — a deterministic 32-hex view id and a CollectionType
+    (episodic-ish default), stable across profile refreshes."""
+    from cs_uk_api.recommend import LLM_IDEA_ROW_TYPES
+
+    for kind in LLM_IDEA_ROW_TYPES:
+        assert jf_router._COLLECTION_TYPE_BY_ROW[kind] == "tvshows"
+        vid = jf_router._view_id_for(kind)
+        assert len(vid) == 32 and vid == jf_router._view_id_for(kind)
+    assert jf_router._view_id_for("llm_idea_1") != jf_router._view_id_for("llm_idea_2")
+
+
+def test_llm_idea_row_is_a_view(client: TestClient) -> None:
+    """#293 AC3+AC5: with an active profile the idea row appears on home
+    with only genre-matching cards and opens through the existing view
+    mechanism — no client changes (spec #290 user stories 5–6, 13)."""
+    from cs_uk_api.llm import RowIdea, TasteProfile, set_active_profile
+
+    PROVIDERS["animeon"] = _genres_seed()
+    _auth(client)
+    _seed_similar_profiles(
+        client,
+        {
+            "Дюна": {
+                "genres": frozenset(["екшн", "фантастика"]),
+                "people": frozenset(),
+                "year": 2021,
+                "form": "movie",
+                "styles": frozenset(),
+            },
+            "Війна": {
+                "genres": frozenset(["екшн"]),
+                "people": frozenset(),
+                "year": 2019,
+                "form": "movie",
+                "styles": frozenset(),
+            },
+            "Інтерстеллар": {
+                "genres": frozenset(["фантастика"]),
+                "people": frozenset(),
+                "year": 2014,
+                "form": "movie",
+                "styles": frozenset(),
+            },
+        },
+    )
+    try:
+        set_active_profile(
+            TasteProfile(
+                row_ideas=(
+                    RowIdea(
+                        title="Космічні епопеї для тебе",
+                        genres=("фантастика",),
+                        max=5,
+                    ),
+                )
+            )
+        )
+        _home_cache.clear()
+
+        home = client.get("/api/home").json()
+        idea = next(r for r in home["rows"] if r["type"] == "llm_idea_1")
+        assert idea["title"] == "Космічні епопеї для тебе"
+        # ONLY genre-matching cards: Дюна + Інтерстеллар share
+        # «Фантастика»; Війна (only «Екшн») must not appear.
+        assert {i["title"] for i in idea["items"]} == {"Дюна", "Інтерстеллар"}
+
+        views = _views(client)
+        view = next(v for v in views if v["Name"] == "Космічні епопеї для тебе")
+        items = _items(client, view["Id"])
+        assert {i["Name"] for i in items} == {"Дюна", "Інтерстеллар"}
+        assert all(i["Type"] == "Movie" for i in items)
+        assert all(i["Id"].startswith("g2:") for i in items)
+    finally:
+        set_active_profile(None)
+        _home_cache.clear()

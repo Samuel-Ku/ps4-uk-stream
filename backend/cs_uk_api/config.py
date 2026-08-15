@@ -90,6 +90,13 @@ class Settings:
     # ``load_settings`` env default mirrors this so explicit
     # ``Settings(...)`` constructions (tests) stay valid.
     jellyfin_token: str = "jellyfin-dev-token"
+    #: LLM taste-profile layer (spec #290): an OPTIONAL OpenAI-
+    #: compatible enrichment of the recommender. All three knobs must be
+    #: set for the layer to activate; any missing (or an empty key)
+    #: leaves the pure scorer untouched. Defaults keep the layer inert.
+    llm_base_url: str | None = None
+    llm_key: str | None = None
+    llm_model: str | None = None
 
 
 def _load_resume_path() -> str | None:
@@ -193,6 +200,12 @@ def load_settings() -> Settings:
         # ``X-Emby-Token`` or ``Authorization: MediaBrowser Token="…"``.
         # Default: a stable dev value; override in production.
         jellyfin_token=os.environ.get("CS_UK_JF_TOKEN", "jellyfin-dev-token"),
+        # LLM taste-profile layer (spec #290): all three knobs must be
+        # set for the layer to activate — an empty key (explicitly set
+        # to "" in env) disables it like an absent one.
+        llm_base_url=os.environ.get("CS_UK_LLM_BASE_URL") or None,
+        llm_key=os.environ.get("CS_UK_LLM_KEY") or None,
+        llm_model=os.environ.get("CS_UK_LLM_MODEL") or None,
     )
 
 

@@ -27,6 +27,7 @@ from .catalog_state import home_cache as _catalog_home_cache
 from .catalog_state import load_home as _catalog_load_home
 from .catalog_state import merged_search as _catalog_merged_search
 from .catalog_state import recommendation_stats as _catalog_recommendation_stats
+from .catalog_state import refresh_profile as _llm_refresh_profile
 from .catalog_state import search_cache as _catalog_search_cache
 from .catalog_state import sources_cache as _catalog_sources_cache
 from .config import SETTINGS
@@ -39,6 +40,7 @@ from .http_client import close_client, get_client
 from .jellyfin import router as jellyfin_router
 from .jellyfin.capture import capture_request
 from .jellyfin.router import normalize_jellyfin_path
+from .llm import llm_enabled as _llm_enabled
 from .merge import group_key_from
 from .models import (
     STATUS_DOWN,
@@ -118,6 +120,28 @@ _watchdog_task: asyncio.Task[None] | None = None
 #: Watchdog tick period: how often the all-providers-down check runs.
 _WATCHDOG_INTERVAL_S: float = 60.0
 
+#: Handle of the background LLM taste-profile refresh task started by
+#: ``lifespan`` (spec #290) — None until scheduled.
+_llm_task: asyncio.Task[None] | None = None
+
+#: Daily LLM taste-profile cadence (spec #290 §Cadence: "refreshed
+#: daily in the background").
+_LLM_PROFILE_INTERVAL_S: float = 24 * 60 * 60
+
+
+async def _llm_profile_loop() -> None:
+    """Daily LLM taste-profile refresh (spec #290 user story 10).
+
+    Scheduled once by ``lifespan`` — and ONLY when the three LLM knobs
+    are configured (the layer is invisible until enabled). Each tick
+    refreshes the active profile from the current signals; the refresh
+    function never raises, so a failed model call can never kill the
+    loop. Cancelled by ``lifespan`` shutdown.
+    """
+    while True:
+        await asyncio.sleep(_LLM_PROFILE_INTERVAL_S)
+        await _llm_refresh_profile()
+
 
 async def _watchdog_loop() -> None:
     """Periodic all-providers-down check (ticket #215).
@@ -181,7 +205,7 @@ async def _warm_and_heartbeat() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    global _warm_task, _watchdog_task, _catalog_warm_task
+    global _warm_task, _watchdog_task, _catalog_warm_task, _llm_task
     if os.path.exists(DEFAULT_CHROMIUM):
         # Background warm+heartbeat (issue #193): uakino's browser session
         # is brought up once at startup instead of lazily on first request,
@@ -198,6 +222,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # never triggers real provider scrapes.
     if SETTINGS.catalog_warm_enabled:
         _catalog_warm_task = asyncio.create_task(_catalog_warm_loop())
+    # Daily LLM taste-profile refresh (spec #290): scheduled only when
+    # the layer is configured — no knobs, no task, no LLM calls.
+    if _llm_enabled():
+        _llm_task = asyncio.create_task(_llm_profile_loop())
     yield
     if _watchdog_task is not None:
         _watchdog_task.cancel()
@@ -220,6 +248,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         except (TimeoutError, asyncio.CancelledError):
             pass
         _warm_task = None
+    if _llm_task is not None:
+        _llm_task.cancel()
+        try:
+            await asyncio.wait_for(_llm_task, timeout=1.0)
+        except (TimeoutError, asyncio.CancelledError):
+            pass
+        _llm_task = None
     # Persist any debounced playback-progress state (ticket #248): the
     # Stopped report already flushed, but heartbeat positions may still
     # be pending a debounce when the process is told to stop.

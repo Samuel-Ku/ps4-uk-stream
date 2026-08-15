@@ -12,6 +12,11 @@ dependencies = [
   "cachetools>=5.3",
   "pycryptodome>=3.20",
   "playwright>=1.40",
+  # WebP transcode for the Jellyfin image routes (avatar + poster
+  # `format=Webp`): Pillow is imported lazily inside the transcode
+  # helpers, but a fresh install must still ship it (ticket #291 found
+  # the missing dep — the existing venv only had it by accident).
+  "pillow>=10.0",
 ]
 
 [project.optional-dependencies]
@@ -22,6 +27,21 @@ dev = [
   "ruff>=0.4",
   "mypy>=1.9",
 ]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# The package list is pinned explicitly (ticket #291): the deploy/
+# directory is a sibling top-level dir, and setuptools flat-layout
+# auto-discovery would refuse to build with two top-level packages
+# ("Multiple top-level packages discovered: ['deploy', 'cs_uk_api']").
+# Only the cs_uk_api package ships; deploy/ stays source-only.
+[tool.setuptools]
+packages = ["cs_uk_api"]
+
+[tool.setuptools.package-data]
+"*" = ["py.typed"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

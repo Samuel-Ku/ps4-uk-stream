@@ -38,7 +38,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import RedirectResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from ..catalog_state import (
@@ -55,6 +55,7 @@ from ..catalog_state import (
     playback_entries,
     recent_playback_entries,
     record_playback,
+    refresh_profile,
     register_search_groups,
     remember_dub,
     resolve_group,
@@ -307,6 +308,11 @@ _COLLECTION_TYPE_BY_ROW = {
     # spec #272: «Нещодавно переглянуто» is mixed-form history — the
     # episodic-ish default is fine (the client renders it as a shelf).
     "recently_watched": "tvshows",
+    # spec #290: the LLM-proposed idea rows use fixed slots so their
+    # view ids stay stable across profile refreshes; mixed-form
+    # shelves take the episodic-ish default like the other rows.
+    "llm_idea_1": "tvshows",
+    "llm_idea_2": "tvshows",
 }
 
 #: Home-row kind → Jellyfin item Type. Only Movie/Series are expressible
@@ -2886,6 +2892,41 @@ async def scheduled_tasks() -> list[object]:
     empty in the standard ``TaskInfo[]`` shape — never a 404.
     """
     return []
+
+
+async def _run_llm_profile_refresh() -> bool:
+    """Injectable LLM-profile refresh seam (spec #290): the route
+    answers through this so a test never hits a real model endpoint
+    (same idiom as ``_schedule_restart``/``_exec_restart``)."""
+    return await refresh_profile()
+
+
+@router.post(
+    "/ScheduledTasks/Running/llm-profile",
+    dependencies=[Depends(require_token)],
+)
+async def run_llm_profile_refresh() -> Response:
+    """On-demand LLM taste-profile refresh (spec #290 user story 11).
+
+    Token-gated operator trigger in the dashboard's task idiom: a
+    successful refresh answers 204 (the client's task-started
+    contract); an inert/refused refresh answers 200 with a note —
+    never an error (user story 8: a broken model answer leaves home
+    unchanged). The real refresh runs through the injectable
+    ``_run_llm_profile_refresh`` seam.
+    """
+    ok = await _run_llm_profile_refresh()
+    if ok:
+        return Response(status_code=204)
+    return JSONResponse(
+        {
+            "Message": (
+                "LLM taste profile not refreshed "
+                "(not configured or the model call failed)"
+            )
+        },
+        status_code=200,
+    )
 
 
 @router.get(

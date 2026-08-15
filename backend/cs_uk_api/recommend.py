@@ -19,6 +19,7 @@ from collections.abc import Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 
+from .llm import TasteProfile
 from .models import ContentResponse, HomeItem, HomeRow
 
 #: «Рекомендовано для тебе» row cap (spec #252).
@@ -48,6 +49,10 @@ ANCHOR_WEIGHTS = (1.0, 0.7, 0.5)
 #: Row kinds the recommendation builder emits.
 RECOMMENDED_ROW_TYPE = "recommended"
 SIMILAR_ROW_TYPE = "similar"
+
+#: Fixed row-kind slots for the LLM-proposed idea rows (spec #290) so
+#: the facade view ids stay stable across profile refreshes.
+LLM_IDEA_ROW_TYPES = ("llm_idea_1", "llm_idea_2")
 
 
 @dataclass(frozen=True)
@@ -84,21 +89,50 @@ def _cosine(a: AbstractSet[str], b: AbstractSet[str]) -> float:
     return inter / math.sqrt(len(a) * len(b))
 
 
+def _genre_cosine(
+    a: frozenset[str], b: frozenset[str], weights: Mapping[str, float] | None
+) -> float:
+    """Cosine over two genre sets, each SHARED genre weighted.
+
+    With no weights the numerator is exactly ``len(shared)`` — the
+    plain cosine, byte-identical to the unweighted run. With a taste
+    profile (spec #290) a viewer-boosted genre (weight > 1) contributes
+    more than one shared slot, a damped one less (the parser clamps
+    weights to 0.2–2.0).
+    """
+    if not a or not b:
+        return 0.0
+    shared = set(a) & set(b)
+    if not shared:
+        return 0.0
+    if weights is None:
+        return len(shared) / math.sqrt(len(a) * len(b))
+    num = sum(weights.get(g, 1.0) for g in shared)
+    return num / math.sqrt(len(a) * len(b))
+
+
 def _year_proximity(a: int | None, b: int | None) -> float:
     if a is None or b is None:
         return 0.0
     return 1.0 if abs(a - b) <= _YEAR_WINDOW else 0.0
 
 
-def similarity(a: ItemProfile, b: ItemProfile) -> float:
+def similarity(
+    a: ItemProfile,
+    b: ItemProfile,
+    genre_weights: Mapping[str, float] | None = None,
+) -> float:
     """Weighted content similarity between two profiles (spec §Scoring).
 
     Sum of the weighted cosine terms over genres/people/styles plus the
     year-proximity term; a form mismatch (movie vs series) halves the
     total so movies mostly recommend movies and series mostly series.
+    ``genre_weights`` (the LLM taste profile, spec #290) multiply each
+    SHARED genre's contribution; None or empty is byte-identical to the
+    unweighted run.
     """
     score = (
-        _GENRE_W * _cosine(a.genres, b.genres)
+        _GENRE_W * _genre_cosine(a.genres, b.genres, genre_weights)
         + _PEOPLE_W * _cosine(a.people, b.people)
         + _STYLE_W * _cosine(a.styles, b.styles)
         + _YEAR_W * _year_proximity(a.year, b.year)
@@ -125,16 +159,24 @@ def query_boost(profile: ItemProfile, title: str, queries: Sequence[str]) -> flo
     return boost
 
 
-def taste_score(candidate: ItemProfile, anchors: Sequence[tuple[ItemProfile, float]]) -> float:
+def taste_score(
+    candidate: ItemProfile,
+    anchors: Sequence[tuple[ItemProfile, float]],
+    genre_weights: Mapping[str, float] | None = None,
+) -> float:
     """Aggregate taste: the recency-weighted mean of per-anchor similarities."""
     total_w = sum(w for _, w in anchors)
     if not anchors or total_w <= 0:
         return 0.0
-    return sum(similarity(candidate, anchor) * w for anchor, w in anchors) / total_w
+    return (
+        sum(similarity(candidate, anchor, genre_weights) * w for anchor, w in anchors)
+        / total_w
+    )
 
 
 __all__ = [
     "ANCHOR_WEIGHTS",
+    "LLM_IDEA_ROW_TYPES",
     "MAX_ANCHORS",
     "QUERY_MATCH_BOOST",
     "RECOMMENDED_LIMIT",
@@ -158,15 +200,29 @@ def build_recommendation_rows(
     anchors: Sequence[tuple[ItemProfile, float]],
     similar_anchor: tuple[ItemProfile, str] | None,
     queries: Sequence[str],
+    profile: TasteProfile | None = None,
 ) -> list[HomeRow]:
-    """«Рекомендовано для тебе» + «Схоже на X», or [] when no signal.
+    """«Рекомендовано для тебе» + «Схоже на X» + up to two LLM idea
+    rows, or [] when no signal.
 
     Candidates are the home-snapshot groups that have a profile and are
-    not in ``watched``. Both rows are omitted when they have no signal
-    (no anchors/queries, or nothing scores above zero) — the existing
-    home rule: empty rows don't ship. ``anchors`` are (profile, recency
-    weight) pairs, newest first; ``similar_anchor`` is the single most
-    recent in-progress (profile, title) for «Схоже на X».
+    not in ``watched``. The personalized rows are omitted when they
+    have no signal (no anchors/queries, or nothing scores above zero) —
+    the existing home rule: empty rows don't ship. ``anchors`` are
+    (profile, recency weight) pairs, newest first; ``similar_anchor``
+    is the single most recent in-progress (profile, title) for «Схоже
+    на X».
+
+    ``profile`` (the LLM taste profile, spec #290) is strictly
+    additive — None or an empty profile reproduces the unweighted
+    behavior byte-identically:
+
+      - ``genre_weights`` multiply each shared genre's cosine term;
+      - ``theme_tags`` join the query-boost token mechanics (a tag
+        matching the title or a genre label adds the fixed boost);
+      - ``row_ideas`` (at most two, fixed ``llm_idea_N`` kinds) filter
+        the pool to items whose profile shares a declared genre, ranked
+        by taste, capped at the idea's max.
     """
     # A group can surface in more than one home row (e.g. «Новинки» and
     # a type row) — and the same title can carry DIFFERENT group keys
@@ -192,9 +248,15 @@ def build_recommendation_rows(
     # surface the row (spec #252 user story 3: "things I looked for but
     # didn't watch also surface"). With no anchors, taste_score is 0 and
     # only query-matching candidates score above zero.
+    genre_weights = profile.genre_weights if profile else None
+    theme_tags = profile.theme_tags if profile else ()
     if (anchors or queries) and pool:
         scored = [
-            (item, taste_score(prof, anchors) + query_boost(prof, item.title, queries))
+            (
+                item,
+                taste_score(prof, anchors, genre_weights)
+                + query_boost(prof, item.title, [*queries, *theme_tags]),
+            )
             for item, prof in pool
         ]
         scored.sort(key=lambda pair: pair[1], reverse=True)
@@ -221,5 +283,34 @@ def build_recommendation_rows(
                     items=top,
                 )
             )
+
+    # Idea rows (spec #290 user story 5–6): only items whose profile
+    # shares a declared genre, ranked by taste, capped at the idea's
+    # max. An idea with no matching item simply produces no row — the
+    # curation never lies. The rows rank by taste (recency-weighted)
+    # but do NOT require a positive score, so an idea row can ship on
+    # genre signal alone (no anchors needed).
+    if profile and profile.row_ideas and pool:
+        for i, idea in enumerate(profile.row_ideas):
+            if i >= len(LLM_IDEA_ROW_TYPES):
+                break
+            wanted = set(idea.genres)
+            matching = [
+                (item, taste_score(prof, anchors, genre_weights))
+                for item, prof in pool
+                if wanted & prof.genres
+            ]
+            if not matching:
+                continue
+            matching.sort(key=lambda pair: pair[1], reverse=True)
+            top = [item for item, _score in matching][: idea.max]
+            if top:
+                rows.append(
+                    HomeRow(
+                        title=idea.title,
+                        type=LLM_IDEA_ROW_TYPES[i],
+                        items=top,
+                    )
+                )
 
     return rows

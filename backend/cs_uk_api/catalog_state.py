@@ -18,7 +18,7 @@ import asyncio
 import logging
 import re
 from collections.abc import Mapping, Sequence
-from typing import cast
+from typing import Any, cast
 
 import httpx
 from fastapi import HTTPException
@@ -30,6 +30,7 @@ from .filters import matches_axes, style_key
 from .health import TRACKER
 from .home import build_genre_rows, build_home_rows, section_row_type
 from .http_client import get_client
+from .llm import active_profile, fetch_profile, set_active_profile
 from .merge import group_key_from, item_group_key, merge_results
 from .models import (
     STATUS_DOWN,
@@ -540,7 +541,12 @@ def _recommendation_rows(rows: Sequence[HomeRow]) -> list[HomeRow]:
         if similar is None and item is not None:
             similar = (prof, item.title)
     queries = recent_search_queries()
-    if not anchors and not queries:
+    # An active profile's idea rows are genre signal alone — they can
+    # ship without any anchor/query taste signal (spec #290 user story
+    # 5: the curated rows exist even when the viewer hasn't watched or
+    # searched recently).
+    profile = active_profile()
+    if not anchors and not queries and not (profile and profile.row_ideas):
         return []
     return build_recommendation_rows(
         home_items=home_items,
@@ -549,6 +555,7 @@ def _recommendation_rows(rows: Sequence[HomeRow]) -> list[HomeRow]:
         anchors=anchors,
         similar_anchor=similar,
         queries=queries,
+        profile=profile,
     )
 
 
@@ -575,6 +582,76 @@ def _with_recommendation_rows(rows: list[HomeRow]) -> list[HomeRow]:
     if genre:
         out.extend(genre)
     return out
+
+
+# ---------------------------------------------------- LLM wiring (spec #290)
+
+
+def _llm_history_signal() -> list[dict[str, object]]:
+    """The up-to-10 most recent history items as taste signals.
+
+    Each entry is {title, genres, year, form} for the LLM: the item id
+    resolves to its merged group key through the series-group reverse
+    lookup (episodes report ``provider:external:s1e1`` wire ids), and
+    only groups with a warm content profile contribute — a cold group
+    has no taste to signal. Titles come from the current home snapshot
+    (profiles carry no title); a group outside the snapshot falls back
+    to its group key.
+    """
+    home = get_home()
+    title_by_key: dict[str, str] = {}
+    if home is not None:
+        title_by_key = {it.group_key: it.title for row in home.rows for it in row.items}
+    out: list[dict[str, object]] = []
+    for item_id in recent_history_entries(10):
+        group_key = episode_group_key(item_id)
+        if group_key is None:
+            continue
+        prof = _profiles.get(group_key)
+        if prof is None:
+            continue
+        out.append(
+            {
+                "title": title_by_key.get(group_key, group_key),
+                "genres": sorted(prof.genres),
+                "year": prof.year,
+                "form": prof.form,
+            }
+        )
+    return out
+
+
+async def refresh_profile(*, client: Any | None = None) -> bool:
+    """One LLM taste-profile refresh (spec #290 user stories 10–12).
+
+    Collects the signals (recent history via the series-group reverse
+    lookup, recent queries, the profile-derived catalog genre
+    vocabulary), calls the model, and installs the active profile on
+    success. Returns True only when a profile was installed; on ANY
+    failure (missing knobs, network error, invalid answer) the previous
+    profile — or none — stays active and False is returned. Never
+    raises, never blocks the home build: the LLM call happens here, not
+    on the home path. ``client`` is the injectable seam (tests pass a
+    fake; production uses the configured endpoint).
+    """
+    try:
+        profile = await fetch_profile(
+            history=_llm_history_signal(),
+            queries=recent_search_queries(),
+            genres=sorted({g for p in _profiles.values() for g in p.genres}),
+            client=client,
+        )
+    except Exception as e:  # noqa: BLE001 — the layer degrades to inert
+        log.warning("llm taste-profile refresh failed: %s", e)
+        return False
+    if profile is None:
+        return False
+    set_active_profile(profile)
+    # The home rows are BUILT from the active profile — the new weights/
+    # tags/ideas must surface on the next build, not after the 30-min
+    # home TTL. Clearing only invalidates; the next request rebuilds.
+    home_cache.clear()
+    return True
 
 
 #: Cap on concurrent content-page fetches during the gate sweep, and

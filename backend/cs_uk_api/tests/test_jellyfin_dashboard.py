@@ -405,3 +405,46 @@ def test_system_restart_reexec_uses_running_command_line(monkeypatch) -> None:
     executable, argv = captured[0]
     assert executable == sys.executable
     assert argv == [sys.executable, *sys.argv]
+
+
+def test_run_llm_profile_answers_204_on_success(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#294 AC3: a successful on-demand LLM-profile refresh answers 204
+    via the injectable ``_run_llm_profile_refresh`` seam — never a real
+    model call in tests."""
+    calls: list[bool] = []
+
+    async def fake_refresh() -> bool:  # type: ignore[no-untyped-def]
+        calls.append(True)
+        return True
+
+    monkeypatch.setattr(jf_router, "_run_llm_profile_refresh", fake_refresh)
+    r = client.post(
+        "/ScheduledTasks/Running/llm-profile", headers={"X-Emby-Token": TOKEN}
+    )
+    assert r.status_code == 204
+    assert calls == [True]
+
+
+def test_run_llm_profile_answers_200_note_when_inert(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#294 AC3: an inert/refused refresh (not configured, model call
+    failed) answers 200 with a note — never an error."""
+    async def fake_refresh() -> bool:  # type: ignore[no-untyped-def]
+        return False
+
+    monkeypatch.setattr(jf_router, "_run_llm_profile_refresh", fake_refresh)
+    r = client.post(
+        "/ScheduledTasks/Running/llm-profile", headers={"X-Emby-Token": TOKEN}
+    )
+    assert r.status_code == 200
+    assert "not refreshed" in r.json()["Message"]
+
+
+def test_run_llm_profile_requires_token(client: TestClient) -> None:
+    """#294: the on-demand trigger sits behind the same token gate as
+    the rest of the facade surface."""
+    r = client.post("/ScheduledTasks/Running/llm-profile")
+    assert r.status_code == 401

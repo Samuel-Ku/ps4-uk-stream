@@ -214,6 +214,26 @@ boundary validation is `fullmatch` everywhere; uakino movies without a
   `/anime/` (adapter rejects non-200) — ticket **#297**; the same run
   also proved the deep probe catches provider bugs (cikavaideya/
   hentaiukr external-id handling verified green after the fix).
+- **LLM taste-profile layer (spec #290, tickets #291–#295,
+  2026-08-15).** An OPTIONAL enrichment of the #252 recommender
+  through its pluggable scorer seam — per-genre weights re-rank
+  «Рекомендовано для тебе», theme tags act as token boosts, and up to
+  two LLM-proposed rows with Ukrainian titles ship through fixed
+  facade row-kind slots (`llm_idea_1`/`llm_idea_2`, zero client
+  changes). One daily OpenAI-compatible call (30 s timeout, no
+  retries) turns the recent history (resolved through the
+  series-group reverse lookup), recent queries, and the catalog genre
+  vocabulary into a strictly-validated v1 profile; ANY failure —
+  missing knobs, network error, bad answer — keeps the pure scorer
+  byte-identical and invisible (the fallback invariant). Env knobs:
+  `CS_UK_LLM_BASE_URL` / `CS_UK_LLM_KEY` / `CS_UK_LLM_MODEL`;
+  on-demand `POST /ScheduledTasks/Running/llm-profile` (204 / 200+
+  note, never an error). Ships the packaging fix for fresh installs
+  (explicit package pin + the missing Pillow dependency — a fresh
+  venv now runs the full suite). Test counts: 1234 passing (was
+  1204; +30 — parser/client, scorer enrichment incl. the
+  byte-identical no-profile guarantee, refresh wiring, facade
+  vocabulary + idea-row view, trigger route).
 
 ```bash
 cd backend

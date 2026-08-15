@@ -8,8 +8,10 @@ builder's timing or concurrency internals.
 
 from __future__ import annotations
 
+from cs_uk_api.llm import RowIdea, TasteProfile
 from cs_uk_api.models import ContentResponse, HomeItem
 from cs_uk_api.recommend import (
+    LLM_IDEA_ROW_TYPES,
     QUERY_MATCH_BOOST,
     ItemProfile,
     build_recommendation_rows,
@@ -203,6 +205,144 @@ def test_candidates_deduped_by_title_across_group_keys() -> None:
         queries=[],
     )
     assert len(rows[0].items) == 1
+
+
+# --------------------------------------------- LLM enrichment (#293)
+
+
+def test_genre_weights_rerank_above_unweighted() -> None:
+    """#293 AC1: with an active profile a boosted genre ranks its titles
+    above the unweighted order."""
+    anchor = _prof(genres=frozenset({"боєвик", "драма"}), form="movie")
+    action = _prof(genres=frozenset({"боєвик"}), form="movie")
+    drama = _prof(genres=frozenset({"драма", "трилер"}), form="movie")
+    items = [_item("g2:a", "Екшн"), _item("g2:d", "Драма")]
+    profiles = {"g2:a": action, "g2:d": drama}
+    kw = {
+        "home_items": items,
+        "profiles": profiles,
+        "watched": set(),
+        "anchors": [(anchor, 1.0)],
+        "similar_anchor": None,
+        "queries": [],
+    }
+    plain = build_recommendation_rows(**kw)
+    weighted = build_recommendation_rows(
+        **kw, profile=TasteProfile(genre_weights={"драма": 2.0})
+    )
+    # Unweighted: action shares 1 of the anchor's 2 genres (cos 1/√2)
+    # vs drama's 1/2 — action leads. Weighted: the drama genre term is
+    # doubled (2/√4 = 1.0) and flips the order.
+    assert [it.group_key for it in plain[0].items] == ["g2:a", "g2:d"]
+    assert [it.group_key for it in weighted[0].items] == ["g2:d", "g2:a"]
+
+
+def test_theme_tags_boost_by_title_or_genre() -> None:
+    """#293 AC2: theme tags reuse the query-boost token mechanics — a
+    tag matching the title OR a genre label lifts the item above the
+    unweighted taste order."""
+    anchor = _prof(genres=frozenset({"боєвик", "фантастика"}), form="movie")
+    action = _prof(genres=frozenset({"боєвик"}), form="movie")
+    drama = _prof(genres=frozenset({"драма"}), form="movie")
+
+    def top(profile: TasteProfile | None) -> list[str]:
+        rows = build_recommendation_rows(
+            home_items=[_item("g2:a", "Екшн"), _item("g2:d", "Повільна драма")],
+            profiles={"g2:a": action, "g2:d": drama},
+            watched=set(),
+            anchors=[(anchor, 1.0)],
+            similar_anchor=None,
+            queries=[],
+            profile=profile,
+        )
+        return [it.group_key for it in rows[0].items]
+
+    assert top(None) == ["g2:a"]
+    # genre-label match: the tag "драма" IS a genre label — drama
+    # (0 taste + 1.0 boost) outranks action (0.707 taste).
+    assert top(TasteProfile(theme_tags=("драма",))) == ["g2:d", "g2:a"]
+    # title match: the tag "повільна" appears in the title.
+    assert top(TasteProfile(theme_tags=("повільна",))) == ["g2:d", "g2:a"]
+
+
+def test_idea_rows_filter_by_genre_and_cap() -> None:
+    """#293 AC3: up to two idea rows appear with ONLY genre-matching
+    items, capped at the idea's max, on the fixed llm_idea_N kinds —
+    even with no anchor/query taste signal."""
+    profile = TasteProfile(
+        row_ideas=(
+            RowIdea(title="Похмурі драми для тебе", genres=("драма",), max=1),
+            RowIdea(title="Екшн для тебе", genres=("боєвик",), max=10),
+        )
+    )
+    rows = build_recommendation_rows(
+        home_items=[
+            _item("g2:a", "Екшн"),
+            _item("g2:d", "Драма"),
+            _item("g2:c", "Комедія"),
+        ],
+        profiles={
+            "g2:a": _prof(genres=frozenset({"боєвик"}), form="movie"),
+            "g2:d": _prof(genres=frozenset({"драма"}), form="movie"),
+            "g2:c": _prof(genres=frozenset({"комедія"}), form="movie"),
+        },
+        watched=set(),
+        anchors=[],
+        similar_anchor=None,
+        queries=[],
+        profile=profile,
+    )
+    assert [r.type for r in rows] == list(LLM_IDEA_ROW_TYPES)
+    assert rows[0].title == "Похмурі драми для тебе"
+    assert [it.group_key for it in rows[0].items] == ["g2:d"]
+    assert rows[1].title == "Екшн для тебе"
+    assert [it.group_key for it in rows[1].items] == ["g2:a"]
+
+
+def test_idea_row_with_no_matching_items_is_omitted() -> None:
+    """#293 user story 6: an idea whose declared genre matches nothing
+    in the snapshot produces no row — the curation never lies."""
+    profile = TasteProfile(
+        row_ideas=(RowIdea(title="Вестерни", genres=("вестерн",), max=5),)
+    )
+    rows = build_recommendation_rows(
+        home_items=[_item("g2:a", "Екшн")],
+        profiles={"g2:a": _prof(genres=frozenset({"боєвик"}), form="movie")},
+        watched=set(),
+        anchors=[],
+        similar_anchor=None,
+        queries=[],
+        profile=profile,
+    )
+    assert rows == []
+
+
+def test_no_profile_is_identical_to_empty_profile() -> None:
+    """#293 AC4: without an active profile (or with an empty one) the
+    rows and ranking are identical to the unweighted behavior — the
+    layer is invisible until enabled."""
+    anchor = _prof(genres=frozenset({"боєвик", "фантастика"}), form="movie", year=2021)
+    items = [_item("g2:a", "Екшн"), _item("g2:b", "Драма"), _item("g2:w", "Дивився")]
+    profiles = {
+        "g2:a": _prof(genres=frozenset({"боєвик"}), form="movie"),
+        "g2:b": _prof(genres=frozenset({"драма"}), form="movie"),
+        "g2:w": _prof(genres=frozenset({"боєвик"}), form="movie"),
+    }
+    kw = {
+        "home_items": items,
+        "profiles": profiles,
+        "watched": {"g2:w"},
+        "anchors": [(anchor, 1.0)],
+        "similar_anchor": None,
+        "queries": ["екшн"],
+    }
+    assert build_recommendation_rows(**kw) == build_recommendation_rows(
+        **kw, profile=TasteProfile()
+    )
+    # The scorer itself: an empty weight map is the unweighted cosine.
+    a = _prof(genres=frozenset({"драма", "трилер"}), form="movie")
+    b = _prof(genres=frozenset({"драма"}), form="movie")
+    assert similarity(a, b) == similarity(a, b, {})
 
 
 def test_profile_from_content() -> None:

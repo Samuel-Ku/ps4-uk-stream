@@ -420,6 +420,47 @@ backend cannot record which dub a viewer watched. Evaluated and
 rejected for parity round 3 — documented so no future round re-proposes
 it.
 
+### LLM taste profile (spec #290)
+
+An OPTIONAL enrichment of the #252 scorer, filled through the seam the
+scorer was designed for. When all three knobs (`CS_UK_LLM_BASE_URL`,
+`CS_UK_LLM_KEY`, `CS_UK_LLM_MODEL`) are set, a daily background task in
+the app lifespan calls ONE OpenAI-compatible chat-completions endpoint
+(30 s timeout, no retries) with the signals — the ≤10 most recent
+history items resolved through the series-group reverse lookup
+(`episode_group_key` → warm content profile, so episodes land on their
+series), the recent search queries, and the catalog genre vocabulary
+(the union of genres across the warm profiles). Provider titles are
+untrusted DATA in the prompt, never instructions.
+
+The validated v1 profile (`llm.py::TasteProfile`) plugs into the pure
+scorer (`recommend.py`) as strictly additive:
+
+- **genre_weights** (0.2–2.0) multiply each SHARED genre's cosine
+  contribution — a boosted genre's titles re-rank above the unweighted
+  order;
+- **theme_tags** reuse the query-boost token mechanics (a tag matching
+  the title or a genre label adds the fixed boost);
+- **row_ideas** (≤2) become home rows with Ukrainian titles, filtered
+  to items whose profile shares a declared genre, capped at the idea's
+  max — served through fixed facade row-kind slots `llm_idea_1` /
+  `llm_idea_2` (stable view ids, zero client changes). An idea with no
+  matching item ships no row; the curation never lies.
+
+**The fallback invariant: ANY failure → the pure scorer.** A missing
+knob, a network error, a non-JSON answer, an out-of-band weight, or a
+malformed idea rejects the WHOLE profile (never a partial install) and
+leaves the previous profile — or none — active. Without a profile the
+rows and scoring are byte-identical to the pre-LLM behavior. The
+profile is in-memory only (regenerable; a restart re-runs the loop),
+never blocks the home build (the call happens in the refresh task, not
+on the home path), and `refresh_profile()` clears the home cache on a
+successful install so the new rows surface immediately.
+
+Operator surface: `POST /ScheduledTasks/Running/llm-profile`
+(token-gated, in the dashboard's task idiom) refreshes on demand — 204
+on success, 200 with a note when inert, never an error.
+
 ### Home composition (spec #263)
 
 «Новинки» was retired (2026-08-14) in favour of a Netflix-style home:
