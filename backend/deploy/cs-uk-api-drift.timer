@@ -1,0 +1,16 @@
+# cs-uk-api drift monitor timer (spec #285, ticket #288)
+#
+# Runs the nightly drift sweep. OnCalendar is the operator's nightly
+# cadence (default 03:10 — after the API's own quiet hours); adjust for
+# the host. Persistent=true catches a missed run at next boot.
+
+[Unit]
+Description=Run the cs-uk-api drift monitor nightly
+
+[Timer]
+OnCalendar=*-*-* 03:10:00
+Persistent=true
+Unit=cs-uk-api-drift.service
+
+[Install]
+WantedBy=timers.target

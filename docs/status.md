@@ -195,6 +195,25 @@ boundary validation is `fullmatch` everywhere; uakino movies without a
   counts/storage/users wire tests, graceful-empties envelopes,
   Download bytes + disposition + 404, detail MediaSource name,
   restart seam tests).
+- **Upstream drift monitor (spec #285, tickets #286–#289,
+  2026-08-15).** A standalone nightly probe catches upstream drift
+  within a day: every plain-HTTP provider's listing is parsed through
+  the REAL adapters (browse newest-section page 1), a rotating subset
+  gets a deep probe (content → stream → HEAD) with full coverage
+  every 6 days, and verdicts run against a self-calibrating baseline
+  (card-count band + form/style distribution updated by each healthy
+  pass — growth never false-positives, a flipped kind-signal trips).
+  The second consecutive failure files a GitHub issue (one per
+  provider, deduped; recovery comments + closes) via an injectable
+  `gh` boundary; a systemd timer pair ships beside the service unit;
+  machine-readable report + state under `~/.cache/cs-uk-api/drift-*`.
+  uakino is never probed (API browser-session heartbeat covers it).
+  Test counts: 1204 passing (was 1165; +39 — probe harness, baseline
+  verdicts, monitor issue-flow tests). Live smoke on real upstreams
+  found genuine drift: anitubeinua's `/anime/page/1/` now 301s to
+  `/anime/` (adapter rejects non-200) — ticket **#297**; the same run
+  also proved the deep probe catches provider bugs (cikavaideya/
+  hentaiukr external-id handling verified green after the fix).
 
 ```bash
 cd backend

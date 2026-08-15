@@ -73,6 +73,41 @@ providers' own pages by a bounded background warm, similarity is a
 pure weighted-cosine function, and nothing leaves the LAN — no API
 keys, no external services (see `CONTEXT.md` §Recommendations).
 
+**Upstream drift monitor (spec #285)** — providers drift (animeon
+lost card URLs, anitubeinua moved its listing page — both found by
+this monitor). A detached nightly probe sweeps every plain-HTTP
+provider's listing through the real adapters, deep-probes a rotating
+subset (content → stream → HEAD) so each provider gets full coverage
+every 6 days, verdicts each against a self-calibrating baseline (a
+healthy pass updates the expected card-count band and form/style
+distribution, so catalog growth never false-positives), and files a
+GitHub issue on the second consecutive failure — one issue per
+provider, recovery comments and closes it. uakino is never probed
+(its health is the API's browser-session heartbeat).
+
+Install the timer pair beside the service unit:
+
+```bash
+sudo cp backend/deploy/cs-uk-api-drift.service backend/deploy/cs-uk-api-drift.timer /etc/systemd/system/
+# edit User= / WorkingDirectory= to this host (and gh auth for issue filing)
+sudo systemctl daemon-reload
+sudo systemctl enable --now cs-uk-api-drift.timer
+```
+
+Run it by hand (no issue filing):
+
+```bash
+cd backend && . .venv/bin/activate
+python -m cs_uk_api.scripts.drift_monitor --no-issues   # probes + report only
+cat ~/.cache/cs-uk-api/drift-report.json               # machine-readable report
+```
+
+The report and the baseline/counter state live in
+`~/.cache/cs-uk-api/drift-{report,state}.json` (gitignored runtime
+state; override with `CS_UK_DRIFT_REPORT` / `CS_UK_DRIFT_STATE`). The
+script exits non-zero when any provider failed — visible in
+`journalctl -u cs-uk-api-drift`.
+
 ## Release gate
 
 ```bash

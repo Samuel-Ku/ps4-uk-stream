@@ -242,6 +242,50 @@ catalog is movies/series/episodes — there is no danmaku surface and no
 music/playlist content, so the client's related screens stay quietly
 empty rather than erroring.
 
+### Upstream drift monitor (spec #285)
+
+A standalone nightly probe (``scripts/drift_monitor.py``, modules in
+``drift/``) that detects upstream drift within a day instead of
+waiting for user-visible errors:
+
+- **Hybrid sweep.** Every plain-HTTP provider (all except uakino — its
+  health is the API's browser-session heartbeat, and probing would
+  warm a second browser session) gets a nightly LISTING probe: page 1
+  of its newest section parsed through the REAL adapter, so a parse
+  breakage or form/style flip shows up as a changed signature. A
+  rotating subset additionally gets a DEEP probe (first card's
+  ``content()`` → ``stream()`` → HEAD of the stream URL), full
+  coverage every 6 days — stream-level drift (animeon's lost URLs)
+  is caught without hammering upstreams nightly.
+- **Self-calibrating baseline** (``drift/baseline.py``): each healthy
+  pass stores the provider's signature — card-count band (low/high),
+  form/style distribution, required-fields expectation. Drift = zero
+  items, missing fields (empty title/url), count under the calibrated
+  low, or a SIGNIFICANT form/style (≥20% share) leaving the band
+  (<5%). Hard floors: at least 2 cards, non-empty titles. A healthy
+  pass widens the band (low shrinks, high grows) and refreshes the
+  distribution — catalog growth never false-positives; a flipped
+  kind-signal (kinovezha search cards all defaulting to movie) trips.
+- **Verdict + issue flow** (``drift/monitor.py``, ``drift/issues.py``):
+  consecutive-failure counters persist in the state file; the FIRST
+  failure logs only, the SECOND consecutive failure files a GitHub
+  issue (one per provider, deduped by title pattern — ``gh issue
+  create/list`` with the operator's auth), repeated failures reuse the
+  open issue, and a healthy pass comments + closes it. The issue
+  gateway is an injectable boundary so tests never spawn `gh`.
+- **Report/state**: machine-readable JSON per run
+  (``~/.cache/cs-uk-api/drift-report.json``) plus a per-provider
+  human summary line; baseline/counters in
+  ``~/.cache/cs-uk-api/drift-state.json``. Both gitignored runtime
+  state, overridable via ``CS_UK_DRIFT_REPORT`` / ``CS_UK_DRIFT_STATE``.
+- **Scheduling**: ``backend/deploy/cs-uk-api-drift.{service,timer}``
+  (nightly 03:10, Persistent=true). The script exits non-zero when any
+  provider failed — the timer's status / journal shows it.
+
+Concrete regressions the monitor must catch (2026-08-14): animeon
+episode rows losing their URLs (deep probe), eneyida bare card URLs,
+kinovezha search cards losing their kind signal (form-band verdict).
+
 ### Deliberate non-features (each rejected with alternatives evaluated)
 
 - **No `language` / `kind` / `studio` fields** — providers come from the wild; no consistent language taxonomy upstream. Display label only.

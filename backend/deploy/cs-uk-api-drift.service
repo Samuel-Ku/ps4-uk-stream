@@ -1,0 +1,34 @@
+# cs-uk-api drift monitor service unit (spec #285, ticket #288)
+#
+# One-shot: runs the nightly drift sweep, exits non-zero when any
+# provider failed (visible via systemctl status / journalctl).
+#
+# Install (with the timer):
+#   sudo cp deploy/cs-uk-api-drift.service deploy/cs-uk-api-drift.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now cs-uk-api-drift.timer
+#
+# Edit User= and WorkingDirectory= to match the host before enabling.
+# The default state/report files live under ~/.cache/cs-uk-api/ (the
+# same runtime dir the API's poster cache uses).
+
+[Unit]
+Description=cs-uk-api - upstream drift monitor (nightly probe sweep)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=rorschach
+WorkingDirectory=/home/rorschach/UA flims/ps4-uk-stream/backend
+# The monitor is detached (spec #285): it imports the provider adapters
+# and never shares state with the API process. Its own httpx client and
+# per-run state file are all it touches.
+ExecStart="/home/rorschach/UA flims/ps4-uk-stream/backend/.venv/bin/python" -m cs_uk_api.scripts.drift_monitor --deep-every 6
+# The monitor files GitHub issues via `gh`; the unit must run as a user
+# with gh auth (the operator's own).
+# Environment=CS_UK_DRIFT_STATE=/home/rorschach/.cache/cs-uk-api/drift-state.json
+# Environment=CS_UK_DRIFT_REPORT=/home/rorschach/.cache/cs-uk-api/drift-report.json
+
+[Install]
+WantedBy=multi-user.target
