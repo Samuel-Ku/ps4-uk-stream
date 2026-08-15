@@ -41,7 +41,6 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from ..country import extract_country
-from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -54,13 +53,16 @@ from ..models import (
 from ..wire_identity import MOVIE_SUFFIX
 from ._crypto_uaserialspro import decrypt_player_data
 from ._tortuga import decode as _tortuga_decode
-from .base import BaseProvider, ProviderError, model_b_axes, parse_actor_list
+from .base import (
+    BaseProvider,
+    ProviderError,
+    ProviderErrorCode,
+    model_b_axes,
+    parse_actor_list,
+    split_content_suffix,
+)
 
 BASE_URL = "https://uaserials.com"
-# Hosts the upstream may legally redirect to: the DLE CMS and the
-# tortuga player. A hostile CMS response must not be able to pivot
-# either hop to an attacker-controlled host.
-_ALLOWED_HOSTS: frozenset[str] = frozenset({"uaserials.com", "tortuga.tw"})
 # tortuga.tw serves the HLS manifest with this Referer (mirrors the
 # upstream Kotlin source).
 TORTUGA_REFERER = "https://tortuga.tw/"
@@ -138,7 +140,7 @@ def _type_for_section(section_id: str) -> str:
 
 def _section_url(section: str, page: int) -> str:
     if section not in {s.id for s in UASERIALSPRO_SECTIONS}:
-        raise ProviderError("not_found", f"unknown section: {section}")
+        raise ProviderError(ProviderErrorCode.NOT_FOUND, f"unknown section: {section}")
     base = f"{BASE_URL}/{section}/"
     # Upstream Kotlin uses the section root for page 1 and `/page/N/`
     # otherwise — same DLE convention as CikavaIdeya / KlonTV.
@@ -243,17 +245,21 @@ class UASerialsProProvider(BaseProvider):
     name = "UASerialsPro"
     types = ("movie", "series", "anime")
     sections = UASERIALSPRO_SECTIONS
+    #: SSRF allowlist: the DLE CMS and the tortuga player. A hostile
+    #: CMS response must not be able to pivot either hop to an
+    #: attacker-controlled host.
+    hosts: frozenset[str] = frozenset({"uaserials.com", "tortuga.tw"})
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         # The site uses `/search/<query>/` for search. We quote the
         # query so non-ASCII Cyrillic and reserved characters survive.
         url = f"{BASE_URL}/search/{quote(query)}/"
         try:
-            resp = await http.get(url)
+            resp = await self.guarded_get(http, url)
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError("upstream_unreachable", f"status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.UPSTREAM_UNREACHABLE, f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         results: list[SearchResult] = []
         for a in soup.select("a.uas-card"):
@@ -267,11 +273,11 @@ class UASerialsProProvider(BaseProvider):
     ) -> tuple[list[SearchResult], bool]:
         url = _section_url(section, page)
         try:
-            resp = await http.get(url)
+            resp = await self.guarded_get(http, url)
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError("not_found", f"status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         media_type = _type_for_section(section)
         results: list[SearchResult] = []
@@ -292,18 +298,20 @@ class UASerialsProProvider(BaseProvider):
         self, external_id: str, http: httpx.AsyncClient
     ) -> ContentResponse:
         if not _EXTERNAL_ID_RE.fullmatch(external_id):
-            raise ProviderError("not_found", f"bad external_id: {external_id!r}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"bad external_id: {external_id!r}")
         url = f"{BASE_URL}/{external_id}.html"
         try:
-            resp = await http.get(url, headers={"User-Agent": USER_AGENT})
+            resp = await self.guarded_get(
+                http, url, headers={"User-Agent": USER_AGENT}
+            )
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError("not_found", f"status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         title_el = soup.select_one(".short-title")
         if title_el is None:
-            raise ProviderError("parse_failed", "title missing")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "title missing")
         # Drop the inner `<span class="oname_ua">` so the title is
         # just the visible primary Ukrainian name.
         title = title_el.get_text(" ", strip=True)
@@ -349,24 +357,23 @@ class UASerialsProProvider(BaseProvider):
         # AES-decrypt the player data-tag1 to get the player URL.
         data_tag1_el = soup.select_one("div.fplayer player-control")
         if data_tag1_el is None or not data_tag1_el.get("data-tag1"):
-            raise ProviderError("parse_failed", "no data-tag1 on content page")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no data-tag1 on content page")
         tabs = decrypt_player_data(str(data_tag1_el["data-tag1"]))
         player_url = _select_player_url(tabs)
         if player_url is None:
-            raise ProviderError("parse_failed", "no player url in data-tag1")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no player url in data-tag1")
         # The player URL came from decrypted upstream HTML, so it goes
         # through the redirect allowlist (#126).
         try:
-            player_resp = await safe_get(
+            player_resp = await self.guarded_get(
                 http,
                 player_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"User-Agent": USER_AGENT, "Referer": BASE_URL + "/"},
             )
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if player_resp.status_code != 200:
-            raise ProviderError("not_found", f"status {player_resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {player_resp.status_code}")
         # Decode the `file:` field — Tortuga-encoded for movies, or a
         # JSON playlist for series.
         seasons = self._build_seasons_from_player(player_resp.text, external_id, self.id)
@@ -455,59 +462,54 @@ class UASerialsProProvider(BaseProvider):
         # (movie — explicit suffix from the content listing), or
         # "<external_id>:s<N>e<M>" (series episode), or just the bare
         # "<external_id>" (movie — straight from a search result).
-        if MOVIE_SUFFIX in content_id:
-            ext_id = content_id.split(MOVIE_SUFFIX, 1)[0]
-            ep_suffix = ""
-        elif ":" in content_id:
-            ext_id, _, ep_suffix = content_id.rpartition(":")
-        else:
-            ext_id, ep_suffix = content_id, ""
+        ext_id, ep_suffix = split_content_suffix(content_id)
         if not _EXTERNAL_ID_RE.fullmatch(ext_id):
-            raise ProviderError("not_found", f"bad external_id: {ext_id!r}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"bad external_id: {ext_id!r}")
         url = f"{BASE_URL}/{ext_id}.html"
         try:
-            resp = await http.get(url, headers={"User-Agent": USER_AGENT})
+            resp = await self.guarded_get(
+                http, url, headers={"User-Agent": USER_AGENT}
+            )
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError("not_found", f"status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         data_tag1_el = soup.select_one("div.fplayer player-control")
         if data_tag1_el is None or not data_tag1_el.get("data-tag1"):
-            raise ProviderError("parse_failed", "no data-tag1 on content page")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no data-tag1 on content page")
         tabs = decrypt_player_data(str(data_tag1_el["data-tag1"]))
         player_url = _select_player_url(tabs)
         if player_url is None:
-            raise ProviderError("parse_failed", "no player url in data-tag1")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no player url in data-tag1")
         # The player URL came from decrypted upstream HTML, so it goes
         # through the redirect allowlist (#126).
         try:
-            player_resp = await safe_get(
+            player_resp = await self.guarded_get(
                 http,
                 player_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"User-Agent": USER_AGENT, "Referer": BASE_URL + "/"},
             )
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if player_resp.status_code != 200:
-            raise ProviderError("not_found", f"status {player_resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {player_resp.status_code}")
         m = _FILE_RE.search(player_resp.text)
         if not m:
-            raise ProviderError("parse_failed", "no file: in player page")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no file: in player page")
         encoded = m.group(1)
         if encoded.startswith("http"):
             decoded = encoded
         else:
             decoded = _tortuga_decode(encoded)
         if not decoded:
-            raise ProviderError("parse_failed", "tortuga decode empty")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "tortuga decode empty")
         # Movies: the decoded value is the m3u8 URL. Series: the decoded
         # value is a JSON playlist — pick the right episode by suffix.
         if ep_suffix:
             media_url = self._select_episode_url(decoded, ep_suffix)
             if media_url is None:
-                raise ProviderError("parse_failed", f"no media url for {ep_suffix!r}")
+                raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"no media url for {ep_suffix!r}")
         else:
             media_url = decoded
         return StreamResponse(

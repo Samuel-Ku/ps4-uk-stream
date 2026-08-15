@@ -9,7 +9,6 @@ from urllib.parse import quote, urlencode, urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup
 
-from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -22,13 +21,7 @@ from ..models import (
 )
 from ..uakino_browser import _UA, BASE_URL, UakinoSessionProtocol, get_session
 from ..wire_identity import MOVIE_SUFFIX
-from .base import BaseProvider, ProviderError, model_b_axes
-
-# ashdi.vip serves the playlist page; m3u8 manifests and segment URLs
-# stay on the same host. The host allowlist refuses SSRF pivots at the
-# Shared-IP boundary — uakino.best is reachable only through the
-# headless browser session, never via httpx.
-_STREAM_ALLOWED_HOSTS: frozenset[str] = frozenset({"ashdi.vip"})
+from .base import BaseProvider, ProviderError, ProviderErrorCode, model_b_axes
 
 # Sections exposed by Uakino's new-theme navigation. The /animeukr URL is
 # the anime sub-site (Ukrainian-dubbed anime). Section ids are stable;
@@ -96,7 +89,7 @@ def _section_url(section: str, page: int) -> str:
         "cartoons": "/cartoon",
     }.get(section)
     if path is None:
-        raise ProviderError("not_found", f"unknown section: {section}")
+        raise ProviderError(ProviderErrorCode.NOT_FOUND, f"unknown section: {section}")
     if page <= 1:
         return f"{path}/"
     return f"{path}/page/{page}/"
@@ -170,7 +163,7 @@ def _parse_external_id(external_id: str) -> tuple[str, str, str]:
     if m:
         kind, item_id, slug = m.group(1), m.group(2), m.group(3)
         return ("filmy" if kind == "film" else "seriesss"), item_id, slug
-    raise ProviderError("not_found", "bad external_id")
+    raise ProviderError(ProviderErrorCode.NOT_FOUND, "bad external_id")
 
 
 def _normalize_cdn_url(raw: str) -> str:
@@ -263,6 +256,12 @@ class UakinoProvider(BaseProvider):
     name = "Uakino"
     types = ("movie", "series", "anime", "cartoon")
     sections = UAKINO_SECTIONS
+    #: ashdi.vip serves the playlist page; m3u8 manifests and segment
+    #: URLs stay on the same host. The allowlist refuses SSRF pivots at
+    #: the Shared-IP boundary — uakino.best is reachable only through
+    #: the headless browser session, never via httpx, so this is the
+    #: provider's full guarded-client surface.
+    hosts: frozenset[str] = frozenset({"ashdi.vip"})
 
     def __init__(self, session: UakinoSessionProtocol | None = None) -> None:
         self._session = session
@@ -277,9 +276,9 @@ class UakinoProvider(BaseProvider):
         try:
             status, text = await self.session.fetch(path, method=method, data=data)
         except Exception as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if status != 200:
-            raise ProviderError("upstream_unreachable", f"status {status}")
+            raise ProviderError(ProviderErrorCode.UPSTREAM_UNREACHABLE, f"status {status}")
         return text
 
     async def _fetch_playlists(self, news_id: str) -> tuple[list[_PlaylistItem], bool]:
@@ -290,7 +289,7 @@ class UakinoProvider(BaseProvider):
         try:
             payload = json.loads(html)
         except json.JSONDecodeError as e:
-            raise ProviderError("parse_failed", "playlists response is not JSON") from e
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "playlists response is not JSON") from e
         return _parse_playlists(str(payload.get("response", "")))
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
@@ -313,7 +312,7 @@ class UakinoProvider(BaseProvider):
 
         title_el = soup.select_one("h1 span.solototle")
         if title_el is None:
-            raise ProviderError("parse_failed", "title missing")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "title missing")
         title = title_el.get_text(strip=True)
 
         poster_el = soup.select_one("div.film-poster img")
@@ -406,7 +405,7 @@ class UakinoProvider(BaseProvider):
                 if voice and voice not in [t.id for t in (ep.translations or [])]:
                     ep.translations = [*(ep.translations or []), Translation(id=voice, label=voice)]
             if not episodes_by_number:
-                raise ProviderError("parse_failed", "series playlists has no episodes")
+                raise ProviderError(ProviderErrorCode.PARSE_FAILED, "series playlists has no episodes")
             seasons = [
                 Season(
                     number=1,
@@ -454,7 +453,7 @@ class UakinoProvider(BaseProvider):
         # (ADR-0002) so the catalog sweep drops it instead of failing at
         # play time.
         if not items and _direct_player_url(soup) is None:
-            raise ProviderError("gated", "no playable source on movie page")
+            raise ProviderError(ProviderErrorCode.GATED, "no playable source on movie page")
         movie_type = "anime" if "аніме" in " ".join(tags).lower() else "movie"
         # A style-tagged movie (аніме-фільм) is form=movie, not series
         # (model_b_axes defaults style-tagged types to series).
@@ -491,11 +490,11 @@ class UakinoProvider(BaseProvider):
         if episode is not None:
             candidates = [it for it in items if it.get("episode") == episode]
             if not candidates:
-                raise ProviderError("not_found", f"episode {episode} not found in playlists")
+                raise ProviderError(ProviderErrorCode.NOT_FOUND, f"episode {episode} not found in playlists")
             chosen = _pick_voice(candidates, translation)
             if chosen is None:
                 raise ProviderError(
-                    "translation_missing",
+                    ProviderErrorCode.TRANSLATION_MISSING,
                     f"voice {translation!r} not found in playlists",
                 )
             stream_page_url = str(chosen["file"])
@@ -505,7 +504,7 @@ class UakinoProvider(BaseProvider):
                 chosen = _pick_voice(candidates, translation)
                 if chosen is None:
                     raise ProviderError(
-                        "translation_missing",
+                        ProviderErrorCode.TRANSLATION_MISSING,
                         f"voice {translation!r} not found in playlists",
                     )
                 stream_page_url = str(chosen["file"])
@@ -518,14 +517,13 @@ class UakinoProvider(BaseProvider):
                 direct_url = _direct_player_url(BeautifulSoup(html, "lxml"))
                 if direct_url is None:
                     raise ProviderError(
-                        "parse_failed", "no playable voices in playlists"
+                        ProviderErrorCode.PARSE_FAILED, "no playable voices in playlists"
                     )
                 stream_page_url = direct_url
         try:
-            resp = await safe_get(
+            resp = await self.guarded_get(
                 http,
                 stream_page_url,
-                allowed_hosts=set(_STREAM_ALLOWED_HOSTS),
                 headers={
                     "User-Agent": _DESKTOP_UA,
                     "Referer": f"{BASE_URL}/",
@@ -533,23 +531,23 @@ class UakinoProvider(BaseProvider):
                 },
             )
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
-        if resp.url.host not in _STREAM_ALLOWED_HOSTS:
-            raise ProviderError("not_found", "unexpected upstream host")
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
+        if resp.url.host not in self.hosts:
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, "unexpected upstream host")
         if resp.status_code != 200:
-            raise ProviderError("not_found", f"stream page status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"stream page status {resp.status_code}")
 
         m3u8_url = next(
             (u for u in _FILE_RE.findall(resp.text) if u.endswith(".m3u8")),
             None,
         )
         if m3u8_url is None:
-            raise ProviderError("parse_failed", "no m3u8 link in stream page")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no m3u8 link in stream page")
         # The m3u8 URL is content we hand to the LAN client. Reject
         # anything outside the ashdi.vip host so a hostile stream page
         # can't redirect the PS4 into an internal address.
-        if urlparse(m3u8_url).netloc not in _STREAM_ALLOWED_HOSTS:
-            raise ProviderError("not_found", "m3u8 host not in allowlist")
+        if urlparse(m3u8_url).netloc not in self.hosts:
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, "m3u8 host not in allowlist")
         # The stream CDN (ashdi.vip) is served over plain HTTP and needs
         # the Referer to authorize the manifest/segment fetches — but a
         # comma-bearing desktop UA breaks clients that split headers on

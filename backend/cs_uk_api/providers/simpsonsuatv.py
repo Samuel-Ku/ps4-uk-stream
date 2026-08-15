@@ -35,7 +35,6 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup, Tag
 
-from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -45,7 +44,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError, model_b_axes
+from .base import BaseProvider, ProviderError, ProviderErrorCode, model_b_axes
 
 BASE_URL = "https://simpsonsua.tv"
 BASE_URL_HOST = urlparse(BASE_URL).hostname
@@ -53,10 +52,6 @@ BASE_URL_HOST = urlparse(BASE_URL).hostname
 # Kotlin sets the Referer to the site root so the CDN serves the
 # manifest.
 ASHDI_REFERER = BASE_URL + "/"
-# Hosts the upstream may legally redirect to. Anything outside this
-# set is treated as a not_found error so a hostile CMS response can't
-# pivot the request to an attacker-controlled host.
-_ALLOWED_HOSTS: frozenset[str] = frozenset({"simpsonsua.tv", "ashdi.vip"})
 
 # How many season subpages a show page may fetch at once. A show like
 # The Simpsons has 37 seasons; sequential fetches pushed content() past
@@ -377,6 +372,12 @@ class SimpsonsUATvProvider(BaseProvider):
     # (The second section, ``"page"``, is the full catalogue and does
     # NOT opt into «Новинки» — only the ``updates`` slot does.)
     newest_section = "updates"
+    #: SSRF allowlist (spec #309 T9): the CMS and the ashdi.vip player.
+    #: Anything outside this set is treated as a not_found error so a
+    #: hostile CMS response can't pivot the request to an
+    #: attacker-controlled host. ``guarded_get`` applies it by default
+    #: AND ``_get`` re-verifies the response host post-fetch.
+    hosts = frozenset({"simpsonsua.tv", "ashdi.vip"})
 
     async def _get(
         self,
@@ -392,19 +393,15 @@ class SimpsonsUATvProvider(BaseProvider):
         if headers:
             merged.update(headers)
         try:
-            response = await safe_get(
-                http,
-                url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
-                headers=merged,
-                params=params,
+            response = await self.guarded_get(
+                http, url, headers=merged, params=params
             )
         except httpx.HTTPError as error:
-            raise ProviderError("unreachable", str(error)) from error
-        if response.url.host not in _ALLOWED_HOSTS:
-            raise ProviderError("not_found", "unexpected upstream host")
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(error)) from error
+        if response.url.host not in self.hosts:
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, "unexpected upstream host")
         if response.status_code != 200:
-            raise ProviderError("not_found", f"status {response.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {response.status_code}")
         return response
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
@@ -436,7 +433,7 @@ class SimpsonsUATvProvider(BaseProvider):
             ]
             return update_results, False
         if section != "page":
-            raise ProviderError("not_found", f"unknown section: {section}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"unknown section: {section}")
         if page <= 1:
             url = f"{BASE_URL}/multserialy-ukrainskoyu/"
         else:
@@ -487,7 +484,7 @@ class SimpsonsUATvProvider(BaseProvider):
         self, external_id: str, http: httpx.AsyncClient
     ) -> ContentResponse:
         if not _EXTERNAL_ID_RE.fullmatch(external_id):
-            raise ProviderError("not_found", f"bad external_id: {external_id!r}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"bad external_id: {external_id!r}")
         url = f"{BASE_URL}/{external_id}/"
         response = await self._open_content_page(url, external_id, http)
         soup = BeautifulSoup(response.text, "lxml")
@@ -515,7 +512,7 @@ class SimpsonsUATvProvider(BaseProvider):
         description chain."""
         title_el = soup.select_one(".poster h2, .cat-nazva h1, h1")
         if title_el is None:
-            raise ProviderError("parse_failed", "title missing")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "title missing")
         title = _clean_title(title_el.get_text(strip=True))
         if not title:
             title = _title_for_slug(external_id)
@@ -625,7 +622,7 @@ class SimpsonsUATvProvider(BaseProvider):
         # The /api/stream router strips the `<provider>:` prefix before
         # calling us, so we get the bare URL.
         if not content_id.startswith(f"{BASE_URL}/"):
-            raise ProviderError("not_found", f"bad content_id: {content_id!r}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"bad content_id: {content_id!r}")
         # Host check + per-segment slug check so we don't pass arbitrary
         # user input (e.g. `../admin`) to http.get(). The host is
         # parsed structurally (`simpsonsua.tv` carries a dot and no
@@ -633,18 +630,18 @@ class SimpsonsUATvProvider(BaseProvider):
         # the slug regex, with a trailing `.html` stripped first.
         parsed = urlparse(content_id)
         if parsed.netloc not in (BASE_URL_HOST, f"www.{BASE_URL_HOST}"):
-            raise ProviderError("not_found", f"bad content_id: {content_id!r}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"bad content_id: {content_id!r}")
         segments = [s for s in parsed.path.split("/") if s]
         check_segments = [s.removesuffix(".html") for s in segments]
         if not check_segments or not all(
             _EXTERNAL_ID_RE.fullmatch(s) for s in check_segments
         ):
-            raise ProviderError("not_found", f"bad content_id: {content_id!r}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"bad content_id: {content_id!r}")
         response = await self._get(content_id, http)
         soup = BeautifulSoup(response.text, "lxml")
         iframes = soup.find_all("iframe")
         if not iframes:
-            raise ProviderError("parse_failed", "no iframe on content page")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no iframe on content page")
         ordered_iframes = sorted(
             iframes,
             key=lambda iframe: "ashdi.vip" not in str(iframe.get("src") or ""),
@@ -661,7 +658,7 @@ class SimpsonsUATvProvider(BaseProvider):
                 last_error = error
         if last_error is not None:
             raise last_error
-        raise ProviderError("parse_failed", "no iframe src on content page")
+        raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no iframe src on content page")
 
     async def _fetch_m3u8(
         self, player_url: str, http: httpx.AsyncClient
@@ -669,14 +666,16 @@ class SimpsonsUATvProvider(BaseProvider):
         """Fetch the player page (ashdi.vip) and pull the
         `file: '...m3u8'` URL out of the inline PlayerJS script."""
         try:
-            response = await http.get(player_url, headers={"Referer": ASHDI_REFERER})
+            response = await self.guarded_get(
+                http, player_url, headers={"Referer": ASHDI_REFERER}
+            )
         except httpx.HTTPError as error:
-            raise ProviderError("unreachable", str(error)) from error
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(error)) from error
         if response.status_code != 200:
-            raise ProviderError("not_found", f"status {response.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {response.status_code}")
         m = re.search(r"file\s*:\s*['\"]([^'\"]+)['\"]", response.text)
         if not m:
-            raise ProviderError("parse_failed", "no file: in player page")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no file: in player page")
         m3u8 = m.group(1)
         # The Tortuga player XOR-encodes the file value. The shared
         # `decode` helper from `._tortuga` returns a plain m3u8 URL
@@ -689,7 +688,7 @@ class SimpsonsUATvProvider(BaseProvider):
             if ".m3u8" in decoded:
                 m3u8 = decoded
         if ".m3u8" not in m3u8:
-            raise ProviderError("parse_failed", "no m3u8 in player file value")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no m3u8 in player file value")
         return StreamResponse(
             url=m3u8,
             type="m3u8",

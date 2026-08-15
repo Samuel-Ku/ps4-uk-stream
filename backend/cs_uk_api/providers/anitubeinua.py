@@ -54,7 +54,13 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError, ProviderErrorCode, model_b_axes
+from .base import (
+    BaseProvider,
+    ProviderError,
+    ProviderErrorCode,
+    model_b_axes,
+    split_content_suffix,
+)
 
 BASE_URL = "https://anitube.in.ua"
 # ashdi.vip requires the upstream Referer to serve the m3u8 manifest.
@@ -121,10 +127,10 @@ def _extract_dle_hash(html: str) -> str:
     ordering."""
     last = html.rfind("dle_login_hash = '")
     if last < 0:
-        raise ProviderError("parse_failed", "dle_login_hash not found")
+        raise ProviderError(ProviderErrorCode.PARSE_FAILED, "dle_login_hash not found")
     m = _DLE_HASH_RE.search(html[last:])
     if not m:
-        raise ProviderError("parse_failed", "dle_login_hash not found")
+        raise ProviderError(ProviderErrorCode.PARSE_FAILED, "dle_login_hash not found")
     return m.group(1)
 
 
@@ -198,7 +204,7 @@ def _parse_content_meta(soup: BeautifulSoup) -> tuple[str, str | None, str, int 
     other fields are best-effort."""
     title_el = soup.select_one(".story_c h2")
     if title_el is None:
-        raise ProviderError("parse_failed", "title missing")
+        raise ProviderError(ProviderErrorCode.PARSE_FAILED, "title missing")
     title = title_el.get_text(" ", strip=True)
     # Poster: `.story_c_left span.story_post img` (listing) or
     # `.story_post img` (older templates).
@@ -451,6 +457,11 @@ class AnitubeinuaProvider(BaseProvider):
     sections = ANITUBEINUA_SECTIONS
     # v3 (issue #70): "Нові" contributes to «Новинки».
     newest_section = "page"
+    #: SSRF allowlist (spec #309 T9): the CMS on anitube.in.ua and the
+    #: player iframe pages (ashdi.vip / moonanime.art / peertube.in.ua)
+    #: ``_pick_episode_url`` can yield. ``guarded_get`` applies this by
+    #: default.
+    hosts = frozenset({"anitube.in.ua", "ashdi.vip", "moonanime.art", "peertube.in.ua"})
 
     async def _get(
         self,
@@ -465,11 +476,11 @@ class AnitubeinuaProvider(BaseProvider):
         if headers:
             merged.update(headers)
         try:
-            response = await http.get(url, headers=merged)
+            response = await self.guarded_get(http, url, headers=merged)
         except httpx.HTTPError as error:
-            raise ProviderError("unreachable", str(error)) from error
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(error)) from error
         if response.status_code != 200:
-            raise ProviderError("not_found", f"status {response.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {response.status_code}")
         return response
 
     async def _post(
@@ -480,10 +491,10 @@ class AnitubeinuaProvider(BaseProvider):
                 url, data=data, headers={"Referer": BASE_URL + "/"}
             )
         except httpx.HTTPError as error:
-            raise ProviderError("unreachable", str(error)) from error
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(error)) from error
         if response.status_code != 200:
             raise ProviderError(
-                "upstream_unreachable", f"status {response.status_code}"
+                ProviderErrorCode.UPSTREAM_UNREACHABLE, f"status {response.status_code}"
             )
         return response
 
@@ -497,7 +508,7 @@ class AnitubeinuaProvider(BaseProvider):
         the content page (matches the upstream Kotlin
         `substringAfterLast("dle_login_hash = '")` extraction)."""
         if not _EXTERNAL_ID_RE.fullmatch(external_id):
-            raise ProviderError("not_found", f"bad external_id: {external_id!r}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"bad external_id: {external_id!r}")
         content_resp = await self._get(f"{BASE_URL}/{external_id}.html", http)
         hash_ = _extract_dle_hash(content_resp.text)
         news_id = external_id.split("-", 1)[0]
@@ -513,7 +524,8 @@ class AnitubeinuaProvider(BaseProvider):
             f"&xfield=playlist&user_hash={hash_}"
         )
         try:
-            ajax_resp = await http.get(
+            ajax_resp = await self.guarded_get(
+                http,
                 ajax_url,
                 headers={
                     "X-Requested-With": "XMLHttpRequest",
@@ -521,15 +533,15 @@ class AnitubeinuaProvider(BaseProvider):
                 },
             )
         except httpx.HTTPError as error:
-            raise ProviderError("unreachable", str(error)) from error
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(error)) from error
         if ajax_resp.status_code != 200:
-            raise ProviderError("not_found", f"ajax status {ajax_resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"ajax status {ajax_resp.status_code}")
         try:
             payload = cast(dict[str, Any], ajax_resp.json())
         except json.JSONDecodeError as error:
-            raise ProviderError("parse_failed", "ajax response not JSON") from error
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "ajax response not JSON") from error
         if not payload.get("success") or not payload.get("response"):
-            raise ProviderError("parse_failed", "ajax response not successful")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "ajax response not successful")
         return _parse_playlist(str(payload["response"]))
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
@@ -556,7 +568,7 @@ class AnitubeinuaProvider(BaseProvider):
         # Only one section ("page") — the upstream `mainPage` only
         # ships `/anime/page/`. Anything else is unknown.
         if section != "page":
-            raise ProviderError("not_found", f"unknown section: {section}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"unknown section: {section}")
         url = f"{BASE_URL}/anime/page/{page}/"
         response = await self._get(url, http)
         soup = BeautifulSoup(response.text, "lxml")
@@ -579,7 +591,7 @@ class AnitubeinuaProvider(BaseProvider):
         self, external_id: str, http: httpx.AsyncClient
     ) -> ContentResponse:
         if not _EXTERNAL_ID_RE.fullmatch(external_id):
-            raise ProviderError("not_found", f"bad external_id: {external_id!r}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"bad external_id: {external_id!r}")
         response = await self._get(f"{BASE_URL}/{external_id}.html", http)
         soup = BeautifulSoup(response.text, "lxml")
         title, poster, description, year = _parse_content_meta(soup)
@@ -621,31 +633,38 @@ class AnitubeinuaProvider(BaseProvider):
         self, content_id: str, translation: str | None, http: httpx.AsyncClient
     ) -> StreamResponse:
         # content_id arrives as either "<external_id>" (bare, from a
-        # search result) or "<external_id>:s<N>e<M>" (series episode).
+        # search result) or "<external_id>:s<N>e<M>" (series episode) —
+        # the shared suffix splitter handles both (spec #309 T9).
         # /api/stream strips the `<provider>:` prefix before calling us.
-        if ":" in content_id:
-            ext_id, _, ep_part = content_id.rpartition(":")
-        else:
-            ext_id, ep_part = content_id, ""
+        ext_id, ep_part = split_content_suffix(content_id)
         if not _EXTERNAL_ID_RE.fullmatch(ext_id):
-            raise ProviderError("not_found", f"bad external_id: {ext_id!r}")
+            if not ep_part and ":" in ext_id:
+                # A colon the shared splitter didn't recognize as a
+                # suffix form is a malformed episode suffix (client
+                # input error), not a bad external id — anitubeinua
+                # externals are ``\d+-[a-z0-9-]+`` and carry no colon.
+                raise ProviderError(
+                    ProviderErrorCode.PARSE_FAILED,
+                    f"malformed episode suffix: {content_id!r}",
+                )
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"bad external_id: {ext_id!r}")
         m = _EPISODE_RE.fullmatch(ep_part)
         if not m:
             raise ProviderError(
-                "parse_failed", f"malformed episode suffix: {ep_part!r}"
+                ProviderErrorCode.PARSE_FAILED, f"malformed episode suffix: {ep_part!r}"
             )
         season_idx, episode_idx = int(m.group(1)), int(m.group(2))
         playlist = await self._load_playlist(ext_id, http)
         studio_id = self._resolve_studio_id(playlist, translation, season_idx)
         if studio_id is None:
             raise ProviderError(
-                "parse_failed",
+                ProviderErrorCode.PARSE_FAILED,
                 f"translation {translation!r} not in season {season_idx}",
             )
         file_url = _pick_episode_url(playlist, season_idx, episode_idx, studio_id)
         if file_url is None:
             raise ProviderError(
-                "parse_failed",
+                ProviderErrorCode.PARSE_FAILED,
                 f"no stream URL for s{season_idx}e{episode_idx}",
             )
         return await self._fetch_m3u8(file_url, http)
@@ -658,17 +677,16 @@ class AnitubeinuaProvider(BaseProvider):
         `/vod/`; the upstream Kotlin normalizes the path before
         fetching the m3u8. We just GET the iframe URL as-is."""
         try:
-            player_resp = await http.get(
-                file_url,
-                headers={"Referer": _referer_for(file_url)},
+            player_resp = await self.guarded_get(
+                http, file_url, headers={"Referer": _referer_for(file_url)}
             )
         except httpx.HTTPError as error:
-            raise ProviderError("unreachable", str(error)) from error
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(error)) from error
         if player_resp.status_code != 200:
-            raise ProviderError("not_found", f"player status {player_resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"player status {player_resp.status_code}")
         m3u8 = _FILE_RE.search(player_resp.text)
         if not m3u8:
-            raise ProviderError("parse_failed", "no m3u8 in player page")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no m3u8 in player page")
         return StreamResponse(
             url=m3u8.group(1),
             type="m3u8",
@@ -738,9 +756,9 @@ class AnitubeinuaProvider(BaseProvider):
         """Return the studio ids available for a specific episode, or
         None when the episode cannot be resolved. The caller falls back
         to content-level translations in that case."""
-        if ":" not in content_id:
+        ext_id, ep_part = split_content_suffix(content_id)
+        if not ep_part:
             return None
-        ext_id, _, ep_part = content_id.rpartition(":")
         if not _EXTERNAL_ID_RE.fullmatch(ext_id):
             return None
         m = _EPISODE_RE.fullmatch(ep_part)

@@ -206,7 +206,7 @@ def _classify_translations(doc: dict[str, Any]) -> list[dict[str, Any]]:
     raw = doc.get("translations")
     if isinstance(raw, list):
         if not raw:
-            raise ProviderError("gated", "no translations")
+            raise ProviderError(ProviderErrorCode.GATED, "no translations")
         return raw
     return []
 
@@ -235,6 +235,12 @@ class AnimeONProvider(BaseProvider):
     #: dropped from home/search instead of failing only at play time
     #: (#160, same pattern as eneyida #158).
     can_gate = True
+    #: SSRF allowlist (spec #309 T9): the JSON API on animeon.club and
+    #: the ashdi.vip / moonanime.art player iframe pages (both fetched
+    #: through ``_get_json``/``_get_text``). The s.moonanime.art stream
+    #: host is client-facing only. ``guarded_get`` applies this by
+    #: default.
+    hosts = frozenset({"animeon.club", "ashdi.vip", "moonanime.art"})
 
     async def _get_json(
         self,
@@ -247,19 +253,21 @@ class AnimeONProvider(BaseProvider):
         with the right code: ``unreachable`` on connection errors,
         ``upstream_unreachable`` on 5xx, and ``not_found`` on 4xx."""
         try:
-            response = await http.get(url, headers=headers or _DEFAULT_HEADERS)
+            response = await self.guarded_get(
+                http, url, headers=headers or _DEFAULT_HEADERS
+            )
         except httpx.HTTPError as error:
-            raise ProviderError("unreachable", str(error)) from error
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(error)) from error
         if response.status_code >= 500:
             raise ProviderError(
-                "upstream_unreachable", f"status {response.status_code}"
+                ProviderErrorCode.UPSTREAM_UNREACHABLE, f"status {response.status_code}"
             )
         if response.status_code != 200:
-            raise ProviderError("not_found", f"status {response.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {response.status_code}")
         try:
             return response.json()
         except json.JSONDecodeError as error:
-            raise ProviderError("parse_failed", str(error)) from error
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, str(error)) from error
 
     async def _get_text(
         self,
@@ -271,15 +279,15 @@ class AnimeONProvider(BaseProvider):
         """GET ``url`` and return the body as text. Same error codes as
         ``_get_json`` except we don't try to JSON-decode the body."""
         try:
-            response = await http.get(url, headers=headers)
+            response = await self.guarded_get(http, url, headers=headers)
         except httpx.HTTPError as error:
-            raise ProviderError("unreachable", str(error)) from error
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(error)) from error
         if response.status_code >= 500:
             raise ProviderError(
-                "upstream_unreachable", f"status {response.status_code}"
+                ProviderErrorCode.UPSTREAM_UNREACHABLE, f"status {response.status_code}"
             )
         if response.status_code != 200:
-            raise ProviderError("not_found", f"status {response.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {response.status_code}")
         return response.text
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
@@ -336,7 +344,7 @@ class AnimeONProvider(BaseProvider):
             )
             has_next = (page * 24) < total and len(items) >= 24
             return self._build_safe_results(items), has_next
-        raise ProviderError("not_found", f"unknown section: {section}")
+        raise ProviderError(ProviderErrorCode.NOT_FOUND, f"unknown section: {section}")
 
     @staticmethod
     def _build_local_results(items: list[dict[str, Any]]) -> list[SearchResult]:
@@ -370,13 +378,13 @@ class AnimeONProvider(BaseProvider):
         self, external_id: str, http: httpx.AsyncClient
     ) -> ContentResponse:
         if not _EXTERNAL_ID_RE.fullmatch(external_id):
-            raise ProviderError("not_found", "bad external_id")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, "bad external_id")
         anime_id = int(external_id)
 
         info, year_int = await self._load_content_info(anime_id, external_id, http)
         title = str(info.get("titleUa") or "").strip()
         if not title:
-            raise ProviderError("parse_failed", "title missing")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "title missing")
         image = info.get("image") or {}
         poster = _poster_url(image.get("preview"))
         description = str(info.get("description") or "")
@@ -396,7 +404,7 @@ class AnimeONProvider(BaseProvider):
 
         episodes_by_num = await self._collect_episode_map(anime_id, http)
         if not episodes_by_num:
-            raise ProviderError("parse_failed", "no episodes resolved")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no episodes resolved")
 
         # Ticket #223: the upstream ``/api/anime/<slug>/episodes-info``
         # endpoint carries per-episode real titles (``titleUa``) and air
@@ -521,13 +529,13 @@ class AnimeONProvider(BaseProvider):
         if isinstance(first, dict) and first.get("moved") is True:
             slug = str(first.get("slug") or first.get("redirectTo") or "")
             if not _SLUG_RE.fullmatch(slug):
-                raise ProviderError("not_found", "bad redirect slug")
+                raise ProviderError(ProviderErrorCode.NOT_FOUND, "bad redirect slug")
         else:
             slug = external_id
 
         info = await self._get_json(f"{BASE_URL}/api/anime/{slug}", http)
         if not isinstance(info, dict):
-            raise ProviderError("parse_failed", "content body not object")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "content body not object")
 
         raw_year = info.get("releaseDate")
         year_int: int | None = None
@@ -769,7 +777,7 @@ class AnimeONProvider(BaseProvider):
                 try:
                     doc = await self._get_json(f"{base}&skip={skip}", http)
                 except ProviderError as e:
-                    if e.code in {"unreachable", "upstream_unreachable"}:
+                    if e.code in (ProviderErrorCode.UNREACHABLE, ProviderErrorCode.UPSTREAM_UNREACHABLE):
                         raise
                     logger.debug("animeon episodes skip=%d unavailable: %s", skip, e)
                     return []
@@ -884,25 +892,25 @@ class AnimeONProvider(BaseProvider):
             parts = content_id.split(":", 2)
             if len(parts) == 2 and parts[1] == MOVIE_SUFFIX.removeprefix(":"):
                 if not _EXTERNAL_ID_RE.fullmatch(parts[0]):
-                    raise ProviderError("not_found", "bad content_id")
+                    raise ProviderError(ProviderErrorCode.NOT_FOUND, "bad content_id")
                 return await self._movie_stream(int(parts[0]), translation, http)
             if len(parts) != 3 or not _EXTERNAL_ID_RE.fullmatch(parts[0]):
-                raise ProviderError("not_found", "bad content_id")
+                raise ProviderError(ProviderErrorCode.NOT_FOUND, "bad content_id")
         else:
             if not _EXTERNAL_ID_RE.fullmatch(content_id):
-                raise ProviderError("not_found", "bad content_id")
+                raise ProviderError(ProviderErrorCode.NOT_FOUND, "bad content_id")
             return await self._movie_stream(int(content_id), translation, http)
         anime_id = int(parts[0])
         if not re.fullmatch(r"e\d{1,5}", parts[1]):
-            raise ProviderError("parse_failed", "bad episode suffix")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "bad episode suffix")
         try:
             payload = json.loads(base64.b64decode(parts[2]).decode("utf-8"))
             sources = payload.get("sources", [])
         except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as error:
-            raise ProviderError("parse_failed", "bad sources blob") from error
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "bad sources blob") from error
         episode_num = int(payload.get("episode") or int(parts[1][1:]))
         if not sources:
-            raise ProviderError("parse_failed", "no sources for episode")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no sources for episode")
 
         # Match the translation. Fall back to the first available
         # source rather than 404 — the v1 upstream always picks the
@@ -916,7 +924,7 @@ class AnimeONProvider(BaseProvider):
                     break
             if chosen is None:
                 raise ProviderError(
-                    "translation_missing",
+                    ProviderErrorCode.TRANSLATION_MISSING,
                     f"translation {translation!r} not available",
                 )
         if chosen is None:
@@ -963,9 +971,9 @@ class AnimeONProvider(BaseProvider):
                     )
         if translation is not None:
             raise ProviderError(
-                "translation_missing", f"translation {translation!r} not available"
+                ProviderErrorCode.TRANSLATION_MISSING, f"translation {translation!r} not available"
             )
-        raise ProviderError("parse_failed", "no movie source resolved")
+        raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no movie source resolved")
 
     async def _resolve_movie_player_source(
         self,
@@ -1028,7 +1036,7 @@ class AnimeONProvider(BaseProvider):
         video_url = source.get("video_url")
         if _is_moon(source):
             if not video_url:
-                raise ProviderError("parse_failed", "moon source without video_url")
+                raise ProviderError(ProviderErrorCode.PARSE_FAILED, "moon source without video_url")
             return await self._resolve_moon_iframe(video_url, http)
         if _is_ashdi(source):
             if file_url and file_url.endswith(".m3u8"):
@@ -1045,14 +1053,14 @@ class AnimeONProvider(BaseProvider):
             )
             if fallback is not None:
                 return fallback
-            raise ProviderError("parse_failed", "ashdi source without urls")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "ashdi source without urls")
         # Unknown player: prefer fileUrl if it is an m3u8, otherwise
         # try the iframe page's `file:` regex.
         if file_url and ".m3u8" in file_url:
             return str(file_url)
         if video_url:
             return await self._resolve_ashdi_iframe(video_url, http)
-        raise ProviderError("parse_failed", "no usable url in source")
+        raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no usable url in source")
 
     async def _ashdi_playlist_fallback(
         self,
@@ -1156,7 +1164,7 @@ class AnimeONProvider(BaseProvider):
         )
         match = _ASHDI_FILE_RE.search(page)
         if not match:
-            raise ProviderError("parse_failed", "ashdi file: '...' missing")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "ashdi file: '...' missing")
         return match.group(1)
 
     async def _resolve_moon_iframe(
@@ -1189,16 +1197,16 @@ class AnimeONProvider(BaseProvider):
 
         atob_match = _ATOB_RE.search(page)
         if not atob_match:
-            raise ProviderError("parse_failed", "moon atob blob missing")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "moon atob blob missing")
         decoded_js = _moon_outer_decode(atob_match.group(1)).decode(
             "utf-8", errors="ignore"
         )
         if not decoded_js:
-            raise ProviderError("parse_failed", "moon outer decode failed")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "moon outer decode failed")
 
         key_match = _KEY_RE.search(decoded_js)
         if not key_match:
-            raise ProviderError("parse_failed", "moon xor key missing")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "moon xor key missing")
         xor_key = key_match.group(1)
 
         for inner in _INNER_RE.findall(decoded_js):
@@ -1220,7 +1228,7 @@ class AnimeONProvider(BaseProvider):
                     # health signal), NOT `parse_failed` (502, pollutes
                     # the health tracker for a healthy provider).
                     raise ProviderError(
-                        "gated", "no playable tracks — video not yet published"
+                        ProviderErrorCode.GATED, "no playable tracks — video not yet published"
                     )
                 for track in tracks if isinstance(tracks, list) else []:
                     url = str(track.get("file") or "").strip()
@@ -1230,7 +1238,7 @@ class AnimeONProvider(BaseProvider):
             if ".m3u8" not in decoded:
                 continue
             return decoded
-        raise ProviderError("parse_failed", "no .m3u8 in moon payload")
+        raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no .m3u8 in moon payload")
 
 
 def _stream_headers(source: dict[str, Any]) -> dict[str, str]:
