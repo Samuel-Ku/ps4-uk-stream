@@ -296,6 +296,46 @@ def test_items_extension_is_cached_across_requests(client: TestClient) -> None:
     assert provider.browse_calls == first_calls
 
 
+def test_items_extension_skips_a_failing_provider(client: TestClient) -> None:
+    """AC4: a failing provider fetch skips THAT provider without breaking
+    the extension — the healthy provider's deeper pages still grow the
+    pool (a flap on one upstream never freezes the scroll)."""
+    a = _PagedStub(
+        "a",
+        sections=(Section(id="movie", title="Фільми", form="movie"),),
+        pages={"movie": {1: [_movie("a", n) for n in range(1, 21)]}},
+    )
+    b = _PagedStub(
+        "b",
+        sections=(Section(id="movie", title="Фільми", form="movie"),),
+        pages={
+            "movie": {
+                1: [_movie("b", n) for n in range(1, 21)],
+                2: [_movie("b", n) for n in range(21, 31)],
+            }
+        },
+    )
+
+    async def _broken_browse(section: str, page: int, http: Any):  # type: ignore[no-untyped-def]
+        if page >= 2:
+            raise RuntimeError("upstream flap")
+        return await _PagedStub.browse(a, section, page, http)
+
+    a.browse = _broken_browse  # type: ignore[method-assign]
+    PROVIDERS["a"] = a
+    PROVIDERS["b"] = b
+    _auth(client)
+    movie_view = _view_id("Фільми", _views(client))
+
+    page1 = _items_page(client, movie_view, start_index=0, limit=20)
+    assert page1["TotalRecordCount"] == 20
+
+    page2 = _items_page(client, movie_view, start_index=20, limit=20)
+    assert page2["TotalRecordCount"] == 30  # snapshot 20 + provider b's page 2
+    assert len(page2["Items"]) == 10
+    assert page1["Items"][0]["Id"] != page2["Items"][0]["Id"]
+
+
 # ---------------------------------------------------------------------------
 # Unit: the extension path
 # ---------------------------------------------------------------------------
