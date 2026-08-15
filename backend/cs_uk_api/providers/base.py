@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import abc
 import re
+from enum import Enum
 from typing import Any, Literal
 from urllib.parse import unquote
 
@@ -16,8 +17,17 @@ from ..models import (
     Section,
     StreamResponse,
 )
+from ..wire_identity import split_episode_tail, strip_movie_suffix
 
 MediaTypeStr = Literal["movie", "series", "anime", "cartoon", "dorama"]
+
+#: Sentinel for ``guarded_get``'s ``allowed_hosts`` parameter (mirrors
+#: ``http_client.safe_get``'s): distinguishes "the caller did not pass
+#: it" (→ ``self.hosts``) from an explicit ``None`` (the documented
+#: escape hatch that skips the check). Defined here rather than
+#: imported from ``http_client`` to avoid the ``http_client → base``
+#: import cycle.
+_UNSET: Any = object()
 
 #: Style-tagged MediaType values map 1:1 to a MediaStyle.
 _STYLE_BY_TYPE: dict[str, MediaStyle] = {
@@ -79,11 +89,53 @@ def model_b_axes(
     return (form or "series"), frozenset({style})
 
 
+class ProviderErrorCode(str, Enum):
+    """Typed provider-error vocabulary (spec #309 T6, US6).
+
+    The codes providers raise on upstream failures. String values are
+    the wire contract — a consumer matching against the CONSTANT (not a
+    free-string literal) can never silently change behavior via a typo.
+    ``ProviderError.code`` stays a plain ``str``; because the members
+    are ``str`` subclasses, ``e.code == ProviderErrorCode.GATED`` holds
+    for both a constant-raised and a literal-raised error.
+    """
+
+    NOT_FOUND = "not_found"
+    PARSE_FAILED = "parse_failed"
+    UNREACHABLE = "unreachable"
+    UPSTREAM_UNREACHABLE = "upstream_unreachable"
+    GATED = "gated"
+    TRANSLATION_MISSING = "translation_missing"
+    INVALID_TRANSLATION = "invalid_translation"
+    TIMEOUT = "timeout"
+    SCRAPE_FAILED = "scrape_failed"
+
+
 class ProviderError(Exception):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(f"{code}: {message}")
         self.code = code
         self.message = message
+
+
+def split_content_id(content_id: str) -> tuple[str, str]:
+    """Split a provider content id into (provider, external), covering
+    every wire suffix form (spec #309 T6).
+
+    ``provider:external`` (plain), ``provider:external:__movie__`` (the
+    movie sentinel) and the episode tails ``:s1e1`` / ``:e5`` /
+    ``:eN:<blob>`` all resolve to the same ``(provider, external)`` —
+    the suffix is wire decoration, never part of the external id. A
+    malformed id (no provider prefix) yields ``("", "")``.
+    """
+    provider_id, _, rest = content_id.partition(":")
+    if not rest:
+        return "", ""
+    rest = strip_movie_suffix(rest)
+    split = split_episode_tail(rest)
+    if split is not None:
+        rest = split[0]
+    return provider_id, rest
 
 
 class BaseProvider(abc.ABC):
@@ -105,6 +157,39 @@ class BaseProvider(abc.ABC):
     #: build then resolves their cards and drops gated ones before
     #: merging rows, so a promo clip never surfaces as a playable card.
     can_gate: bool = False
+    #: SSRF allowlist for this provider's upstream fetches (spec #309
+    #: T6, US7): ``guarded_get`` applies it BY DEFAULT, so adapters stop
+    #: opting in per call. Empty (the default) is fail-closed — a fetch
+    #: without declared hosts raises ``not_found``. Adapters declare
+    #: their hosts once here; the contract phase migrates the adapters
+    #: onto this surface.
+    hosts: frozenset[str] = frozenset()
+
+    async def guarded_get(
+        self,
+        http: httpx.AsyncClient,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        params: dict[str, str] | None = None,
+        allowed_hosts: set[str] | None = _UNSET,
+    ) -> httpx.Response:
+        """Guarded upstream GET — the SSRF allowlist applies by default.
+
+        ``self.hosts`` is the default allowlist; pass ``allowed_hosts``
+        per call to use a different set; explicit ``None`` is the
+        documented escape hatch that skips the check (only where the
+        URL is not attacker-influenced). ``safe_get`` is imported
+        lazily to break the ``http_client → base`` import cycle (the
+        poster_proxy pattern).
+        """
+        from ..http_client import safe_get  # cycle-break
+
+        if allowed_hosts is _UNSET:
+            allowed_hosts = set(self.hosts)
+        return await safe_get(
+            http, url, allowed_hosts=allowed_hosts, headers=headers, params=params
+        )
 
     def has_section(self, section_id: str) -> bool:
         return any(s.id == section_id for s in self.sections)

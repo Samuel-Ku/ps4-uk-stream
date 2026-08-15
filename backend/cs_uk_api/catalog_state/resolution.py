@@ -38,7 +38,7 @@ from ..models import (
     SearchResult,
 )
 from ..providers import PROVIDERS
-from ..providers.base import ProviderError
+from ..providers.base import ProviderError, ProviderErrorCode
 from ..uakino_browser import get_session
 from ..wire_identity import is_group_key, provider_union, split_episode_tail
 from ._stores import _SOURCES_KEY, blocklist_cache, content_cache, gated_cache, sources_cache
@@ -146,7 +146,7 @@ async def filter_gated_items(
             try:
                 resp = await provider.content(external, http)
             except ProviderError as e:
-                if e.code == "gated":
+                if e.code == ProviderErrorCode.GATED:
                     gated_cache.set(key, True)
                     return True
                 return False
@@ -363,7 +363,7 @@ async def _resolve_group_content_once(
             resp = await provider.content(external_id, http)
             break
         except ProviderError as e:
-            if e.code == "gated":
+            if e.code == ProviderErrorCode.GATED:
                 # ADR-0002: a gated verdict never moves the health
                 # tracker. Cache it so every later group-key call
                 # short-circuits — the load_home sweep normally

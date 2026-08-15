@@ -56,7 +56,7 @@ from ..models import (
     Translation,
 )
 from ..wire_identity import MOVIE_SUFFIX
-from .base import BaseProvider, MediaTypeStr, ProviderError, model_b_axes
+from .base import BaseProvider, MediaTypeStr, ProviderError, ProviderErrorCode, model_b_axes
 
 BASE_URL = "https://animeon.club"
 MOON_BASE = "https://moonanime.art"
@@ -718,7 +718,7 @@ class AnimeONProvider(BaseProvider):
         try:
             return cast(dict[str, Any], await self._get_json(f"{base}&skip=-1", http))
         except ProviderError as e:
-            if e.code in {"unreachable", "upstream_unreachable"}:
+            if e.code in (ProviderErrorCode.UNREACHABLE, ProviderErrorCode.UPSTREAM_UNREACHABLE):
                 raise
             logger.debug("animeon skip=-1 specials unavailable: %s", e)
             return None
@@ -989,7 +989,7 @@ class AnimeONProvider(BaseProvider):
                 f"{BASE_URL}/api/player/{player.get('id')}/{translation_id}", http
             )
         except ProviderError as e:
-            if e.code in {"unreachable", "upstream_unreachable"}:
+            if e.code in (ProviderErrorCode.UNREACHABLE, ProviderErrorCode.UPSTREAM_UNREACHABLE):
                 raise
             logger.debug("animeon movie direct source unavailable: %s", e)
             direct = None

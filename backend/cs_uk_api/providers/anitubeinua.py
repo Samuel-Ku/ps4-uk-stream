@@ -54,7 +54,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError, model_b_axes
+from .base import BaseProvider, ProviderError, ProviderErrorCode, model_b_axes
 
 BASE_URL = "https://anitube.in.ua"
 # ashdi.vip requires the upstream Referer to serve the m3u8 manifest.
@@ -597,7 +597,7 @@ class AnitubeinuaProvider(BaseProvider):
             # Network/server failures must propagate so the health
             # tracker sees the provider as down; only unparseable
             # upstream payloads degrade to an empty season list.
-            if e.code in {"unreachable", "upstream_unreachable"}:
+            if e.code in (ProviderErrorCode.UNREACHABLE, ProviderErrorCode.UPSTREAM_UNREACHABLE):
                 raise
             seasons = None
         # Always have at least one translation so the model min_length

@@ -28,7 +28,7 @@ from typing import Any
 
 import httpx
 
-from ..providers.base import BaseProvider, ProviderError
+from ..providers.base import BaseProvider, ProviderError, ProviderErrorCode
 
 #: uakino is never probed (spec #285, user story 9): the API's
 #: browser-session heartbeat already tracks its health, and a second
@@ -134,9 +134,9 @@ async def probe_deep(
         if not result.ok:
             result.error = f"HEAD {stream.url} → {head.status_code}"
     except ProviderError as e:
-        if e.code == "gated":
+        if e.code == ProviderErrorCode.GATED:
             result.ok = True  # gated is a deliberate state, not drift
-            result.error = "gated"
+            result.error = ProviderErrorCode.GATED
         else:
             result.error = f"{e.code}: {e.message}"
     except Exception as e:  # noqa: BLE001 — a probe never crashes the sweep
