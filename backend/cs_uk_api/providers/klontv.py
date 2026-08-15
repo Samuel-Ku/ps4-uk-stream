@@ -23,7 +23,6 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from ..country import extract_country
-from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -35,7 +34,13 @@ from ..models import (
     Translation,
 )
 from ..wire_identity import MOVIE_SUFFIX
-from .base import BaseProvider, ProviderError, model_b_axes
+from .base import (
+    BaseProvider,
+    ProviderError,
+    ProviderErrorCode,
+    model_b_axes,
+    split_content_suffix,
+)
 
 
 def _jsonld_doc(soup: BeautifulSoup) -> dict[str, Any] | None:
@@ -140,11 +145,6 @@ BASE_URL = "https://klonua.com"
 # serves the manifest.
 ASHDI_REFERER = "https://tortuga.wtf/"
 
-# Hosts the upstream may legally redirect to: the CMS on klonua.com
-# and the player CDN on ashdi.vip. A hostile CMS response must not be
-# able to pivot either hop to an attacker-controlled host.
-_ALLOWED_HOSTS: frozenset[str] = frozenset({"klonua.com", "ashdi.vip"})
-
 # Sections exposed by KlonTV's main navigation. Per the upstream
 # `mainPage = mainPageOf(...)` in KlonTVProvider.kt, but the v2
 # contract only ships `films` and `series` (multfilmy/multserialy/
@@ -162,11 +162,6 @@ _PATH_TYPE: tuple[tuple[tuple[str, ...], str], ...] = (
     (("films", "filmy"), "movie"),
     (("series", "serialy"), "series"),
 )
-
-# Sentinel episode-id suffix for movies (whose Player1 is a single
-# `file: "https://...m3u8"` URL rather than a season/episode map;
-# defined once in ``wire_identity``, spec #309).
-
 
 def _page_number(href: str) -> int:
     """Pull the `/page/N/` integer out of a DLE pagination link."""
@@ -238,7 +233,7 @@ def _section_url(section: str, page: int) -> str:
         "series": "serialy",
     }
     if section not in paths:
-        raise ProviderError("not_found", f"unknown section: {section}")
+        raise ProviderError(ProviderErrorCode.NOT_FOUND, f"unknown section: {section}")
     base = f"{BASE_URL}/{paths[section]}/"
     if page <= 1:
         return base
@@ -300,6 +295,11 @@ class KlonTVProvider(BaseProvider):
     name = "KlonTV"
     types = ("movie", "series")
     sections = KLONTV_SECTIONS
+    #: SSRF allowlist (spec #309 T8): the CMS on klonua.com and the
+    #: player CDN on ashdi.vip. A hostile CMS response must not be able
+    #: to pivot either hop to an attacker-controlled host.
+    #: ``guarded_get`` applies this by default.
+    hosts = frozenset({"klonua.com", "ashdi.vip"})
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         # DLE search form posts to the site root with `do`/`subaction`/
@@ -311,10 +311,10 @@ class KlonTVProvider(BaseProvider):
                 data={"do": "search", "subaction": "search", "story": quote(query)},
             )
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
             raise ProviderError(
-                "upstream_unreachable", f"status {resp.status_code}"
+                ProviderErrorCode.UPSTREAM_UNREACHABLE, f"status {resp.status_code}"
             )
         soup = BeautifulSoup(resp.text, "lxml")
         results: list[SearchResult] = []
@@ -329,11 +329,11 @@ class KlonTVProvider(BaseProvider):
     ) -> tuple[list[SearchResult], bool]:
         url = _section_url(section, page)
         try:
-            resp = await http.get(url)
+            resp = await self.guarded_get(http, url)
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError("not_found", f"status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         results: list[SearchResult] = []
         for card in soup.select(".short-news__slide-item"):
@@ -356,27 +356,24 @@ class KlonTVProvider(BaseProvider):
     ) -> ContentResponse:
         kind, _, slug = external_id.partition("/")
         if not kind or not slug:
-            raise ProviderError("parse_failed", f"invalid external_id: {external_id!r}")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"invalid external_id: {external_id!r}")
         if not _SLUG_RE.fullmatch(slug):
-            raise ProviderError("not_found", f"bad external_id: {external_id!r}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"bad external_id: {external_id!r}")
         path = "filmy" if kind == "films" else "serialy"
         url = f"{BASE_URL}/{path}/{slug}.html"
-        # Fetch through safe_get: the upstream 301-redirects a title
+        # Fetch through guarded_get: the upstream 301-redirects a title
         # moved between sections (e.g. `/filmy/...` -> `/serialy/...`,
-        # observed live 2026-08-09) and safe_get follows same-host
+        # observed live 2026-08-09) and the guard follows same-host
         # redirects instead of surfacing a dead not_found for a card
         # whose player page is alive.
         try:
-            resp = await safe_get(
-                http,
-                url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
-                headers={"Referer": BASE_URL + "/"},
+            resp = await self.guarded_get(
+                http, url, headers={"Referer": BASE_URL + "/"}
             )
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError("not_found", f"status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         # Title selector: the upstream Kotlin uses `.seo-h1__position`
         # (a class on the `<h1>`); we accept the same.
@@ -386,7 +383,7 @@ class KlonTVProvider(BaseProvider):
             # would get via `tryParseJson` when the JSON-LD is missing.
             title_el = soup.select_one("h1")
         if title_el is None:
-            raise ProviderError("parse_failed", "title missing")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "title missing")
         # Poster: `.cover-image` (a class on the `<img>` inside the
         # `.poster-block__poster` block). We also accept any `img`
         # with `/uploads/...` in case the class name drifts.
@@ -415,7 +412,7 @@ class KlonTVProvider(BaseProvider):
             elif isinstance(src, str):
                 player_url = src
         if player_url is None:
-            raise ProviderError("parse_failed", "no player iframe on content page")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no player iframe on content page")
         # tvType: classify from the content URL's path; the upstream
         # Kotlin also overrides to `TvSeries` when the player URL is
         # `ashdi.vip/serial/...` (the rare case where a `/filmy/` URL
@@ -454,9 +451,8 @@ class KlonTVProvider(BaseProvider):
             genres=genres,
         )
 
-    @staticmethod
     async def _build_series_seasons(
-        player_url: str, external_id: str, http: httpx.AsyncClient, provider_id: str
+        self, player_url: str, external_id: str, http: httpx.AsyncClient, provider_id: str
     ) -> list[Season] | None:
         """Fetch the player page and decode the PlayerJS playlist.
 
@@ -474,10 +470,9 @@ class KlonTVProvider(BaseProvider):
         will then see no episodes and stop, instead of crashing.
         """
         try:
-            resp = await safe_get(
+            resp = await self.guarded_get(
                 http,
                 _strip_query_param(player_url, "multivoice"),
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"Referer": BASE_URL + "/"},
             )
         except httpx.HTTPError:
@@ -519,61 +514,51 @@ class KlonTVProvider(BaseProvider):
         # "<external_id>:s<N>e<M>" (series episode). /api/stream
         # strips the `<provider>:` prefix before calling us, so the
         # incoming value is the external_id with the suffix attached.
-        if MOVIE_SUFFIX in content_id:
-            ext_id = content_id.split(MOVIE_SUFFIX, 1)[0]
-            ep_suffix = ""
-        elif ":" in content_id:
-            ext_id, _, ep_suffix = content_id.rpartition(":")
-        else:
-            ext_id, ep_suffix = content_id, ""
+        ext_id, ep_suffix = split_content_suffix(content_id)
         kind, _, slug = ext_id.partition("/")
         if not kind or not slug:
-            raise ProviderError("parse_failed", f"invalid content_id: {content_id!r}")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"invalid content_id: {content_id!r}")
         if not _SLUG_RE.fullmatch(slug):
-            raise ProviderError("not_found", f"bad external_id: {ext_id!r}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"bad external_id: {ext_id!r}")
         path = "filmy" if kind == "films" else "serialy"
         content_url = f"{BASE_URL}/{path}/{slug}.html"
         # Same-host redirect following as content() — a title moved
         # between sections (e.g. /filmy/ -> /serialy/) must still
         # resolve its player page instead of surfacing not_found.
         try:
-            resp = await safe_get(
-                http,
-                content_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
-                headers={"Referer": BASE_URL + "/"},
+            resp = await self.guarded_get(
+                http, content_url, headers={"Referer": BASE_URL + "/"}
             )
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError("not_found", f"status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         iframe = soup.select_one("div.film-player iframe")
         if iframe is None:
-            raise ProviderError("parse_failed", "no player iframe on content page")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no player iframe on content page")
         data_src = iframe.get("data-src")
         src = iframe.get("src")
         player_url = data_src if isinstance(data_src, str) else src
         if not isinstance(player_url, str):
-            raise ProviderError("parse_failed", "no player url on content page")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no player url on content page")
         # Fetch the player page (ashdi.vip/vod/<id> for movies,
         # ashdi.vip/serial/<id> for series) with the same Referer
         # header the upstream Kotlin uses. The URL came from upstream
-        # HTML, so it goes through the redirect allowlist (#117).
+        # HTML, so it goes through the allowlist via guarded_get (#117).
         try:
-            player_resp = await safe_get(
+            player_resp = await self.guarded_get(
                 http,
                 _strip_query_param(player_url, "multivoice"),
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"Referer": BASE_URL + "/"},
             )
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if player_resp.status_code != 200:
-            raise ProviderError("not_found", f"status {player_resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {player_resp.status_code}")
         raw = _file_url(player_resp.text)
         if raw is None:
-            raise ProviderError("parse_failed", "no file: in player page")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no file: in player page")
         # Movies: `raw` is the m3u8 URL. Series: `raw` is a JSON
         # playlist — pick the right episode via the suffix. A bare
         # series id (no episode suffix) must NOT hand the client the
@@ -588,7 +573,7 @@ class KlonTVProvider(BaseProvider):
         else:
             media_url = raw
         if media_url is None:
-            raise ProviderError("parse_failed", f"no media url for {ep_suffix!r}")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"no media url for {ep_suffix!r}")
         # ashdi.vip refuses manifest requests without the upstream
         # Referer; same Referer the upstream Kotlin uses for HLS.
         return StreamResponse(

@@ -28,7 +28,13 @@ from ..models import (
     Translation,
 )
 from ..wire_identity import MOVIE_SUFFIX
-from .base import BaseProvider, ProviderError, model_b_axes
+from .base import (
+    BaseProvider,
+    ProviderError,
+    ProviderErrorCode,
+    model_b_axes,
+    split_content_suffix,
+)
 
 BASE_URL = "https://bambooua.com"
 
@@ -111,7 +117,7 @@ def _require_playable_files(groups: list[_PlaylistGroup]) -> None:
     catalog sweep drops the card during ``load_home`` instead of
     surfacing a zero-season series (#139)."""
     if not _has_playable_files(groups):
-        raise ProviderError("gated", "playlist has no playable files")
+        raise ProviderError(ProviderErrorCode.GATED, "playlist has no playable files")
 
 
 def _playlist_fully_gated(groups: list[_PlaylistGroup]) -> bool:
@@ -162,7 +168,7 @@ def _external_id_from_url(href: str) -> str:
         href,
     )
     if not m:
-        raise ProviderError("parse_failed", f"unrecognized url: {href}")
+        raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"unrecognized url: {href}")
     return f"{m.group(1)}{m.group(2)}"
 
 
@@ -183,7 +189,7 @@ def _page_number(href: str) -> int:
 def _section_url(section: str, page: int) -> str:
     paths = {s.id: f"/{s.id}/" for s in BAMBOUA_SECTIONS}
     if section not in paths:
-        raise ProviderError("not_found", f"unknown section: {section}")
+        raise ProviderError(ProviderErrorCode.NOT_FOUND, f"unknown section: {section}")
     base = f"{BASE_URL}{paths[section]}"
     if page <= 1:
         return base
@@ -292,9 +298,9 @@ def _extract_playlist(html: str) -> list[_PlaylistGroup]:
     try:
         raw = json.loads(m.group(1))
     except json.JSONDecodeError as e:
-        raise ProviderError("parse_failed", "playlist json invalid") from e
+        raise ProviderError(ProviderErrorCode.PARSE_FAILED, "playlist json invalid") from e
     if not isinstance(raw, list):
-        raise ProviderError("parse_failed", "playlist not a list")
+        raise ProviderError(ProviderErrorCode.PARSE_FAILED, "playlist not a list")
     out: list[_PlaylistGroup] = []
     for item in raw:
         if not isinstance(item, dict):
@@ -317,7 +323,7 @@ def _require_playlist(groups: list[_PlaylistGroup]) -> None:
     catalog sweep drops the card during ``load_home`` instead of
     surfacing a zero-season series (#139)."""
     if not groups:
-        raise ProviderError("gated", "no playlist on content page")
+        raise ProviderError(ProviderErrorCode.GATED, "no playlist on content page")
 
 
 def _parse_jsonld(html: str) -> _JSONModel | None:
@@ -347,6 +353,11 @@ class BambooUAProvider(BaseProvider):
     #: Gated titles resolve to a sponsor promo clip; the catalog build
     #: drops those sources before they surface as cards.
     can_gate = True
+    #: SSRF allowlist (spec #309 T8): every backend fetch (listings,
+    #: content pages) stays on bambooua.com; the hls*.bambooua.com
+    #: stream hosts are client-facing only. ``guarded_get`` applies
+    #: this by default.
+    hosts = frozenset({"bambooua.com"})
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         # The upstream POSTs to the bare mainUrl with the DLE search
@@ -362,9 +373,9 @@ class BambooUAProvider(BaseProvider):
                 },
             )
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError("upstream_unreachable", f"status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.UPSTREAM_UNREACHABLE, f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         results: list[SearchResult] = []
         for slide in soup.select("article.swiper-slide"):
@@ -382,11 +393,11 @@ class BambooUAProvider(BaseProvider):
     ) -> tuple[list[SearchResult], bool]:
         url = _section_url(section, page)
         try:
-            resp = await http.get(url)
+            resp = await self.guarded_get(http, url)
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError("not_found", f"status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         results: list[SearchResult] = []
         for slide in soup.select("article.swiper-slide"):
@@ -408,14 +419,14 @@ class BambooUAProvider(BaseProvider):
         self, external_id: str, http: httpx.AsyncClient
     ) -> ContentResponse:
         if not _SLUG_RE.fullmatch(external_id):
-            raise ProviderError("not_found", "bad external_id")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, "bad external_id")
         url = f"{BASE_URL}/{external_id}.html"
         try:
-            resp = await http.get(url)
+            resp = await self.guarded_get(http, url)
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError("not_found", f"status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         meta = _parse_jsonld(resp.text)
         # The first graph node carries the title + description for the
@@ -426,7 +437,7 @@ class BambooUAProvider(BaseProvider):
             if h1 is not None:
                 title = h1.get_text(strip=True)
         if not title:
-            raise ProviderError("parse_failed", "title missing")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "title missing")
         og = soup.select_one('meta[property="og:image"]')
         poster = urljoin(BASE_URL, str(og["content"])) if og and og.get("content") else None
         description = (
@@ -442,7 +453,7 @@ class BambooUAProvider(BaseProvider):
         _require_playlist(groups)
         _require_playable_files(groups)
         if _playlist_fully_gated(groups):
-            raise ProviderError("gated", "subscription required")
+            raise ProviderError(ProviderErrorCode.GATED, "subscription required")
         media_type = _type_from_url(url)
         seasons = self._build_seasons(groups, external_id, media_type, self.id)
         mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
@@ -504,30 +515,24 @@ class BambooUAProvider(BaseProvider):
         # `content_id` arrives as either "<external_id>__movie__"
         # (movie shortcut) or "<external_id>:s<N>e<M>" (series episode).
         # `/api/stream` strips the `<provider>:` prefix before calling us.
-        if MOVIE_SUFFIX in content_id:
-            ext_id = content_id.split(MOVIE_SUFFIX, 1)[0]
-            ep_suffix = ""
-        elif ":" in content_id:
-            ext_id, _, ep_suffix = content_id.rpartition(":")
-        else:
-            ext_id, ep_suffix = content_id, ""
+        ext_id, ep_suffix = split_content_suffix(content_id)
         if not _SLUG_RE.fullmatch(ext_id):
-            raise ProviderError("not_found", "bad external_id")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, "bad external_id")
         url = f"{BASE_URL}/{ext_id}.html"
         try:
-            resp = await http.get(url)
+            resp = await self.guarded_get(http, url)
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError("not_found", f"status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
         groups = _extract_playlist(resp.text)
         _require_playlist(groups)
         _require_playable_files(groups)
         media_url = self._select_file(groups, ep_suffix)
         if media_url is None:
-            raise ProviderError("not_found", f"no file for {ep_suffix!r}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"no file for {ep_suffix!r}")
         if _is_sponsor_file(media_url):
-            raise ProviderError("gated", "subscription required")
+            raise ProviderError(ProviderErrorCode.GATED, "subscription required")
         # Live titles are HLS (hlsN.bambooua.com/…/index.m3u8) or plain
         # mp4; label the stream by its actual URL, not a fixed "mp4".
         stream_type: StreamType = "m3u8" if media_url.lower().endswith(".m3u8") else "mp4"

@@ -28,7 +28,6 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from ..country import extract_country
-from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -40,7 +39,13 @@ from ..models import (
     Translation,
 )
 from ._tortuga import decode as _tor_decrypt
-from .base import BaseProvider, ProviderError, model_b_axes
+from .base import (
+    BaseProvider,
+    ProviderError,
+    ProviderErrorCode,
+    model_b_axes,
+    split_content_suffix,
+)
 
 BASE_URL = "https://serialno.tv"
 
@@ -80,12 +85,6 @@ def _parse_fmeta(soup: BeautifulSoup) -> tuple[int | None, list[str], list[Perso
                 # round-trips (kinotron convention).
                 people.append(Person(id=f"serialno:{name}", name=name, role=role))
     return year, genres, people
-# Hosts the upstream may legally redirect to: the DLE CMS and the
-# tortuga player. A hostile CMS response must not be able to pivot
-# either hop to an attacker-controlled host.
-_ALLOWED_HOSTS: frozenset[str] = frozenset({"serialno.tv", "tortuga.tw"})
-
-
 def _season_list(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Normalize the decoded player payload to a season list.
 
@@ -149,7 +148,7 @@ def _section_url(section: str, page: int) -> str:
     Serialno's homepage IS the series listing; DLE pagination
     moves subsequent pages to ``/page/N/``."""
     if section not in {"series"}:
-        raise ProviderError("not_found", f"unknown section: {section}")
+        raise ProviderError(ProviderErrorCode.NOT_FOUND, f"unknown section: {section}")
     base = f"{BASE_URL}/"
     if page <= 1:
         return base
@@ -216,6 +215,11 @@ class SerialnoProvider(BaseProvider):
     name = "Serialno"
     types = ("series",)
     sections = SERIALNO_SECTIONS
+    #: SSRF allowlist (spec #309 T8): the DLE CMS and the tortuga
+    #: player. A hostile CMS response must not be able to pivot either
+    #: hop to an attacker-controlled host. ``guarded_get`` applies this
+    #: by default.
+    hosts = frozenset({"serialno.tv", "tortuga.tw"})
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         # DLE search form posts to /index.php?do=search with the
@@ -228,10 +232,10 @@ class SerialnoProvider(BaseProvider):
                 data={"do": "search", "subaction": "search", "story": quote(query)},
             )
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
             raise ProviderError(
-                "upstream_unreachable", f"status {resp.status_code}"
+                ProviderErrorCode.UPSTREAM_UNREACHABLE, f"status {resp.status_code}"
             )
         soup = BeautifulSoup(resp.text, "lxml")
         results: list[SearchResult] = []
@@ -246,11 +250,11 @@ class SerialnoProvider(BaseProvider):
     ) -> tuple[list[SearchResult], bool]:
         url = _section_url(section, page)
         try:
-            resp = await http.get(url)
+            resp = await self.guarded_get(http, url)
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError("not_found", f"status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         results: list[SearchResult] = []
         for card in soup.select(".th-item"):
@@ -271,20 +275,20 @@ class SerialnoProvider(BaseProvider):
         self, external_id: str, http: httpx.AsyncClient
     ) -> ContentResponse:
         if not _SLUG_RE.fullmatch(external_id):
-            raise ProviderError("not_found", f"bad external_id: {external_id!r}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"bad external_id: {external_id!r}")
         url = f"{BASE_URL}/{external_id}.html"
         try:
-            resp = await http.get(url)
+            resp = await self.guarded_get(http, url)
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError("not_found", f"status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         # Title selector: the content page's `<h1>` is the show
         # title (e.g. "1670").
         title_el = soup.select_one("h1")
         if title_el is None:
-            raise ProviderError("parse_failed", "title missing")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "title missing")
         # Poster: the `<img>` inside `.fposter`. The page lazy-loads
         # it via `data-src`; some pages set `src` directly.
         img = soup.select_one(".fposter img")
@@ -304,7 +308,7 @@ class SerialnoProvider(BaseProvider):
         # trailer and is ignored.
         iframe = soup.select_one(".fplayer iframe")
         if iframe is None or not iframe.get("src"):
-            raise ProviderError("parse_failed", "no player iframe on content page")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no player iframe on content page")
         player_url = str(iframe["src"])
         seasons = await self._load_series_seasons(player_url, external_id, http, self.id)
         mb_form, mb_styles = model_b_axes("series")
@@ -323,9 +327,8 @@ class SerialnoProvider(BaseProvider):
             styles=mb_styles,
         )
 
-    @staticmethod
     async def _load_series_seasons(
-        player_url: str, external_id: str, http: httpx.AsyncClient, provider_id: str
+        self, player_url: str, external_id: str, http: httpx.AsyncClient, provider_id: str
     ) -> list[Season] | None:
         """Fetch the tortuga.tw player page and decode the obfuscated
         season/episode JSON list.
@@ -340,26 +343,22 @@ class SerialnoProvider(BaseProvider):
         empty seasons list — the live gate will then see no episodes
         and stop, instead of crashing."""
         try:
-            resp = await safe_get(
-                http,
-                player_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
-            )
+            resp = await self.guarded_get(http, player_url)
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError("not_found", f"status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
         decoded = _resolve_file_value(resp.text)
         if decoded is None:
-            raise ProviderError("parse_failed", "no file value on player page")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no file value on player page")
         if not decoded.startswith("["):
             raise ProviderError(
-                "parse_failed", "player payload is not a season/episode list"
+                ProviderErrorCode.PARSE_FAILED, "player payload is not a season/episode list"
             )
         try:
             data = _parse_player_json(decoded)
         except json.JSONDecodeError as e:
-            raise ProviderError("parse_failed", f"player json: {e}") from e
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"player json: {e}") from e
         seasons: list[Season] = []
         if not data:
             return None
@@ -390,48 +389,41 @@ class SerialnoProvider(BaseProvider):
         self, content_id: str, translation: str | None, http: httpx.AsyncClient
     ) -> StreamResponse:
         # `content_id` arrives as either "<external>" (no suffix)
-        # or "<external>:s<N>e<M>" (series episode). `/api/stream`
-        # strips the `<provider>:` prefix before calling us. The
-        # external_id alone is enough to rebuild the content URL.
-        if ":" in content_id:
-            ext_id, _, ep_suffix = content_id.rpartition(":")
-        else:
-            ext_id = content_id
-            ep_suffix = ""
+        # or "<external>:s<N>e<M>" (series episode) — the shared suffix
+        # splitter handles both (spec #309 T8). `/api/stream` strips the
+        # `<provider>:` prefix before calling us. The external_id alone
+        # is enough to rebuild the content URL.
+        ext_id, ep_suffix = split_content_suffix(content_id)
         if not _SLUG_RE.fullmatch(ext_id):
-            raise ProviderError("not_found", f"bad external_id: {ext_id!r}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"bad external_id: {ext_id!r}")
         content_url = f"{BASE_URL}/{ext_id}.html"
         try:
-            resp = await http.get(content_url)
+            resp = await self.guarded_get(http, content_url)
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError("not_found", f"status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         iframe = soup.select_one(".fplayer iframe")
         if iframe is None or not iframe.get("src"):
-            raise ProviderError("parse_failed", "no player iframe on content page")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no player iframe on content page")
         player_url = str(iframe["src"])
         try:
-            player_resp = await safe_get(
-                http,
-                player_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
-            )
+            player_resp = await self.guarded_get(http, player_url)
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if player_resp.status_code != 200:
-            raise ProviderError("not_found", f"status {player_resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {player_resp.status_code}")
         decoded = _resolve_file_value(player_resp.text)
         if decoded is None:
-            raise ProviderError("parse_failed", "no file value on player page")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no file value on player page")
         if not decoded.startswith("["):
             raise ProviderError(
-                "parse_failed", "player payload is not a season/episode list"
+                ProviderErrorCode.PARSE_FAILED, "player payload is not a season/episode list"
             )
         stream_url = self._select_stream_url(decoded, ep_suffix)
         if stream_url is None:
-            raise ProviderError("parse_failed", f"no stream url for {ep_suffix!r}")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"no stream url for {ep_suffix!r}")
         return StreamResponse(
             url=stream_url,
             type="m3u8",
