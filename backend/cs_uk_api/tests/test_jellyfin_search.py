@@ -46,7 +46,7 @@ from cs_uk_api.main import (
 )
 from cs_uk_api.models import ContentResponse, Episode, SearchResult, Season, Translation
 from cs_uk_api.providers import PROVIDERS
-from cs_uk_api.providers.base import BaseProvider, ProviderError, model_b_axes
+from cs_uk_api.providers.base import BaseProvider, ProviderError
 
 TOKEN = SETTINGS.jellyfin_token
 USER = "fdc808859fc45eb8ac5aa6faddc12c72"
@@ -97,7 +97,11 @@ def _result(
     year: int | None = None,
     poster: str | None = None,
 ) -> SearchResult:
-    mb_form, mb_styles = model_b_axes(cast(Any, media_type))
+    mb_form, mb_styles = (
+        (media_type, frozenset())
+        if media_type in ("movie", "series")
+        else ("series", frozenset({media_type}))
+    )
     return SearchResult(
         id=f"{pid}:{external}",
         provider=pid,

@@ -13,6 +13,8 @@ from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
+    MediaForm,
+    MediaStyle,
     SearchResult,
     Season,
     Section,
@@ -20,7 +22,7 @@ from ..models import (
     Translation,
     TranslationLevel,
 )
-from .base import BaseProvider, MediaTypeStr, ProviderError, model_b_axes, parse_actor_list
+from .base import MOVIE_SUFFIX, BaseProvider, MediaTypeStr, ProviderError, parse_actor_list
 
 BASE_URL = "https://kinotron.tv"
 # Hosts the upstream may legally redirect to: the DLE CMS and the ashdi
@@ -39,11 +41,6 @@ SECTIONS = (
 # the URL interpolation against path-traversal payloads before hitting the
 # upstream HTTP client.
 _SLUG_RE = re.compile(r"\d+-[a-z0-9][a-z0-9-]*")
-
-# Sentinel episode-id suffix for movies (whose player iframe is a single
-# URL rather than a season/episode map).
-MOVIE_SUFFIX = ":__movie__"
-
 
 def _external_id(href: str) -> str:
     match = re.search(r"/(\d+-[a-z0-9-]+?)(?:\.html)?/?$", href, re.IGNORECASE)
@@ -77,7 +74,10 @@ def _parse_cards(html: str, provider: str, media_type: MediaTypeStr) -> list[Sea
         title = title_el.get_text(" ", strip=True) if title_el else link.get_text(" ", strip=True)
         year_match = re.search(r"\b(?:19|20)\d{2}\b", title)
         poster = urljoin(BASE_URL, str(image.get("data-src"))) if image and image.get("data-src") else None
-        mb_form, mb_styles = model_b_axes(media_type)
+        mb_form: MediaForm = media_type if media_type == "movie" or media_type == "series" else "series"
+        mb_styles: frozenset[MediaStyle] = (
+            frozenset() if media_type == "movie" or media_type == "series" else frozenset({media_type})
+        )
         results.append(SearchResult(
             id=f"{provider}:{external_id}", provider=provider,
             title=title, year=int(year_match.group()) if year_match else None,
@@ -262,7 +262,10 @@ class KinoTronProvider(BaseProvider):
         cast = parse_actor_list(
             soup, "В ролях", self.id, re.compile(r"/actors/([^/]+)/?$")
         )
-        mb_form, mb_styles = model_b_axes(kind)
+        mb_form: MediaForm = kind if kind == "movie" or kind == "series" else "series"
+        mb_styles: frozenset[MediaStyle] = (
+            frozenset() if kind == "movie" or kind == "series" else frozenset({kind})
+        )
         return ContentResponse(id=f"{self.id}:{external_id}", title=title_el.get_text(" ", strip=True),
             description=description_el.get_text(" ", strip=True) if description_el else "",
             poster=poster, translations=translations, seasons=seasons, translations_level=translations_level, country=country,

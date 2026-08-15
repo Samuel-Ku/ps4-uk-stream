@@ -15,13 +15,15 @@ from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
+    MediaForm,
+    MediaStyle,
     SearchResult,
     Season,
     Section,
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, MediaTypeStr, ProviderError, model_b_axes
+from .base import MOVIE_SUFFIX, BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://eneyida.tv"
 _ALLOWED_HOSTS: frozenset[str] = frozenset({"eneyida.tv", "hdvbua.pro"})
@@ -33,7 +35,6 @@ _PATH_TYPE: tuple[tuple[tuple[str, ...], str], ...] = (
     (("serials", "series"), "series"),
     (("films",), "movie"),
 )
-MOVIE_SUFFIX = ":__movie__"
 _SLUG_RE = re.compile(r"\d+-[a-z0-9-]+")
 # Upstream's deliberate-unavailable embed page: «Контент недоступний»
 # (captured live 2026-08-08 — 1441 bytes, the phrase in <title> and <h1>,
@@ -112,7 +113,11 @@ def _parse_card(
     img = card.select_one("img")
     poster_src = (img.get("data-src") or img.get("src")) if img else None
     resolved_kind = kind or _card_kind(card, str(a["href"])) or "movie"
-    mb_form, mb_styles = model_b_axes(cast(MediaTypeStr, resolved_kind))
+    _kind = cast(MediaTypeStr, resolved_kind)
+    mb_form: MediaForm = _kind if _kind == "movie" or _kind == "series" else "series"
+    mb_styles: frozenset[MediaStyle] = (
+        frozenset() if _kind == "movie" or _kind == "series" else frozenset({_kind})
+    )
     _, _, slug = ext.partition("/")
     id_kind = "series" if resolved_kind == "series" else "films"
     return SearchResult(
@@ -278,7 +283,10 @@ class EneyidaProvider(BaseProvider):
                     episodes=[Episode(number=1, id=f"{self.id}:{external_id}{MOVIE_SUFFIX}", title="Фільм")],
                 )
             ]
-        mb_form, mb_styles = model_b_axes(typ)
+        mb_form: MediaForm = typ if typ == "movie" or typ == "series" else "series"
+        mb_styles: frozenset[MediaStyle] = (
+            frozenset() if typ == "movie" or typ == "series" else frozenset({typ})
+        )
         return ContentResponse(
             id=f"{self.id}:{external_id}",
             title=h1.get_text(strip=True),

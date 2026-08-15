@@ -28,6 +28,8 @@ from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
+    MediaForm,
+    MediaStyle,
     SearchResult,
     Season,
     Section,
@@ -35,7 +37,7 @@ from ..models import (
     Translation,
 )
 from ._tortuga import decode as _tor_decrypt
-from .base import BaseProvider, ProviderError, model_b_axes
+from .base import MOVIE_SUFFIX, BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://kinovezha.tv"
 # Hosts the upstream may legally redirect to: the DLE CMS and the
@@ -69,7 +71,7 @@ _SECTION_KIND: dict[str, str] = {
 # `/s-cartoons/` is classified as `series` (not `movie` via `cartoon`).
 # Per the upstream Kotlin's conditional: tags contain "Мультсеріали"
 # or "Серіали" → TvSeries, else TvType.Movie.
-_PATH_TYPE: tuple[tuple[str, str], ...] = (
+_PATH_TYPE: tuple[tuple[str, MediaTypeStr], ...] = (
     ("s-cartoons", "series"),  # /s-cartoons/ — Мультсеріали
     ("series", "series"),      # /series/ — Серіали
     ("cartoon", "movie"),      # /cartoons/ — Мультфільми
@@ -83,7 +85,7 @@ _PATH_TYPE: tuple[tuple[str, str], ...] = (
 # singular and plural forms are needed — upstream titles a Мультсеріал
 # page's Жанр row «Мультсеріал» (singular, observed live 2026-08-09).
 # Longest needles first so "Мультсеріали" beats "Серіали".
-_TAG_TYPE: tuple[tuple[str, str], ...] = (
+_TAG_TYPE: tuple[tuple[str, MediaTypeStr], ...] = (
     ("мультсеріали", "series"),
     ("мультсеріал", "series"),
     ("серіали", "series"),
@@ -101,9 +103,7 @@ _PAGINATION_LINK = re.compile(r"/page/(\d+)/?")
 # an inline script on the player page.
 _FILE_RE = re.compile(r"""file\s*:\s*["']([^"']+)["']""")
 
-# Episode-id suffix for movies (whose Player iframe is a single URL
-# rather than a season/episode map).
-MOVIE_SUFFIX = ":__movie__"
+
 
 # external_id is a numeric-prefixed slug (e.g. "2831-enn-droyid"). Gate
 # both content() and stream() against values that could escape the URL
@@ -111,7 +111,7 @@ MOVIE_SUFFIX = ":__movie__"
 _SLUG_RE = re.compile(r"\d+-[a-z0-9][a-z0-9-]*")
 
 
-def _classify_from_tags(tags_text: str) -> str:
+def _classify_from_tags(tags_text: str) -> MediaTypeStr:
     """Map the Жанр list text to a MediaType. Mirrors the upstream
     conditional: contains "Мультсеріали" or "Серіали" → series; else
     movie. Longest-prefix-first so "Мультсеріали" beats "Серіали"."""
@@ -122,7 +122,7 @@ def _classify_from_tags(tags_text: str) -> str:
     return "movie"
 
 
-def _classify_from_url(href: str) -> str:
+def _classify_from_url(href: str) -> MediaTypeStr:
     """Map a section path to a MediaType. Used by the browse helper."""
     lower = href.lower()
     for needle, t in _PATH_TYPE:
@@ -182,7 +182,11 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
     external_id = _external_id_from_url(href)
     if not external_id:
         return None
-    mb_form, mb_styles = model_b_axes(_classify_from_url(href))  # type: ignore[arg-type]
+    kind = _classify_from_url(href)
+    mb_form: MediaForm = kind if kind == "movie" or kind == "series" else "series"
+    mb_styles: frozenset[MediaStyle] = (
+        frozenset() if kind == "movie" or kind == "series" else frozenset({kind})
+    )
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
@@ -345,7 +349,10 @@ class KinoVezhaProvider(BaseProvider):
             seasons = [Season(number=1, episodes=[Episode(
                 number=1, id=f"{self.id}:{external_id}{MOVIE_SUFFIX}", title=title_el.get_text(strip=True),
             )])]
-        mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
+        mb_form: MediaForm = media_type if media_type == "movie" or media_type == "series" else "series"
+        mb_styles: frozenset[MediaStyle] = (
+            frozenset() if media_type == "movie" or media_type == "series" else frozenset({media_type})
+        )
         return ContentResponse(
             id=f"kinovezha:{external_id}",
             title=title_el.get_text(strip=True),

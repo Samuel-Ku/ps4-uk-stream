@@ -20,7 +20,7 @@ import re
 
 from fastapi import Header, HTTPException, Query, status
 
-from ..config import SETTINGS
+from .. import config as _config
 
 log = logging.getLogger("cs_uk_api.jellyfin")
 
@@ -96,7 +96,7 @@ async def require_token(
     if presented is None:
         log.warning("jellyfin facade rejecting request: missing token header")
         raise HTTPException(status_code=_UNAUTHORIZED, detail="missing token")
-    if presented != SETTINGS.jellyfin_token:
+    if presented != _config.SETTINGS.jellyfin_token:
         log.warning("jellyfin facade rejecting request: wrong token")
         raise HTTPException(status_code=_UNAUTHORIZED, detail="invalid token")
     return presented

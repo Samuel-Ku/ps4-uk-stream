@@ -35,13 +35,14 @@ import httpx
 from ..models import (
     ContentResponse,
     Episode,
+    MediaForm,
     SearchResult,
     Season,
     Section,
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError, model_b_axes
+from .base import BaseProvider, ProviderError
 
 API_URL = "https://api.coani.net/api"
 SITE_URL = "https://coani.net"
@@ -128,8 +129,7 @@ def _parse_card(item: object) -> SearchResult | None:
     year_value = inner.get("year")
     year = year_value if isinstance(year_value, int) else None
     type_field = inner.get("type")
-    media_type: str = "series" if type_field == _TYPE_SERIAL else "movie"
-    mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
+    media_type: MediaForm = "series" if type_field == _TYPE_SERIAL else "movie"
     return SearchResult(
         id=f"coaninet:{seo_slug}",
         provider="coaninet",
@@ -137,8 +137,8 @@ def _parse_card(item: object) -> SearchResult | None:
         year=year,
         poster=poster,
         url=f"{SITE_URL}/catalog/{film_seo_slug}/{seo_slug}",
-        form=mb_form,
-        styles=mb_styles,
+        form=media_type,
+        styles=frozenset(),
     )
 
 
@@ -239,7 +239,7 @@ class CoaninetProvider(BaseProvider):
             or ""
         )
         type_field = inner.get("type")
-        media_type: str = "series" if type_field == _TYPE_SERIAL else "movie"
+        media_type: MediaForm = "series" if type_field == _TYPE_SERIAL else "movie"
 
         # Pull the episode list (one entry per (number, voice_type))
         # from the id-addressed series endpoint.
@@ -295,7 +295,6 @@ class CoaninetProvider(BaseProvider):
         ):
             translations_level = "episode"
         translations = [Translation(id="uk", label="Українська")]
-        mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"coaninet:{external_id}",
             title=str(name),
@@ -305,8 +304,8 @@ class CoaninetProvider(BaseProvider):
             translations=translations,
             seasons=seasons,
             translations_level=translations_level,  # type: ignore[arg-type]
-            form=mb_form,
-            styles=mb_styles,
+            form=media_type,
+            styles=frozenset(),
         )
 
     async def stream(

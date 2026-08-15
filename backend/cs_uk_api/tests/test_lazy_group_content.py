@@ -55,7 +55,7 @@ from cs_uk_api.models import (
     Translation,
 )
 from cs_uk_api.providers import PROVIDERS
-from cs_uk_api.providers.base import BaseProvider, model_b_axes
+from cs_uk_api.providers.base import BaseProvider
 
 # ---------------------------------------------------------------------------
 # Helpers + fixtures
@@ -69,7 +69,11 @@ def _make_item(
     year: int | None = None,
     n: str = "1",
 ) -> SearchResult:
-    mb_form, mb_styles = model_b_axes(cast(Any, media_type))
+    mb_form, mb_styles = (
+        (media_type, frozenset())
+        if media_type in ("movie", "series")
+        else ("series", frozenset({media_type}))
+    )
     return SearchResult(
         id=f"{pid}:{n}",
         provider=pid,
@@ -82,7 +86,7 @@ def _make_item(
 
 
 from collections.abc import Iterator
-from typing import Any, ClassVar, cast
+from typing import ClassVar
 
 
 @pytest.fixture(autouse=True)

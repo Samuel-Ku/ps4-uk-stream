@@ -24,8 +24,8 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from cs_uk_api.catalog_state import clear_playback
 from cs_uk_api.config import SETTINGS
+from cs_uk_api.profile_store import Profile, profile_store
 
 TOKEN = SETTINGS.jellyfin_token
 
@@ -33,10 +33,11 @@ TOKEN = SETTINGS.jellyfin_token
 @pytest.fixture(autouse=True)
 def _isolate_playback() -> None:
     """Keep the session reports out of other test modules' state: the
-    resume shelf is global in-memory (single-user facade, #214)."""
-    clear_playback()
+    resume shelf is global in-memory (single-user facade, #214). Reset
+    through the store's seam, never by mutating it."""
+    profile_store.install(Profile())
     yield
-    clear_playback()
+    profile_store.install(Profile())
 
 #: The full PlaybackStartInfo/ProgressInfo/PlaybackStopInfo shapes the
 #: @jellyfin/sdk hands over (capture row 6 + playback-progress).

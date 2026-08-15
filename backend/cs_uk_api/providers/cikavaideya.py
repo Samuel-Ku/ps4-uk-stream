@@ -16,13 +16,15 @@ from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
+    MediaForm,
+    MediaStyle,
     SearchResult,
     Season,
     Section,
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError, model_b_axes
+from .base import MOVIE_SUFFIX, BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://cikava-ideya.top"
 # Hosts the upstream may legally redirect to: the CMS and the ashdi
@@ -49,7 +51,7 @@ CIKAVA_SECTIONS: tuple[Section, ...] = (
 # Order matters: longest first so "Мультсеріали" beats "Серіали" and
 # "Фільми" beats "Анімаційні" when both appear in the same card.
 # Needles are pre-lowered to skip `.lower()` on every call.
-_TAG_TYPE: tuple[tuple[str, str], ...] = (
+_TAG_TYPE: tuple[tuple[str, MediaTypeStr], ...] = (
     ("мультсеріали", "series"),
     ("фільми", "movie"),
     ("артхаус", "movie"),
@@ -78,9 +80,7 @@ _REMOVED_MARKER = "Видалено на прохання правовласни
 #: `gated`, not `parse_failed`, so the health tracker stays green (#139).
 _ASHDI_NOT_FOUND = "Файл не знайдено"
 
-# Sentinel episode-id suffix for movies (whose Player1 is a single URL
-# rather than a season/episode map).
-MOVIE_SUFFIX = ":__movie__"
+
 
 
 def _page_number(href: str) -> int:
@@ -100,7 +100,7 @@ def _numeric_sort_key(label: str) -> int:
 _SLUG_RE = re.compile(r"\d+-[a-z0-9-]+")
 
 
-def _classify_from_tags(tags_text: str) -> str:
+def _classify_from_tags(tags_text: str) -> MediaTypeStr:
     """Map the .th-subtitle (or content-page Жанр) text to a MediaType."""
     lower = tags_text.lower()
     for needle, t in _TAG_TYPE:
@@ -146,7 +146,11 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
     m = re.search(r"/(\d+-[a-z0-9-]+?)(?:\.html)?/?$", href)
     if not m:
         return None
-    mb_form, mb_styles = model_b_axes(_classify_from_tags(subtitle_text))  # type: ignore[arg-type]
+    kind = _classify_from_tags(subtitle_text)
+    mb_form: MediaForm = kind if kind == "movie" or kind == "series" else "series"
+    mb_styles: frozenset[MediaStyle] = (
+        frozenset() if kind == "movie" or kind == "series" else frozenset({kind})
+    )
     return SearchResult(
         id=f"{provider_id}:{m.group(1)}",
         provider=provider_id,
@@ -366,7 +370,11 @@ class CikavaIdeyaProvider(BaseProvider):
         if player_url is not None:
             await _probe_ashdi_gate(player_url, http)
         seasons = self._build_seasons(player1, external_id, self.id)
-        mb_form, mb_styles = model_b_axes(_classify_from_tags(tags_text))  # type: ignore[arg-type]
+        kind = _classify_from_tags(tags_text)
+        mb_form: MediaForm = kind if kind == "movie" or kind == "series" else "series"
+        mb_styles: frozenset[MediaStyle] = (
+            frozenset() if kind == "movie" or kind == "series" else frozenset({kind})
+        )
         return ContentResponse(
             id=f"cikavaideya:{external_id}",
             title=title_el.get_text(strip=True),

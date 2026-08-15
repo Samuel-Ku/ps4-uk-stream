@@ -24,6 +24,7 @@ from fastapi import HTTPException
 
 from . import config as _config
 from .cache import TtlCache
+from .config import Settings
 from .country import is_blocked_country
 from .filters import matches_axes, style_key
 from .health import TRACKER
@@ -49,16 +50,55 @@ from .uakino_browser import get_session
 
 log = logging.getLogger("cs_uk_api.catalog_state")
 
+class CatalogStores:
+    """The catalog's state/cache stores, built from a settings snapshot.
+
+    Arch T12 (spec #309) configuration seam: each state/cache store is
+    constructed with a settings argument — re-instantiable, the
+    snapshot-store pattern. Build a fresh set from different settings
+    (``CatalogStores(replace(SETTINGS, cache_home_s=60))``) instead of
+    reaching for module globals; the module-level ``STORES`` singleton
+    is the one production binding, constructed once from the ``SETTINGS``
+    snapshot at import. The bare cache names below are back-compat
+    aliases.
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        #: v3 (issue #70): the merged home view — «Новинки» + «Популярні
+        #: зараз» + the five type rows — is a curated snapshot, refreshed
+        #: every 30 min.
+        self.home_cache = TtlCache(settings.cache_home_s)
+        #: Multi-provider merged search (ticket #106): the native
+        #: ``/api/search`` route and the Jellyfin facade share the SAME
+        #: search cache (ADR-0003, same 5m TTL as browse).
+        self.search_cache = TtlCache(settings.cache_search_s)
+        #: Content-detail + blocked-country caches (ADR-0003), one TTL,
+        #: one cache-key shape, one clear().
+        self.content_cache = TtlCache(settings.cache_content_s)
+        self.blocklist_cache = TtlCache(settings.cache_content_s)
+        #: Subscription-gate verdict store: ``content:{provider}:{external}``
+        #: → True (gated) / False (known-good). TTL is deliberately longer
+        #: than the home cache (see ``Settings.cache_gated_s``).
+        self.gated_cache = TtlCache(settings.cache_gated_s)
+        #: v3 (issue #60): side cache keyed by group_key → {provider →
+        #: SearchResult}; v3 (ticket #101): the facade's resolution map.
+        self.sources_cache = TtlCache(settings.cache_home_s)
+
+
+#: The single production binding: one store set from the ``SETTINGS``
+#: snapshot. Tests re-instantiate through ``CatalogStores(settings)``.
+STORES = CatalogStores(_config.SETTINGS)
+
 #: v3 (issue #70): the merged home view — «Новинки» + «Популярні зараз»
 #: + the five type rows — is a curated snapshot, refreshed every 30 min.
-home_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_home_s)
+home_cache = STORES.home_cache
 
 #: Multi-provider merged search (ticket #106): the native ``/api/search``
 #: route and the Jellyfin facade share the SAME search cache (ADR-0003,
 #: same 5m TTL as browse), so a query searched from either surface never
 #: runs the provider fan-out twice. Key format and cache-key axes match
 #: the route's contract exactly (``search:{provider}:{q}:{form}:{style}``).
-search_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_search_s)
+search_cache = STORES.search_cache
 
 #: Bound on how long an explicit uakino route waits for the browser
 #: session to become ready before answering 503 ``warming`` (issue #193).
@@ -71,15 +111,15 @@ WARM_WAIT_S: float = 15.0
 #: ``main.py`` so the Jellyfin facade's ticket #105 detail resolver reads
 #: the SAME stores the native ``/api/content`` route uses — one TTL, one
 #: cache key shape (``content:{provider}:{external}``), one clear().
-content_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_content_s)
-blocklist_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_content_s)
+content_cache = STORES.content_cache
+blocklist_cache = STORES.blocklist_cache
 
 #: Subscription-gate verdict store: ``content:{provider}:{external}`` →
 #: True (gated) / False (known-good). Written by the catalog sweep and
 #: read by the routes so a gated verdict survives across home rebuilds
 #: without re-resolving (TTL is deliberately longer than the home cache,
 #: see ``Settings.cache_gated_s``).
-gated_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_gated_s)
+gated_cache = STORES.gated_cache
 
 #: v3 (issue #60): side cache keyed by group_key → {provider →
 #: SearchResult}. Populated from the raw SearchResult listings the home
@@ -90,7 +130,7 @@ gated_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_gated_s)
 #: ``/Items/{g2:...}`` resolves provider+external from it. ``g2:`` ids
 #: are deliberately NOT self-resolving; a cold cache yields 404
 #: ("item unavailable"), which Jellyfin clients tolerate.
-sources_cache: TtlCache = TtlCache(default_ttl_s=_config.SETTINGS.cache_home_s)
+sources_cache: TtlCache = STORES.sources_cache
 
 _HOME_KEY = "home:v1"
 _SOURCES_KEY = "home:sources:v1"
@@ -475,35 +515,6 @@ def group_key_for_external(composite: str) -> str | None:
                 if part == item_seg or part.startswith(f"{item_seg}-"):
                     return group_key
     return None
-
-
-#: Per-item playback positions reported by the client (ticket #214):
-#: ``item_id -> position_ticks``. The facade has a single fixed user (D4),
-#: so no per-user dimension. In-memory only (ADR-0003: no persistence).
-_playback: dict[str, int] = {}
-
-
-def record_playback(item_id: str, position_ticks: int) -> None:
-    """Record the client's playback position (``Sessions/Playing/*``).
-
-    Last report wins — the client streams Progress heartbeats while
-    playing and a final Stopped report, so the newest position is the
-    most accurate. Zero/negative positions (a just-started item) are
-    ignored; a later positive report overwrites.
-    """
-    if position_ticks <= 0:
-        return
-    _playback[item_id] = position_ticks
-
-
-def playback_positions() -> dict[str, int]:
-    """item_id -> position_ticks, most-progressed first (ticket #214)."""
-    return dict(sorted(_playback.items(), key=lambda kv: kv[1], reverse=True))
-
-
-def clear_playback() -> None:
-    """Drop all recorded positions (test isolation, #214)."""
-    _playback.clear()
 
 
 def peek_group_content(group_key: str) -> ContentResponse | None:
@@ -1019,7 +1030,9 @@ def register_search_groups(groups: Sequence[SearchGroup]) -> None:
 
 
 __all__ = [
+    "STORES",
     "WARM_WAIT_S",
+    "CatalogStores",
     "await_uakino_ready",
     "blocklist_cache",
     "content_cache",

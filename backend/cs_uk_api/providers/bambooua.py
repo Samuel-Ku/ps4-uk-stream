@@ -20,6 +20,8 @@ from ..country import extract_country
 from ..models import (
     ContentResponse,
     Episode,
+    MediaForm,
+    MediaStyle,
     SearchResult,
     Season,
     Section,
@@ -27,7 +29,7 @@ from ..models import (
     StreamType,
     Translation,
 )
-from .base import BaseProvider, ProviderError, model_b_axes
+from .base import MOVIE_SUFFIX, BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://bambooua.com"
 
@@ -51,7 +53,7 @@ BAMBOUA_SECTIONS: tuple[Section, ...] = (
 # maps: dorama -> AsianDrama, anime -> Anime, else -> Movie; but here
 # we classify per-card so a `/cinema/` URL is movie and a `/dorama/`
 # URL is series/dorama.
-_PATH_TYPE: tuple[tuple[str, str], ...] = (
+_PATH_TYPE: tuple[tuple[str, MediaTypeStr], ...] = (
     ("tv-show", "series"),
     ("cinema", "movie"),
     ("dorama", "dorama"),
@@ -62,9 +64,7 @@ _PATH_TYPE: tuple[tuple[str, str], ...] = (
     ("now", "series"),
 )
 
-# Sentinel episode-id suffix for movies (whose playlist has a single
-# file URL rather than a season/episode map).
-MOVIE_SUFFIX = ":__movie__"
+
 
 #: The site's subscription-gate placeholder: gated titles ("Для
 #: підписників") are served this sponsor promo clip instead of the real
@@ -165,7 +165,7 @@ def _external_id_from_url(href: str) -> str:
     return f"{m.group(1)}{m.group(2)}"
 
 
-def _type_from_url(href: str) -> str:
+def _type_from_url(href: str) -> MediaTypeStr:
     """Map the URL's path segment to a MediaType."""
     lower = href.lower()
     for needle, t in _PATH_TYPE:
@@ -205,7 +205,11 @@ def _parse_card(slide: Tag, provider_id: str) -> SearchResult | None:
         ext = _external_id_from_url(href)
     except ProviderError:
         return None
-    mb_form, mb_styles = model_b_axes(_type_from_url(href))  # type: ignore[arg-type]
+    kind = _type_from_url(href)
+    mb_form: MediaForm = kind if kind == "movie" or kind == "series" else "series"
+    mb_styles: frozenset[MediaStyle] = (
+        frozenset() if kind == "movie" or kind == "series" else frozenset({kind})
+    )
     return SearchResult(
         id=f"{provider_id}:{ext}",
         provider=provider_id,
@@ -444,7 +448,10 @@ class BambooUAProvider(BaseProvider):
             raise ProviderError("gated", "subscription required")
         media_type = _type_from_url(url)
         seasons = self._build_seasons(groups, external_id, media_type, self.id)
-        mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
+        mb_form: MediaForm = media_type if media_type == "movie" or media_type == "series" else "series"
+        mb_styles: frozenset[MediaStyle] = (
+            frozenset() if media_type == "movie" or media_type == "series" else frozenset({media_type})
+        )
         return ContentResponse(
             id=f"bambooua:{external_id}",
             title=title.strip(),

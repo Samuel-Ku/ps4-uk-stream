@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 import cs_uk_api.providers._registry  # noqa: F401
 
 from . import catalog_warm as catalog_warm_mod
+from . import config as _config
 from . import watchdog as watchdog_mod
 from .cache import TtlCache
 from .catalog_state import _GATE_CHECK_TIMEOUT_S, resolve_group
@@ -27,7 +28,6 @@ from .catalog_state import load_home as _catalog_load_home
 from .catalog_state import merged_search as _catalog_merged_search
 from .catalog_state import search_cache as _catalog_search_cache
 from .catalog_state import sources_cache as _catalog_sources_cache
-from .config import SETTINGS
 from .country import is_blocked_country
 from .filters import parse_form_filter as _parse_form_filter
 from .filters import parse_style_filter as _parse_style_filter
@@ -58,7 +58,6 @@ from .models import (
 from .poster_proxy import fetch as fetch_poster
 from .providers import PROVIDERS
 from .providers.base import BaseProvider
-from .providers.base import model_b_axes as _model_b_axes
 from .service import (
     content_provider_error as _content_provider_error,
 )
@@ -84,7 +83,9 @@ if not os.path.exists(DEFAULT_CHROMIUM):
 #: back-compat alias — tests import it from here.
 _search_cache = _catalog_search_cache
 _content_cache = _catalog_content_cache
-_browse_cache = TtlCache(default_ttl_s=SETTINGS.cache_search_s)
+#: The browse cache store (ADR-0003), constructed from the ``SETTINGS``
+#: snapshot via the one ``config`` binding (Arch T12).
+_browse_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_search_s)
 _blocklist_cache = _catalog_blocklist_cache
 
 #: Back-compat aliases (tests import these): the home snapshot + group-key
@@ -194,7 +195,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # app's first requests never hit a 17-21s cold scrape. OFF in tests
     # (conftest sets CS_UK_CATALOG_WARM=0) so a TestClient lifespan
     # never triggers real provider scrapes.
-    if SETTINGS.catalog_warm_enabled:
+    if _config.SETTINGS.catalog_warm_enabled:
         _catalog_warm_task = asyncio.create_task(_catalog_warm_loop())
     yield
     if _watchdog_task is not None:
@@ -306,7 +307,7 @@ async def health() -> dict[str, object]:
                 # NOT "pending" — it will never finish, so the runner's
                 # warm gate must not block on it. Report done: there is
                 # nothing to wait for.
-                "status": "done" if not SETTINGS.catalog_warm_enabled else "pending",
+                "status": "done" if not _config.SETTINGS.catalog_warm_enabled else "pending",
                 "home_warmed": False,
                 "content_warmed": 0,
                 "failed": 0,
@@ -338,7 +339,7 @@ def _provider_forms(p: BaseProvider) -> list[MediaForm]:
     """The provider's ``MediaForm`` rollup, deduped in a stable order."""
     seen: list[MediaForm] = []
     for kind in p.types:
-        form = _model_b_axes(kind)[0]
+        form: MediaForm = "movie" if kind == "movie" else "series"
         if form not in seen:
             seen.append(form)
     return seen
@@ -348,7 +349,8 @@ def _provider_styles(p: BaseProvider) -> list[MediaStyle]:
     """The provider's style-tag rollup (∅ on the wire when none)."""
     styles: set[MediaStyle] = set()
     for kind in p.types:
-        styles.update(_model_b_axes(kind)[1])
+        if kind in ("anime", "cartoon", "dorama"):
+            styles.add(kind)
     return sorted(styles)
 
 
@@ -534,7 +536,7 @@ async def _content_by_id(content_id: str) -> ContentResponse:
         f"content id={content_id}",
         exc_handler=_content_provider_error,
     )
-    if SETTINGS.block_russian and is_blocked_country(resp.country):
+    if _config.SETTINGS.block_russian and is_blocked_country(resp.country):
         _blocklist_cache.set(cache_key, True)
         log.info("blocked Russian content id=%s country=%s", content_id, resp.country)
         raise HTTPException(404, detail=ErrorResponse(error="not_found", message=content_id).model_dump())

@@ -1,11 +1,11 @@
 """Tests proving the existing Russian-content blocking behaviour (issue #79).
 
 The behaviour itself is committed in ``cs_uk_api/main.py`` (read-only for
-this ticket): when ``SETTINGS.block_russian`` is on and a provider returns a
-content whose ``country`` is blocked (see ``cs_uk_api.country`` READ-ONLY),
-``/api/content`` answers 404 and records the content id in the 30-min
-``_blocklist_cache`` so a repeat request short-circuits without hitting the
-provider again.
+this ticket): when ``config.SETTINGS.block_russian`` is on and a provider
+returns a content whose ``country`` is blocked (see ``cs_uk_api.country``
+READ-ONLY), ``/api/content`` answers 404 and records the content id in the
+30-min ``_blocklist_cache`` so a repeat request short-circuits without
+hitting the provider again.
 
 These tests only *prove* that behaviour with a stubbed provider — no network.
 """
@@ -15,6 +15,7 @@ from dataclasses import replace
 
 from fastapi.testclient import TestClient
 
+import cs_uk_api.config as config_mod
 import cs_uk_api.main as main_mod
 from cs_uk_api.main import app
 from cs_uk_api.models import ContentResponse, Translation
@@ -75,11 +76,12 @@ def test_blocked_content_returns_404_and_provider_was_called() -> None:
 
 
 def test_blocklist_cached_30min_short_circuits_second_request() -> None:
-    # Cache TTL: the blocklist store is built from SETTINGS.cache_content_s
-    # (main.py), whose default is 1800 s = 30 min. Assert the structural
-    # invariant (cache built from the setting) plus the documented default.
-    assert main_mod._blocklist_cache._default_ttl_s == main_mod.SETTINGS.cache_content_s
-    assert main_mod.SETTINGS.cache_content_s == 1800
+    # Cache TTL: the blocklist store is built from config.SETTINGS.cache_content_s
+    # (Arch T12: the ONE settings binding), whose default is 1800 s = 30 min.
+    # Assert the structural invariant (cache built from the setting) plus the
+    # documented default.
+    assert main_mod._blocklist_cache._default_ttl_s == config_mod.SETTINGS.cache_content_s
+    assert config_mod.SETTINGS.cache_content_s == 1800
 
     stub = _register_stub("blocked-b")
     try:
@@ -97,8 +99,9 @@ def test_blocklist_cached_30min_short_circuits_second_request() -> None:
 
 def test_block_russian_disabled_returns_200() -> None:
     stub = _register_stub("blocked-c")
-    original = main_mod.SETTINGS
-    main_mod.SETTINGS = replace(original, block_russian=False)
+    original = config_mod.SETTINGS
+    # Arch T12: patch the ONE binding (config.SETTINGS).
+    config_mod.SETTINGS = replace(original, block_russian=False)
     try:
         r = client.get("/api/content/blocked-c:12345")
         assert r.status_code == 200
@@ -107,5 +110,5 @@ def test_block_russian_disabled_returns_200() -> None:
         # And with the flag off, nothing is written to the blocklist cache.
         assert main_mod._blocklist_cache.get("content:blocked-c:12345") is None
     finally:
-        main_mod.SETTINGS = original
+        config_mod.SETTINGS = original
         _unregister("blocked-c")

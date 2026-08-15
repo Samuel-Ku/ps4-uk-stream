@@ -29,13 +29,15 @@ from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
+    MediaForm,
+    MediaStyle,
     SearchResult,
     Season,
     Section,
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError, model_b_axes
+from .base import BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://doramy.world"
 # ashdi.vip hosts the HLS manifest for each episode; the upstream Kotlin
@@ -59,7 +61,7 @@ DORAMYWORLD_SECTIONS: tuple[Section, ...] = (
 # against any nested path. The upstream maps `/film/` -> Movie and
 # everything else -> AsianDrama; we map `/dorama/` to its own `dorama`
 # MediaType so the front-end can branch on it.
-_PATH_TYPE: tuple[tuple[str, str], ...] = (
+_PATH_TYPE: tuple[tuple[str, MediaTypeStr], ...] = (
     ("film", "movie"),
     ("dorama", "dorama"),
     ("show", "series"),
@@ -162,7 +164,7 @@ def _external_id_from_url(href: str) -> str:
     return f"{m.group(1)}/{m.group(2)}"
 
 
-def _type_from_url(href: str) -> str:
+def _type_from_url(href: str) -> MediaTypeStr:
     """Map the URL's path segment to a MediaType. Falls back to
     'series' for any URL we don't recognise so the safe default
     mirrors the upstream's else-branch."""
@@ -238,7 +240,11 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
         ext = _external_id_from_url(href)
     except ProviderError:
         return None
-    mb_form, mb_styles = model_b_axes(_type_from_url(href))  # type: ignore[arg-type]
+    kind = _type_from_url(href)
+    mb_form: MediaForm = kind if kind == "movie" or kind == "series" else "series"
+    mb_styles: frozenset[MediaStyle] = (
+        frozenset() if kind == "movie" or kind == "series" else frozenset({kind})
+    )
     return SearchResult(
         id=f"{provider_id}:{ext}",
         provider=provider_id,
@@ -357,7 +363,10 @@ class DoramyWorldProvider(BaseProvider):
         seasons: list[Season] | None = None
         if translations_models:
             seasons = self._build_seasons(translations_models, external_id, self.id)
-        mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
+        mb_form: MediaForm = media_type if media_type == "movie" or media_type == "series" else "series"
+        mb_styles: frozenset[MediaStyle] = (
+            frozenset() if media_type == "movie" or media_type == "series" else frozenset({media_type})
+        )
         return ContentResponse(
             id=f"doramyworld:{external_id}",
             title=title,

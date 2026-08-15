@@ -45,6 +45,8 @@ from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
+    MediaForm,
+    MediaStyle,
     SearchResult,
     Season,
     Section,
@@ -53,7 +55,7 @@ from ..models import (
 )
 from ._crypto_uaserialspro import decrypt_player_data
 from ._tortuga import decode as _tortuga_decode
-from .base import BaseProvider, ProviderError, model_b_axes, parse_actor_list
+from .base import MOVIE_SUFFIX, BaseProvider, MediaTypeStr, ProviderError, parse_actor_list
 
 BASE_URL = "https://uaserials.com"
 # Hosts the upstream may legally redirect to: the DLE CMS and the
@@ -84,10 +86,6 @@ _EXTERNAL_ID_RE = re.compile(r"\d+-[a-z0-9-]+")
 # Episode-id suffix grammar: `s<N>e<M>` (1-based).
 _EP_SUFFIX_RE = re.compile(r"s(\d+)e(\d+)$")
 
-# Sentinel episode-id suffix for movies (whose player file is a single
-# m3u8 URL rather than a season/episode map).
-MOVIE_SUFFIX = ":__movie__"
-
 # Upstream Kotlin regex for the `file: '...'` value on the Tortuga
 # player page. Matches single- or double-quoted strings.
 _FILE_RE = re.compile(r"""file\s*:\s*["']([^"']+?)["']""")
@@ -99,7 +97,7 @@ def _page_number(href: str) -> int:
     return int(m.group(1)) if m else 0
 
 
-def _classify_from_genres(genre_text: str) -> str:
+def _classify_from_genres(genre_text: str) -> MediaTypeStr:
     """Map the Жанр row text to a MediaType.
 
     Mirrors the upstream Kotlin `when` block:
@@ -118,21 +116,22 @@ def _classify_from_genres(genre_text: str) -> str:
         ("фільм", "movie"),
     ):
         if needle in lowered:
-            return mapped
+            return cast(MediaTypeStr, mapped)
     return "series"
 
 
-def _type_for_section(section_id: str) -> str:
+def _type_for_section(section_id: str) -> MediaTypeStr:
     """Default MediaType per section. Used by `browse` since the
     listings carry no per-card genre tag."""
-    return {
+    table: dict[str, MediaTypeStr] = {
         "films": "movie",
         "series": "series",
         "fcartoon": "movie",
         "cartoons": "series",
         "anime": "anime",
         "exclusive": "movie",
-    }.get(section_id, "series")
+    }
+    return table.get(section_id, "series")
 
 
 def _section_url(section: str, page: int) -> str:
@@ -158,7 +157,7 @@ def _select_player_url(tabs: list[dict[str, Any]]) -> str | None:
     return str(first_url) if first_url else None
 
 
-def _parse_card(card: Tag, provider_id: str, media_type: str) -> SearchResult | None:
+def _parse_card(card: Tag, provider_id: str, media_type: MediaTypeStr) -> SearchResult | None:
     """Parse one `.short-item` listing card.
 
     The card exposes an anchor (`.short-item.width-16 .short-img`), a
@@ -187,7 +186,10 @@ def _parse_card(card: Tag, provider_id: str, media_type: str) -> SearchResult | 
             if isinstance(src, str) and src:
                 poster_src = src
     poster = urljoin(BASE_URL, poster_src) if poster_src else None
-    mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
+    mb_form: MediaForm = media_type if media_type == "movie" or media_type == "series" else "series"
+    mb_styles: frozenset[MediaStyle] = (
+        frozenset() if media_type == "movie" or media_type == "series" else frozenset({media_type})
+    )
     return SearchResult(
         id=f"{provider_id}:{m.group(1)}",
         provider=provider_id,
@@ -224,7 +226,6 @@ def _parse_search_card(a: Tag, provider_id: str) -> SearchResult | None:
             if isinstance(src, str) and src:
                 poster_src = src
     poster = urljoin(BASE_URL, poster_src) if poster_src else None
-    mb_form, mb_styles = model_b_axes("series")
     return SearchResult(
         id=f"{provider_id}:{m.group(1)}",
         provider=provider_id,
@@ -232,8 +233,8 @@ def _parse_search_card(a: Tag, provider_id: str) -> SearchResult | None:
         year=None,
         poster=poster,
         url=urljoin(BASE_URL, href),
-        form=mb_form,
-        styles=mb_styles,
+        form="series",
+        styles=frozenset(),
     )
 
 
@@ -374,7 +375,10 @@ class UASerialsProProvider(BaseProvider):
         cast = parse_actor_list(
             soup, "Актори", self.id, re.compile(r"/person/([^/]+)/?$")
         )
-        mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
+        mb_form: MediaForm = media_type if media_type == "movie" or media_type == "series" else "series"
+        mb_styles: frozenset[MediaStyle] = (
+            frozenset() if media_type == "movie" or media_type == "series" else frozenset({media_type})
+        )
         return ContentResponse(
             id=f"uaserialspro:{external_id}",
             title=title,

@@ -4,7 +4,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from .config import SETTINGS
+from . import config as _config
 from .providers.base import ProviderError
 
 _client: httpx.AsyncClient | None = None
@@ -14,7 +14,7 @@ def get_client() -> httpx.AsyncClient:
     global _client
     if _client is None:
         _client = httpx.AsyncClient(
-            timeout=httpx.Timeout(SETTINGS.upstream_timeout_s),
+            timeout=httpx.Timeout(_config.SETTINGS.upstream_timeout_s),
             headers={"User-Agent": "cs-uk-api/1.0 (+https://github.com/)"},
             follow_redirects=False,
         )

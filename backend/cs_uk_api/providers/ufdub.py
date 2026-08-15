@@ -13,6 +13,8 @@ from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
+    MediaForm,
+    MediaStyle,
     Person,
     SearchResult,
     Season,
@@ -20,7 +22,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError, model_b_axes
+from .base import MOVIE_SUFFIX, BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://ufdub.com"
 # Hosts the upstream may legally redirect to. The content page lives on
@@ -33,7 +35,7 @@ UFDUB_SECTIONS: tuple[Section, ...] = (
     Section(id="serialy", title="Серіали", form="series"),
     Section(id="doramy", title="Дорами", styles=frozenset({"dorama"})),
     # Ufdub cartoon films are tagged ``form=series, styles={cartoon}``
-    # (model_b_axes default form for style-tagged types) — a ``form``
+    # (the default form for style-tagged types) — a ``form``
     # axis would filter them all out, so the section filters by style.
     Section(id="cartoons", title="Мультфільми", styles=frozenset({"cartoon"})),
     Section(id="multserialy", title="Мультсеріали", form="series"),
@@ -45,7 +47,7 @@ UFDUB_SECTIONS: tuple[Section, ...] = (
 # and `/serial/` is not also matched by `/serials/`. Per the upstream
 # Kotlin source's `when { contains("serials") -> TvType.TvSeries ... }`
 # logic.
-_PATH_TYPE: tuple[tuple[str, str], ...] = (
+_PATH_TYPE: tuple[tuple[str, MediaTypeStr], ...] = (
     ("cartoon-serial", "series"),  # /cartoon-serial/ (multserialy)
     ("serial", "series"),          # /serial/, /serials/
     ("cartoon", "movie"),          # /cartoon/, /cartoons/
@@ -92,12 +94,7 @@ def _split_external_id(external_id: str) -> tuple[str, str] | None:
 # short label (mp4/720p/HD/source/web).
 _EPISODE_ROW_RE = re.compile(r"\[\s*'([^']*)'\s*,\s*'[^']*'\s*,\s*'([^']*)'\s*\]")
 
-# Sentinel episode-id suffix used by other providers for movies; kept
-# here so stream() treats a bare id and an explicit movie suffix alike.
-MOVIE_SUFFIX = ":__movie__"
-
-
-def _type_from_url(href: str) -> str:
+def _type_from_url(href: str) -> MediaTypeStr:
     """Map the URL's path segment to a MediaType."""
     lower = href.lower()
     for needle, t in _PATH_TYPE:
@@ -168,7 +165,11 @@ def _parse_card(card: Tag | BeautifulSoup, provider_id: str) -> SearchResult | N
         external_id = _external_id_from_url(href)
     except ProviderError:
         return None
-    mb_form, mb_styles = model_b_axes(_type_from_url(href))  # type: ignore[arg-type]
+    kind = _type_from_url(href)
+    mb_form: MediaForm = kind if kind == "movie" or kind == "series" else "series"
+    mb_styles: frozenset[MediaStyle] = (
+        frozenset() if kind == "movie" or kind == "series" else frozenset({kind})
+    )
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
@@ -346,7 +347,10 @@ class UFDubProvider(BaseProvider):
                 Episode(number=i, id=f"{self.id}:{external_id}:s1e{i}", title=title)
                 for i, (title, _url) in enumerate(episodes, start=1)
             ])]
-        mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
+        mb_form: MediaForm = media_type if media_type == "movie" or media_type == "series" else "series"
+        mb_styles: frozenset[MediaStyle] = (
+            frozenset() if media_type == "movie" or media_type == "series" else frozenset({media_type})
+        )
         return ContentResponse(
             id=f"ufdub:{external_id}",
             title=title_el.get_text(strip=True),

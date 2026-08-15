@@ -43,7 +43,6 @@ from typing import Any, cast
 import pytest
 from fastapi.testclient import TestClient
 
-from cs_uk_api.catalog_state import clear_playback
 from cs_uk_api.config import SETTINGS
 from cs_uk_api.main import (
     _blocklist_cache,
@@ -59,8 +58,9 @@ from cs_uk_api.models import (
     Season,
     Translation,
 )
+from cs_uk_api.profile_store import Profile, profile_store
 from cs_uk_api.providers import PROVIDERS
-from cs_uk_api.providers.base import BaseProvider, ProviderError, model_b_axes
+from cs_uk_api.providers.base import BaseProvider, ProviderError
 
 TOKEN = SETTINGS.jellyfin_token
 USER = "fdc808859fc45eb8ac5aa6faddc12c72"
@@ -169,7 +169,11 @@ def _card(
     *,
     poster: str | None = None,
 ) -> SearchResult:
-    mb_form, mb_styles = model_b_axes(cast(Any, media_type))
+    mb_form, mb_styles = (
+        (media_type, frozenset())
+        if media_type in ("movie", "series")
+        else ("series", frozenset({media_type}))
+    )
     return SearchResult(
         id=f"{pid}:{id_}",
         provider=pid,
@@ -199,7 +203,7 @@ def _isolate() -> Iterator[None]:
     real upstream calls or stale state leak into assertions."""
     saved_providers = dict(PROVIDERS)
     PROVIDERS.clear()
-    clear_playback()
+    profile_store.install(Profile())
     for cache in (_home_cache, _home_sources_cache, _content_cache, _blocklist_cache):
         cache.clear()
     try:
@@ -207,7 +211,7 @@ def _isolate() -> Iterator[None]:
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved_providers)
-        clear_playback()
+        profile_store.install(Profile())
         for cache in (_home_cache, _home_sources_cache, _content_cache, _blocklist_cache):
             cache.clear()
 

@@ -25,7 +25,8 @@ from __future__ import annotations
 
 import time
 from collections.abc import Iterator
-from typing import Any, cast
+from dataclasses import replace
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -44,7 +45,7 @@ from cs_uk_api.models import (
     Translation,
 )
 from cs_uk_api.providers import PROVIDERS
-from cs_uk_api.providers.base import BaseProvider, model_b_axes
+from cs_uk_api.providers.base import BaseProvider
 
 # ---------------------------------------------------------------------------
 # Helpers + fixtures
@@ -58,7 +59,11 @@ def item(
     year: int | None = None,
     n: str = "1",
 ) -> SearchResult:
-    mb_form, mb_styles = model_b_axes(cast(Any, media_type))
+    mb_form, mb_styles = (
+        (media_type, frozenset())
+        if media_type in ("movie", "series")
+        else ("series", frozenset({media_type}))
+    )
     return SearchResult(
         id=f"{pid}:{n}",
         provider=pid,
@@ -722,30 +727,12 @@ def test_home_route_does_not_hang_on_a_provider_that_hangs(
     individual ``browse`` calls, but a provider that produces no
     exception yet never returns is the edge this test pins."""
     import cs_uk_api.config as config_mod
-    import cs_uk_api.main as main_mod
 
     saved_settings = config_mod.SETTINGS
-    patched = type(saved_settings)(
-        host=saved_settings.host,
-        port=saved_settings.port,
-        upstream_timeout_s=10.0,
-        # Tight overall budget so the test fails fast if the guard breaks.
-        search_total_timeout_s=0.1,
-        poster_size_cap_bytes=saved_settings.poster_size_cap_bytes,
-        poster_allowed_hosts=saved_settings.poster_allowed_hosts,
-        cache_search_s=saved_settings.cache_search_s,
-        cache_content_s=saved_settings.cache_content_s,
-        cache_home_s=saved_settings.cache_home_s,
-        cache_poster_s=saved_settings.cache_poster_s,
-        cache_gated_s=saved_settings.cache_gated_s,
-        poster_cache_dir=saved_settings.poster_cache_dir,
-        poster_disk_ttl_s=saved_settings.poster_disk_ttl_s,
-        providers=saved_settings.providers,
-        block_russian=saved_settings.block_russian,
-        home_row_limit=saved_settings.home_row_limit,
-    )
+    # Arch T12: patch ONE binding (config.SETTINGS) — no positional
+    # Settings reconstruction.
+    patched = replace(saved_settings, upstream_timeout_s=10.0, search_total_timeout_s=0.1)
     config_mod.SETTINGS = patched
-    main_mod.SETTINGS = patched
     try:
         import asyncio
 
@@ -784,7 +771,6 @@ def test_home_route_does_not_hang_on_a_provider_that_hangs(
         assert elapsed < 2.0, f"hung past budget: {elapsed:.2f}s"
     finally:
         config_mod.SETTINGS = saved_settings
-        main_mod.SETTINGS = saved_settings
 
 
 # ---------------------------------------------------------------------------

@@ -22,6 +22,8 @@ from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
+    MediaForm,
+    MediaStyle,
     Person,
     SearchResult,
     Season,
@@ -29,7 +31,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError, model_b_axes
+from .base import BaseProvider, MediaTypeStr, ProviderError
 
 
 def _itemprop_values(soup: BeautifulSoup, name: str) -> list[str]:
@@ -125,7 +127,7 @@ _SECTION_PATHS: dict[str, str] = {
 # Path prefix -> MediaType. Longest prefix first so `/films/` matches
 # `film` (not anything shorter), and `/serials/` matches `series`
 # (not `serial`). Mirrors the upstream Kotlin's `when` ordering.
-_PATH_TYPE: tuple[tuple[str, str], ...] = (
+_PATH_TYPE: tuple[tuple[str, MediaTypeStr], ...] = (
     ("cartoon", "cartoon"),  # /cartoons/
     ("serial", "series"),    # /serials/, /serials/multseial/
     ("anime", "anime"),      # /anime/
@@ -154,7 +156,7 @@ def _external_id_from_url(href: str) -> str:
     return f"{m.group(1)}-{m.group(2)}"
 
 
-def _type_from_url(href: str) -> str:
+def _type_from_url(href: str) -> MediaTypeStr:
     """Map the URL's first path segment to a MediaType."""
     lower = href.lower()
     for needle, t in _PATH_TYPE:
@@ -246,7 +248,11 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
         external_id = _external_id_from_url(href)
     except ProviderError:
         return None
-    mb_form, mb_styles = model_b_axes(_type_from_url(href))  # type: ignore[arg-type]
+    kind = _type_from_url(href)
+    mb_form: MediaForm = kind if kind == "movie" or kind == "series" else "series"
+    mb_styles: frozenset[MediaStyle] = (
+        frozenset() if kind == "movie" or kind == "series" else frozenset({kind})
+    )
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
@@ -280,7 +286,11 @@ def _parse_search_card(card: Tag, provider_id: str) -> SearchResult | None:
         external_id = _external_id_from_url(href)
     except ProviderError:
         return None
-    mb_form, mb_styles = model_b_axes(_type_from_url(href))  # type: ignore[arg-type]
+    kind = _type_from_url(href)
+    mb_form: MediaForm = kind if kind == "movie" or kind == "series" else "series"
+    mb_styles: frozenset[MediaStyle] = (
+        frozenset() if kind == "movie" or kind == "series" else frozenset({kind})
+    )
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
@@ -572,7 +582,10 @@ class UAFlixProvider(BaseProvider):
                 raise ProviderError(
                     "gated", "trailer only — no playable player"
                 )
-        mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
+        mb_form: MediaForm = media_type if media_type == "movie" or media_type == "series" else "series"
+        mb_styles: frozenset[MediaStyle] = (
+            frozenset() if media_type == "movie" or media_type == "series" else frozenset({media_type})
+        )
         return ContentResponse(
             id=f"uaflix:{external_id}",
             title=title,

@@ -40,7 +40,7 @@ from ..models import (
     Translation,
 )
 from ._tortuga import decode as _tor_decrypt
-from .base import BaseProvider, ProviderError, model_b_axes
+from .base import BaseProvider, ProviderError
 
 BASE_URL = "https://serialno.tv"
 
@@ -176,15 +176,14 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
     external_id = _external_id_from_url(href)
     if not external_id:
         return None
-    mb_form, mb_styles = model_b_axes("series")
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
-        form=mb_form,
-        styles=mb_styles,
+        form="series",
+        styles=frozenset(),
     )
 
 
@@ -307,7 +306,6 @@ class SerialnoProvider(BaseProvider):
             raise ProviderError("parse_failed", "no player iframe on content page")
         player_url = str(iframe["src"])
         seasons = await self._load_series_seasons(player_url, external_id, http, self.id)
-        mb_form, mb_styles = model_b_axes("series")
         return ContentResponse(
             id=f"serialno:{external_id}",
             title=title_el.get_text(strip=True),
@@ -319,8 +317,8 @@ class SerialnoProvider(BaseProvider):
             translations=[Translation(id="uk", label="Українська")],
             seasons=seasons,
             country=country,
-            form=mb_form,
-            styles=mb_styles,
+            form="series",
+            styles=frozenset(),
         )
 
     @staticmethod

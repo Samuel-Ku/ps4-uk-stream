@@ -9,8 +9,6 @@ import httpx
 
 from ..models import (
     ContentResponse,
-    MediaForm,
-    MediaStyle,
     Person,
     SearchResult,
     Section,
@@ -19,12 +17,11 @@ from ..models import (
 
 MediaTypeStr = Literal["movie", "series", "anime", "cartoon", "dorama"]
 
-#: Style-tagged MediaType values map 1:1 to a MediaStyle.
-_STYLE_BY_TYPE: dict[str, MediaStyle] = {
-    "anime": "anime",
-    "cartoon": "cartoon",
-    "dorama": "dorama",
-}
+#: The single canonical movie wire-id sentinel (spec #309, contract step
+#: #319). A movie's episode id is ``<external>:__movie__`` so stream() can
+#: route it without a season/episode map; every provider that emits or
+#: parses that shape imports this constant instead of redefining it.
+MOVIE_SUFFIX = ":__movie__"
 
 
 def parse_actor_list(
@@ -57,26 +54,6 @@ def parse_actor_list(
             people.append(Person(id=f"{provider}:{key}", name=name))
         return people
     return []
-
-
-def model_b_axes(
-    media_type: MediaTypeStr,
-    *,
-    form: MediaForm | None = None,
-) -> tuple[MediaForm, frozenset[MediaStyle]]:
-    """Map a legacy ``MediaType`` to Model B axes (ADR-0001, expand
-    step #129).
-
-    ``movie``/``series`` map directly with an empty style set (ordinary
-    live-action). Style-tagged types (``anime``/``cartoon``/``dorama``)
-    always carry their style; their ``form`` defaults to ``"series"``
-    unless the caller knows the item is a film and passes ``form``
-    explicitly (e.g. an anime movie in a ``films`` section).
-    """
-    if media_type in ("movie", "series"):
-        return media_type, frozenset()
-    style = _STYLE_BY_TYPE[media_type]
-    return (form or "series"), frozenset({style})
 
 
 class ProviderError(Exception):

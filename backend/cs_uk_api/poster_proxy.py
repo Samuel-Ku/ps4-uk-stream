@@ -11,12 +11,15 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
+from . import config as _config
 from .cache import TtlCache
-from .config import SETTINGS
 
 log = logging.getLogger("cs_uk_api.poster")
 
-_cache = TtlCache(default_ttl_s=SETTINGS.cache_poster_s)
+#: The poster cache store (ADR-0003), constructed from the ``SETTINGS``
+#: snapshot (Arch T12: stores read settings through the one ``config``
+#: binding — the poster policy reads below are lazy at call time).
+_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_poster_s)
 
 _MAX_HOPS = 5
 
@@ -90,7 +93,7 @@ def _disk_put(directory: str, u: str, body: bytes, ctype: str) -> None:
 
 
 def _host_allowed(host: str) -> bool:
-    for entry in SETTINGS.poster_allowed_hosts:
+    for entry in _config.SETTINGS.poster_allowed_hosts:
         if host == entry or host.endswith("." + entry):
             return True
     return False
@@ -176,7 +179,7 @@ async def _browser_fetch_bytes(u: str) -> tuple[bytes, str] | None:
         return None
     if status != 200 or not body:
         return None
-    if len(body) > SETTINGS.poster_size_cap_bytes:
+    if len(body) > _config.SETTINGS.poster_size_cap_bytes:
         return None
     if not ctype.startswith("image/"):
         ctype = "image/jpeg"
@@ -189,8 +192,10 @@ async def fetch(u: str, http: httpx.AsyncClient) -> tuple[bytes, str] | None:
     cached = _cache.get(u)
     if cached is not None:
         return cached  # type: ignore[return-value]
-    if SETTINGS.poster_cache_dir is not None:
-        disk = await asyncio.to_thread(_disk_get, SETTINGS.poster_cache_dir, u, SETTINGS.poster_disk_ttl_s)
+    if _config.SETTINGS.poster_cache_dir is not None:
+        disk = await asyncio.to_thread(
+            _disk_get, _config.SETTINGS.poster_cache_dir, u, _config.SETTINGS.poster_disk_ttl_s
+        )
         if disk is not None:
             _cache.set(u, disk)
             return disk
@@ -204,13 +209,13 @@ async def fetch(u: str, http: httpx.AsyncClient) -> tuple[bytes, str] | None:
             return None
         body, ctype = fetched
     else:
-        if len(resp.content) > SETTINGS.poster_size_cap_bytes:
+        if len(resp.content) > _config.SETTINGS.poster_size_cap_bytes:
             return None
         body = resp.content
         ctype = resp.headers.get("Content-Type", "image/jpeg")
         if not ctype.startswith("image/"):
             ctype = "image/jpeg"
-    if SETTINGS.poster_cache_dir is not None:
-        await asyncio.to_thread(_disk_put, SETTINGS.poster_cache_dir, u, body, ctype)
+    if _config.SETTINGS.poster_cache_dir is not None:
+        await asyncio.to_thread(_disk_put, _config.SETTINGS.poster_cache_dir, u, body, ctype)
     _cache.set(u, (body, ctype))
     return body, ctype

@@ -55,7 +55,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, MediaTypeStr, ProviderError, model_b_axes
+from .base import BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://animeon.club"
 MOON_BASE = "https://moonanime.art"
@@ -187,7 +187,7 @@ def _form_from_type(raw_type: Any) -> MediaForm:
     ``special``) and a missing field (older captures such as the
     /api/anime/seasons shape) are episodic (``form="series"``).
     Styles stay ``{anime}`` — animeon is an anime-only catalogue — and
-    are supplied by ``model_b_axes("anime")`` callers; ``content()``
+    are supplied by the callers (``frozenset({"anime"})``); ``content()``
     derives its form from the same ``type == "movie"`` check, so a
     card and its detail never disagree."""
     return "movie" if str(raw_type or "").strip().lower() == "movie" else "series"
@@ -297,16 +297,13 @@ class AnimeONProvider(BaseProvider):
             # Issue #140: derive the form axis per-item from the upstream
             # `type` field so search cards agree with content() for the
             # same id. Styles stay {anime} (animeon is anime-only).
-            mb_form, mb_styles = model_b_axes(
-                "anime", form=_form_from_type(item.get("type"))
-            )
             out.append(SearchResult(
                 id=f"{self.id}:{item['id']}",
                 provider=self.id,
                 title=title,
                 poster=_poster_url((item.get("image") or {}).get("preview")),
-                form=mb_form,
-                styles=mb_styles,
+                form=_form_from_type(item.get("type")),
+                styles=frozenset({"anime"}),
                 url=f"{BASE_URL}/anime/{item['id']}",
             ))
         return out
@@ -347,15 +344,14 @@ class AnimeONProvider(BaseProvider):
             # Issue #140: default to "series" when `type` is absent (older
             # LocalResult captures like seasons.json carry no `type` key);
             # `movie` maps to form="movie", everything else stays "series".
-            mb_form, mb_styles = model_b_axes("anime", form=_form_from_type(item.get("type")))
             out.append(
                 SearchResult(
                     id=f"{ANIMEON_ID}:{item['id']}",
                     provider="animeon",
                     title=str(item.get("titleUa", "")).strip(),
                     poster=_poster_url(image.get("preview")),
-                    form=mb_form,
-                    styles=mb_styles,
+                    form=_form_from_type(item.get("type")),
+                    styles=frozenset({"anime"}),
                     url=f"{BASE_URL}/anime/{item['id']}",
                 )
             )
@@ -416,7 +412,6 @@ class AnimeONProvider(BaseProvider):
             anime_id, episodes_by_num, all_translations, self.id,
             episode_info=episode_info,
         )
-        mb_form, mb_styles = model_b_axes("anime")
         return ContentResponse(
             id=f"{self.id}:{external_id}",
             title=title,
@@ -429,8 +424,8 @@ class AnimeONProvider(BaseProvider):
             ],
             seasons=[season],
             translations_level="episode",
-            form=mb_form,
-            styles=mb_styles,
+            form="series",
+            styles=frozenset({"anime"}),
         )
 
     @staticmethod
@@ -494,8 +489,7 @@ class AnimeONProvider(BaseProvider):
         if not names:
             names = ["Оригінал"]
         # AnimeON movies are anime films — form=movie, styles={anime}
-        # (the default model_b_axes for "movie" would drop the style).
-        mb_form, mb_styles = model_b_axes("anime", form="movie")
+        # (a plain "movie" mapping would drop the style).
         return ContentResponse(
             id=f"{self.id}:{external_id}",
             title=title,
@@ -504,8 +498,8 @@ class AnimeONProvider(BaseProvider):
             poster=poster,
             genres=genres,
             translations=[Translation(id=name, label=name) for name in names],
-            form=mb_form,
-            styles=mb_styles,
+            form="movie",
+            styles=frozenset({"anime"}),
             seasons=None,
             translations_level="content",
         )

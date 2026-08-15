@@ -22,7 +22,7 @@ from ..models import (
     Translation,
     TranslationLevel,
 )
-from .base import BaseProvider, MediaTypeStr, ProviderError, model_b_axes
+from .base import BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://animeua.club"
 # The ashdi.vip CDN serves the HLS manifest only with this Referer; the
@@ -102,13 +102,11 @@ def _parse_cards(html: str, provider: str, media_type: MediaTypeStr) -> list[Sea
         # animeua is an anime-only site: every item carries the anime
         # style; the form comes from the section/fixture type (film vs
         # series — search results are all "anime" = series).
-        mb_form, mb_styles = model_b_axes(
-            "anime", form="movie" if media_type == "movie" else "series"
-        )
         results.append(SearchResult(
             id=f"{provider}:{external_id}", provider=provider,
             title=title, poster=poster, url=urljoin(BASE_URL, str(href)),
-            form=mb_form, styles=mb_styles,
+            form=("movie" if media_type == "movie" else "series"),
+            styles=frozenset({"anime"}),
         ))
     return results
 
@@ -325,9 +323,6 @@ class AnimeUAProvider(BaseProvider):
         # with the anime style, not the default plain movie; kind="anime"
         # means an anime series (form=series). The axes always carry the
         # anime style — every entry on this site is animation.
-        mb_form, mb_styles = model_b_axes(
-            "anime", form="movie" if kind == "movie" else "series"
-        )
         return ContentResponse(
             id=f"{self.id}:{external_id}",
             title=title_el.get_text(" ", strip=True),
@@ -335,8 +330,8 @@ class AnimeUAProvider(BaseProvider):
             description=description,
             poster=poster,
             translations=translations,
-            form=mb_form,
-            styles=mb_styles,
+            form=("movie" if kind == "movie" else "series"),
+            styles=frozenset({"anime"}),
             seasons=seasons,
             translations_level=translations_level,
             # Ticket #213: the ``.pmovie__genres`` tag list (already

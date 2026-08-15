@@ -27,6 +27,8 @@ from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
+    MediaForm,
+    MediaStyle,
     Person,
     SearchResult,
     Season,
@@ -34,7 +36,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError, model_b_axes
+from .base import MOVIE_SUFFIX, BaseProvider, MediaTypeStr, ProviderError
 
 
 def _jsonld_doc(soup: BeautifulSoup) -> dict[str, Any] | None:
@@ -157,15 +159,10 @@ KLONTV_SECTIONS: tuple[Section, ...] = (
 # and `/serialy/` while our internal section ids are `films` and
 # `series` (no y). We accept both forms so callers can pass either a
 # site URL or an external-id when classifying.
-_PATH_TYPE: tuple[tuple[tuple[str, ...], str], ...] = (
+_PATH_TYPE: tuple[tuple[tuple[str, ...], MediaTypeStr], ...] = (
     (("films", "filmy"), "movie"),
     (("series", "serialy"), "series"),
 )
-
-# Sentinel episode-id suffix for movies (whose Player1 is a single
-# `file: "https://...m3u8"` URL rather than a season/episode map).
-MOVIE_SUFFIX = ":__movie__"
-
 
 def _page_number(href: str) -> int:
     """Pull the `/page/N/` integer out of a DLE pagination link."""
@@ -210,7 +207,7 @@ def _strip_query_param(url: str, name: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, parts.path, rebuilt, parts.fragment))
 
 
-def _type_from_url(href: str) -> str:
+def _type_from_url(href: str) -> MediaTypeStr:
     """Map the URL's path segment to a MediaType. Accepts both
     `/filmy/` and `/serialy/` (site paths) as well as our internal
     `films/<slug>` / `series/<slug>` external-id form for robustness."""
@@ -273,7 +270,11 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
     external_id = _external_id_from_url(href)
     if external_id is None:
         return None
-    mb_form, mb_styles = model_b_axes(_type_from_url(href))  # type: ignore[arg-type]
+    kind = _type_from_url(href)
+    mb_form: MediaForm = kind if kind == "movie" or kind == "series" else "series"
+    mb_styles: frozenset[MediaStyle] = (
+        frozenset() if kind == "movie" or kind == "series" else frozenset({kind})
+    )
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
@@ -436,7 +437,10 @@ class KlonTVProvider(BaseProvider):
         cast = _jsonld_cast(soup, self.id)
         rating = _jsonld_rating(soup)
         year, genres = _table_info_year_genres(soup)
-        mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
+        mb_form: MediaForm = media_type if media_type == "movie" or media_type == "series" else "series"
+        mb_styles: frozenset[MediaStyle] = (
+            frozenset() if media_type == "movie" or media_type == "series" else frozenset({media_type})
+        )
         return ContentResponse(
             id=f"klontv:{external_id}",
             title=title_el.get_text(strip=True),

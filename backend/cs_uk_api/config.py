@@ -69,6 +69,12 @@ class Settings:
     # ``load_settings`` env default mirrors this so explicit
     # ``Settings(...)`` constructions (tests) stay valid.
     jellyfin_token: str = "jellyfin-dev-token"
+    # Round-2 persistence (spec #323, Store T1): when set, the viewer
+    # profile store persists the resume memory to this file via the
+    # VersionedFileStore (version token + atomic writes) and restores it
+    # on a cold start. Default unset = in-memory only — round-1
+    # behaviour, zero change unless an operator opts in.
+    profile_file: str | None = None
 
 
 def load_settings() -> Settings:
@@ -113,7 +119,14 @@ def load_settings() -> Settings:
         # ``X-Emby-Token`` or ``Authorization: MediaBrowser Token="…"``.
         # Default: a stable dev value; override in production.
         jellyfin_token=os.environ.get("CS_UK_JF_TOKEN", "jellyfin-dev-token"),
+        # Round-2 (spec #323): opt-in versioned resume persistence.
+        profile_file=os.environ.get("CS_UK_PROFILE_FILE") or None,
     )
 
 
+#: The single configuration binding (Arch T12, spec #309): every module
+#: reads settings through this module reference (``config.SETTINGS``) — no
+#: module imports the value into its own binding — and every store is
+#: constructed from this snapshot. Tests patch exactly ONE binding:
+#: ``cs_uk_api.config.SETTINGS``.
 SETTINGS = load_settings()

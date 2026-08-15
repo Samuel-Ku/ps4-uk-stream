@@ -28,7 +28,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError, model_b_axes
+from .base import BaseProvider, ProviderError
 
 BASE_URL = "https://hentaiukr.com"
 OBJECTS_URL = f"{BASE_URL}/search/objects.json"
@@ -63,7 +63,6 @@ def _parse_video_array(
             continue
         if not all(item.get(k) for k in ("id", "name", "url")):
             continue
-        mb_form, mb_styles = model_b_axes("anime")
         results.append(
             SearchResult(
                 id=f"{provider_id}:{item['id']}",
@@ -71,8 +70,8 @@ def _parse_video_array(
                 title=str(item["name"]),
                 poster=urljoin(BASE_URL, str(item["thumb"])) if item.get("thumb") else None,
                 url=urljoin(BASE_URL, str(item["url"])),
-                form=mb_form,
-                styles=mb_styles,
+                form="series",
+                styles=frozenset({"anime"}),
             )
         )
     return results
@@ -186,7 +185,6 @@ class HentaiUkrProvider(BaseProvider):
                     )
         # HentaiUkr is single-dub (Ukrainian). One Translation row so
         # /api/content passes ``min_length=1`` on ``translations``.
-        mb_form, mb_styles = model_b_axes("anime")
         return ContentResponse(
             id=f"{self.id}:{external_id}",
             title=title,
@@ -194,8 +192,8 @@ class HentaiUkrProvider(BaseProvider):
             description=description,
             poster=poster,
             translations=[Translation(id="uk", label="Українська")],
-            form=mb_form,
-            styles=mb_styles,
+            form="series",
+            styles=frozenset({"anime"}),
             seasons=[Season(number=1, episodes=episodes)] if episodes else None,
         )
 

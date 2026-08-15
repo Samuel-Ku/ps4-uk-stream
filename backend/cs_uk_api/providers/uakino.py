@@ -13,6 +13,8 @@ from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
+    MediaForm,
+    MediaStyle,
     Person,
     SearchResult,
     Season,
@@ -21,7 +23,7 @@ from ..models import (
     Translation,
 )
 from ..uakino_browser import _UA, BASE_URL, UakinoSessionProtocol, get_session
-from .base import BaseProvider, ProviderError, model_b_axes
+from .base import BaseProvider, MediaTypeStr, ProviderError
 
 # ashdi.vip serves the playlist page; m3u8 manifests and segment URLs
 # stay on the same host. The host allowlist refuses SSRF pivots at the
@@ -71,7 +73,7 @@ _CDN_REFERER = "https://ashdi.vip/"
 _DESKTOP_UA = _UA
 
 # MediaType hints for search results, keyed on the section in the href.
-_SECTION_TYPES: dict[str, str] = {
+_SECTION_TYPES: dict[str, MediaTypeStr] = {
     "filmy": "movie",
     "seriesss": "series",
     "animeukr": "anime",
@@ -138,12 +140,19 @@ def _parse_cards(html: str) -> list[SearchResult]:
             # anime-series, cartoonseries all denote serialized content.
             kind = "series" if section.endswith("series") else "movie"
         # The cartoons section («Мультфільми») is animated *films* — its
-        # items must be form=movie, not model_b_axes's default series for
+        # items must be form=movie, not the default series form for
         # the style-tagged "cartoon" type (else ?form=movie&style=cartoon
         # search and the section filter both miss them).
-        mb_form, mb_styles = model_b_axes(
-            kind,  # type: ignore[arg-type]
-            form="movie" if section == "cartoon" else None,
+        kind_typed = kind
+        mb_form: MediaForm = (
+            kind_typed
+            if kind_typed == "movie" or kind_typed == "series"
+            else ("movie" if section == "cartoon" else "series")
+        )
+        mb_styles: frozenset[MediaStyle] = (
+            frozenset()
+            if kind_typed == "movie" or kind_typed == "series"
+            else frozenset({kind_typed})
         )
         results.append(
             SearchResult(
@@ -416,8 +425,9 @@ class UakinoProvider(BaseProvider):
             # animeukr section = anime series: keep the anime style on
             # content so it matches the item's search/browse card
             # (styles=["anime"]), not a plain series with no style.
-            mb_form, mb_styles = model_b_axes(
-                "anime" if section == "animeukr" else "series"
+            mb_form: MediaForm = "series"
+            mb_styles: frozenset[MediaStyle] = (
+                frozenset({"anime"}) if section == "animeukr" else frozenset()
             )
             return ContentResponse(
                 id=f"uakino:{external_id}",
@@ -456,8 +466,7 @@ class UakinoProvider(BaseProvider):
             raise ProviderError("gated", "no playable source on movie page")
         movie_type = "anime" if "аніме" in " ".join(tags).lower() else "movie"
         # A style-tagged movie (аніме-фільм) is form=movie, not series
-        # (model_b_axes defaults style-tagged types to series).
-        mb_form, mb_styles = model_b_axes(movie_type, form="movie")  # type: ignore[arg-type]
+        # (style-tagged types default to series).
         return ContentResponse(
             id=f"uakino:{external_id}",
             title=title,
@@ -470,8 +479,8 @@ class UakinoProvider(BaseProvider):
             translations=translations,
             seasons=None,
             country=country,
-            form=mb_form,
-            styles=mb_styles,
+            form="movie",
+            styles=frozenset({"anime"}) if movie_type == "anime" else frozenset(),
         )
 
     async def stream(

@@ -54,7 +54,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError, model_b_axes
+from .base import BaseProvider, ProviderError
 
 BASE_URL = "https://anitube.in.ua"
 # ashdi.vip requires the upstream Referer to serve the m3u8 manifest.
@@ -170,15 +170,14 @@ def _parse_story(card: Any, provider_id: str) -> SearchResult | None:
         elif isinstance(src, str) and src and not src.endswith("spacer.gif"):
             poster_src = src
     poster = urljoin(BASE_URL, poster_src) if poster_src else None
-    mb_form, mb_styles = model_b_axes("anime")
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
         title=title,
         poster=poster,
         url=urljoin(BASE_URL, href),
-        form=mb_form,
-        styles=mb_styles,
+        form="series",
+        styles=frozenset({"anime"}),
     )
 
 
@@ -603,7 +602,6 @@ class AnitubeinuaProvider(BaseProvider):
         # Always have at least one translation so the model min_length
         # check passes.
         translations = [Translation(id="uk", label="Українська")]
-        mb_form, mb_styles = model_b_axes("anime")
         return ContentResponse(
             id=f"{self.id}:{external_id}",
             title=title,
@@ -611,8 +609,8 @@ class AnitubeinuaProvider(BaseProvider):
             description=description,
             poster=poster,
             translations=translations,
-            form=mb_form,
-            styles=mb_styles,
+            form="series",
+            styles=frozenset({"anime"}),
             seasons=seasons,
             translations_level=translations_level,  # type: ignore[arg-type]
         )
