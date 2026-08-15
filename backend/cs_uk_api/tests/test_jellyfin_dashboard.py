@@ -384,3 +384,24 @@ def test_system_restart_schedule_targets_exec_restart(monkeypatch) -> None:
         loop.close()
         asyncio.set_event_loop(None)
     assert calls == ["exec"]
+
+
+def test_system_restart_reexec_uses_running_command_line(monkeypatch) -> None:
+    """#283: the real re-exec passes the SAME executable and arguments
+    as the running process (``os.execv(sys.executable, [sys.executable,
+    *sys.argv])``) — a uvicorn relaunch, not a bare ``execv("python")``
+    that would lose the ``-m uvicorn …`` invocation."""
+    import sys
+
+    captured: list[tuple[str, list[str]]] = []
+
+    def fake_execv(executable: str, argv: list[str]) -> None:  # type: ignore[no-untyped-def]
+        captured.append((executable, argv))
+
+    monkeypatch.setattr(jf_router.os, "execv", fake_execv)
+    jf_router._exec_restart()
+
+    assert captured, "the real re-exec must call os.execv"
+    executable, argv = captured[0]
+    assert executable == sys.executable
+    assert argv == [sys.executable, *sys.argv]
