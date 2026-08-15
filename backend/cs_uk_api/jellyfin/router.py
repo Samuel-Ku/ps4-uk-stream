@@ -41,28 +41,28 @@ from fastapi import (
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
-from ..catalog_state import (
+from ..catalog import (
     dub_for,
     episode_group_key,
     extend_row_pool,
-    get_home,
-    get_profiles,
+    first_source,
+    group_sources,
     is_favorite,
     is_hard_unavailable,
     is_played,
-    load_home,
-    merged_search,
     peek_group_content,
-    playback_entries,
-    recent_playback_entries,
-    record_playback,
+    playback_positions,
+    profiles,
+    recent_playback,
+    record_position,
     refresh_profile,
-    register_search_groups,
+    refresh_snapshot,
     remember_dub,
-    resolve_group,
-    resolve_group_content,
+    resolve_item,
+    search,
     set_favorite,
     set_played,
+    snapshot,
 )
 from ..config import SETTINGS
 from ..health import TRACKER
@@ -247,7 +247,7 @@ def _view_type_by_id(parent_id: str, home: HomeResponse | None = None) -> str | 
     if t is not None:
         return t
     if home is None:
-        home = get_home()
+        home = snapshot()
     if home is None:
         return None
     for row in home.rows:
@@ -281,7 +281,7 @@ async def _resolve_view_row_type(
         return row_type, None
     if not _VIEW_ID_RE.fullmatch(parent_id):
         return None, None
-    home = await load_home()
+    home = await refresh_snapshot()
     row_type = _view_type_by_id(parent_id, home)
     return row_type, home
 
@@ -387,9 +387,10 @@ def _user_data(item_id: str | None) -> UserDataResult | None:
     if item_id is None:
         return None
     result = UserDataResult(IsFavorite=is_favorite(item_id), Played=is_played(item_id))
-    pos = playback_entries().get(item_id)
+    pos = playback_positions().get(item_id)
     if pos is not None:
-        position, runtime = pos
+        position = pos.position_ticks
+        runtime = pos.runtime_ticks
         result.PlaybackPositionTicks = position
         if runtime and runtime > 0:
             result.PlayedPercentage = round(min(100.0, position / runtime * 100), 2)
@@ -451,7 +452,7 @@ def _home_items() -> list[tuple[HomeRow, HomeItem]]:
     out to every provider belongs to the detail/list routes, not to
     cheap snapshot lookups (poster, similar shelf).
     """
-    home = get_home()
+    home = snapshot()
     if home is None:
         return []
     return [(row, it) for row in home.rows for it in row.items]
@@ -462,15 +463,12 @@ def _group_cards(group_key: str) -> list[SearchResult]:
 
     Ticket #233: the #219/#220 fallbacks read the home snapshot, but a
     search-found group is usually NOT in the 30-min home snapshot — only
-    in the shared group-key resolution map ``register_search_groups``
-    populated. The detail DTO falls back across BOTH sources so a
-    search-opened item renders the same metadata its own search card
-    surfaced.
+    in the shared group-key resolution map the interface's search
+    populates (US3 fold-in). The detail DTO falls back across BOTH
+    sources so a search-opened item renders the same metadata its own
+    search card surfaced.
     """
-    per_provider = resolve_group(group_key)
-    if per_provider is None:
-        return []
-    return list(per_provider.values())
+    return group_sources(group_key)
 
 
 def _genres_for_group(group_key: str) -> list[str]:
@@ -523,7 +521,7 @@ def _snapshot_counts() -> ItemCounts:
     series = 0
     episodes = 0
     seen_groups: set[str] = set()
-    home = get_home()
+    home = snapshot()
     if home is not None:
         for row in home.rows:
             for it in row.items:
@@ -671,7 +669,7 @@ def _poster_for(item_id: str) -> str | None:
     does NOT trigger a home build: an image request must not fan out to
     every provider.
     """
-    home = get_home()
+    home = snapshot()
     if home is None:
         return None
     for row in home.rows:
@@ -688,7 +686,7 @@ def _view_id_for_item(item_id: str) -> str | None:
     tell the client which library the item belongs to (D5). None when
     the item is not in the current home snapshot.
     """
-    home = get_home()
+    home = snapshot()
     if home is None:
         return None
     for row in home.rows:
@@ -852,7 +850,7 @@ async def _user_views() -> BaseItemDtoQueryResult:
     ``GET /api/home``), so a fresh client launch never sees an empty
     library list; afterwards it serves from the 30-min snapshot.
     """
-    home = await load_home()
+    home = await refresh_snapshot()
     server_id = _server_id()
     dtos = [_row_dto(row, server_id) for row in home.rows]
     return BaseItemDtoQueryResult(Items=dtos, TotalRecordCount=len(dtos))
@@ -897,12 +895,13 @@ def _search_hint(group: SearchGroup) -> SearchHint:
 async def _jf_search_groups(search_term: str) -> list[SearchGroup]:
     """The merged search groups behind a facade search, or [] (ticket #106).
 
-    Feeds the shared ``merged_search`` (the exact fan-out the native
+    Feeds the interface's ``search`` (the exact fan-out the native
     ``/api/search`` route runs — same per-provider failure attribution,
-    gated-item sweep, uakino skip, and 5-min cache), then registers the
-    groups into the shared group-key resolution map so a searched card
-    opens in the #105 detail surface (search covers the whole catalog;
-    most results are NOT in the 30-min home snapshot).
+    gated-item sweep, uakino skip, and 5-min cache), whose registration
+    fold-in (US3) puts the searched groups into the shared group-key
+    resolution map so a card opens in the #105 detail surface (search
+    covers the whole catalog; most results are NOT in the 30-min home
+    snapshot).
 
     Degrades to an empty result on total failure (every provider timed
     out — the native route's 502 ``search_timeout``) and on an empty
@@ -913,10 +912,9 @@ async def _jf_search_groups(search_term: str) -> list[SearchGroup]:
     if not term:
         return []
     try:
-        resp = await merged_search(term, provider="all", form=None, style_filter=None)
+        resp = await search(term)
     except HTTPException:
         return []
-    register_search_groups(resp.groups)
     return resp.groups
 
 
@@ -1162,7 +1160,7 @@ async def items_listing(
     if row_type is None:
         return await _hierarchy(parent_id)
     if home is None:
-        home = await load_home()
+        home = await refresh_snapshot()
     server_id = _server_id()
     wanted_genres = _parse_genre_ids(genre_ids)
     for row in home.rows:
@@ -1235,14 +1233,14 @@ def _person_filmography(
     if not wanted:
         return BaseItemDtoQueryResult()
     forms = {t.lower() for t in include_item_types.split("|")} if include_item_types else None
-    profiles = get_profiles()
+    profile_store = profiles()
     server_id = _server_id()
     dtos = []
     seen: set[str] = set()
     for row, it in _home_items():
         if it.group_key in seen:
             continue
-        profile = profiles.get(it.group_key)
+        profile = profile_store.get(it.group_key)
         if profile is None:
             continue
         if not (wanted & profile.people):
@@ -1309,7 +1307,7 @@ async def _record_playback_from(request: Request, *, flush: bool) -> None:
     if isinstance(item_id, str) and isinstance(position, (int, float)):
         runtime = body.get("RunTimeTicks")
         runtime_ticks = int(runtime) if isinstance(runtime, (int, float)) else None
-        record_playback(item_id, int(position), runtime_ticks=runtime_ticks, flush=flush)
+        record_position(item_id, int(position), runtime_ticks=runtime_ticks, flush=flush)
 
 
 @router.get(
@@ -1330,7 +1328,9 @@ async def items_resume(user_id: str) -> BaseItemDtoQueryResult:
     a single fixed user (D4).
     """
     dtos: list[BaseItemDto] = []
-    for item_id, (position, runtime) in recent_playback_entries().items():
+    for item_id, pos in recent_playback().items():
+        position = pos.position_ticks
+        runtime = pos.runtime_ticks
         if is_group_key(item_id):
             try:
                 dto = await item_detail(item_id)
@@ -1364,9 +1364,10 @@ async def shows_next_up() -> BaseItemDtoQueryResult:
     """
     result: list[BaseItemDto] = []
     seen_series: set[str] = set()
-    for item_id, (_position, runtime) in playback_entries().items():
+    for item_id, pos in playback_positions().items():
         if is_group_key(item_id):
             continue  # a movie has no "next"
+        runtime = pos.runtime_ticks
         _, next_episode = await _resolve_playback_episode(item_id)
         if next_episode is not None and next_episode.SeriesId not in seen_series:
             seen_series.add(next_episode.SeriesId or "")
@@ -1558,7 +1559,7 @@ async def genres(
     if row_type is None:
         return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
     if home is None:
-        home = await load_home()
+        home = await refresh_snapshot()
     server_id = _server_id()
     want_type = _parse_include_types(include_item_types)
     counts: dict[str, int] = {}
@@ -1647,7 +1648,7 @@ async def _hierarchy(parent_id: str | None) -> BaseItemDtoQueryResult:
         return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
     group_key, season_number = _split_season_suffix(parent_id)
 
-    content = await resolve_group_content(group_key)
+    content = (await resolve_item(group_key)).content
     if content is None or content.seasons is None:
         return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
 
@@ -1710,7 +1711,7 @@ async def item_detail(item_id: str) -> BaseItemDto:
     if not is_group_key(item_id):
         raise HTTPException(status_code=404, detail="item_unavailable")
     group_key, season_number = _split_season_suffix(item_id)
-    content = await resolve_group_content(group_key)
+    content = (await resolve_item(group_key)).content
     if content is None:
         # Ticket #224: a card that IS in the home snapshot but whose
         # live resolution failed transiently (upstream blip/throttle)
@@ -1804,7 +1805,7 @@ async def _serve_item_image(
     if poster_url is None and is_group_key(item_id):
         # Item not in the home snapshot (surfaced via Latest/search);
         # resolve from the content cache which holds the poster URL.
-        content = await resolve_group_content(item_id)
+        content = (await resolve_item(item_id)).content
         poster_url = content.poster if content else None
     if poster_url is None:
         raise HTTPException(status_code=404, detail="poster_unavailable")
@@ -1929,13 +1930,13 @@ async def _resolve_stream(
         group_key, season_number = _split_season_suffix(item_id)
         if season_number is not None:
             return None
-        content = await resolve_group_content(group_key)
+        content = (await resolve_item(group_key)).content
         if content is None or content.form != "movie":
             return None
-        per_provider = resolve_group(group_key)
-        if per_provider is None:
+        first = first_source(group_key)
+        if first is None:
             return None
-        provider_id, result = next(iter(per_provider.items()))
+        provider_id, result = first
         _, _, external_id = result.id.partition(":")
     else:
         # Provider-scoped episode wire id — split the prefix and hand the
@@ -2112,7 +2113,7 @@ async def _translations_for(
     remembered: str | None = None
     if is_group_key(item_id):
         # Movie: content translations; no dub memory.
-        content = await resolve_group_content(item_id)
+        content = (await resolve_item(item_id)).content
         if content is None:
             return [], None
         return list(content.translations), None
@@ -2122,7 +2123,7 @@ async def _translations_for(
     group_key = episode_group_key(item_id)
     if group_key is None:
         return [], None
-    content = await resolve_group_content(group_key)
+    content = (await resolve_item(group_key)).content
     if content is None:
         return [], None
     provider_id = next(iter(content.id.split(":")), "")
@@ -2245,14 +2246,14 @@ async def item_similar(
     raised ``out_of_range.403`` on the console.
     """
     server_id = _server_id()
-    item_profile = get_profiles().get(item_id)
+    item_profile = profiles().get(item_id)
     if item_profile is not None:
         scored: list[tuple[float, HomeRow, HomeItem]] = []
         scored_seen: set[str] = set()
         for row, it in _home_items():
             if it.group_key == item_id or it.group_key in scored_seen:
                 continue
-            cand = get_profiles().get(it.group_key)
+            cand = profiles().get(it.group_key)
             if cand is None:
                 continue
             score = similarity(item_profile, cand)

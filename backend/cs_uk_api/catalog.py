@@ -33,7 +33,15 @@ from enum import Enum
 from typing import Any
 
 from . import catalog_state
-from .models import ContentResponse, HomeResponse, MediaForm, MediaStyle, SearchResponse
+from .models import (
+    ContentResponse,
+    HomeItem,
+    HomeResponse,
+    MediaForm,
+    MediaStyle,
+    SearchResponse,
+    SearchResult,
+)
 from .recommend import ItemProfile
 
 
@@ -108,6 +116,90 @@ async def resolve_item(group_key: str) -> ItemResolution:
     if content is not None:
         return ItemResolution(verdict=ItemVerdict.OK, content=content)
     return ItemResolution(verdict=ItemVerdict.UNAVAILABLE)
+
+
+def peek_group_content(group_key: str) -> ContentResponse | None:
+    """Cache-only group content read (ticket #216) — never fetches.
+
+    The view-card Type is a cheap URL/section guess while the content
+    page is the truth, and the facade re-verifies a card against this
+    peek; a cold group answers None exactly like ``resolve_item`` would
+    on its first cache-miss, so callers degrade identically ("keep the
+    card's own guess") without paying a fetch.
+    """
+    return catalog_state.peek_group_content(group_key)
+
+
+def is_hard_unavailable(group_key: str) -> bool:
+    """True when a group key is DELIBERATELY unavailable — gated
+    (subscription) or blocklisted (Russian content) — or unknown, as
+    opposed to transiently unresolvable (an upstream blip).
+
+    The facade detail route uses this to decide between a degraded card
+    answer (a known card whose live resolution failed should still
+    render) and the D2 404 — a gated/blocked verdict must NEVER be
+    masked by the degradation.
+    """
+    return catalog_state.is_hard_unavailable(group_key)
+
+
+def group_sources(group_key: str) -> list[SearchResult]:
+    """Every card the resolution map holds for a ``g2:`` item, or [].
+
+    First-seen provider order (the same order the home row's chip strip
+    shows). The dict shape the delegate keeps internally stops crossing
+    the seam — callers get the ordered card list directly.
+    """
+    per_provider = catalog_state.resolve_group(group_key)
+    if per_provider is None:
+        return []
+    return list(per_provider.values())
+
+
+def first_source(group_key: str) -> tuple[str, SearchResult] | None:
+    """(provider_id, first-seen card) of a ``g2:`` group, or None.
+
+    The first-seen provider is the same one the home row's chip strip
+    shows and the detail resolver asks first — the derivation now lives
+    behind the interface (US: the first-seen-provider ordering stops
+    crossing the seam).
+    """
+    per_provider = catalog_state.resolve_group(group_key)
+    if per_provider is None:
+        return None
+    return next(iter(per_provider.items()))
+
+
+def episode_group_key(item_id: str) -> str | None:
+    """The merged group key behind a played item id (spec #252).
+
+    Movies report their ``g2:`` key; episodes report the provider-scoped
+    wire id (``ufdub:dorama-408-...:s1e1``), whose ``provider:external``
+    prefix identifies the merged group (reverse lookup, #214).
+    """
+    return catalog_state.episode_group_key(item_id)
+
+
+# ---------------------------------------------------------------------------
+# Deep rows (spec #305)
+# ---------------------------------------------------------------------------
+
+
+async def extend_row_pool(
+    row_type: str,
+    snapshot_items: list[HomeItem],
+) -> list[HomeItem] | None:
+    """The row's pool past the snapshot (spec #305), or None when bounded.
+
+    Fetches provider browse pages 2..N for the row's contributing
+    sections under the shared search budget (depth bounded by
+    ``CS_UK_ROW_MAX_PAGES``), merges them with the home build's
+    round-robin + group-key dedupe, and returns the snapshot items
+    followed by the new deduped cards. None = the row kind does not
+    extend (personalized / genre rails) or every deeper fetch failed —
+    the caller then serves the snapshot slice unchanged.
+    """
+    return await catalog_state.extend_row_pool(row_type, snapshot_items)
 
 
 # ---------------------------------------------------------------------------
