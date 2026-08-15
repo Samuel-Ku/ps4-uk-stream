@@ -336,6 +336,40 @@ def test_items_extension_skips_a_failing_provider(client: TestClient) -> None:
     assert page1["Items"][0]["Id"] != page2["Items"][0]["Id"]
 
 
+def test_items_personalized_row_stays_snapshot_bounded(client: TestClient) -> None:
+    """AC4: personalized rows stay snapshot-bounded — a page beyond a
+    «Нещодавно переглянуто» row serves the honest snapshot end (short
+    page, snapshot count) and never triggers an extension fetch."""
+
+    from cs_uk_api.catalog_state import clear_playback, record_playback
+
+    provider = _movie_provider()
+    PROVIDERS["p"] = provider
+    _auth(client)
+    clear_playback()
+    try:
+        home = client.get("/api/home").json()
+        gk = {i["title"]: i["group_key"] for r in home["rows"] for i in r["items"]}
+        record_playback(gk["Фільм 1"], 1_000)
+        _home_cache.clear()
+
+        home = client.get("/api/home").json()
+        rw = next(r for r in home["rows"] if r["type"] == "recently_watched")
+        assert len(rw["items"]) == 1
+
+        views = _views(client)
+        view = next(v for v in views if v["Name"] == "Нещодавно переглянуто")
+        calls_before = list(provider.browse_calls)
+
+        page2 = _items_page(client, view["Id"], start_index=1, limit=1)
+        assert page2["Items"] == []
+        assert page2["TotalRecordCount"] == 1  # snapshot slice, honest end
+        # No extension fetch: the personalized row's pool IS the snapshot.
+        assert provider.browse_calls == calls_before
+    finally:
+        clear_playback()
+
+
 # ---------------------------------------------------------------------------
 # Unit: the extension path
 # ---------------------------------------------------------------------------
