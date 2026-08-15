@@ -6,6 +6,7 @@ from cs_uk_api.providers.base import (
     ProviderError,
     ProviderErrorCode,
     split_content_id,
+    split_content_suffix,
 )
 
 
@@ -98,6 +99,40 @@ def test_split_content_id_episode_tail_blob():
 def test_split_content_id_malformed():
     assert split_content_id("no-colon") == ("", "")
     assert split_content_id("") == ("", "")
+
+
+# --- T7: prefix-stripped suffix splitter -----------------------------------
+
+
+def test_split_content_suffix_bare():
+    assert split_content_suffix("film-48-fokus-pokus-hocus-pocus") == (
+        "film-48-fokus-pokus-hocus-pocus",
+        "",
+    )
+
+
+def test_split_content_suffix_movie_sentinel():
+    assert split_content_suffix("film-48-fokus-pokus:__movie__") == (
+        "film-48-fokus-pokus",
+        "",
+    )
+
+
+def test_split_content_suffix_episode_tail_season():
+    assert split_content_suffix("10496-mesniki:s1e3") == ("10496-mesniki", "s1e3")
+
+
+def test_split_content_suffix_episode_tail_plain():
+    assert split_content_suffix("226-jak-vlashtovanij-vsesvit:e2") == (
+        "226-jak-vlashtovanij-vsesvit",
+        "e2",
+    )
+
+
+def test_split_content_suffix_unknown_suffix_passes_through():
+    # A colon that is not a recognized suffix form is not split — the
+    # adapter's slug validator rejects the composite as not_found.
+    assert split_content_suffix("film-48-x:weird") == ("film-48-x:weird", "")
 
 
 # --- T6: guarded_get default allowlist (US7) -------------------------------

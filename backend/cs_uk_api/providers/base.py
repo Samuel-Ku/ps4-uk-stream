@@ -138,6 +138,26 @@ def split_content_id(content_id: str) -> tuple[str, str]:
     return provider_id, rest
 
 
+def split_content_suffix(content_id: str) -> tuple[str, str]:
+    """Split a PREFIX-STRIPPED content id into (external, episode_suffix).
+
+    ``/api/stream`` strips the ``<provider>:`` prefix before calling
+    ``stream()`` (spec #309 T7), so adapters receive ``external``
+    (bare), ``external:__movie__`` (the movie sentinel) or
+    ``external:s1e1`` / ``external:e5`` (episode tails). All three
+    resolve to the same ``(external, suffix)`` — the suffix is wire
+    decoration, never part of the external id; the episode suffix is
+    returned without its leading colon (``s1e1``), matching what the
+    adapters' episode selectors expect. An id with no recognizable
+    suffix passes through as ``(content_id, "")``.
+    """
+    content_id = strip_movie_suffix(content_id)
+    split = split_episode_tail(content_id)
+    if split is not None:
+        return split[0], split[1].lstrip(":")
+    return content_id, ""
+
+
 class BaseProvider(abc.ABC):
     id: str
     name: str

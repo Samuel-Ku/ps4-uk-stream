@@ -9,7 +9,6 @@ import httpx
 from bs4 import BeautifulSoup
 
 from ..country import extract_country
-from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -20,14 +19,17 @@ from ..models import (
     Translation,
     TranslationLevel,
 )
-from ..wire_identity import MOVIE_SUFFIX
-from .base import BaseProvider, MediaTypeStr, ProviderError, model_b_axes, parse_actor_list
+from .base import (
+    BaseProvider,
+    MediaTypeStr,
+    ProviderError,
+    ProviderErrorCode,
+    model_b_axes,
+    parse_actor_list,
+    split_content_suffix,
+)
 
 BASE_URL = "https://kinotron.tv"
-# Hosts the upstream may legally redirect to: the DLE CMS and the ashdi
-# player. A hostile CMS response must not be able to pivot either hop
-# to an attacker-controlled host.
-_ALLOWED_HOSTS: frozenset[str] = frozenset({"kinotron.tv", "ashdi.vip"})
 SECTIONS = (
     Section(id="films", title="Фільми", form="movie"),
     Section(id="serials", title="Серіали", form="series"),
@@ -41,15 +43,10 @@ SECTIONS = (
 # upstream HTTP client.
 _SLUG_RE = re.compile(r"\d+-[a-z0-9][a-z0-9-]*")
 
-# Sentinel episode-id suffix for movies (whose player iframe is a single
-# URL rather than a season/episode map; defined once in
-# ``wire_identity``, spec #309).
-
-
 def _external_id(href: str) -> str:
     match = re.search(r"/(\d+-[a-z0-9-]+?)(?:\.html)?/?$", href, re.IGNORECASE)
     if not match:
-        raise ProviderError("parse_failed", f"unrecognized url: {href}")
+        raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"unrecognized url: {href}")
     return match.group(1)
 
 
@@ -96,6 +93,13 @@ class KinoTronProvider(BaseProvider):
     #: ``content()`` gates trailer-only (youtube-only) pages (#163) so
     #: the catalog sweep drops dead cards from home/search.
     can_gate = True
+    #: SSRF allowlist (spec #309 T7): every host the provider legally
+    #: fetches — the DLE CMS, the ashdi serials player, and the
+    #: zetvideo.net movie VOD player (the old per-file allowlist only
+    #: covered the browse redirect; ``_get`` fetched the player raw).
+    #: A hostile CMS response must not be able to pivot any hop to an
+    #: attacker-controlled host. ``guarded_get`` applies this by default.
+    hosts = frozenset({"kinotron.tv", "ashdi.vip", "zetvideo.net"})
 
     @staticmethod
     def _type_from_subtitle(subtitle: str) -> MediaTypeStr:
@@ -152,11 +156,13 @@ class KinoTronProvider(BaseProvider):
 
     async def _get(self, url: str, http: httpx.AsyncClient) -> httpx.Response:
         try:
-            response = await http.get(url, headers={"Referer": f"{BASE_URL}/"})
+            response = await self.guarded_get(
+                http, url, headers={"Referer": f"{BASE_URL}/"}
+            )
         except httpx.HTTPError as error:
-            raise ProviderError("unreachable", str(error)) from error
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(error)) from error
         if response.status_code != 200:
-            raise ProviderError("not_found", f"status {response.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {response.status_code}")
         return response
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
@@ -165,26 +171,26 @@ class KinoTronProvider(BaseProvider):
                 "do": "search", "subaction": "search", "story": quote(query),
             })
         except httpx.HTTPError as error:
-            raise ProviderError("unreachable", str(error)) from error
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(error)) from error
         if response.status_code != 200:
-            raise ProviderError("upstream_unreachable", f"status {response.status_code}")
+            raise ProviderError(ProviderErrorCode.UPSTREAM_UNREACHABLE, f"status {response.status_code}")
         return _parse_cards(response.text, self.id, "series")
 
     async def browse(self, section: str, page: int, http: httpx.AsyncClient) -> tuple[list[SearchResult], bool]:
         if not self.has_section(section):
-            raise ProviderError("not_found", f"unknown section: {section}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"unknown section: {section}")
         url = f"{BASE_URL}/{section}/page/{page}/"
         # The upstream now 301-redirects the first page of most sections
         # (`/serials/page/1/` -> `/serials/`), so fetch through the
-        # SSRF-safe `safe_get` helper (same host allowlist as the ashdi
-        # player) which follows allowed same-host redirects. Pages > 1
-        # still return 200 directly and are unaffected.
+        # SSRF-safe ``guarded_get`` which follows allowed same-host
+        # redirects. Pages > 1 still return 200 directly and are
+        # unaffected.
         try:
-            response = await safe_get(http, url, allowed_hosts=set(_ALLOWED_HOSTS))
+            response = await self.guarded_get(http, url)
         except httpx.HTTPError as error:
-            raise ProviderError("unreachable", str(error)) from error
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(error)) from error
         if response.status_code != 200:
-            raise ProviderError("not_found", f"status {response.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {response.status_code}")
         soup = BeautifulSoup(response.text, "lxml")
         # Contract #135: sections carry Model B axes, not the legacy
         # ``type`` — the card classifier needs the legacy type string,
@@ -199,12 +205,12 @@ class KinoTronProvider(BaseProvider):
 
     async def content(self, external_id: str, http: httpx.AsyncClient) -> ContentResponse:
         if not _SLUG_RE.fullmatch(external_id):
-            raise ProviderError("not_found", "bad external_id")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, "bad external_id")
         response = await self._get(f"{BASE_URL}/{external_id}.html", http)
         soup = BeautifulSoup(response.text, "lxml")
         title_el = soup.select_one(".full h1")
         if title_el is None:
-            raise ProviderError("parse_failed", "title missing")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "title missing")
         image = soup.select_one(".img-box img")
         poster = urljoin(BASE_URL, str(image.get("data-src"))) if image and image.get("data-src") else None
         kind = self._type_from_subtitle(str(soup.select_one("div.fsubtitle") or ""))
@@ -214,7 +220,7 @@ class KinoTronProvider(BaseProvider):
         # upstream has no playable player. Gate so the ADR-0002 sweep
         # drops the dead card instead of failing only at play time.
         if player_url is None:
-            raise ProviderError("gated", "trailer only — no playable player")
+            raise ProviderError(ProviderErrorCode.GATED, "trailer only — no playable player")
         seasons = None
         translations = [Translation(id="uk", label="Українська")]
         translations_level: TranslationLevel = "content"
@@ -256,7 +262,7 @@ class KinoTronProvider(BaseProvider):
             # at play time.
             player = await self._get(player_url, http)
             if not self._files(player.text):
-                raise ProviderError("gated", "no playable files on player page")
+                raise ProviderError(ProviderErrorCode.GATED, "no playable files on player page")
         description_el = soup.select_one(".full-text")
         # Ticket #221: the page's ``В ролях:`` li lists the cast with
         # one ``/xfsearch/actors/<name>/`` anchor per person.
@@ -273,36 +279,30 @@ class KinoTronProvider(BaseProvider):
         # `content_id` arrives from /api/stream with the `<provider>:`
         # prefix already stripped: "<external_id>" (movie),
         # "<external_id>:__movie__" (movie from the content listing), or
-        # "<external_id>:s<N>e<M>" (series episode).
-        if MOVIE_SUFFIX in content_id:
-            external_id = content_id.split(MOVIE_SUFFIX, 1)[0]
-            episode_match = None
-        elif ":" in content_id:
-            external_id, _, ep_suffix = content_id.rpartition(":")
-            episode_match = re.fullmatch(r"s(\d+)e(\d+)", ep_suffix)
-        else:
-            external_id = content_id
-            episode_match = None
+        # "<external_id>:s<N>e<M>" (series episode) — the shared suffix
+        # splitter handles all three (spec #309 T7).
+        external_id, ep_suffix = split_content_suffix(content_id)
+        episode_match = re.fullmatch(r"s(\d+)e(\d+)", ep_suffix) if ep_suffix else None
         if not _SLUG_RE.fullmatch(external_id):
-            raise ProviderError("not_found", "bad external_id")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, "bad external_id")
         content = await self._get(f"{BASE_URL}/{external_id}.html", http)
         player_url = self._player_url(BeautifulSoup(content.text, "lxml"))
         if not player_url:
-            raise ProviderError("parse_failed", "no player iframe found")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no player iframe found")
         player = await self._get(player_url, http)
         files = self._files(player.text)
         if not files:
-            raise ProviderError("parse_failed", "no stream URL found")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no stream URL found")
         selected = files[0]
         if episode_match:
             season_number, episode_number = map(int, episode_match.groups())
             season_names = list(dict.fromkeys(str(item.get("season", "")).strip() for item in files))
             if season_number < 1 or season_number > len(season_names):
-                raise ProviderError("not_found", "season not found")
+                raise ProviderError(ProviderErrorCode.NOT_FOUND, "season not found")
             season_files = [item for item in files if str(item.get("season", "")).strip() == season_names[season_number - 1]]
             episode_titles = list(dict.fromkeys(str(item.get("title", "")).strip() for item in season_files))
             if episode_number < 1 or episode_number > len(episode_titles):
-                raise ProviderError("not_found", "episode not found")
+                raise ProviderError(ProviderErrorCode.NOT_FOUND, "episode not found")
             matches = [item for item in season_files if str(item.get("title", "")).strip() == episode_titles[episode_number - 1]]
             selected = next((item for item in matches if str(item.get("dub", "")).strip() == translation), matches[0])
         return StreamResponse(url=str(selected["file"]), type="m3u8", headers={"Referer": player_url, "User-Agent": "cs-uk-api/1.0"})

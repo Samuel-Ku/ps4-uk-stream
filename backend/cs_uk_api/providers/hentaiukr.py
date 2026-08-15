@@ -28,7 +28,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError, model_b_axes
+from .base import BaseProvider, ProviderError, ProviderErrorCode, model_b_axes
 
 BASE_URL = "https://hentaiukr.com"
 OBJECTS_URL = f"{BASE_URL}/search/objects.json"
@@ -78,36 +78,42 @@ def _parse_video_array(
     return results
 
 
-async def _get_json(url: str, http: httpx.AsyncClient) -> object:
-    try:
-        resp = await http.get(url, headers={"Referer": f"{BASE_URL}/"})
-    except httpx.HTTPError as e:
-        raise ProviderError("unreachable", str(e)) from e
-    if resp.status_code != 200:
-        raise ProviderError("upstream_unreachable", f"status {resp.status_code}")
-    try:
-        return json.loads(resp.text)
-    except json.JSONDecodeError as e:
-        raise ProviderError("parse_failed", f"invalid json: {e}") from e
-
-
-async def _fetch_objects(http: httpx.AsyncClient) -> dict[str, Any]:
-    data = await _get_json(OBJECTS_URL, http)
-    if not isinstance(data, dict):
-        raise ProviderError("parse_failed", "objects.json is not an object")
-    return cast(dict[str, Any], data)
-
-
 class HentaiUkrProvider(BaseProvider):
     id = "hentaiukr"
     name = "HentaiUkr 18+"
     types = ("anime",)
     sections = HENTAIUKR_SECTIONS
+    #: SSRF allowlist (spec #309 T7): every backend fetch (objects.json,
+    #: the content page, the cfg.json) stays on hentaiukr.com.
+    #: ``guarded_get`` applies this by default.
+    hosts = frozenset({"hentaiukr.com"})
+
+    async def _get_json(self, url: str, http: httpx.AsyncClient) -> object:
+        try:
+            resp = await self.guarded_get(
+                http, url, headers={"Referer": f"{BASE_URL}/"}
+            )
+        except httpx.HTTPError as e:
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
+        if resp.status_code != 200:
+            raise ProviderError(
+                ProviderErrorCode.UPSTREAM_UNREACHABLE, f"status {resp.status_code}"
+            )
+        try:
+            return json.loads(resp.text)
+        except json.JSONDecodeError as e:
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"invalid json: {e}") from e
+
+    async def _fetch_objects(self, http: httpx.AsyncClient) -> dict[str, Any]:
+        data = await self._get_json(OBJECTS_URL, http)
+        if not isinstance(data, dict):
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "objects.json is not an object")
+        return cast(dict[str, Any], data)
 
     async def search(
         self, query: str, http: httpx.AsyncClient
     ) -> list[SearchResult]:
-        data = await _fetch_objects(http)
+        data = await self._fetch_objects(http)
         # Upstream: ``it.name.contains(query, true)`` — case-insensitive
         # substring on the Ukrainian title only (NOT eng_name /
         # orig_name). An empty result must return ``[]`` so the typeahead
@@ -118,8 +124,8 @@ class HentaiUkrProvider(BaseProvider):
         self, section: str, page: int, http: httpx.AsyncClient
     ) -> tuple[list[SearchResult], bool]:
         if not self.has_section(section):
-            raise ProviderError("not_found", f"unknown section: {section}")
-        data = await _fetch_objects(http)
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"unknown section: {section}")
+        data = await self._fetch_objects(http)
         # The objects.json is a flat list with no pagination cursor;
         # we surface the entire ``video`` array and report no next page.
         _ = page  # the upstream mainPage ignores the page parameter
@@ -131,27 +137,27 @@ class HentaiUkrProvider(BaseProvider):
         # Reconstruct the slug from the upstream ``video`` array —
         # callers only carry the integer id, but we need the URL slug
         # to hit the content page and the cfg.json.
-        data = await _fetch_objects(http)
+        data = await self._fetch_objects(http)
         item = next(
             (v for v in (data.get("video") or []) if str(v.get("id")) == external_id),
             None,
         )
         if item is None:
-            raise ProviderError("not_found", f"unknown id: {external_id}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"unknown id: {external_id}")
         content_url = urljoin(BASE_URL, str(item["url"]))
         try:
-            resp = await http.get(content_url)
+            resp = await self.guarded_get(http, content_url)
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError("not_found", f"status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         # Title: ``#name-ukr`` is the Ukrainian name (the upstream
         # Kotlin uses this). The ``<title>`` tag has a " | Хентай
         # аніме українською" suffix, so we must NOT use it.
         title_el = soup.select_one("#name-ukr")
         if title_el is None:
-            raise ProviderError("parse_failed", "title missing")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "title missing")
         title = title_el.get_text(strip=True)
         year: int | None = None
         year_el = soup.select_one("#year")
@@ -171,7 +177,7 @@ class HentaiUkrProvider(BaseProvider):
         # entries), but real content pages do carry text here.
         desc_el = soup.select_one("#about")
         description = desc_el.get_text(" ", strip=True) if desc_el else ""
-        cfg_data = await _get_json(content_url + CFG_SUFFIX, http)
+        cfg_data = await self._get_json(content_url + CFG_SUFFIX, http)
         episodes: list[Episode] = []
         if isinstance(cfg_data, list):
             # 1-based index matches the upstream `episode = index + 1`.
@@ -212,38 +218,38 @@ class HentaiUkrProvider(BaseProvider):
         _ = translation  # single-dub site; translation is ignored
         external_id, _, ep_raw = content_id.partition(":")
         if not external_id:
-            raise ProviderError("parse_failed", f"bad content_id: {content_id}")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"bad content_id: {content_id}")
         if ep_raw:
             try:
                 episode_number = int(ep_raw)
             except ValueError as e:
-                raise ProviderError("parse_failed", f"bad content_id: {content_id}") from e
+                raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"bad content_id: {content_id}") from e
         else:
             episode_number = 1
-        data = await _fetch_objects(http)
+        data = await self._fetch_objects(http)
         item = next(
             (v for v in (data.get("video") or []) if str(v.get("id")) == external_id),
             None,
         )
         if item is None:
-            raise ProviderError("not_found", f"unknown id: {external_id}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"unknown id: {external_id}")
         content_url = urljoin(BASE_URL, str(item["url"]))
-        cfg_data = await _get_json(content_url + CFG_SUFFIX, http)
+        cfg_data = await self._get_json(content_url + CFG_SUFFIX, http)
         if not isinstance(cfg_data, list):
-            raise ProviderError("parse_failed", "cfg.json not a list")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "cfg.json not a list")
         if not (1 <= episode_number <= len(cfg_data)):
             # REGRESSION (KinoTron): must raise not_found — do not
             # silently fall back to the first available episode.
             raise ProviderError(
-                "not_found",
+                ProviderErrorCode.NOT_FOUND,
                 f"episode {episode_number} out of range (1..{len(cfg_data)})",
             )
         entry = cfg_data[episode_number - 1]
         if not isinstance(entry, dict):
-            raise ProviderError("parse_failed", "cfg entry not an object")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "cfg entry not an object")
         sources = entry.get("sources") or []
         if not isinstance(sources, list) or not sources:
-            raise ProviderError("parse_failed", "no sources for episode")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no sources for episode")
         # Highest-quality source wins. The upstream adds all sources
         # to the extractor; we only return one URL.
         valid = [s for s in sources if isinstance(s, dict) and s.get("src")]

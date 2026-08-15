@@ -12,7 +12,6 @@ from bs4 import BeautifulSoup, Tag
 
 from ..country import extract_country
 from ..extractors import RegexExtractor
-from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -23,13 +22,15 @@ from ..models import (
     Translation,
 )
 from ..wire_identity import MOVIE_SUFFIX
-from .base import BaseProvider, ProviderError, model_b_axes
+from .base import (
+    BaseProvider,
+    ProviderError,
+    ProviderErrorCode,
+    model_b_axes,
+    split_content_suffix,
+)
 
 BASE_URL = "https://cikava-ideya.top"
-# Hosts the upstream may legally redirect to: the CMS and the ashdi
-# player CDN. A hostile CMS response must not be able to pivot the
-# player hop to an attacker-controlled host.
-_ALLOWED_HOSTS: frozenset[str] = frozenset({"cikava-ideya.top", "ashdi.vip"})
 # ashdi.vip hosts the HLS manifest for each episode. The upstream
 # Kotlin source sets the Referer to "https://tortuga.wtf/" so that the
 # CDN serves the manifest.
@@ -79,11 +80,6 @@ _REMOVED_MARKER = "Видалено на прохання правовласни
 #: `gated`, not `parse_failed`, so the health tracker stays green (#139).
 _ASHDI_NOT_FOUND = "Файл не знайдено"
 
-# Sentinel episode-id suffix for movies (whose Player1 is a single URL
-# rather than a season/episode map; defined once in ``wire_identity``,
-# spec #309).
-
-
 def _page_number(href: str) -> int:
     """Pull the `/page/N/` integer out of a DLE pagination link."""
     m = re.search(r"/page/(\d+)/?", href)
@@ -118,7 +114,7 @@ def _section_url(section: str, page: int) -> str:
         "arthaus": "/arthaus/",
     }
     if section not in paths:
-        raise ProviderError("not_found", f"unknown section: {section}")
+        raise ProviderError(ProviderErrorCode.NOT_FOUND, f"unknown section: {section}")
     base = f"{BASE_URL}{paths[section]}"
     if page <= 1:
         return base
@@ -218,47 +214,20 @@ def _real_season_keys(player1: dict[str, Any]) -> list[str]:
 def _load_player1(soup: BeautifulSoup) -> str | dict[str, Any]:
     """Extract Player1 from a content page, gating unplayable titles.
 
-    Raises ``ProviderError("gated", ...)`` (ADR-0002) when the page
-    carries the upstream's removed-title marker in its `.fmessage` box,
+    Raises ``ProviderError(ProviderErrorCode.GATED, ...)`` (ADR-0002)
+    when the page carries the upstream's removed-title marker in its
+    `.fmessage` box,
     or when Player1 is absent / empty (`Object({})`) / trailer-only —
     all deliberate upstream unavailability, not provider-health signals
     (#139). Shared by `content()` and `stream()` so both judge the same
     page the same way."""
     if _removed_marker(soup):
-        raise ProviderError("gated", "upstream content removed")
+        raise ProviderError(ProviderErrorCode.GATED, "upstream content removed")
     player_json = _parse_player_json(soup)
     player1: str | dict[str, Any] | None = player_json.get("Player1") if player_json else None
     if player1 is None or not _is_playable(player1):
-        raise ProviderError("gated", "no playable player on content page")
+        raise ProviderError(ProviderErrorCode.GATED, "no playable player on content page")
     return player1
-
-
-async def _probe_ashdi_gate(player_url: str, http: httpx.AsyncClient) -> None:
-    """Best-effort content()-time dead-VOD probe (#185).
-
-    Fetch the representative ashdi.vip player page and raise
-    ``ProviderError("gated", ...)`` when it answers with a 200 body
-    carrying the «Файл не знайдено» marker (captured live 2026-08-08,
-    ashdi_vod_127413.html) — upstream-removed content, not a
-    provider-health signal. Mirrors eneyida's content()-time gating
-    check (#139). The URL came from upstream HTML, so the fetch goes
-    through the redirect allowlist stream() uses (#126).
-
-    Transient failures are tolerated: a flaky ashdi must not drop a live
-    card during the catalog sweep (``filter_gated_items`` only drops
-    KNOWN-gated items), so ``stream()`` keeps the marker check as the
-    play-time backstop."""
-    try:
-        ashdi_resp = await safe_get(
-            http,
-            player_url,
-            allowed_hosts=set(_ALLOWED_HOSTS),
-            headers={"Referer": ASHDI_REFERER},
-        )
-    except (httpx.HTTPError, ProviderError):
-        return
-    if ashdi_resp.status_code == 200 and _ASHDI_NOT_FOUND in ashdi_resp.text:
-        raise ProviderError("gated", "upstream content removed")
 
 
 class CikavaIdeyaProvider(BaseProvider):
@@ -272,6 +241,37 @@ class CikavaIdeyaProvider(BaseProvider):
     #: `load_home`; `resolve_group_content` additionally backstops a            # Cold-cache g2: detail call so a gated verdict never records a
     #: health-down (#139).
     can_gate = True
+    #: SSRF allowlist (spec #309 T7): the CMS and the ashdi player CDN.
+    #: A hostile CMS response must not be able to pivot the player hop
+    #: to an attacker-controlled host. ``guarded_get`` applies this by
+    #: default.
+    hosts = frozenset({"cikava-ideya.top", "ashdi.vip"})
+
+    async def _probe_ashdi_gate(
+        self, player_url: str, http: httpx.AsyncClient
+    ) -> None:
+        """Best-effort content()-time dead-VOD probe (#185).
+
+        Fetch the representative ashdi.vip player page and raise
+        ``ProviderError(ProviderErrorCode.GATED, ...)`` when it answers
+        with a 200 body carrying the «Файл не знайдено» marker
+        (captured live 2026-08-08, ashdi_vod_127413.html) —
+        upstream-removed content, not a provider-health signal. Mirrors
+        eneyida's content()-time gating check (#139). The URL came from
+        upstream HTML, so the fetch goes through ``guarded_get`` (#126).
+
+        Transient failures are tolerated: a flaky ashdi must not drop a
+        live card during the catalog sweep (``filter_gated_items`` only
+        drops KNOWN-gated items), so ``stream()`` keeps the marker
+        check as the play-time backstop."""
+        try:
+            ashdi_resp = await self.guarded_get(
+                http, player_url, headers={"Referer": ASHDI_REFERER}
+            )
+        except (httpx.HTTPError, ProviderError):
+            return
+        if ashdi_resp.status_code == 200 and _ASHDI_NOT_FOUND in ashdi_resp.text:
+            raise ProviderError(ProviderErrorCode.GATED, "upstream content removed")
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         # DLE (CikavaIdeya's CMS) accepts a POST with the same fields
@@ -283,9 +283,9 @@ class CikavaIdeyaProvider(BaseProvider):
                 data={"do": "search", "subaction": "search", "story": quote(query)},
             )
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError("upstream_unreachable", f"status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.UPSTREAM_UNREACHABLE, f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         results: list[SearchResult] = []
         for card in soup.select(".th-item"):
@@ -299,11 +299,11 @@ class CikavaIdeyaProvider(BaseProvider):
     ) -> tuple[list[SearchResult], bool]:
         url = _section_url(section, page)
         try:
-            resp = await http.get(url)
+            resp = await self.guarded_get(http, url)
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError("not_found", f"status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         results: list[SearchResult] = []
         for card in soup.select(".th-item"):
@@ -323,18 +323,18 @@ class CikavaIdeyaProvider(BaseProvider):
         self, external_id: str, http: httpx.AsyncClient
     ) -> ContentResponse:
         if not _SLUG_RE.fullmatch(external_id):
-            raise ProviderError("not_found", f"bad external_id: {external_id!r}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"bad external_id: {external_id!r}")
         url = f"{BASE_URL}/{external_id}.html"
         try:
-            resp = await http.get(url)
+            resp = await self.guarded_get(http, url)
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError("not_found", f"status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         title_el = soup.select_one(".full h1")
         if title_el is None:
-            raise ProviderError("parse_failed", "title missing")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "title missing")
         img = soup.select_one(".img-fit img")
         poster_src = str(img["src"]) if img and img.get("src") else None
         poster = urljoin(BASE_URL, poster_src) if poster_src else None
@@ -365,7 +365,7 @@ class CikavaIdeyaProvider(BaseProvider):
             else self._select_player_url(player1, "s1e1")
         )
         if player_url is not None:
-            await _probe_ashdi_gate(player_url, http)
+            await self._probe_ashdi_gate(player_url, http)
         seasons = self._build_seasons(player1, external_id, self.id)
         mb_form, mb_styles = model_b_axes(_classify_from_tags(tags_text))  # type: ignore[arg-type]
         return ContentResponse(
@@ -414,53 +414,45 @@ class CikavaIdeyaProvider(BaseProvider):
         # `content_id` arrives as either "<external_id>" (movie, bare
         # id straight from a search result), "<external_id>:__movie__"
         # (movie, explicit suffix from the content listing), or
-        # "<external_id>:s<N>e<M>" (series episode). `/api/stream`
+        # "<external_id>:s<N>e<M>" (series episode) — the shared suffix
+        # splitter handles all three (spec #309 T7). `/api/stream`
         # strips the `<provider>:` prefix before calling us.
-        if MOVIE_SUFFIX in content_id:
-            ext_id = content_id.split(MOVIE_SUFFIX, 1)[0]
-            ep_suffix = ""
-        elif ":" in content_id:
-            ext_id, _, ep_suffix = content_id.rpartition(":")
-        else:
-            ext_id, ep_suffix = content_id, ""
+        ext_id, ep_suffix = split_content_suffix(content_id)
         if not _SLUG_RE.fullmatch(ext_id):
-            raise ProviderError("not_found", f"bad external_id: {ext_id!r}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"bad external_id: {ext_id!r}")
         content_url = f"{BASE_URL}/{ext_id}.html"
         try:
-            resp = await http.get(content_url)
+            resp = await self.guarded_get(http, content_url)
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError("not_found", f"status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
         player1 = _load_player1(BeautifulSoup(resp.text, "lxml"))
         player_url = self._select_player_url(player1, ep_suffix)
         if player_url is None:
-            raise ProviderError("parse_failed", f"no player url for {ep_suffix!r}")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"no player url for {ep_suffix!r}")
         # The player URL lives on ashdi.vip; the upstream Kotlin calls
         # M3u8Helper.generateM3u8 which hits the page and pulls the
         # `file: "https://.../index.m3u8"` URL out of an inline script.
         # The URL came from upstream HTML, so it goes through the
-        # redirect allowlist (#126).
+        # allowlist via ``guarded_get`` (#126).
         try:
-            ashdi_resp = await safe_get(
-                http,
-                player_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
-                headers={"Referer": ASHDI_REFERER},
+            ashdi_resp = await self.guarded_get(
+                http, player_url, headers={"Referer": ASHDI_REFERER}
             )
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if ashdi_resp.status_code != 200:
-            raise ProviderError("not_found", f"status {ashdi_resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {ashdi_resp.status_code}")
         if _ASHDI_NOT_FOUND in ashdi_resp.text:
             # ashdi.vip's dead-VOD page (captured live 2026-08-08,
             # ashdi_vod_127413.html) — upstream-removed content, not a
             # provider-health signal → `gated` (ADR-0002), mirroring
             # eneyida's «Контент недоступний» (#139).
-            raise ProviderError("gated", "upstream content removed")
+            raise ProviderError(ProviderErrorCode.GATED, "upstream content removed")
         extracted = RegexExtractor().extract(ashdi_resp.text)
         if extracted is None or not extracted.url:
-            raise ProviderError("parse_failed", "no m3u8 in ashdi page")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no m3u8 in ashdi page")
         return StreamResponse(
             url=extracted.url,
             type=extracted.type,

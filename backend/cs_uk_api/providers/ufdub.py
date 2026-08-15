@@ -9,7 +9,6 @@ import httpx
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 
-from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -20,14 +19,15 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from ..wire_identity import MOVIE_SUFFIX
-from .base import BaseProvider, ProviderError, model_b_axes
+from .base import (
+    BaseProvider,
+    ProviderError,
+    ProviderErrorCode,
+    model_b_axes,
+    split_content_suffix,
+)
 
 BASE_URL = "https://ufdub.com"
-# Hosts the upstream may legally redirect to. The content page lives on
-# ufdub.com and the player on video.ufdub.com; a hostile CMS response
-# must not be able to pivot either hop to an attacker-controlled host.
-_ALLOWED_HOSTS: frozenset[str] = frozenset({"ufdub.com", "video.ufdub.com"})
 
 UFDUB_SECTIONS: tuple[Section, ...] = (
     Section(id="filmy", title="Фільми", form="movie"),
@@ -68,7 +68,7 @@ def _external_id_from_url(href: str) -> str:
     part of the path (e.g. "48-fokus-pokus-hocus-pocus")."""
     m = re.search(r"/([a-z][a-z-]*?)/(\d+-[a-z0-9-]+?)(?:\.html)?/?$", href)
     if not m:
-        raise ProviderError("parse_failed", f"unrecognized url: {href}")
+        raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"unrecognized url: {href}")
     return f"{m.group(1)}-{m.group(2)}"
 
 
@@ -92,11 +92,6 @@ def _split_external_id(external_id: str) -> tuple[str, str] | None:
 # array. Titles may contain spaces/hyphens but no quotes; codec is a
 # short label (mp4/720p/HD/source/web).
 _EPISODE_ROW_RE = re.compile(r"\[\s*'([^']*)'\s*,\s*'[^']*'\s*,\s*'([^']*)'\s*\]")
-
-# Sentinel episode-id suffix used by other providers for movies; kept
-# here so stream() treats a bare id and an explicit movie suffix alike
-# (the sentinel itself is defined once in ``wire_identity``, spec #309).
-
 
 def _type_from_url(href: str) -> str:
     """Map the URL's path segment to a MediaType."""
@@ -138,7 +133,7 @@ def _section_url(section: str, page: int) -> str:
         "anime": "/anime/",
     }
     if section not in paths:
-        raise ProviderError("not_found", f"unknown section: {section}")
+        raise ProviderError(ProviderErrorCode.NOT_FOUND, f"unknown section: {section}")
     base = f"{BASE_URL}{paths[section]}"
     # Page 1 is the index; subsequent pages use `/page/N/`.
     if page <= 1:
@@ -231,6 +226,11 @@ class UFDubProvider(BaseProvider):
     #: dead titles) so the ADR-0002 catalog sweep drops them instead
     #: of failing only at play time.
     can_gate = True
+    #: SSRF allowlist (spec #309 T7): the content page lives on
+    #: ufdub.com and the player on video.ufdub.com; a hostile CMS
+    #: response must not be able to pivot either hop to an
+    #: attacker-controlled host. ``guarded_get`` applies this by default.
+    hosts = frozenset({"ufdub.com", "video.ufdub.com"})
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         url = f"{BASE_URL}/index.php?do=search"
@@ -248,9 +248,9 @@ class UFDubProvider(BaseProvider):
                 },
             )
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError("upstream_unreachable", f"status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.UPSTREAM_UNREACHABLE, f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         results: list[SearchResult] = []
         for card in soup.select(".short-t"):
@@ -264,11 +264,11 @@ class UFDubProvider(BaseProvider):
     ) -> tuple[list[SearchResult], bool]:
         url = _section_url(section, page)
         try:
-            resp = await http.get(url)
+            resp = await self.guarded_get(http, url)
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError("not_found", f"status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         # The upstream Kotlin removes `.section` (ad/featured blocks) before
         # mapping `.short` cards. Each card is `<div class="short clearfix">`
@@ -298,20 +298,20 @@ class UFDubProvider(BaseProvider):
             # (non-digit-prefixed) slug is not_found.
             kind, _, slug = external_id.partition("-")
             if not kind or not slug:
-                raise ProviderError("parse_failed", f"invalid external_id: {external_id!r}")
-            raise ProviderError("not_found", f"bad external_id: {external_id!r}")
+                raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"invalid external_id: {external_id!r}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"bad external_id: {external_id!r}")
         kind, slug = split
         url = f"{BASE_URL}/{kind}/{external_id[len(kind) + 1:]}.html"
         try:
-            resp = await http.get(url)
+            resp = await self.guarded_get(http, url)
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError("not_found", f"status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         title_el = soup.select_one("h1.top-title")
         if title_el is None:
-            raise ProviderError("parse_failed", "title missing")
+            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "title missing")
         poster_el = soup.select_one("div.f-poster img")
         poster = (
             urljoin(BASE_URL, str(poster_el["src"]))
@@ -338,7 +338,7 @@ class UFDubProvider(BaseProvider):
         episodes = await self._fetch_player_episodes(player_url, http)
         if player_url is None or not episodes:
             raise ProviderError(
-                "gated", "no playable media on player page"
+                ProviderErrorCode.GATED, "no playable media on player page"
             )
         year = _extract_year(soup)
         seasons: list[Season] | None = None
@@ -385,16 +385,13 @@ class UFDubProvider(BaseProvider):
         if player_url is None:
             return []
         try:
-            resp = await safe_get(
-                http,
-                player_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
-                headers={"Referer": f"{BASE_URL}/"},
+            resp = await self.guarded_get(
+                http, player_url, headers={"Referer": f"{BASE_URL}/"}
             )
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError("not_found", f"status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
         return self._extract_episodes(resp.text)
 
     async def stream(
@@ -405,65 +402,55 @@ class UFDubProvider(BaseProvider):
         # media URL lives in that page's `var a = [['Серія 1','mp4', url]]`
         # array. Follow both hops (HTML + regex only, spec ground rule #4).
         # `content_id` is either the bare external id (`film-48-...` for
-        # movies) or `<external>:s1e<N>` for a series episode.
-        if MOVIE_SUFFIX in content_id:
-            ext_id = content_id.split(MOVIE_SUFFIX, 1)[0]
-            ep_suffix = ""
-        elif ":" in content_id:
-            ext_id, _, ep_suffix = content_id.rpartition(":")
-        else:
-            ext_id, ep_suffix = content_id, ""
+        # movies) or `<external>:s1e<N>` for a series episode — the
+        # shared suffix splitter strips the movie sentinel / episode
+        # tail (spec #309 T7).
+        ext_id, ep_suffix = split_content_suffix(content_id)
         split = _split_external_id(ext_id)
         if split is None:
             kind, _, slug = ext_id.partition("-")
             if not kind or not slug:
-                raise ProviderError("parse_failed", f"invalid content_id: {content_id!r}")
-            raise ProviderError("not_found", f"bad external_id: {content_id!r}")
+                raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"invalid content_id: {content_id!r}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"bad external_id: {content_id!r}")
         kind, slug = split
         content_url = f"{BASE_URL}/{kind}/{ext_id[len(kind) + 1:]}.html"
         try:
-            resp = await safe_get(
-                http,
-                content_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
-                headers={"Referer": f"{BASE_URL}/"},
+            resp = await self.guarded_get(
+                http, content_url, headers={"Referer": f"{BASE_URL}/"}
             )
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError("not_found", f"status {resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         player_url = self._extract_player_url(soup)
         if player_url is None:
             raise ProviderError(
-                "parse_failed", "no player iframe found on content page"
+                ProviderErrorCode.PARSE_FAILED, "no player iframe found on content page"
             )
         try:
-            player_resp = await safe_get(
-                http,
-                player_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
-                headers={"Referer": f"{BASE_URL}/"},
+            player_resp = await self.guarded_get(
+                http, player_url, headers={"Referer": f"{BASE_URL}/"}
             )
         except httpx.HTTPError as e:
-            raise ProviderError("unreachable", str(e)) from e
+            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
         if player_resp.status_code != 200:
-            raise ProviderError("not_found", f"status {player_resp.status_code}")
+            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {player_resp.status_code}")
         episodes = self._extract_episodes(player_resp.text)
         if not episodes:
             raise ProviderError(
-                "parse_failed", "no media URL found in player page"
+                ProviderErrorCode.PARSE_FAILED, "no media URL found in player page"
             )
         if ep_suffix:
             m = re.fullmatch(r"s(\d+)e(\d+)", ep_suffix)
             if not m:
                 raise ProviderError(
-                    "not_found", f"bad episode suffix: {ep_suffix!r}"
+                    ProviderErrorCode.NOT_FOUND, f"bad episode suffix: {ep_suffix!r}"
                 )
             season, episode = int(m.group(1)), int(m.group(2))
             if season != 1 or episode < 1 or episode > len(episodes):
                 raise ProviderError(
-                    "not_found", f"episode out of range: {ep_suffix!r}"
+                    ProviderErrorCode.NOT_FOUND, f"episode out of range: {ep_suffix!r}"
                 )
             _title, media_url = episodes[episode - 1]
         else:
