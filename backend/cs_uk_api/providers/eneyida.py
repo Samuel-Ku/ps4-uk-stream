@@ -146,6 +146,20 @@ def _is_season_titled(entry: dict[str, Any] | None) -> bool:
     return bool(entry and _SEASON_TITLE_RE.search(str(entry.get("title", ""))))
 
 
+def _dub_index(folders: list[dict[str, Any]], translation: str | None) -> int | None:
+    """Index of the dub folder titled ``translation``, or None.
+
+    The dub picker (spec #276) passes the translation id — for eneyida
+    that is the studio name from the payload folder title (ticket #331).
+    """
+    if not translation:
+        return None
+    for idx, folder in enumerate(folders):
+        if str(folder.get("title", "")).strip() == translation:
+            return idx
+    return None
+
+
 #: hdvbua player URLs inside an iframe tag — recovery path for the
 #: upstream's doubled-quote template bug (the regex runs against the
 #: RAW tag HTML, where the URL is intact).
@@ -429,14 +443,20 @@ class EneyidaProvider(BaseProvider):
                 payload = cast(list[dict[str, Any]], json.loads(raw))
                 first = payload[0]
                 if _is_season_titled(first):
-                    # Season-top payload: season index at the top level,
-                    # first dub's episode list (ticket #331 companion).
-                    raw = payload[s_idx]["folder"][0]["folder"][e_idx]["file"]
+                    # Season-top payload: season index at the top level;
+                    # the translation picks the dub folder INSIDE the
+                    # season (fallback: first dub) (ticket #331).
+                    dubs = payload[s_idx].get("folder", [])
+                    dub_idx = _dub_index(dubs, translation) or 0
+                    raw = payload[s_idx]["folder"][dub_idx]["folder"][e_idx]["file"]
                 else:
-                    # Wrapper payload: index into data[0]["folder"] (the
-                    # season OR dub track — for the multi-dub shape this
-                    # keeps legacy ``:s<i>e<j>`` dub semantics).
-                    raw = payload[0]["folder"][s_idx]["folder"][e_idx]["file"]
+                    # Wrapper payload: data[0]["folder"] holds the dub
+                    # tracks (multi-dub) or the seasons. A translation
+                    # matching a dub title wins; otherwise the legacy
+                    # suffix dub indexing stays (ticket #331).
+                    entries = payload[0].get("folder", [])
+                    picked_dub = _dub_index(entries, translation)
+                    raw = entries[picked_dub if picked_dub is not None else s_idx]["folder"][e_idx]["file"]
             except (KeyError, IndexError, TypeError, json.JSONDecodeError) as e:
                 raise ProviderError(ProviderErrorCode.PARSE_FAILED, "episode missing") from e
         else:

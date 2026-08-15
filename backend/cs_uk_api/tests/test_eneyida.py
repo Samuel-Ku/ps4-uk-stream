@@ -458,6 +458,55 @@ async def test_eneyida_stream_multi_season_suffix_navigates_season() -> None:
 
 
 @pytest.mark.asyncio
+async def test_eneyida_stream_multi_dub_honors_translation_choice() -> None:
+    """Ticket #331: the dub picker's translation id (a studio name)
+    selects that voiceover's folder — ``MGG`` on a collapsed multi-dub
+    payload plays MGG's file, not dub 1's."""
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://eneyida.tv/series/7878-dim-drakona-2022-v2.html").respond(
+            200, text=_fixture("content_series.html")
+        )
+        router.get("https://hdvbua.pro/embed/9549").respond(200, text=PLAYER_MULTI_DUB_HTML)
+        async with httpx.AsyncClient() as http:
+            stream = await EneyidaProvider().stream(
+                "series/7878-dim-drakona-2022-v2:s1e2", "MGG", http
+            )
+    assert stream.url.endswith("hotd.s01e02.mgg/index.m3u8")
+
+
+@pytest.mark.asyncio
+async def test_eneyida_stream_unknown_translation_falls_back_to_suffix() -> None:
+    """Ticket #331: an unmatched translation id must not 500 — the
+    suffix dub indexing stays the fallback (tolerant degradation)."""
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://eneyida.tv/series/7878-dim-drakona-2022-v2.html").respond(
+            200, text=_fixture("content_series.html")
+        )
+        router.get("https://hdvbua.pro/embed/9549").respond(200, text=PLAYER_MULTI_DUB_HTML)
+        async with httpx.AsyncClient() as http:
+            stream = await EneyidaProvider().stream(
+                "series/7878-dim-drakona-2022-v2:s3e2", "nonexistent-dub", http
+            )
+    assert stream.url.endswith("hotd.s01e02.mgg/index.m3u8")
+
+
+@pytest.mark.asyncio
+async def test_eneyida_stream_multi_season_honors_translation_choice() -> None:
+    """Ticket #331 companion: on a season-top payload the translation
+    picks the dub INSIDE the season (S2's MGG track)."""
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://eneyida.tv/series/8550-taiemnycia-bunkera.html").respond(
+            200, text=_fixture("content_series.html")
+        )
+        router.get("https://hdvbua.pro/embed/9549").respond(200, text=PLAYER_TWO_SEASON_HTML)
+        async with httpx.AsyncClient() as http:
+            stream = await EneyidaProvider().stream(
+                "series/8550-taiemnycia-bunkera:s2e1", "MGG", http
+            )
+    assert stream.url.endswith("silo.s02e01/index.m3u8")
+
+
+@pytest.mark.asyncio
 async def test_eneyida_browse_unknown_section_raises():
     with respx.mock(assert_all_called=False), pytest.raises(ProviderError) as exc_info:
         await EneyidaProvider().browse("unknown", 1, httpx.AsyncClient())
