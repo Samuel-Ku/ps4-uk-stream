@@ -29,7 +29,8 @@ from fastapi.testclient import TestClient
 
 import cs_uk_api.catalog_state as catalog_state_mod
 from cs_uk_api import main as main_mod
-from cs_uk_api.main import _home_cache, _search_cache, app
+from cs_uk_api.catalog_state import home_cache, search_cache
+from cs_uk_api.main import app
 from cs_uk_api.merge import item_group_key, merge_results
 from cs_uk_api.models import (
     SearchGroup,
@@ -71,15 +72,15 @@ def isolate() -> Iterator[None]:
     """
     saved_providers = dict(PROVIDERS)
     PROVIDERS.clear()
-    _search_cache.clear()
-    _home_cache.clear()
+    search_cache.clear()
+    home_cache.clear()
     try:
         yield
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved_providers)
-        _search_cache.clear()
-        _home_cache.clear()
+        search_cache.clear()
+        home_cache.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -576,7 +577,7 @@ def test_search_group_key_matches_home_group_key_on_year_soft(
     The test exercises BOTH routes — fetching /api/search and /api/home
     with the same year-soft data and asserting the keys round-trip.
     """
-    from cs_uk_api.main import _home_cache
+    from cs_uk_api.catalog_state import home_cache
     from cs_uk_api.merge import item_group_key
 
     # Yearful + yearless scenario — the two items have DIFFERENT per-item
@@ -607,7 +608,7 @@ def test_search_group_key_matches_home_group_key_on_year_soft(
 
     monkeypatch.setitem(PROVIDERS, "uakino", _DualStub("uakino", [uakino_yearful]))
     monkeypatch.setitem(PROVIDERS, "eneyida", _DualStub("eneyida", [eneyida_yearless]))
-    _home_cache.clear()
+    home_cache.clear()
 
     client = TestClient(app)
 

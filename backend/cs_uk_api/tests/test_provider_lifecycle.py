@@ -25,7 +25,8 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from cs_uk_api.main import _search_cache, app
+from cs_uk_api.catalog_state import search_cache
+from cs_uk_api.main import app
 from cs_uk_api.models import SearchResult, Section
 from cs_uk_api.providers import PROVIDERS
 from cs_uk_api.providers.base import BaseProvider
@@ -236,7 +237,7 @@ def test_search_lazy_reachability_does_not_block_startup():
 
         PROV = UakinoProvider()
         PROVIDERS["uakino"] = PROV
-        _search_cache.clear()
+        search_cache.clear()
         r = client.get("/api/search?q=startup-timeout")
         # The uakino provider's search() may raise or return [] depending
         # on the environment; the contract is: a 200 with whatever the
@@ -245,7 +246,7 @@ def test_search_lazy_reachability_does_not_block_startup():
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved)
-        _search_cache.clear()
+        search_cache.clear()
 
 
 # ---------------------------------------------------------------------------

@@ -68,8 +68,8 @@ def isolate() -> Iterator[None]:
         catalog_state.deep_page_cache,
     ):
         cache.clear()
-    saved_profiles = catalog_state._profiles
-    catalog_state._profiles = {}
+    saved_profiles = dict(catalog_state.get_profiles())
+    catalog_api.install_profiles({})
     catalog_state.clear_playback()
     catalog_state.clear_user_state()
     health.TRACKER.reset()
@@ -78,7 +78,7 @@ def isolate() -> Iterator[None]:
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved)
-        catalog_state._profiles = saved_profiles
+        catalog_api.install_profiles(saved_profiles)
         health.TRACKER.reset()
 
 

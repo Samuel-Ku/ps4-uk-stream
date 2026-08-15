@@ -12,26 +12,14 @@ from fastapi.responses import JSONResponse
 
 import cs_uk_api.providers._registry  # noqa: F401
 
+from . import catalog
 from . import catalog_warm as catalog_warm_mod
 from . import watchdog as watchdog_mod
 from .cache import TtlCache
-from .catalog_state import _GATE_CHECK_TIMEOUT_S, resolve_group
+from .catalog_state import _GATE_CHECK_TIMEOUT_S
 from .catalog_state import await_uakino_ready as _await_uakino_ready
-from .catalog_state import blocklist_cache as _catalog_blocklist_cache
-from .catalog_state import content_cache as _catalog_content_cache
 from .catalog_state import filter_gated_items as _filter_gated_items
-from .catalog_state import flush_playback as _flush_playback
-from .catalog_state import gated_cache as _catalog_gated_cache
-from .catalog_state import get_home as _catalog_get_home
-from .catalog_state import home_cache as _catalog_home_cache
-from .catalog_state import load_home as _catalog_load_home
-from .catalog_state import merged_search as _catalog_merged_search
-from .catalog_state import recommendation_stats as _catalog_recommendation_stats
-from .catalog_state import refresh_profile as _llm_refresh_profile
-from .catalog_state import search_cache as _catalog_search_cache
-from .catalog_state import sources_cache as _catalog_sources_cache
 from .config import SETTINGS
-from .country import is_blocked_country
 from .filters import parse_form_filter as _parse_form_filter
 from .filters import parse_style_filter as _parse_style_filter
 from .filters import section_matches as _section_matches
@@ -83,21 +71,10 @@ if not os.path.exists(DEFAULT_CHROMIUM):
     TRACKER.mark_startup("uakino", "chromium_missing")
     log.warning("uakino marked down at startup: chromium binary not found at %s", DEFAULT_CHROMIUM)
 
-#: The shared merged-search cache now lives in ``catalog_state``
-#: (ticket #106: the native /api/search route and the Jellyfin facade
-#: share one fan-out and one cache). ``_search_cache`` stays as a
-#: back-compat alias — tests import it from here.
-_search_cache = _catalog_search_cache
-_content_cache = _catalog_content_cache
+#: The browse route's own TtlCache (ADR-0003 browse TTL) — the one cache
+#: main owns outright; every other catalog cache lives in
+#: ``catalog_state`` behind the ``catalog`` interface (spec #309 T4).
 _browse_cache = TtlCache(default_ttl_s=SETTINGS.cache_search_s)
-_blocklist_cache = _catalog_blocklist_cache
-
-#: Back-compat aliases (tests import these): the home snapshot + group-key
-#: resolution map now live in ``cs_uk_api.catalog_state`` (ticket #101),
-#: shared by the native ``/api/*`` routes and the Jellyfin facade.
-#: Clearing them clears the shared state.
-_home_cache = _catalog_home_cache
-_home_sources_cache = _catalog_sources_cache
 
 #: Bounded drain for the background warm/heartbeat task in lifespan
 #: shutdown so a mid-warm Chromium launch cannot hang the teardown.
@@ -141,7 +118,7 @@ async def _llm_profile_loop() -> None:
     """
     while True:
         await asyncio.sleep(_LLM_PROFILE_INTERVAL_S)
-        await _llm_refresh_profile()
+        await catalog.refresh_profile()
 
 
 async def _watchdog_loop() -> None:
@@ -259,7 +236,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # Persist any debounced playback-progress state (ticket #248): the
     # Stopped report already flushed, but heartbeat positions may still
     # be pending a debounce when the process is told to stop.
-    _flush_playback()
+    catalog.flush_playback()
     # The uakino browser session is lazily created on first request and
     # runs a headless Chromium; close it on shutdown so SIGTERM doesn't
     # orphan the browser process. `close()` is a no-op when the session
@@ -334,7 +311,7 @@ async def health() -> dict[str, object]:
             "last_reset_at": watchdog_mod.WATCHDOG.last_reset_at,
             "cooldown_s": watchdog_mod.WATCHDOG.cooldown_s,
         },
-        "recommendations": _catalog_recommendation_stats(),
+        "recommendations": catalog.recommendation_stats(),
         "catalog_warm": (
             {
                 "status": _catalog_warm_state.status,
@@ -502,7 +479,7 @@ async def search(
         raise HTTPException(400, detail=ErrorResponse(error="unknown_provider", message=provider).model_dump())
     form_filter = _parse_form_filter(form)
     style_filter = _parse_style_filter(style)
-    return await _catalog_merged_search(
+    return await catalog.search(
         q, provider=provider, form=form_filter, style_filter=style_filter
     )
 
@@ -535,7 +512,7 @@ async def home() -> HomeResponse:
     Shared with the Jellyfin facade since ticket #101: the build runs in
     ``catalog_state.load_home`` so the facade resolves the same snapshot.
     """
-    return await _catalog_load_home()
+    return await catalog.refresh_snapshot()
 
 
 @app.get("/api/content/{content_id:path}")
@@ -561,36 +538,27 @@ async def content(
 
 
 async def _content_by_id(content_id: str) -> ContentResponse:
-    cache_key = f"content:{content_id}"
-    if _blocklist_cache.get(cache_key) is not None:
-        raise HTTPException(404, detail=ErrorResponse(error="not_found", message=content_id).model_dump())
-    if _catalog_gated_cache.get(cache_key) is True:
-        raise HTTPException(404, detail=ErrorResponse(error="gated", message=content_id).model_dump())
-    cached = _content_cache.get(cache_key)
-    if cached is not None:
-        return cached  # type: ignore[return-value]
     provider_id, external_id = _split_content_id(content_id)
     if provider_id not in PROVIDERS or not external_id:
         raise HTTPException(404, detail=ErrorResponse(error="not_found", message=content_id).model_dump())
     if provider_id == "uakino":
         await _await_uakino_ready()
-    http = get_client()
-    resp = await _upstream_guard(
+    # The cache layer, the gated/blocklist verdict stores and the
+    # group-key derivation live behind the catalog seam (spec #309 T4):
+    # main no longer constructs ``content:`` keys or reads the stores.
+    result = await _upstream_guard(
         provider_id,
-        PROVIDERS[provider_id].content(external_id, http),
+        catalog.provider_content(provider_id, external_id),
         f"content id={content_id}",
         exc_handler=_content_provider_error,
     )
-    if SETTINGS.block_russian and is_blocked_country(resp.country):
-        _blocklist_cache.set(cache_key, True)
-        log.info("blocked Russian content id=%s country=%s", content_id, resp.country)
+    if result.verdict is catalog.ContentVerdict.GATED:
+        raise HTTPException(404, detail=ErrorResponse(error="gated", message=content_id).model_dump())
+    if result.verdict is not catalog.ContentVerdict.OK:
+        # Blocklisted (or otherwise deliberately unavailable) — the same
+        # not_found the pre-T4 route answered.
         raise HTTPException(404, detail=ErrorResponse(error="not_found", message=content_id).model_dump())
-    # Stateless per-item group key (issue #69): pure function of the item's
-    # own title/type/year, so client state survives across sessions and
-    # provider-set changes.
-    resp.group_key = group_key_from(resp.title, resp.form, resp.year, content_id)
-    _content_cache.set(cache_key, resp)
-    return resp
+    return result.content  # type: ignore[return-value]
 
 
 async def _content_by_group_key(group_key: str) -> GroupContentResponse:
@@ -603,7 +571,7 @@ async def _content_by_group_key(group_key: str) -> GroupContentResponse:
     and the next /api/home refresh repopulates the mapping. The spec
     accepts this in exchange for the documented 30-min home cache.
     """
-    home = _catalog_get_home()
+    home = catalog.snapshot()
     if home is not None:
         for row in home.rows:
             for it in row.items:
@@ -639,8 +607,8 @@ async def _content_by_group_key_and_source(
       - 404 ``not_found`` when the group key itself is unknown (no entry
         in the sources side cache).
     """
-    per_provider = resolve_group(group_key)
-    if per_provider is None:
+    sources_echo = catalog.group_sources(group_key)
+    if not sources_echo:
         raise HTTPException(
             404,
             detail=ErrorResponse(error="not_found", message=group_key).model_dump(),
@@ -648,8 +616,8 @@ async def _content_by_group_key_and_source(
 
     # First-seen order: matches the home row's ``HomeItem.providers``
     # because both reads walk the same build_home_rows iteration order.
-    sources_echo = list(per_provider.values())
-    if source not in per_provider or source not in PROVIDERS:
+    card = catalog.group_source(group_key, source)
+    if card is None or source not in PROVIDERS:
         raise HTTPException(
             400,
             detail=ErrorResponse(
@@ -664,12 +632,12 @@ async def _content_by_group_key_and_source(
     # Issue #157: the lazy branch used to pass the prefixed id straight
     # through, which 502'd for every provider whose content() validates
     # the external id shape.
-    _, external_id = _split_content_id(per_provider[source].id)
+    _, external_id = _split_content_id(card.id)
     if not external_id:
         raise HTTPException(
             404,
             detail=ErrorResponse(
-                error="not_found", message=per_provider[source].id
+                error="not_found", message=card.id
             ).model_dump(),
         )
     provider = PROVIDERS[source]

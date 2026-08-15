@@ -33,8 +33,9 @@ from fastapi.testclient import TestClient
 import cs_uk_api.catalog_state as catalog_state_mod
 from cs_uk_api import main as main_mod
 from cs_uk_api import uakino_browser
+from cs_uk_api.catalog_state import content_cache, search_cache
 from cs_uk_api.health import TRACKER
-from cs_uk_api.main import _content_cache, _search_cache, app
+from cs_uk_api.main import app
 from cs_uk_api.models import (
     ContentResponse,
     SearchResult,
@@ -56,8 +57,8 @@ def _isolate_session_health_and_registry() -> Iterator[None]:
     saved_session = uakino_browser._session
     saved_providers = dict(PROVIDERS)
     TRACKER.reset()
-    _search_cache.clear()
-    _content_cache.clear()
+    search_cache.clear()
+    content_cache.clear()
     PROVIDERS.clear()
     try:
         yield
@@ -66,8 +67,8 @@ def _isolate_session_health_and_registry() -> Iterator[None]:
         PROVIDERS.update(saved_providers)
         uakino_browser._session = saved_session
         TRACKER.reset()
-        _search_cache.clear()
-        _content_cache.clear()
+        search_cache.clear()
+        content_cache.clear()
 
 
 class _StubSession:
@@ -288,7 +289,7 @@ def test_fanout_cache_distinguishes_cold_then_warmed() -> None:
     PROVIDERS["uakino"] = _Provider(
         "uakino", results=[_result("uakino", "Дюна", year=2021)], calls=uakino_calls
     )
-    _search_cache.clear()
+    search_cache.clear()
 
     r1 = client.get("/api/search?q=дюна")
     assert r1.status_code == 200
@@ -378,7 +379,7 @@ async def test_explicit_search_waits_for_ready_then_returns(
     PROVIDERS["uakino"] = _Provider(
         "uakino", results=[_result("uakino", "Дюна", year=2021)]
     )
-    _search_cache.clear()
+    search_cache.clear()
 
     async def _set_ready() -> None:
         await asyncio.sleep(0.05)

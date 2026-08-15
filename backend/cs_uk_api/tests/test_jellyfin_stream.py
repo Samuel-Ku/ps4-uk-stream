@@ -45,8 +45,8 @@ import pytest
 import respx
 from fastapi.testclient import TestClient
 
+from cs_uk_api.catalog_state import blocklist_cache, content_cache, home_cache, sources_cache
 from cs_uk_api.config import SETTINGS
-from cs_uk_api.main import _blocklist_cache, _content_cache, _home_cache, _home_sources_cache
 from cs_uk_api.models import (
     ContentResponse,
     Episode,
@@ -223,7 +223,7 @@ def _stale_memo() -> dict[Any, Any]:
 def _isolate() -> Iterator[None]:
     saved_providers = dict(PROVIDERS)
     PROVIDERS.clear()
-    for cache in (_home_cache, _home_sources_cache, _content_cache, _blocklist_cache):
+    for cache in (home_cache, sources_cache, content_cache, blocklist_cache):
         cache.clear()
     _stale_memo().clear()
     try:
@@ -231,7 +231,7 @@ def _isolate() -> Iterator[None]:
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved_providers)
-        for cache in (_home_cache, _home_sources_cache, _content_cache, _blocklist_cache):
+        for cache in (home_cache, sources_cache, content_cache, blocklist_cache):
             cache.clear()
         _stale_memo().clear()
 

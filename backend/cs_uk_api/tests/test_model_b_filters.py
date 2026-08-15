@@ -34,7 +34,8 @@ from typing import Any, cast
 import pytest
 from fastapi.testclient import TestClient
 
-from cs_uk_api.main import _search_cache, app
+from cs_uk_api.catalog_state import search_cache
+from cs_uk_api.main import app
 from cs_uk_api.models import SearchResult, Section
 from cs_uk_api.providers import PROVIDERS
 from cs_uk_api.providers.base import BaseProvider
@@ -46,13 +47,13 @@ def isolate() -> Iterator[None]:
     leak real upstream calls or cached entries into assertions."""
     saved_providers = dict(PROVIDERS)
     PROVIDERS.clear()
-    _search_cache.clear()
+    search_cache.clear()
     try:
         yield
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved_providers)
-        _search_cache.clear()
+        search_cache.clear()
 
 
 def _result(

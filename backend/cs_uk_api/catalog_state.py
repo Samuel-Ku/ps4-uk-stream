@@ -587,6 +587,18 @@ def get_profiles() -> Mapping[str, ItemProfile]:
     return _profiles
 
 
+def install_profiles(mapping: Mapping[str, ItemProfile]) -> None:
+    """Replace the warm content profiles wholesale (spec #309 T4).
+
+    The install seam for the profile store: the interface exposes it so
+    tests seed state through the same route-visible surface instead of
+    mutating ``_profiles`` directly (step 6 turns this into the store's
+    own install/get/warm contract).
+    """
+    _profiles.clear()
+    _profiles.update(mapping)
+
+
 # ---------------------------------------------------------- recommendations (#252)
 
 #: Content-page taste profiles of the home-snapshot groups (spec #252),
@@ -1291,6 +1303,43 @@ async def _resolve_group_content_once(
     resp.group_key = group_key
     content_cache.set(cache_key, resp)
     return resp
+
+
+async def cached_provider_content(
+    provider_id: str, external_id: str
+) -> tuple[str, ContentResponse | None]:
+    """The native content-by-id cache path (spec #309 T4), verdict first.
+
+    Mirrors the pre-T4 ``main._content_by_id`` semantics exactly, with
+    the cache key and verdict stores staying HERE (the implementation):
+
+      - blocklisted → ("blocked", None)
+      - gated verdict cached → ("gated", None)
+      - cached detail → ("ok", resp)
+      - else one upstream ``content()`` fetch, with the block-russian
+        check and the stateless group-key derivation applied before
+        caching → ("ok", resp) or ("blocked", None)
+
+    Upstream ProviderError propagates unchanged — the native route's
+    ``upstream_guard`` (via ``content_provider_error``) converts a
+    provider-raised ``gated`` into its client-visible 404, exactly as
+    before. Health recording stays with the guard too.
+    """
+    cache_key = f"content:{provider_id}:{external_id}"
+    if blocklist_cache.get(cache_key) is not None:
+        return "blocked", None
+    if gated_cache.get(cache_key) is True:
+        return "gated", None
+    cached = content_cache.get(cache_key)
+    if cached is not None:
+        return "ok", cast(ContentResponse, cached)
+    resp = await PROVIDERS[provider_id].content(external_id, get_client())
+    if _config.SETTINGS.block_russian and is_blocked_country(resp.country):
+        blocklist_cache.set(cache_key, True)
+        return "blocked", None
+    resp.group_key = group_key_from(resp.title, resp.form, resp.year, resp.id)
+    content_cache.set(cache_key, resp)
+    return "ok", resp
 
 
 def is_hard_unavailable(group_key: str) -> bool:

@@ -37,13 +37,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from cs_uk_api import health
+from cs_uk_api.catalog_state import home_cache
 from cs_uk_api.home import (
     aggregate_by_group_key,
     build_genre_rows,
     build_home_rows,
     round_robin_dedup,
 )
-from cs_uk_api.main import _home_cache, app
+from cs_uk_api.main import app
 from cs_uk_api.models import (
     ContentResponse,
     HomeItem,
@@ -104,14 +105,14 @@ def reset_state() -> Iterator[None]:
     # just get the snapshot back unchanged.
     saved = dict(PROVIDERS)
     PROVIDERS.clear()
-    _home_cache.clear()
+    home_cache.clear()
     health.TRACKER.reset()
     try:
         yield
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved)
-        _home_cache.clear()
+        home_cache.clear()
         health.TRACKER.reset()
 
 
@@ -1007,12 +1008,12 @@ def test_home_cache_uses_30_minute_ttl() -> None:
 def test_home_cache_set_with_short_ttl_expires() -> None:
     """Manual short-TTL set on the home cache expires promptly — confirms
     the cache primitive is wired and TTL is the only invalidation mechanism."""
-    from cs_uk_api.main import _home_cache
+    from cs_uk_api.catalog_state import home_cache
 
-    _home_cache.set("test:expire", {"v": 1}, ttl_s=0)
+    home_cache.set("test:expire", {"v": 1}, ttl_s=0)
     # ttl_s=0 → expires_at == now → already past on the next tick.
     time.sleep(0.01)
-    assert _home_cache.get("test:expire") is None
+    assert home_cache.get("test:expire") is None
 
 
 def test_home_route_accumulates_multiple_sections_of_same_type(

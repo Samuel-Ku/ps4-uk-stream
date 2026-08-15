@@ -20,8 +20,8 @@ from fastapi.testclient import TestClient
 
 from cs_uk_api import catalog_state as cs
 from cs_uk_api import config as _config
+from cs_uk_api.catalog_state import home_cache, sources_cache
 from cs_uk_api.config import SETTINGS
-from cs_uk_api.main import _home_cache, _home_sources_cache
 from cs_uk_api.models import SearchResult, Section
 from cs_uk_api.providers import PROVIDERS
 from cs_uk_api.providers.base import BaseProvider, model_b_axes
@@ -112,8 +112,8 @@ def _isolate() -> Iterator[None]:
     test_jellyfin_views.py) so no real upstream calls leak in."""
     saved_providers = dict(PROVIDERS)
     PROVIDERS.clear()
-    _home_cache.clear()
-    _home_sources_cache.clear()
+    home_cache.clear()
+    sources_cache.clear()
     cs.row_deep_cache.clear()
     cs.deep_page_cache.clear()
     try:
@@ -121,8 +121,8 @@ def _isolate() -> Iterator[None]:
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved_providers)
-        _home_cache.clear()
-        _home_sources_cache.clear()
+        home_cache.clear()
+        sources_cache.clear()
         cs.row_deep_cache.clear()
         cs.deep_page_cache.clear()
 
@@ -351,7 +351,7 @@ def test_items_personalized_row_stays_snapshot_bounded(client: TestClient) -> No
         home = client.get("/api/home").json()
         gk = {i["title"]: i["group_key"] for r in home["rows"] for i in r["items"]}
         record_playback(gk["Фільм 1"], 1_000)
-        _home_cache.clear()
+        home_cache.clear()
 
         home = client.get("/api/home").json()
         rw = next(r for r in home["rows"] if r["type"] == "recently_watched")

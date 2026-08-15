@@ -278,20 +278,23 @@ async def test_httpx_client_hits_chat_completions(monkeypatch) -> None:
 def _seed_refresh_signals(cs: Any) -> None:
     """Playback history + a search query + warm profiles — the signals
     the refresh collects for the model call."""
-    cs._profiles.clear()
-    cs._profiles["g2:test"] = ItemProfile(
-        genres=frozenset({"драма", "трилер"}),
-        people=frozenset(),
-        year=2021,
-        form="movie",
-        styles=frozenset(),
-    )
-    cs._profiles["g2:other"] = ItemProfile(
-        genres=frozenset({"комедія"}),
-        people=frozenset(),
-        year=2019,
-        form="movie",
-        styles=frozenset(),
+    cs.install_profiles(
+        {
+            "g2:test": ItemProfile(
+                genres=frozenset({"драма", "трилер"}),
+                people=frozenset(),
+                year=2021,
+                form="movie",
+                styles=frozenset(),
+            ),
+            "g2:other": ItemProfile(
+                genres=frozenset({"комедія"}),
+                people=frozenset(),
+                year=2019,
+                form="movie",
+                styles=frozenset(),
+            ),
+        }
     )
     cs.record_playback("g2:test", 1_000)
     cs.record_search_query("дюна")
@@ -345,7 +348,7 @@ async def test_refresh_profile_installs_and_clears_home(monkeypatch) -> None:
         assert cs.home_cache.get("home:v1") is None  # invalidated
     finally:
         set_active_profile(None)
-        cs._profiles.clear()
+        cs.install_profiles({})
         cs.clear_playback()
         cs.home_cache.clear()
 
@@ -377,7 +380,7 @@ async def test_refresh_profile_failure_keeps_previous(monkeypatch) -> None:
         assert active_profile() is previous
     finally:
         set_active_profile(None)
-        cs._profiles.clear()
+        cs.install_profiles({})
         cs.clear_playback()
         cs.home_cache.clear()
 
@@ -400,6 +403,6 @@ async def test_refresh_profile_disabled_knobs_returns_false(monkeypatch) -> None
         assert active_profile() is None
     finally:
         set_active_profile(None)
-        cs._profiles.clear()
+        cs.install_profiles({})
         cs.clear_playback()
         cs.home_cache.clear()

@@ -2,7 +2,7 @@ import asyncio
 
 from fastapi.testclient import TestClient
 
-from cs_uk_api import uakino_browser
+from cs_uk_api import catalog_state, uakino_browser
 from cs_uk_api.main import app
 
 client = TestClient(app)
@@ -298,13 +298,9 @@ def test_content_route_respects_block_russian_disabled(monkeypatch):
         block_russian=False,
         home_row_limit=original.home_row_limit,
     )
-    main_mod = __import__("cs_uk_api.main", fromlist=["_blocklist_cache", "_content_cache"])
-    original_main_settings = main_mod.SETTINGS
-    main_mod.SETTINGS = config_mod.SETTINGS
     try:
-        main_mod = __import__("cs_uk_api.main", fromlist=["_blocklist_cache", "_content_cache"])
-        main_mod._blocklist_cache.clear()
-        main_mod._content_cache.clear()
+        catalog_state.blocklist_cache.clear()
+        catalog_state.content_cache.clear()
 
         class _Russian(BaseProvider):
             id = "russian-disabled-test"
@@ -333,8 +329,7 @@ def test_content_route_respects_block_russian_disabled(monkeypatch):
             assert r.json()["country"] == "росія"
         finally:
             del PROVIDERS["russian-disabled-test"]
-            main_mod._blocklist_cache.clear()
-            main_mod._content_cache.clear()
+            catalog_state.blocklist_cache.clear()
+            catalog_state.content_cache.clear()
     finally:
         config_mod.SETTINGS = original
-        main_mod.SETTINGS = original_main_settings

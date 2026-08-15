@@ -33,17 +33,15 @@ from typing import Any, cast
 import pytest
 from fastapi.testclient import TestClient
 
+from cs_uk_api.catalog_state import (
+    blocklist_cache,
+    content_cache,
+    gated_cache,
+    home_cache,
+    search_cache,
+    sources_cache,
+)
 from cs_uk_api.config import SETTINGS
-from cs_uk_api.main import (
-    _blocklist_cache,
-    _content_cache,
-    _home_cache,
-    _home_sources_cache,
-    _search_cache,
-)
-from cs_uk_api.main import (
-    _catalog_gated_cache as _gated_cache,
-)
 from cs_uk_api.models import ContentResponse, Episode, SearchResult, Season, Translation
 from cs_uk_api.providers import PROVIDERS
 from cs_uk_api.providers.base import BaseProvider, ProviderError, model_b_axes
@@ -171,12 +169,12 @@ def _isolate() -> Iterator[None]:
     saved_providers = dict(PROVIDERS)
     PROVIDERS.clear()
     for cache in (
-        _search_cache,
-        _home_cache,
-        _home_sources_cache,
-        _content_cache,
-        _blocklist_cache,
-        _gated_cache,
+        search_cache,
+        home_cache,
+        sources_cache,
+        content_cache,
+        blocklist_cache,
+        gated_cache,
     ):
         cache.clear()
     try:
@@ -185,12 +183,12 @@ def _isolate() -> Iterator[None]:
         PROVIDERS.clear()
         PROVIDERS.update(saved_providers)
         for cache in (
-            _search_cache,
-            _home_cache,
-            _home_sources_cache,
-            _content_cache,
-            _blocklist_cache,
-            _gated_cache,
+            search_cache,
+            home_cache,
+            sources_cache,
+            content_cache,
+            blocklist_cache,
+            gated_cache,
         ):
             cache.clear()
 

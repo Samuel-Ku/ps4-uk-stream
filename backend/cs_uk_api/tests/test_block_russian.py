@@ -4,7 +4,7 @@ The behaviour itself is committed in ``cs_uk_api/main.py`` (read-only for
 this ticket): when ``SETTINGS.block_russian`` is on and a provider returns a
 content whose ``country`` is blocked (see ``cs_uk_api.country`` READ-ONLY),
 ``/api/content`` answers 404 and records the content id in the 30-min
-``_blocklist_cache`` so a repeat request short-circuits without hitting the
+``blocklist_cache`` so a repeat request short-circuits without hitting the
 provider again.
 
 These tests only *prove* that behaviour with a stubbed provider — no network.
@@ -15,7 +15,8 @@ from dataclasses import replace
 
 from fastapi.testclient import TestClient
 
-import cs_uk_api.main as main_mod
+import cs_uk_api.config as config_mod
+from cs_uk_api import catalog_state
 from cs_uk_api.main import app
 from cs_uk_api.models import ContentResponse, Translation
 from cs_uk_api.providers import PROVIDERS
@@ -59,8 +60,8 @@ def _register_stub(pid: str) -> _BlockedStub:
 
 def _unregister(pid: str) -> None:
     PROVIDERS.pop(pid, None)
-    main_mod._blocklist_cache.clear()
-    main_mod._content_cache.clear()
+    catalog_state.blocklist_cache.clear()
+    catalog_state.content_cache.clear()
 
 
 def test_blocked_content_returns_404_and_provider_was_called() -> None:
@@ -78,8 +79,8 @@ def test_blocklist_cached_30min_short_circuits_second_request() -> None:
     # Cache TTL: the blocklist store is built from SETTINGS.cache_content_s
     # (main.py), whose default is 1800 s = 30 min. Assert the structural
     # invariant (cache built from the setting) plus the documented default.
-    assert main_mod._blocklist_cache._default_ttl_s == main_mod.SETTINGS.cache_content_s
-    assert main_mod.SETTINGS.cache_content_s == 1800
+    assert catalog_state.blocklist_cache._default_ttl_s == config_mod.SETTINGS.cache_content_s
+    assert config_mod.SETTINGS.cache_content_s == 1800
 
     stub = _register_stub("blocked-b")
     try:
@@ -97,15 +98,17 @@ def test_blocklist_cached_30min_short_circuits_second_request() -> None:
 
 def test_block_russian_disabled_returns_200() -> None:
     stub = _register_stub("blocked-c")
-    original = main_mod.SETTINGS
-    main_mod.SETTINGS = replace(original, block_russian=False)
+    # The block_russian check lives behind the catalog seam now (T4), so
+    # the flag is patched at its canonical home, ``config.SETTINGS``.
+    original = config_mod.SETTINGS
+    config_mod.SETTINGS = replace(original, block_russian=False)
     try:
         r = client.get("/api/content/blocked-c:12345")
         assert r.status_code == 200
         assert r.json()["country"] == "росія"
         assert stub.calls == 1
         # And with the flag off, nothing is written to the blocklist cache.
-        assert main_mod._blocklist_cache.get("content:blocked-c:12345") is None
+        assert catalog_state.blocklist_cache.get("content:blocked-c:12345") is None
     finally:
-        main_mod.SETTINGS = original
+        config_mod.SETTINGS = original
         _unregister("blocked-c")

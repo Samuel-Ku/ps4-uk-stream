@@ -1,7 +1,8 @@
 """Cache contract: hit, miss, expiry, manual invalidation across routes.
 
-The implementation is already in place (cache.TtlCache, main.py's
-_search_cache / _content_cache / _browse_cache / _blocklist_cache).
+The implementation is already in place (cache.TtlCache; the search /
+content / blocklist caches live in ``catalog_state`` behind the
+``catalog`` interface, the browse cache in main — spec #309 T4).
 ADR-0003 (issue #83) ratifies the shape: TTL-only, in-memory, no
 persisted schema, no version token. These tests prove the contract
 holds at the API surface — they are the regression guard for the
@@ -23,10 +24,9 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+from cs_uk_api.catalog_state import content_cache, search_cache
 from cs_uk_api.main import (
     _browse_cache,
-    _content_cache,
-    _search_cache,
     app,
 )
 from cs_uk_api.models import ContentResponse, SearchResult, Translation
@@ -81,7 +81,7 @@ def test_search_second_call_hits_cache_and_does_not_re_execute_provider():
         content_calls: list[int] = []
         PROVIDERS["cache-stub"] = _register("cache-stub", search_calls, content_calls)
 
-        _search_cache.clear()
+        search_cache.clear()
         r1 = client.get("/api/search?q=cache-q")
         assert r1.status_code == 200
         assert len(search_calls) == 1
@@ -92,11 +92,11 @@ def test_search_second_call_hits_cache_and_does_not_re_execute_provider():
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved)
-        _search_cache.clear()
+        search_cache.clear()
 
 
 def test_search_cache_invalidation_via_clear():
-    """After _search_cache.clear(), the next call re-executes providers."""
+    """After search_cache.clear(), the next call re-executes providers."""
     saved = dict(PROVIDERS)
     try:
         PROVIDERS.clear()
@@ -104,18 +104,18 @@ def test_search_cache_invalidation_via_clear():
         content_calls: list[int] = []
         PROVIDERS["cache-stub"] = _register("cache-stub", search_calls, content_calls)
 
-        _search_cache.clear()
+        search_cache.clear()
         client.get("/api/search?q=cache-q")
         client.get("/api/search?q=cache-q")
         assert len(search_calls) == 1
 
-        _search_cache.clear()
+        search_cache.clear()
         client.get("/api/search?q=cache-q")
         assert len(search_calls) == 2
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved)
-        _search_cache.clear()
+        search_cache.clear()
 
 
 def test_search_cache_expiry():
@@ -128,15 +128,15 @@ def test_search_cache_expiry():
         content_calls: list[int] = []
         PROVIDERS["cache-stub"] = _register("cache-stub", search_calls, content_calls)
 
-        _search_cache.clear()
-        _search_cache.set("search:all:expiry-q::", _search_cache.get("search:all:expiry-q::") or "marker", ttl_s=0)
+        search_cache.clear()
+        search_cache.set("search:all:expiry-q::", search_cache.get("search:all:expiry-q::") or "marker", ttl_s=0)
         # The pre-seeded entry is already expired. Even if the route
         # returned the cached value, the cache is empty for the real query.
         client.get("/api/search?q=expiry-q")
         assert len(search_calls) == 1
 
         # Force expiry: set the cache entry's TTL to 0 in the past.
-        _search_cache.set("search:all:expiry-q::", "stale", ttl_s=0)
+        search_cache.set("search:all:expiry-q::", "stale", ttl_s=0)
         import time
 
         time.sleep(0.01)
@@ -146,7 +146,7 @@ def test_search_cache_expiry():
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved)
-        _search_cache.clear()
+        search_cache.clear()
 
 
 def test_content_second_call_hits_cache():
@@ -158,7 +158,7 @@ def test_content_second_call_hits_cache():
         content_calls: list[int] = []
         PROVIDERS["cache-stub"] = _register("cache-stub", search_calls, content_calls)
 
-        _content_cache.clear()
+        content_cache.clear()
         r1 = client.get("/api/content/cache-stub:1")
         assert r1.status_code == 200
         assert len(content_calls) == 1
@@ -169,7 +169,7 @@ def test_content_second_call_hits_cache():
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved)
-        _content_cache.clear()
+        content_cache.clear()
 
 
 def test_browse_second_call_hits_cache():
@@ -368,7 +368,7 @@ def test_content_cache_stores_response_with_group_key_already_set():
 
         PROVIDERS["mutstub"] = _Stub()
 
-        _content_cache.clear()
+        content_cache.clear()
         r = client.get("/api/content/mutstub:1")
         assert r.status_code == 200
         body = r.json()
@@ -377,7 +377,7 @@ def test_content_cache_stores_response_with_group_key_already_set():
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved)
-        _content_cache.clear()
+        content_cache.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +405,7 @@ def test_search_cache_key_includes_provider_and_query():
 
         PROVIDERS["k"] = _Stub()
 
-        _search_cache.clear()
+        search_cache.clear()
         client.get("/api/search?q=alpha")
         client.get("/api/search?q=beta")
         client.get("/api/search?q=alpha")  # cache hit
@@ -413,7 +413,7 @@ def test_search_cache_key_includes_provider_and_query():
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved)
-        _search_cache.clear()
+        search_cache.clear()
 
 
 def test_search_cache_key_includes_provider_axis():
@@ -443,7 +443,7 @@ def test_search_cache_key_includes_provider_axis():
         PROVIDERS["a"] = _A()
         PROVIDERS["b"] = _B()
 
-        _search_cache.clear()
+        search_cache.clear()
         client.get("/api/search?q=q&provider=a")
         client.get("/api/search?q=q&provider=b")
         client.get("/api/search?q=q&provider=a")  # cache hit
@@ -453,7 +453,7 @@ def test_search_cache_key_includes_provider_axis():
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved)
-        _search_cache.clear()
+        search_cache.clear()
 
 
 def test_search_cache_key_includes_form_axis() -> None:
@@ -478,7 +478,7 @@ def test_search_cache_key_includes_form_axis() -> None:
 
         PROVIDERS["k"] = _Stub()
 
-        _search_cache.clear()
+        search_cache.clear()
         client.get("/api/search?q=alpha")
         client.get("/api/search?q=alpha&form=movie")
         client.get("/api/search?q=alpha&form=series")
@@ -488,4 +488,4 @@ def test_search_cache_key_includes_form_axis() -> None:
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved)
-        _search_cache.clear()
+        search_cache.clear()

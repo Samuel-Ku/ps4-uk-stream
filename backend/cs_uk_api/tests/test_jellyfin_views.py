@@ -28,9 +28,9 @@ from typing import Any, cast
 import pytest
 from fastapi.testclient import TestClient
 
-from cs_uk_api.catalog_state import content_cache
+from cs_uk_api import catalog
+from cs_uk_api.catalog_state import content_cache, home_cache, sources_cache
 from cs_uk_api.config import SETTINGS
-from cs_uk_api.main import _home_cache, _home_sources_cache
 from cs_uk_api.models import ContentResponse, SearchResult, Section, Translation
 from cs_uk_api.providers import PROVIDERS
 from cs_uk_api.providers.base import BaseProvider, model_b_axes
@@ -165,16 +165,16 @@ def _isolate() -> Iterator[None]:
     test_home.py / test_lazy_group_content.py)."""
     saved_providers = dict(PROVIDERS)
     PROVIDERS.clear()
-    _home_cache.clear()
-    _home_sources_cache.clear()
+    home_cache.clear()
+    sources_cache.clear()
     content_cache.clear()
     try:
         yield
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved_providers)
-        _home_cache.clear()
-        _home_sources_cache.clear()
+        home_cache.clear()
+        sources_cache.clear()
         content_cache.clear()
 
 
@@ -503,19 +503,20 @@ def _seed_similar_profiles(client: TestClient, profiles: dict[str, Any]) -> dict
     import cs_uk_api.catalog_state as cs
     from cs_uk_api.recommend import ItemProfile
 
-    _home_cache.clear()
+    home_cache.clear()
     _auth(client)
     home = cs.get_home()
     assert home is not None
-    cs._profiles.clear()
+    installed: dict[str, ItemProfile] = {}
     by_title = {}
     for row in home.rows:
         for it in row.items:
             by_title[it.title] = it.group_key
             p = profiles.get(it.title)
             if p is not None:
-                cs._profiles[it.group_key] = ItemProfile(**p)
-    _home_cache.clear()
+                installed[it.group_key] = ItemProfile(**p)
+    catalog.install_profiles(installed)
+    home_cache.clear()
     _auth(client)
     return by_title
 
@@ -618,9 +619,7 @@ def test_items_similar_cold_profiles_fall_back_to_genres(client: TestClient) -> 
     """#268 T1: a cold profile store (no warm profiles yet) falls back
     to the pre-#267 genre-matching shelf — never an empty 200 during
     the warm-up window."""
-    import cs_uk_api.catalog_state as cs
-
-    cs._profiles.clear()
+    catalog.install_profiles({})
     PROVIDERS["animeon"] = _genres_seed()
     _auth(client)
     movie_view = _view_id("Фільми", _views(client))
@@ -658,19 +657,21 @@ def test_items_person_ids_returns_filmography(client: TestClient) -> None:
     """#272: the person page's ``PersonIds`` query returns every
     home-snapshot group whose warm profile carries the person — the
     filmography, as Movie/Series cards."""
-    import cs_uk_api.catalog_state as cs
     from cs_uk_api.recommend import ItemProfile
 
     PROVIDERS["animeon"] = _filmography_seed()
     _auth(client)
     home = client.get("/api/home").json()
     gk = {i["title"]: i["group_key"] for r in home["rows"] for i in r["items"]}
-    cs._profiles.clear()
-    cs._profiles[gk["Фільм А"]] = ItemProfile(
-        genres=frozenset(), people=frozenset(["денис вілленів"]), year=2021, form="movie", styles=frozenset()
-    )
-    cs._profiles[gk["Серіал Б"]] = ItemProfile(
-        genres=frozenset(), people=frozenset(["денис вілленів"]), year=2022, form="series", styles=frozenset()
+    catalog.install_profiles(
+        {
+            gk["Фільм А"]: ItemProfile(
+                genres=frozenset(), people=frozenset(["денис вілленів"]), year=2021, form="movie", styles=frozenset()
+            ),
+            gk["Серіал Б"]: ItemProfile(
+                genres=frozenset(), people=frozenset(["денис вілленів"]), year=2022, form="series", styles=frozenset()
+            ),
+        }
     )
     try:
         r = client.get(
@@ -683,25 +684,27 @@ def test_items_person_ids_returns_filmography(client: TestClient) -> None:
         assert names == {"Фільм А", "Серіал Б"}
         assert all(i["Type"] in ("Movie", "Series") for i in r.json()["Items"])
     finally:
-        cs._profiles.clear()
+        catalog.install_profiles({})
 
 
 def test_items_person_ids_respects_include_item_types(client: TestClient) -> None:
     """#272: the client's person page splits films and series via
     ``IncludeItemTypes`` — each section returns only its form."""
-    import cs_uk_api.catalog_state as cs
     from cs_uk_api.recommend import ItemProfile
 
     PROVIDERS["animeon"] = _filmography_seed()
     _auth(client)
     home = client.get("/api/home").json()
     gk = {i["title"]: i["group_key"] for r in home["rows"] for i in r["items"]}
-    cs._profiles.clear()
-    cs._profiles[gk["Фільм А"]] = ItemProfile(
-        genres=frozenset(), people=frozenset(["денис вілленів"]), year=2021, form="movie", styles=frozenset()
-    )
-    cs._profiles[gk["Серіал Б"]] = ItemProfile(
-        genres=frozenset(), people=frozenset(["денис вілленів"]), year=2022, form="series", styles=frozenset()
+    catalog.install_profiles(
+        {
+            gk["Фільм А"]: ItemProfile(
+                genres=frozenset(), people=frozenset(["денис вілленів"]), year=2021, form="movie", styles=frozenset()
+            ),
+            gk["Серіал Б"]: ItemProfile(
+                genres=frozenset(), people=frozenset(["денис вілленів"]), year=2022, form="series", styles=frozenset()
+            ),
+        }
     )
     try:
         movies = client.get(
@@ -718,17 +721,15 @@ def test_items_person_ids_respects_include_item_types(client: TestClient) -> Non
         ).json()
         assert [i["Name"] for i in series["Items"]] == ["Серіал Б"]
     finally:
-        cs._profiles.clear()
+        catalog.install_profiles({})
 
 
 def test_items_person_ids_unknown_or_cold_is_empty(client: TestClient) -> None:
     """#272: an unknown person OR a cold profile store is the tolerant
     empty result, never an error."""
-    import cs_uk_api.catalog_state as cs
-
     PROVIDERS["animeon"] = _filmography_seed()
     _auth(client)
-    cs._profiles.clear()
+    catalog.install_profiles({})
 
     # Cold store (no profiles at all).
     cold = client.get(
@@ -744,8 +745,12 @@ def test_items_person_ids_unknown_or_cold_is_empty(client: TestClient) -> None:
 
     home = client.get("/api/home").json()
     gk = {i["title"]: i["group_key"] for r in home["rows"] for i in r["items"]}
-    cs._profiles[gk["Фільм А"]] = ItemProfile(
-        genres=frozenset(), people=frozenset(["хтось інший"]), year=2021, form="movie", styles=frozenset()
+    catalog.install_profiles(
+        {
+            gk["Фільм А"]: ItemProfile(
+                genres=frozenset(), people=frozenset(["хтось інший"]), year=2021, form="movie", styles=frozenset()
+            ),
+        }
     )
     try:
         unknown = client.get(
@@ -756,7 +761,7 @@ def test_items_person_ids_unknown_or_cold_is_empty(client: TestClient) -> None:
         assert unknown.status_code == 200
         assert unknown.json() == {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
     finally:
-        cs._profiles.clear()
+        catalog.install_profiles({})
 
 def test_detail_genres_fall_back_to_snapshot_card(client: TestClient) -> None:
     """#219: the detail DTO's Genres fall back to the snapshot card's
@@ -1089,21 +1094,22 @@ def _seed_genre_profiles(client: TestClient) -> None:
     import cs_uk_api.catalog_state as cs
     from cs_uk_api.recommend import ItemProfile
 
-    _home_cache.clear()
+    home_cache.clear()
     _auth(client)
     home = cs.get_home()
     assert home is not None
-    cs._profiles.clear()
+    installed: dict[str, ItemProfile] = {}
     for row in home.rows:
         for it in row.items:
-            cs._profiles[it.group_key] = ItemProfile(
+            installed[it.group_key] = ItemProfile(
                 genres=frozenset(["пригоди"]),
                 people=frozenset(),
                 year=it.year,
                 form=it.form,
                 styles=frozenset(it.styles or ()),
             )
-    _home_cache.clear()
+    catalog.install_profiles(installed)
+    home_cache.clear()
     _auth(client)
 
 
@@ -1140,7 +1146,7 @@ def test_new_episodes_row_is_a_view(client: TestClient) -> None:
         # The viewer watches Серіал А — its episode wire id resolves to
         # the merged group ``animeon:1`` through the sources map.
         record_playback("animeon:1:s1e1", 1_000)
-        _home_cache.clear()
+        home_cache.clear()
 
         home = client.get("/api/home").json()
         row_types = [r["type"] for r in home["rows"]]
@@ -1189,7 +1195,7 @@ def test_recently_watched_row_is_a_view(client: TestClient) -> None:
         home = client.get("/api/home").json()
         gk = {i["title"]: i["group_key"] for r in home["rows"] for i in r["items"]}
         record_playback(gk["Фільм Б"], 1_000)
-        _home_cache.clear()
+        home_cache.clear()
 
         home = client.get("/api/home").json()
         row_types = [r["type"] for r in home["rows"]]
@@ -1238,7 +1244,7 @@ def test_recently_watched_row_includes_finished(client: TestClient) -> None:
         gk = {i["title"]: i["group_key"] for r in home["rows"] for i in r["items"]}
         # Finished: position at >=95% of the runtime.
         record_playback(gk["Фільм А"], 950, runtime_ticks=1000)
-        _home_cache.clear()
+        home_cache.clear()
 
         # Gone from Resume, present in «Нещодавно переглянуто».
         resume = client.get(
@@ -1281,8 +1287,8 @@ def test_genre_view_id_survives_home_cache_invalidation(client: TestClient) -> N
     genre_view = next(v for v in _views(client) if v["Name"] == "Пригоди")
 
     # Simulate the profile-warm invalidation: cache cleared, snapshot gone.
-    _home_cache.clear()
-    _home_sources_cache.clear()
+    home_cache.clear()
+    sources_cache.clear()
     items = _items(client, genre_view["Id"])
     assert {i["Name"] for i in items} == {"Фільм А", "Фільм Б"}
 
@@ -1351,7 +1357,7 @@ def test_llm_idea_row_is_a_view(client: TestClient) -> None:
                 )
             )
         )
-        _home_cache.clear()
+        home_cache.clear()
 
         home = client.get("/api/home").json()
         idea = next(r for r in home["rows"] if r["type"] == "llm_idea_1")
@@ -1368,4 +1374,4 @@ def test_llm_idea_row_is_a_view(client: TestClient) -> None:
         assert all(i["Id"].startswith("g2:") for i in items)
     finally:
         set_active_profile(None)
-        _home_cache.clear()
+        home_cache.clear()

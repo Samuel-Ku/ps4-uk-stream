@@ -23,7 +23,8 @@ import asyncio
 import httpx
 from fastapi.testclient import TestClient
 
-from cs_uk_api.main import _search_cache, app
+from cs_uk_api.catalog_state import search_cache
+from cs_uk_api.main import app
 from cs_uk_api.models import ProviderFailure, SearchResponse
 from cs_uk_api.providers import PROVIDERS
 from cs_uk_api.providers.base import BaseProvider
@@ -114,7 +115,7 @@ def test_search_returns_200_with_failures_when_some_providers_fail():
             "boom", RuntimeError("upstream site down")
         )
 
-        _search_cache.clear()
+        search_cache.clear()
         r = client.get("/api/search?q=test")
         assert r.status_code == 200
         body = r.json()
@@ -132,7 +133,7 @@ def test_search_returns_200_with_failures_when_some_providers_fail():
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved)
-        _search_cache.clear()
+        search_cache.clear()
 
 
 def test_search_omits_failures_field_when_all_providers_succeed():
@@ -142,7 +143,7 @@ def test_search_omits_failures_field_when_all_providers_succeed():
         PROVIDERS.clear()
         PROVIDERS["only"] = _Ok()
 
-        _search_cache.clear()
+        search_cache.clear()
         r = client.get("/api/search?q=test")
         assert r.status_code == 200
         body = r.json()
@@ -151,7 +152,7 @@ def test_search_omits_failures_field_when_all_providers_succeed():
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved)
-        _search_cache.clear()
+        search_cache.clear()
 
 
 def test_search_returns_200_with_failures_when_all_providers_fail_individually():
@@ -164,7 +165,7 @@ def test_search_returns_200_with_failures_when_all_providers_fail_individually()
         PROVIDERS["a"] = _fa_provider("a", RuntimeError("site A down"))
         PROVIDERS["b"] = _fa_provider("b", RuntimeError("site B down"))
 
-        _search_cache.clear()
+        search_cache.clear()
         r = client.get("/api/search?q=test")
         assert r.status_code == 200
         body = r.json()
@@ -176,7 +177,7 @@ def test_search_returns_200_with_failures_when_all_providers_fail_individually()
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved)
-        _search_cache.clear()
+        search_cache.clear()
 
 
 def test_search_classifies_httpx_timeouts_as_timeout_code():
@@ -188,7 +189,7 @@ def test_search_classifies_httpx_timeouts_as_timeout_code():
             "slow", httpx.ReadTimeout("upstream took too long")
         )
 
-        _search_cache.clear()
+        search_cache.clear()
         r = client.get("/api/search?q=test")
         assert r.status_code == 200
         body = r.json()
@@ -197,7 +198,7 @@ def test_search_classifies_httpx_timeouts_as_timeout_code():
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved)
-        _search_cache.clear()
+        search_cache.clear()
 
 
 def test_search_returns_502_with_search_timeout_when_overall_budget_fires():
@@ -234,7 +235,7 @@ def test_search_returns_502_with_search_timeout_when_overall_budget_fires():
         PROVIDERS["hanga"] = _hang_provider("hanga", 5.0)
         PROVIDERS["hangb"] = _hang_provider("hangb", 5.0)
 
-        _search_cache.clear()
+        search_cache.clear()
         r = client.get("/api/search?q=test")
         assert r.status_code == 502
         assert r.json()["detail"]["error"] == "search_timeout"
@@ -243,7 +244,7 @@ def test_search_returns_502_with_search_timeout_when_overall_budget_fires():
         PROVIDERS.update(saved)
         config_mod.SETTINGS = saved_settings
         main_mod.SETTINGS = saved_settings
-        _search_cache.clear()
+        search_cache.clear()
 
 
 def test_search_caches_200_responses_with_failures():
@@ -255,7 +256,7 @@ def test_search_caches_200_responses_with_failures():
         PROVIDERS["ok"] = _OneResult()
         PROVIDERS["boom"] = _fa_provider("boom", RuntimeError("explicit"))
 
-        _search_cache.clear()
+        search_cache.clear()
 
         # First request: triggers the actual search
         r1 = client.get("/api/search?q=cached")
@@ -280,7 +281,7 @@ def test_search_caches_200_responses_with_failures():
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved)
-        _search_cache.clear()
+        search_cache.clear()
 
 
 def test_search_does_not_cache_502_responses():
@@ -316,7 +317,7 @@ def test_search_does_not_cache_502_responses():
         PROVIDERS.clear()
         PROVIDERS["hang"] = _hang_provider("hang", 1.0)
 
-        _search_cache.clear()
+        search_cache.clear()
         r1 = client.get("/api/search?q=once")
         assert r1.status_code == 502
 
@@ -332,7 +333,7 @@ def test_search_does_not_cache_502_responses():
         PROVIDERS.update(saved)
         config_mod.SETTINGS = saved_settings
         main_mod.SETTINGS = saved_settings
-        _search_cache.clear()
+        search_cache.clear()
 
 
 def test_search_returns_200_with_partial_results_when_overall_budget_fires():
@@ -372,7 +373,7 @@ def test_search_returns_200_with_partial_results_when_overall_budget_fires():
         # Slow provider: hangs past the 100ms budget.
         PROVIDERS["slow"] = _hang_provider("slow", 5.0)
 
-        _search_cache.clear()
+        search_cache.clear()
         r = client.get("/api/search?q=mixed")
         assert r.status_code == 200
         body = r.json()
@@ -391,7 +392,7 @@ def test_search_returns_200_with_partial_results_when_overall_budget_fires():
         PROVIDERS.update(saved)
         config_mod.SETTINGS = saved_settings
         main_mod.SETTINGS = saved_settings
-        _search_cache.clear()
+        search_cache.clear()
 
 
 def test_search_provider_failure_carries_provider_id_and_code():

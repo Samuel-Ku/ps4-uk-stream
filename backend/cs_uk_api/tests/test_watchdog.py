@@ -242,7 +242,7 @@ def test_health_exposes_recommendation_profile_counts() -> None:
     # Other test modules share the process-wide store — start from a
     # clean slate so the counts are exact.
     catalog_state.clear_playback()
-    catalog_state._profiles = {"g2:a": object(), "g2:b": object()}  # type: ignore[assignment]
+    catalog_state.install_profiles({"g2:a": object(), "g2:b": object()})  # type: ignore[arg-type]
     catalog_state.record_search_query("Дюна")
     catalog_state.record_search_query("Наруто")
     catalog_state.record_playback("g2:a", 1_000_000_000)
@@ -254,5 +254,5 @@ def test_health_exposes_recommendation_profile_counts() -> None:
         assert rec["queries"] == 2
         assert rec["watched"] == 1
     finally:
-        catalog_state._profiles = {}
+        catalog_state.install_profiles({})
         catalog_state.clear_playback()

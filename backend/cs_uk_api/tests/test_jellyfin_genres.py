@@ -29,14 +29,14 @@ from typing import Any, cast
 import pytest
 from fastapi.testclient import TestClient
 
-from cs_uk_api.catalog_state import clear_playback
-from cs_uk_api.config import SETTINGS
-from cs_uk_api.main import (
-    _blocklist_cache,
-    _content_cache,
-    _home_cache,
-    _home_sources_cache,
+from cs_uk_api.catalog_state import (
+    blocklist_cache,
+    clear_playback,
+    content_cache,
+    home_cache,
+    sources_cache,
 )
+from cs_uk_api.config import SETTINGS
 from cs_uk_api.models import ContentResponse, SearchResult
 from cs_uk_api.providers import PROVIDERS
 from cs_uk_api.providers.base import BaseProvider, ProviderError, model_b_axes
@@ -114,7 +114,7 @@ def _isolate() -> Iterator[None]:
     saved_providers = dict(PROVIDERS)
     PROVIDERS.clear()
     clear_playback()
-    for cache in (_home_cache, _home_sources_cache, _content_cache, _blocklist_cache):
+    for cache in (home_cache, sources_cache, content_cache, blocklist_cache):
         cache.clear()
     try:
         yield
@@ -122,7 +122,7 @@ def _isolate() -> Iterator[None]:
         PROVIDERS.clear()
         PROVIDERS.update(saved_providers)
         clear_playback()
-        for cache in (_home_cache, _home_sources_cache, _content_cache, _blocklist_cache):
+        for cache in (home_cache, sources_cache, content_cache, blocklist_cache):
             cache.clear()
 
 

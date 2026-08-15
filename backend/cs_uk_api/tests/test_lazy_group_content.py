@@ -43,12 +43,8 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from cs_uk_api.main import (
-    _home_cache,
-    _home_sources_cache,
-    _search_cache,
-    app,
-)
+from cs_uk_api.catalog_state import home_cache, search_cache, sources_cache
+from cs_uk_api.main import app
 from cs_uk_api.models import (
     ContentResponse,
     SearchResult,
@@ -92,17 +88,17 @@ def _isolate() -> Iterator[None]:
     in test_home.py / test_search_grouping.py."""
     saved_providers = dict(PROVIDERS)
     PROVIDERS.clear()
-    _home_cache.clear()
-    _home_sources_cache.clear()
-    _search_cache.clear()
+    home_cache.clear()
+    sources_cache.clear()
+    search_cache.clear()
     try:
         yield
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved_providers)
-        _home_cache.clear()
-        _home_sources_cache.clear()
-        _search_cache.clear()
+        home_cache.clear()
+        sources_cache.clear()
+        search_cache.clear()
 
 
 def _both_pid(

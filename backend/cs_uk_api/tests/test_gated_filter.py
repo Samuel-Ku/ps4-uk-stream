@@ -123,7 +123,7 @@ def _isolate() -> Iterator[None]:
         catalog_state.content_cache,
         catalog_state.blocklist_cache,
         catalog_state.gated_cache,
-        main_mod._search_cache,
+        catalog_state.search_cache,
         main_mod._browse_cache,
     ]
     for cache in caches:

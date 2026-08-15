@@ -180,6 +180,52 @@ def episode_group_key(item_id: str) -> str | None:
     return catalog_state.episode_group_key(item_id)
 
 
+def group_source(group_key: str, provider: str) -> SearchResult | None:
+    """The resolution-map card of one ``g2:`` group for one provider, or
+    None when the group or the provider is absent.
+
+    The native source-switching route's lookup — replaces reaching into
+    the ``{provider: SearchResult}`` dict on the seam.
+    """
+    per_provider = catalog_state.resolve_group(group_key)
+    if per_provider is None:
+        return None
+    return per_provider.get(provider)
+
+
+class ContentVerdict(str, Enum):
+    """Typed verdict of the native provider-scoped content path."""
+
+    OK = "ok"
+    GATED = "gated"
+    BLOCKED = "blocked"
+
+
+@dataclass(frozen=True)
+class ProviderContent:
+    """One provider-scoped content outcome: verdict plus the detail when
+    OK. The route answers its own 404s from the verdict."""
+
+    verdict: ContentVerdict
+    content: ContentResponse | None = None
+
+
+async def provider_content(provider_id: str, external_id: str) -> ProviderContent:
+    """The native content-by-id path behind the seam (spec #309 T4).
+
+    The cache layer, the gated/blocklist verdict stores and the
+    stateless group-key derivation stay in the implementation — main no
+    longer constructs ``content:`` keys or reads the verdict stores.
+    Upstream ProviderError propagates to the caller's guard; a cached
+    ``gated``/blocklisted verdict comes back typed so the native route
+    answers its own 404s exactly as before.
+    """
+    verdict, content = await catalog_state.cached_provider_content(
+        provider_id, external_id
+    )
+    return ProviderContent(verdict=ContentVerdict(verdict), content=content)
+
+
 # ---------------------------------------------------------------------------
 # Deep rows (spec #305)
 # ---------------------------------------------------------------------------
@@ -262,6 +308,11 @@ def recent_history(limit: int = 20) -> list[str]:
     return catalog_state.recent_history_entries(limit)
 
 
+def flush_playback() -> None:
+    """Flush pending playback state to disk (lifespan shutdown, #248)."""
+    catalog_state.flush_playback()
+
+
 def record_position(
     item_id: str,
     position_ticks: int,
@@ -340,3 +391,16 @@ async def refresh_profile(*, client: Any | None = None) -> bool:
     Never raises. ``client`` is the injectable seam tests use.
     """
     return await catalog_state.refresh_profile(client=client)
+
+
+def install_profiles(mapping: Mapping[str, ItemProfile]) -> None:
+    """Install/replace the warm content profiles (spec #309 T4 install
+    seam). Tests seed state through this instead of mutating the store's
+    internals; the LLM warm installs through the same function (step 6).
+    """
+    catalog_state.install_profiles(mapping)
+
+
+def recommendation_stats() -> dict[str, int]:
+    """Profile-store counts for the health surface (#253 AC5)."""
+    return catalog_state.recommendation_stats()

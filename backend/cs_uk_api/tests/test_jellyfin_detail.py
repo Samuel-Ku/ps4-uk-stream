@@ -43,15 +43,16 @@ from typing import Any, cast
 import pytest
 from fastapi.testclient import TestClient
 
-from cs_uk_api import catalog_state
-from cs_uk_api.catalog_state import clear_playback, record_playback
-from cs_uk_api.config import SETTINGS
-from cs_uk_api.main import (
-    _blocklist_cache,
-    _content_cache,
-    _home_cache,
-    _home_sources_cache,
+from cs_uk_api import catalog, catalog_state
+from cs_uk_api.catalog_state import (
+    blocklist_cache,
+    clear_playback,
+    content_cache,
+    home_cache,
+    record_playback,
+    sources_cache,
 )
+from cs_uk_api.config import SETTINGS
 from cs_uk_api.models import (
     ContentResponse,
     Episode,
@@ -203,7 +204,7 @@ def _isolate() -> Iterator[None]:
     saved_providers = dict(PROVIDERS)
     PROVIDERS.clear()
     clear_playback()
-    for cache in (_home_cache, _home_sources_cache, _content_cache, _blocklist_cache):
+    for cache in (home_cache, sources_cache, content_cache, blocklist_cache):
         cache.clear()
     try:
         yield
@@ -211,7 +212,7 @@ def _isolate() -> Iterator[None]:
         PROVIDERS.clear()
         PROVIDERS.update(saved_providers)
         clear_playback()
-        for cache in (_home_cache, _home_sources_cache, _content_cache, _blocklist_cache):
+        for cache in (home_cache, sources_cache, content_cache, blocklist_cache):
             cache.clear()
 
 
@@ -1045,17 +1046,17 @@ def test_recommendation_views_serve_rows(client: TestClient) -> None:
     gk = {item["title"]: item["group_key"] for row in home["rows"] for item in row["items"]}
     # The background profile warm is off in tests — pre-populate the
     # profiles the same shape it would produce.
-    catalog_state._profiles = {
+    catalog.install_profiles({
         gk["Боєвик"]: profile_from_content(action1),
         gk["Боєвик 2"]: profile_from_content(action2),
         gk["Драма"]: profile_from_content(drama),
-    }
+    })
     try:
         # Taste signal: «Боєвик» was watched; «Драма» was searched.
         record_playback(gk["Боєвик"], 1_000_000_000)
         catalog_state.record_search_query("Драма")
         # Rebuild the snapshot so the recommendation rows bake in.
-        _home_cache.clear()
+        home_cache.clear()
 
         views = _get(client, "/Users/user1/Views")["Items"]
         names = [v["Name"] for v in views]
@@ -1072,7 +1073,7 @@ def test_recommendation_views_serve_rows(client: TestClient) -> None:
         sim_items = _get(client, "/Items", parentId=sim["Id"], userId=USER)["Items"]
         assert [i["Name"] for i in sim_items] == ["Боєвик 2"]
     finally:
-        catalog_state._profiles = {}
+        catalog.install_profiles({})
 
 
 def test_recommendation_excludes_any_recorded_position(client: TestClient) -> None:
@@ -1096,16 +1097,16 @@ def test_recommendation_excludes_any_recorded_position(client: TestClient) -> No
 
     home = _get(client, "/api/home")
     gk = {item["title"]: item["group_key"] for row in home["rows"] for item in row["items"]}
-    catalog_state._profiles = {
+    catalog.install_profiles({
         gk[f"Бойовик {i}"]: profile_from_content(movies[i - 1]) for i in range(1, 6)
-    }
+    })
     try:
         # All five movies share the «Бойовик» genre; four are watched.
         # Record in ascending order so Бойовик 4 is the most recent
         # anchor and Бойовик 1 falls OUTSIDE the top-3 anchor window.
         for i in range(1, 5):
             record_playback(gk[f"Бойовик {i}"], 1_000_000_000)
-        _home_cache.clear()
+        home_cache.clear()
 
         views = _get(client, "/Users/user1/Views")["Items"]
         rec = next(v for v in views if v["Name"] == "Рекомендовано для тебе")
@@ -1115,7 +1116,7 @@ def test_recommendation_excludes_any_recorded_position(client: TestClient) -> No
         # excludes its group, including the oldest one.
         assert names == {"Бойовик 5"}
     finally:
-        catalog_state._profiles = {}
+        catalog.install_profiles({})
 
 
 def test_home_recommended_row_signal_and_no_fetch(client: TestClient) -> None:
@@ -1145,14 +1146,14 @@ def test_home_recommended_row_signal_and_no_fetch(client: TestClient) -> None:
     # Warm the profiles the same shape the background builder would.
     home = _get(client, "/api/home")
     gk = {item["title"]: item["group_key"] for row in home["rows"] for item in row["items"]}
-    catalog_state._profiles = {
+    catalog.install_profiles({
         gk["Боєвик"]: profile_from_content(action),
         gk["Драма"]: profile_from_content(drama),
-    }
+    })
     try:
         record_playback(gk["Боєвик"], 1_000_000_000)
         catalog_state.record_search_query("Драма")
-        _home_cache.clear()
+        home_cache.clear()
 
         # AC1: home includes the row once there is signal, ranked with
         # the watched item excluded.
@@ -1166,7 +1167,7 @@ def test_home_recommended_row_signal_and_no_fetch(client: TestClient) -> None:
         # tests, and the row itself never fetches).
         assert stub.content_calls == []
     finally:
-        catalog_state._profiles = {}
+        catalog.install_profiles({})
 
 
 def test_similar_row_omitted_without_in_progress(client: TestClient) -> None:
@@ -1184,22 +1185,22 @@ def test_similar_row_omitted_without_in_progress(client: TestClient) -> None:
     _auth(client)
     home = _get(client, "/api/home")
     gk = {item["title"]: item["group_key"] for row in home["rows"] for item in row["items"]}
-    catalog_state._profiles = {
+    catalog.install_profiles({
         gk["Боєвик"]: profile_from_content(action),
         gk["Драма"]: profile_from_content(drama),
-    }
+    })
     try:
         # A query gives the recommended row a signal, but there is no
         # in-progress item — «Схоже на X» must stay off home.
         catalog_state.record_search_query("Бойовик")
-        _home_cache.clear()
+        home_cache.clear()
 
         home = _get(client, "/api/home")
         types = [r["type"] for r in home["rows"]]
         assert "recommended" in types
         assert "similar" not in types
     finally:
-        catalog_state._profiles = {}
+        catalog.install_profiles({})
 
 
 def test_similar_row_anchor_finished_removes_row(client: TestClient) -> None:
@@ -1218,15 +1219,15 @@ def test_similar_row_anchor_finished_removes_row(client: TestClient) -> None:
     _auth(client)
     home = _get(client, "/api/home")
     gk = {item["title"]: item["group_key"] for row in home["rows"] for item in row["items"]}
-    catalog_state._profiles = {
+    catalog.install_profiles({
         gk["Боєвик"]: profile_from_content(action1),
         gk["Боєвик 2"]: profile_from_content(action2),
-    }
+    })
     try:
         # Anchor: «Боєвик» watched to 40% (in progress). The similar
         # candidate «Боєвик 2» shares the genre, so it scores > 0.
         _post_playback_full(client, gk["Боєвик"], 40_000_000_000, runtime=100_000_000_000)
-        _home_cache.clear()
+        home_cache.clear()
         home = _get(client, "/api/home")
         similar = [r for r in home["rows"] if r["type"] == "similar"]
         assert len(similar) == 1
@@ -1235,12 +1236,12 @@ def test_similar_row_anchor_finished_removes_row(client: TestClient) -> None:
 
         # Finish it: 97% >= 95% → the entry leaves the store.
         _post_playback_full(client, gk["Боєвик"], 97_000_000_000, runtime=100_000_000_000)
-        _home_cache.clear()
+        home_cache.clear()
         home = _get(client, "/api/home")
         types = [r["type"] for r in home["rows"]]
         assert "similar" not in types
     finally:
-        catalog_state._profiles = {}
+        catalog.install_profiles({})
 
 
 def test_search_records_query_for_taste(client: TestClient) -> None:
