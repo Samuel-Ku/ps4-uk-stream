@@ -96,6 +96,41 @@ _EP_SUFFIX_RE = re.compile(r"s(\d+)e(\d+)$")
 _FILE_RE = re.compile(r"""file\s*:\s*["']([^"']+?)["']""")
 
 
+#: The dubbing-studio label inside the ``{...}`` prefix of a series
+#: episode file value (ticket #332): ``{HDrezka Studio}url(subtitle:...)``.
+_FILE_PREFIX_RE = re.compile(r"^\{(.*?)\}")
+
+
+def _file_prefix_label(file_value: str) -> str | None:
+    m = _FILE_PREFIX_RE.match(file_value)
+    return m.group(1).strip() if m else None
+
+
+def _payload_dub_labels(player_html: str) -> list[str]:
+    """Every dubbing label found in a decoded player payload (ticket #332)."""
+    m = _FILE_RE.search(player_html)
+    if not m:
+        return []
+    encoded = m.group(1)
+    if encoded.startswith("http"):
+        decoded = encoded
+    else:
+        decoded = _tortuga_decode(encoded)
+    if not decoded or not decoded.startswith("["):
+        return []
+    try:
+        seasons_raw = cast(list[dict[str, Any]], json.loads(decoded))
+    except json.JSONDecodeError:
+        return []
+    labels: list[str] = []
+    for season in seasons_raw:
+        for ep in season.get("folder") or []:
+            label = _file_prefix_label(str(ep.get("file", "")))
+            if label and label not in labels:
+                labels.append(label)
+    return labels
+
+
 def _page_number(href: str) -> int:
     """Pull the `/page/N/` integer out of a DLE pagination link."""
     m = re.search(r"/page/(\d+)/?", href)
@@ -377,6 +412,13 @@ class UASerialsProProvider(BaseProvider):
         # Decode the `file:` field — Tortuga-encoded for movies, or a
         # JSON playlist for series.
         seasons = self._build_seasons_from_player(player_resp.text, external_id, self.id)
+        # Ticket #332: the player payload's episode files carry the
+        # dubbing studio in a ``{label}`` prefix — the page's single
+        # «Переклад» field is only the primary dub. Surface every
+        # prefix label as a translation for the dub picker.
+        payload_labels = _payload_dub_labels(player_resp.text)
+        if payload_labels:
+            translations = [Translation(id=t, label=t) for t in payload_labels]
         # Ticket #221: the page's ``Актори:`` li lists the cast with
         # one ``/person/<id>-<slug>/`` anchor per person.
         cast = parse_actor_list(
@@ -430,11 +472,13 @@ class UASerialsProProvider(BaseProvider):
                 episodes_raw = season.get("folder") or []
                 episodes: list[Episode] = []
                 for e_idx, ep in enumerate(episodes_raw, start=1):
+                    label = _file_prefix_label(str(ep.get("file", "")))
                     episodes.append(
                         Episode(
                             number=e_idx,
                             id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
                             title=str(ep.get("title", "")).strip(),
+                            translations=[Translation(id=label, label=label)] if label else None,
                         )
                     )
                 if episodes:
@@ -507,7 +551,7 @@ class UASerialsProProvider(BaseProvider):
         # Movies: the decoded value is the m3u8 URL. Series: the decoded
         # value is a JSON playlist — pick the right episode by suffix.
         if ep_suffix:
-            media_url = self._select_episode_url(decoded, ep_suffix)
+            media_url = self._select_episode_url(decoded, ep_suffix, translation)
             if media_url is None:
                 raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"no media url for {ep_suffix!r}")
         else:
@@ -519,8 +563,12 @@ class UASerialsProProvider(BaseProvider):
         )
 
     @staticmethod
-    def _select_episode_url(decoded: str, ep_suffix: str) -> str | None:
-        """Resolve a series episode m3u8 URL from the decoded playlist."""
+    def _select_episode_url(decoded: str, ep_suffix: str, translation: str | None = None) -> str | None:
+        """Resolve a series episode m3u8 URL from the decoded playlist.
+
+        The dub picker's translation id (spec #276, ticket #332) selects
+        the episode entry whose ``{label}`` prefix matches; an unmatched
+        translation falls back to the default track."""
         m = _EP_SUFFIX_RE.fullmatch(ep_suffix)
         if not m:
             return None
@@ -534,7 +582,18 @@ class UASerialsProProvider(BaseProvider):
         episodes_raw = seasons_raw[s_idx - 1].get("folder") or []
         if not (1 <= e_idx <= len(episodes_raw)):
             return None
-        file_str = str(episodes_raw[e_idx - 1].get("file", ""))
+        if translation:
+            candidates = [
+                ep for ep in episodes_raw
+                if _file_prefix_label(str(ep.get("file", ""))) == translation
+            ]
+            if candidates:
+                ep = candidates[e_idx - 1] if e_idx <= len(candidates) else candidates[0]
+            else:
+                ep = episodes_raw[e_idx - 1]
+        else:
+            ep = episodes_raw[e_idx - 1]
+        file_str = str(ep.get("file", ""))
         if not file_str:
             return None
         # The series `file:` shape is `{label}<url>(subtitle:...)`.

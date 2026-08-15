@@ -437,3 +437,65 @@ async def test_stream_content_5xx_raises_not_found():
                     "12588-shopen-shopen:__movie__", None, http
                 )
     assert exc_info.value.code == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# Ticket #332: dubbing-studio labels in the {label} file prefix
+# ---------------------------------------------------------------------------
+
+def _encode_payload(payload: str, salt: int = 7) -> str:
+    """Tortuga-encode a decoded JSON payload (the XOR is symmetric)."""
+    import base64 as b64
+
+    raw = bytes([salt]) + bytes(
+        b ^ ((salt + 7 * i + 13) % 256) for i, b in enumerate(payload.encode("utf-8"))
+    )
+    return b64.b64encode(raw).decode()
+
+
+TWO_DUB_SERIES_PAYLOAD = (
+    '[{"title":"Сезон 1","folder":['
+    '{"title":"Серія 1","file":"{OZZ}https://calypso.tortuga.tw/hls/serials/ann.droid.s01e01.ozz/hls/index.m3u8(subtitle:)"},'
+    '{"title":"Серія 1","file":"{HDrezka Studio}https://calypso.tortuga.tw/hls/serials/ann.droid.s01e01.rezka/hls/index.m3u8(subtitle:)"}]}]'
+)
+
+
+def _two_dub_player_page() -> str:
+    return f"<html><body><script>file: \"{_encode_payload(TWO_DUB_SERIES_PAYLOAD)}\"</script></body></html>"
+
+
+@pytest.mark.asyncio
+async def test_content_exposes_prefix_dub_labels_as_translations():
+    """Ticket #332: the {label} prefixes in the series playlist are
+    dubbing studios — they must surface as translations."""
+    content_html = _fixture("content_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://uaserials.com/12585-enn-droyid.html").respond(
+            200, text=content_html
+        )
+        router.get("https://tortuga.tw/embed/2859").respond(
+            200, text=_two_dub_player_page()
+        )
+        async with httpx.AsyncClient() as http:
+            c = await UASerialsProProvider().content("12585-enn-droyid", http)
+    assert [t.label for t in c.translations] == ["OZZ", "HDrezka Studio"]
+
+
+@pytest.mark.asyncio
+async def test_stream_honors_picked_dub_label():
+    """Ticket #332: the picked studio plays its {label} entry."""
+    content_html = _fixture("content_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://uaserials.com/12585-enn-droyid.html").respond(
+            200, text=content_html
+        )
+        router.get("https://tortuga.tw/embed/2859").respond(
+            200, text=_two_dub_player_page()
+        )
+        async with httpx.AsyncClient() as http:
+            default = await UASerialsProProvider().stream("12585-enn-droyid:s1e1", None, http)
+            picked = await UASerialsProProvider().stream(
+                "12585-enn-droyid:s1e1", "HDrezka Studio", http
+            )
+    assert "s01e01.ozz" in default.url
+    assert "s01e01.rezka" in picked.url
