@@ -16,10 +16,13 @@ behind the same ``require_token`` gate.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import logging
+import os
 import re
+import sys
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -80,10 +83,14 @@ from ..providers.base import ProviderError
 from ..recommend import similarity
 from .auth import require_token
 from .models import (
+    ActivityLogEntryQueryResult,
     AuthenticationResult,
     BaseItemDto,
     BaseItemDtoQueryResult,
+    DeviceInfoDtoQueryResult,
     DisplayPreferencesDto,
+    FolderStorageDto,
+    ItemCounts,
     MediaSourceInfo,
     MediaStreamInfo,
     PersonDto,
@@ -91,6 +98,7 @@ from .models import (
     SearchHint,
     SearchHintResult,
     SystemInfoPublic,
+    SystemStorageDto,
     UserDataResult,
     UserDto,
 )
@@ -494,6 +502,108 @@ def _year_for_group(group_key: str) -> int | None:
     return None
 
 
+def _snapshot_counts() -> ItemCounts:
+    """Library-size counts from the home snapshot (spec #280).
+
+    Movies and series are the forms the merged home actually knows;
+    episodes are counted from the cached content pages when available
+    (a series whose seasons are in the content cache contributes its
+    episode total), else zero — never a fetch. ``ItemCount`` is the
+    movie+series sum, the number the dashboard headline shows.
+    """
+    movies = 0
+    series = 0
+    episodes = 0
+    seen_groups: set[str] = set()
+    home = get_home()
+    if home is not None:
+        for row in home.rows:
+            for it in row.items:
+                if it.group_key in seen_groups:
+                    continue
+                seen_groups.add(it.group_key)
+                if it.form == "movie":
+                    movies += 1
+                else:
+                    series += 1
+    # Episode total from the cached content pages (series only) — a
+    # peek never fetches, so cold series simply contribute zero.
+    for group_key in seen_groups:
+        if _is_series_key(group_key):
+            content = peek_group_content(group_key)
+            if content is not None and content.seasons:
+                episodes += sum(len(s.episodes) for s in content.seasons)
+    return ItemCounts(
+        MovieCount=movies,
+        SeriesCount=series,
+        EpisodeCount=episodes,
+        ItemCount=movies + series,
+    )
+
+
+def _is_series_key(group_key: str) -> bool:
+    """True when the snapshot form for a group key is a series form.
+
+    Cheap home-snapshot lookup mirroring ``_card_for_group``: a group
+    whose card is a movie is a movie; everything else (series/anime/
+    cartoon/dorama forms) is a series for counting purposes.
+    """
+    card = _card_for_group(group_key)
+    if card is not None:
+        return card.form != "movie"
+    return not group_key.startswith("g2:") or True
+
+
+def _folder_storage(path: str) -> FolderStorageDto:
+    """Storage row for one directory (spec #280): path, used bytes,
+    free bytes from ``statvfs`` when the filesystem reports it.
+    """
+    used: int | None = None
+    free: int | None = None
+    try:
+        if path and os.path.isdir(path):
+            used = _dir_size(path)
+            st = os.statvfs(path)
+            free = st.f_bavail * st.f_frsize
+    except OSError:  # a stat failure degrades to empty row
+        pass
+    return FolderStorageDto(Path=path or "", FreeSpace=free, UsedSpace=used)
+
+
+def _dir_size(path: str) -> int:
+    """Recursive byte total of ``path`` (cheap for one cache directory)."""
+    total = 0
+    for dirpath, _dirnames, filenames in os.walk(path):
+        for name in filenames:
+            try:
+                total += os.path.getsize(os.path.join(dirpath, name))
+            except OSError:  # a raced/unreadable file is skipped
+                pass
+    return total
+
+
+def _storage_report() -> SystemStorageDto:
+    """The dashboard storage table (spec #280).
+
+    Real data only for the poster cache (``ImageCacheFolder`` — the one
+    directory the facade actually writes) and the disk's free space;
+    every other named folder is the honest empty row (no other on-disk
+    state exists). ``Libraries`` is empty — the catalog is virtual.
+    """
+    poster_dir = SETTINGS.poster_cache_dir
+    empty = FolderStorageDto(Path="")
+    return SystemStorageDto(
+        ProgramDataFolder=empty,
+        WebFolder=empty,
+        ImageCacheFolder=_folder_storage(poster_dir or ""),
+        CacheFolder=empty,
+        LogFolder=empty,
+        InternalMetadataFolder=empty,
+        TranscodingTempFolder=empty,
+        Libraries=[],
+    )
+
+
 def _card_for_group(group_key: str) -> HomeItem | None:
     """The snapshot card for a ``g2:`` item, or None (ticket #224).
 
@@ -537,6 +647,9 @@ def _card_dto(group_key: str, card: HomeItem, server_id: str) -> BaseItemDto:
     poster = _poster_for(group_key)
     if poster is not None:
         dto.ImageTags = {"Primary": _poster_tag(poster)}
+    # Spec #280: the download manager names the saved file from
+    # ``MediaSources[].Name`` — a stable title-based name on the detail.
+    _attach_download_source(dto, card.title)
     return dto
 
 
@@ -627,7 +740,32 @@ def _content_dto(group_key: str, content: ContentResponse, server_id: str) -> Ba
         dto.ImageTags = {"Primary": _poster_tag(poster)}
     # Spec #257: the detail screen's heart reads UserData.
     dto.UserData = _user_data(group_key)
+    # Spec #280: the download manager names the saved file from
+    # ``MediaSources[].Name`` — a stable title-based name on the detail.
+    _attach_download_source(dto, content.title)
     return dto
+
+
+def _attach_download_source(dto: BaseItemDto, title: str) -> None:
+    """Give a detail DTO the download-source entry (spec #280).
+
+    The client's download manager reads ``MediaSources[].Name`` for the
+    saved file's path; without it the Download button has no name to
+    write. The source is deliberately minimal — just the stable
+    title-based file name (the actual container is learned at download
+    time from the provider's stream, so ``Container`` is omitted here
+    rather than guessed).
+    """
+    item_id = dto.Id or ""
+    dto.MediaSources = [
+        MediaSourceInfo(
+            Id=item_id,
+            Container="",
+            Path=f"/Items/{item_id}/Download",
+            PlaySessionId="",
+            Name=f"{_safe_filename(title)}.mp4",
+        )
+    ]
 
 
 def _season_dto(group_key: str, season: Season, server_id: str, series_name: str) -> BaseItemDto:
@@ -1507,6 +1645,27 @@ async def _hierarchy(parent_id: str | None) -> BaseItemDtoQueryResult:
             for ep in season.episodes
         ]
     return BaseItemDtoQueryResult(Items=dtos, TotalRecordCount=len(dtos))
+
+
+@router.get(
+    "/Items/Counts",
+    response_model=ItemCounts,
+    response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def items_counts() -> ItemCounts:
+    """Dashboard library-size row (spec #280): snapshot-derived counts.
+
+    Movies/series are the forms the merged home snapshot actually
+    knows; episodes come from the cached content pages (never a fetch);
+    everything else the Jellyfin counts envelope names is structurally
+    zero for this catalog and stays omitted.
+
+    Registered BEFORE the ``/Items/{item_id}`` detail route: FastAPI
+    matches in registration order, and ``Counts`` would otherwise be
+    swallowed as an ``item_id`` and 404.
+    """
+    return _snapshot_counts()
 
 
 @router.get(
@@ -2434,6 +2593,95 @@ async def video_stream(
     )
 
 
+@router.get("/Items/{item_id:path}/Download")
+async def item_download(item_id: str) -> Response:
+    """Original-quality download (spec #280): the SAME bytes the stream
+    route serves, with a Content-Disposition filename.
+
+    The download button must fetch exactly what a play would — the same
+    ``_resolve_stream`` seam the stream route crosses — so an unplayable
+    id 404s identically. The redirect path (no upstream headers) is
+    forced through the byte proxy here so the response can carry the
+    ``Content-Disposition`` file name the download manager saves under;
+    HLS manifests are proxied with the provider's headers and their
+    references rewritten to stay behind the facade. The filename is
+    ``<safe-title>.<container>`` (``_download_filename``).
+    """
+    stream = await _resolve_download(item_id)
+    if stream is None:
+        raise HTTPException(status_code=404, detail="item_unavailable")
+    filename = _download_filename(item_id, stream.type)
+    # HTTP header values are latin-1; a Cyrillic title cannot ride in the
+    # bare ``filename=`` (UnicodeEncodeError). ASCII-suffix fallback plus
+    # the RFC 5987 ``filename*=UTF-8''`` form keeps the real name for
+    # modern clients and a usable ASCII name for the rest.
+    ascii_name = filename.encode("ascii", errors="replace").decode("ascii")
+    if ascii_name == filename:
+        disposition = f'attachment; filename="{filename}"'
+    else:
+        encoded = quote(filename, safe="")
+        disposition = (
+            f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{encoded}'
+        )
+
+    if not stream.headers:
+        # No provider headers: stream the upstream body directly (the
+        # stream route would 302; a download needs the file itself).
+        cdn_host = _cdn_host(stream.url)
+        if cdn_host is None:
+            raise HTTPException(status_code=404, detail="item_unavailable")
+        http = get_client()
+        opened = await _open_upstream(
+            http, stream.url, {}, None, cdn_host, allowed=stream.allowed_domains
+        )
+        if opened is None:
+            raise HTTPException(status_code=404, detail="item_unavailable")
+        upstream, closer = opened
+        resp = _streaming_response(
+            upstream, closer, _STREAM_CTYPE.get(stream.type, "application/octet-stream")
+        )
+        resp.headers["Content-Disposition"] = disposition
+        return resp
+
+    cdn_host = _cdn_host(stream.url)
+    if cdn_host is None:
+        raise HTTPException(status_code=404, detail="item_unavailable")
+    _memo_stream(item_id, cdn_host, stream.headers, stream.allowed_domains)
+    http = get_client()
+
+    if _is_hls_stream(stream):
+        manifest = await _fetch_manifest(
+            http, stream.url, stream.headers, cdn_host, allowed=stream.allowed_domains
+        )
+        if manifest is None:
+            raise HTTPException(status_code=404, detail="item_unavailable")
+        body = _rewrite_m3u8(
+            manifest.content.decode("utf-8", errors="replace"), stream.url, item_id
+        )
+        return Response(
+            content=body,
+            media_type=_STREAM_CTYPE["m3u8"],
+            headers={"Content-Disposition": disposition},
+        )
+
+    opened = await _open_upstream(
+        http,
+        stream.url,
+        stream.headers,
+        None,
+        cdn_host,
+        allowed=stream.allowed_domains,
+    )
+    if opened is None:
+        raise HTTPException(status_code=404, detail="item_unavailable")
+    upstream, closer = opened
+    resp = _streaming_response(
+        upstream, closer, _STREAM_CTYPE.get(stream.type, "application/octet-stream")
+    )
+    resp.headers["Content-Disposition"] = disposition
+    return resp
+
+
 @router.get("/Videos/{item_id:path}/segment")
 async def video_segment(item_id: str, url: str = Query(...)) -> Response:
     """Proxy one rewritten HLS reference (D7).
@@ -2536,6 +2784,170 @@ async def sessions_list() -> list[dict[str, object]]:
     return []
 
 
+def _title_for(item_id: str) -> str | None:
+    """A display title for a playable item id (spec #280 download name).
+
+    ``g2:`` keys resolve via the snapshot card (first) or the cached
+    content page; episode wire ids resolve through the series group's
+    content cache, matching the episode by its wire suffix. None for an
+    unknown/cold id — the download route then falls back to the id
+    itself so the filename is still stable and unique.
+    """
+    card = _card_for_group(item_id)
+    if card is not None:
+        return card.title
+    content = peek_group_content(item_id)
+    if content is not None:
+        return content.title
+    group_key = episode_group_key(item_id)
+    if group_key is not None:
+        content = peek_group_content(group_key)
+        if content is not None:
+            tail = item_id[len(content.id.partition(":")[0]) + 1 :]
+            for season in content.seasons or []:
+                for ep in season.episodes:
+                    if ep.id == tail or ep.id == item_id:
+                        return ep.title or content.title
+            return content.title
+    return None
+
+
+def _safe_filename(title: str) -> str:
+    """A filename-safe rendering of a title (spec #280)."""
+    cleaned = re.sub(r'[\\/:*?"<>|\r\n\t ]+', "_", title).strip("_")
+    return cleaned or "item"
+
+
+def _download_filename(item_id: str, stream_type: str) -> str:
+    """Content-Disposition filename for ``/Items/{id}/Download``.
+
+    ``<safe-title>.<container>`` where the container is the provider's
+    actual stream type (mp4/m3u8…) so the saved file is usable offline.
+    """
+    title = _title_for(item_id) or item_id.rsplit(":", 1)[-1]
+    return f"{_safe_filename(title)}.{stream_type}"
+
+
+async def _resolve_download(
+    item_id: str,
+) -> StreamResponse | None:
+    """The stream behind a download request (spec #280).
+
+    Same resolution as the stream route (``_resolve_stream``) — the
+    download button must fetch the SAME bytes a play would, so an
+    unplayable id 404s exactly like ``/Videos/{id}/stream`` does.
+    """
+    return await _resolve_stream(item_id)
+
+
+@router.get(
+    "/System/Info/Storage",
+    response_model=SystemStorageDto,
+    response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def system_storage() -> SystemStorageDto:
+    """Dashboard storage table (spec #280): real bytes, honest empties.
+
+    The poster-cache directory's footprint (``ImageCacheFolder``) and
+    the disk's free space are recomputed per call — cheap for one
+    directory. Every other folder row is empty: the facade keeps no
+    other on-disk state.
+    """
+    return _storage_report()
+
+
+@router.get(
+    "/Users",
+    response_model=list[UserDto],
+    response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def users_list() -> list[UserDto]:
+    """Dashboard users row (spec #280): the single fixed facade user.
+
+    The facade is single-user by design (D4); the list echoes that one
+    user so the dashboard's users screen renders instead of erroring.
+    """
+    user_id = uuid.uuid5(uuid.NAMESPACE_URL, "cs-uk-api-user:default").hex
+    return [UserDto(Name=_user_name_for(user_id), ServerId=_server_id(), Id=user_id)]
+
+
+@router.get(
+    "/ScheduledTasks",
+    response_model=list[object],
+    response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def scheduled_tasks() -> list[object]:
+    """Dashboard scheduled-tasks row (spec #280): an empty task list.
+
+    There is no task scheduler (out of scope), so the list is honestly
+    empty in the standard ``TaskInfo[]`` shape — never a 404.
+    """
+    return []
+
+
+@router.get(
+    "/Devices",
+    response_model=DeviceInfoDtoQueryResult,
+    response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def devices() -> DeviceInfoDtoQueryResult:
+    """Dashboard devices row (spec #280): an empty device list.
+
+    The facade is stateless (D8) — no device sessions are tracked — so
+    the list is honestly empty in the standard query-result shape.
+    """
+    return DeviceInfoDtoQueryResult(Items=[], TotalRecordCount=0)
+
+
+@router.get(
+    "/System/ActivityLog/Entries",
+    response_model=ActivityLogEntryQueryResult,
+    response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def activity_log_entries() -> ActivityLogEntryQueryResult:
+    """Dashboard activity-log row (spec #280): an honest empty log.
+
+    No activity is tracked, so the log answers the standard
+    ``ActivityLogEntryQueryResult`` with zero entries — never a 404.
+    """
+    return ActivityLogEntryQueryResult(Items=[], TotalRecordCount=0, StartIndex=0)
+
+
+@router.post(
+    "/Sessions/Capabilities/Full",
+    dependencies=[Depends(require_token)],
+)
+async def sessions_capabilities_full() -> Response:
+    """Client capability announcement (spec #280): accept, answer 204.
+
+    Every Switchfin connect posts its playback capabilities here; a 404
+    polluted startup logs. There is nothing to store — the facade is
+    stateless (D8) — so the honest answer is 204.
+    """
+    return Response(status_code=204)
+
+
+@router.get(
+    "/LiveTv/Programs/Recommended",
+    response_model=BaseItemDtoQueryResult,
+    response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def live_tv_recommended() -> BaseItemDtoQueryResult:
+    """Live TV recommended programs (spec #280): an empty listing.
+
+    There is no live source (out of scope, same as ``/LiveTv/Channels``
+    #257), so the recommended-programs query answers the standard empty
+    ``BaseItemDtoQueryResult`` — never a 404.
+    """
+    return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
+
+
 @router.get(
     "/LiveTv/Channels",
     response_model=BaseItemDtoQueryResult,
@@ -2596,6 +3008,40 @@ async def sessions_logout() -> Response:
     answer exactly that. No token/session state is dropped — there is
     none to drop.
     """
+    return Response(status_code=204)
+
+
+#: Injectable re-exec seam (spec #280): the real restart swaps the
+#: running process for a fresh one via ``os.execv``; tests replace this
+#: with a recorder so a ``/System/Restart`` test never spawns a real
+#: restart. Kept as a module-level callable so the route body stays
+#: declarative.
+def _exec_restart() -> None:
+    """Replace the running process with the same command line (uvicorn
+    relaunch) — the dashboard restart button's real action."""
+    os.execv(sys.executable, [sys.executable, *sys.argv])
+
+
+#: Injectable schedule seam (spec #280): the route answers 204 first
+#: and lets ``_schedule_restart`` defer the re-exec to a later loop
+#: tick; tests replace it with a recorder so no real restart (or loop
+#: pump) is needed.
+def _schedule_restart() -> None:
+    """Defer the re-exec one tick after the 204 response is sent."""
+    asyncio.get_event_loop().call_later(0.1, _exec_restart)
+
+
+@router.post("/System/Restart", dependencies=[Depends(require_token)])
+async def system_restart() -> Response:
+    """Dashboard restart button (spec #280): answer 204, then re-exec.
+
+    The client expects a 204 response before the process disappears, so
+    the re-exec is scheduled one event-loop tick AFTER the response is
+    sent. ``_schedule_restart`` / ``_exec_restart`` are the injectable
+    seams — LAN-only by design, an operator action (documented): the
+    facade never exposes this over the open internet.
+    """
+    _schedule_restart()
     return Response(status_code=204)
 
 

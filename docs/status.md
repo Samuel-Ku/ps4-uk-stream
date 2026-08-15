@@ -174,8 +174,27 @@ boundary validation is `fullmatch` everywhere; uakino movies without a
   series default to the viewer's last dub. Test counts: 1151 passing
   (was 1142; +9 — multi-source PlaybackInfo wire tests, source-switch
   + memory tests, dub-memory store unit tests).
-
-Run the backend:
+- **Switchfin dashboard surface (spec #280, tickets #281–#284,
+  2026-08-14).** (1) The dashboard stops 404ing: `/Items/Counts`
+  (movies/series from the home snapshot, episodes summed from cached
+  content pages — never a fetch), `/System/Info/Storage` (real poster-
+  cache footprint + free space, honest empty rows for the other
+  folders), `/Users` (the single fixed facade user), and the graceful
+  empties — `/ScheduledTasks`, `/Devices`, `/System/ActivityLog/
+  Entries`, `/LiveTv/Programs/Recommended` — answer the client's
+  standard zero envelopes while `POST /Sessions/Capabilities/Full`
+  answers 204. (2) Original-quality Download: `GET /Items/{id}/
+  Download` (the old 404, ticket #296) resolves the same stream seam
+  as play and proxies the bytes with a `Content-Disposition` name
+  `<safe-title>.<container>` — Cyrillic titles ride the RFC 5987
+  `filename*=UTF-8''` form; the detail DTO carries the matching
+  `MediaSources[].Name`. (3) `POST /System/Restart` answers 204 then
+  re-execs via injectable seams (operator action, LAN-only). Danmaku
+  and music/playlist are documented N/A (no such content in the
+  catalog). Test counts: 1164 passing (was 1151; +13 — dashboard
+  counts/storage/users wire tests, graceful-empties envelopes,
+  Download bytes + disposition + 404, detail MediaSource name,
+  restart seam tests).
 
 ```bash
 cd backend

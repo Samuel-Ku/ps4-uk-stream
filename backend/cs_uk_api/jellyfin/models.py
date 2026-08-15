@@ -124,6 +124,10 @@ class BaseItemDto(BaseModel):
     #: progress bar read this. Populated on card/detail/episode DTOs;
     #: omitted (None) when the DTO has no id to look up.
     UserData: UserDataResult | None = None
+    #: Download source (spec #280): the client's download manager reads
+    #: ``MediaSources[].Name`` to name the saved file; present on
+    #: movie/series detail DTOs so the Download button has a file name.
+    MediaSources: list[MediaSourceInfo] | None = None
 
 
 class PersonDto(BaseModel):
@@ -239,6 +243,10 @@ class MediaSourceInfo(BaseModel):
     Path: str
     PlaySessionId: str
     DisplayTitle: str | None = None
+    #: Spec #280: the detail DTO's download manager names the saved
+    #: file from ``MediaSources[].Name`` — a stable title-based file
+    #: name when the item is downloadable.
+    Name: str | None = None
 
 
 class PlaybackInfoResponse(BaseModel):
@@ -275,4 +283,79 @@ class SearchHintResult(BaseModel):
     """``GET /Search/Hints`` envelope (spec D10, ticket #106)."""
 
     SearchHints: list[SearchHint] = Field(default_factory=list)
+    TotalRecordCount: int = 0
+
+
+class ItemCounts(BaseModel):
+    """``GET /Items/Counts`` (spec #280): library-size dashboard row.
+
+    Only the counts the facade can answer truthfully from the home
+    snapshot — movies and series as the snapshot knows them. Every
+    other Jellyfin count (programs, trailers, music…) is structurally
+    zero for this catalog and stays omitted (``exclude_none``), so the
+    dashboard renders the two real numbers and no invented ones.
+    """
+
+    MovieCount: int = 0
+    SeriesCount: int = 0
+    EpisodeCount: int = 0
+    ItemCount: int = 0
+
+
+class FolderStorageDto(BaseModel):
+    """One storage row of ``/System/Info/Storage`` (spec #280).
+
+    ``Path`` is always present; ``FreeSpace``/``UsedSpace`` are set when
+    the filesystem reports them (``statvfs``), else omitted. ``UsedSpace``
+    for the image cache is the poster-cache directory's real footprint.
+    """
+
+    Path: str
+    FreeSpace: int | None = None
+    UsedSpace: int | None = None
+    StorageType: str | None = None
+
+
+class SystemStorageDto(BaseModel):
+    """``GET /System/Info/Storage`` envelope (spec #280).
+
+    Mirrors Jellyfin's ``SystemStorageDto``: named folder rows the
+    dashboard renders as a storage table. The facade serves real bytes
+    only for the poster cache (``ImageCacheFolder``) and the disk's
+    free space; every other folder is the honest empty/0 row (there is
+    no other on-disk state).
+    """
+
+    ProgramDataFolder: FolderStorageDto
+    WebFolder: FolderStorageDto
+    ImageCacheFolder: FolderStorageDto
+    CacheFolder: FolderStorageDto
+    LogFolder: FolderStorageDto
+    InternalMetadataFolder: FolderStorageDto
+    TranscodingTempFolder: FolderStorageDto
+    Libraries: list[object] = Field(default_factory=list)
+
+
+class ActivityLogEntryQueryResult(BaseModel):
+    """``GET /System/ActivityLog/Entries`` envelope (spec #280).
+
+    Empty by design — no activity is tracked — but the query-result
+    shape the client parses (``Items``/``TotalRecordCount``/
+    ``StartIndex`` all present, the same ``Result<T>`` contract as
+    ``BaseItemDtoQueryResult``).
+    """
+
+    Items: list[object] = Field(default_factory=list)
+    TotalRecordCount: int = 0
+    StartIndex: int = 0
+
+
+class DeviceInfoDtoQueryResult(BaseModel):
+    """``GET /Devices`` envelope (spec #280): empty device list.
+
+    The facade is stateless (D8) — no device sessions are tracked — so
+    the list is honestly empty in the standard query-result shape.
+    """
+
+    Items: list[object] = Field(default_factory=list)
     TotalRecordCount: int = 0

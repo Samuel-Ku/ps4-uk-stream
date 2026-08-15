@@ -205,6 +205,43 @@ the LAST `::`) and streams THAT translation.
 - **Single-translation items are untouched**: one thin source, no
   picker, no memory recording (D6 path).
 
+### Dashboard surface (spec #280)
+
+The Switchfin dashboard stops 404ing — every route it opens answers
+with honest data or an honest empty, never a fake number:
+
+- **`/Items/Counts`** — movies/series counted from the home snapshot
+  (deduped by group key); episodes summed from the CACHED content
+  pages only (a `peek`, never a fetch — a cold series contributes 0).
+  `ItemCount` = movie+series (the headline number).
+- **`/System/Info/Storage`** — real bytes for the ONE directory the
+  facade writes (the poster cache → `ImageCacheFolder`: used bytes via
+  `os.walk` sum, free bytes via `statvfs`) plus honest empty rows for
+  every other named folder; `Libraries` is empty (the catalog is
+  virtual).
+- **`/Users`** — the single fixed facade user (D4).
+- **`/ScheduledTasks`, `/Devices`, `/System/ActivityLog/Entries`,
+  `/LiveTv/Programs/Recommended`** — the client's standard empty
+  envelopes (never 404).
+- **`POST /Sessions/Capabilities/Full`** — every Switchfin connect
+  posts its playback capabilities; the facade answers 204 (nothing to
+  store — stateless, D8).
+- **`GET /Items/{id}/Download`** — the SAME bytes the stream route
+  serves, named via `Content-Disposition` `<safe-title>.<container>`.
+  Cyrillic titles ride in the RFC 5987 `filename*=UTF-8''…` form
+  (headers are latin-1); the byte proxy is forced here even when the
+  stream route would 302, so the file name can ride along. The detail
+  DTO carries the matching `MediaSources[].Name` for the download
+  manager.
+- **`POST /System/Restart`** — operator action (LAN-only by design):
+  204 first, re-exec deferred one loop tick via the injectable
+  `_schedule_restart` / `_exec_restart` seams.
+
+**Danmaku and music/playlist are deliberate non-answers (N/A)**: the
+catalog is movies/series/episodes — there is no danmaku surface and no
+music/playlist content, so the client's related screens stay quietly
+empty rather than erroring.
+
 ### Deliberate non-features (each rejected with alternatives evaluated)
 
 - **No `language` / `kind` / `studio` fields** — providers come from the wild; no consistent language taxonomy upstream. Display label only.

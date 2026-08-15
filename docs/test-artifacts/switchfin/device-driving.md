@@ -1130,6 +1130,40 @@ parsed — each fixed via TDD + live-verified:
   passed. Live: episode stream 206 Partial Content via Dropbox (was
   404). Commit `a135121`.
 
+## Field-coverage sweep round 5 (2026-08-14, wire level, spec #280)
+
+- **Dashboard routes — ALL NOW ANSWER (FIXED, #281)**. The Switchfin
+  dashboard used to 404 on every screen: `/Items/Counts`, `/Users`,
+  `/ScheduledTasks`, `/Devices`, `/System/ActivityLog/Entries`,
+  `/LiveTv/Programs/Recommended` all returned 404 and the capability
+  POST 405. Now: counts come from the home snapshot (movies/series by
+  form, episodes summed from cached content pages — a peek, never a
+  fetch); storage reports the poster-cache footprint (used bytes via
+  `os.walk`, free via `statvfs`) with honest empty rows for the other
+  folders; `/Users` echoes the single fixed user (D4); the graceful
+  empties answer the client's standard envelopes; the capability POST
+  answers 204. Live: `/Items/Counts` → `{MovieCount, SeriesCount,
+  EpisodeCount, ItemCount}`; `/System/Info/Storage` → `ImageCacheFolder`
+  65,100,529 used / 881,127,424 free; `/Users` → 1 user; all empties
+  `200` with zero items; caps `204`. TDD red→green
+  (`test_jellyfin_dashboard.py`, 12 tests), 1164 passed. Commit
+  `dash1` (see below).
+- **Original-quality Download — 404 → real file (FIXED, #282)**. The
+  client's Download button called `GET /Items/{id}/Download?api_key=…`
+  → 404 (ticket #296 in the 2026-08-14 checklist). Now the route
+  resolves the SAME stream seam as play and proxies the bytes with a
+  `Content-Disposition` file name `<safe-title>.<container>`; Cyrillic
+  titles use the RFC 5987 `filename*=UTF-8''…` form (latin-1 headers
+  cannot carry «Легенда про Аанга…» raw). The detail DTO carries the
+  matching `MediaSources[].Name`. Live: download of a movie → 200,
+  `attachment; filename*=UTF-8''%D0%9B%D0%B5%D0%B3%D0%B5%D0%BD…`,
+  HLS manifest proxied (Container m3u8). TDD red→green (byte proxy +
+  disposition + 404-for-unplayable + detail name), 1164 passed.
+- **Danmaku and music/playlist are N/A (documented, no ticket)** — the
+  catalog is movies/series/episodes; there is no danmaku surface and
+  no music/playlist content, so the client's related screens stay
+  quietly empty by design. Recorded in CONTEXT.md (spec #280).
+
 ## Running the suite (2026-08-10, codified)
 
 > Wire-cheat-sheet: the episode rail is
@@ -1227,6 +1261,17 @@ One manual checklist line for the on-device pass — deliberately NOT a
       `user-state.json`, LRU 50, movies never remembered; wire-verified
       multi-source PlaybackInfo + `mediaSourceId` stream switch on the
       backend).
+
+- [ ] Dashboard (spec #280): the dashboard renders counts/storage/users
+      (sidebar → Dashboard): library size matches the catalog, the
+      storage table shows the poster-cache footprint, the users list
+      shows the one fixed user; scheduled tasks / devices / activity
+      log render empty; Live TV stays quietly empty (no error toast).
+- [ ] One Original-quality download (spec #280): open an item, tap
+      download — the file saves under a real title-based name (not
+      `????`), plays back from the Downloads screen; wire-verified
+      `/Items/{id}/Download` 200 + RFC 5987 `filename*` on the backend
+      (was 404, ticket #296).
 
 - [x] User state (spec #257, verified 2026-08-14): on a detail screen tap
       the heart — it lights and stays lit after an app relaunch (toggle
