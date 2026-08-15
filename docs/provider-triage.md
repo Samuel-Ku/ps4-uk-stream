@@ -94,6 +94,34 @@ rotate. Acceptance "every non-gated series episode-rail returns 200" holds for
 genuinely non-gated series; the flagged rows are gated, dead, or mis-tagged
 upstream.
 
+## Degraded-provider triage (2026-08-15, spec #298 ticket #302)
+
+The health monitor (`/api/providers`) reported `degraded` for kinotron,
+cikavaideya, and simpsonsuatv (≥40% errors in the 20-sample sliding
+window). Live-gate triage (`scripts/gate.sh` — search → content → stream
+→ mpv plays 1 frame) on 2026-08-15:
+
+| Provider | Gate result | Verdict |
+| -------- | ----------- | ------- |
+| kinotron | ✅ PASS — «Дюна: Пророцтво» plays (h264 3840x1920); first title's stream dead, retry loop passed | **transient** |
+| cikavaideya | ✅ PASS first try — «Жінка з вітрини» plays (h264 1442x1080) | **transient** |
+| simpsonsuatv | ✅ PASS first try — «Сімпсони» plays (h264 1920x1080, episode-fallback by design) | **transient** |
+
+All three recorded `last_error_at = 2026-08-15T00:27:29+00:00` — the
+backend's ~00:26 restart (pid 1692410); the concurrent background warm
+tripped upstream rate-limit/timeout spikes that filled the window.
+anitubeinua had the identical burst (00:27:23) and already self-healed
+back to `ok`. No provider fails reproducibly → **no follow-up issue
+filed, no adapter changes** (spec #298: passing probe = transient drift;
+rate-limit/timeout results are not filed).
+
+Title-level note (not provider-wide, deliberately not filed): kinotron
+`4519-duna` («Дюна») reproducibly yields no stream — its ashdi.vip
+embed (`/vod/33957`) serves a 47-byte «Файл не знайдено» page upstream.
+The adapter correctly follows kinotron → ashdi and finds nothing to
+parse; this is the documented dead-embed/gated condition (ADR-0002), and
+the gate's by-design top-hit retry (issue #39) covers it.
+
 ## Per-provider "owner" field (suggested order)
 
 Group 1 (simple, HTML-based, `<15 KB`):
