@@ -44,6 +44,7 @@ from pydantic import BaseModel
 from ..catalog_state import (
     dub_for,
     episode_group_key,
+    extend_row_pool,
     get_home,
     get_profiles,
     is_favorite,
@@ -1172,6 +1173,18 @@ async def items_listing(
                 # carrying at least one requested genre (genre ids ARE
                 # the names).
                 items = [it for it in items if wanted_genres & set(it.genres)]
+            # Deep rows (spec #305): a page beyond the snapshot row
+            # lazily EXTENDS the pool — provider browse pages 2..N
+            # under the depth knob, merged with the home build's
+            # round-robin + group-key dedupe — so infinite scroll keeps
+            # serving NEW cards and ``TotalRecordCount`` grows honestly
+            # (the client stops when a page comes back short). The
+            # personalized and genre rails stay snapshot-bounded, and a
+            # failing extension degrades to the snapshot slice.
+            if wanted_genres is None and start_index >= len(items):
+                extended = await extend_row_pool(row.type, items)
+                if extended is not None:
+                    items = extended
             dtos = [_item_dto(row, it, server_id) for it in items]
             total = len(dtos)
             end = None if limit is None else start_index + limit

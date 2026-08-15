@@ -28,7 +28,7 @@ from .cache import TtlCache
 from .country import is_blocked_country
 from .filters import matches_axes, style_key
 from .health import TRACKER
-from .home import build_genre_rows, build_home_rows, section_row_type
+from .home import build_genre_rows, build_home_rows, round_robin_dedup, section_row_type
 from .http_client import get_client
 from .llm import active_profile, fetch_profile, set_active_profile
 from .merge import group_key_from, item_group_key, merge_results
@@ -37,6 +37,7 @@ from .models import (
     STATUS_WARMING,
     ContentResponse,
     ErrorResponse,
+    HomeItem,
     HomeResponse,
     HomeRow,
     MediaForm,
@@ -86,6 +87,16 @@ WARM_WAIT_S: float = 15.0
 #: cache key shape (``content:{provider}:{external}``), one clear().
 content_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_content_s)
 blocklist_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_content_s)
+#: Deep-row extension caches (spec #305): the merged pool BEYOND a
+#: home row's snapshot (``row_deep_cache``, keyed per row kind) and the
+#: underlying provider browse pages 2..N (``deep_page_cache``, keyed per
+#: provider/section/page). Both use the browse-cache TTL so repeated
+#: scroll passes are instant and upstream load stays bounded — the same
+#: TtlCache machinery as the per-page browse cache, no new layer.
+#: Cleared with the home snapshot on rebuild (the pools are
+#: snapshot-anchored).
+row_deep_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_search_s)
+deep_page_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_search_s)
 
 #: Subscription-gate verdict store: ``content:{provider}:{external}`` →
 #: True (gated) / False (known-good). Written by the catalog sweep and
@@ -383,6 +394,10 @@ def _cache_home(
     )
     resp = HomeResponse(rows=rows)
     home_cache.set(_HOME_KEY, resp)
+    # A new snapshot invalidates the deep-row pools (spec #305): they
+    # are anchored to the snapshot's page-1 items, so a rebuild must
+    # not serve a pool deduped against the previous snapshot.
+    row_deep_cache.clear()
     sources = _build_sources_map(newest, popular, type_lists)
     sources_cache.set(_SOURCES_KEY, sources)
     _snapshot_store().save(resp, sources)
@@ -392,6 +407,160 @@ def _cache_home(
 def get_home() -> HomeResponse | None:
     """Cached home snapshot without triggering a build (None on cold cache)."""
     return cast(HomeResponse, home_cache.get(_HOME_KEY))
+
+
+# ---------------------------------------------------------------------------
+# Deep rows (spec #305): lazy pagination of home rows
+# ---------------------------------------------------------------------------
+
+#: Row kinds whose pool extends past the snapshot when the client
+#: scrolls (spec #305): the five type rows, the two form-split
+#: «Нещодавно додані» rows, and «Популярні зараз». The personalized
+#: rows («Нові серії», «Нещодавно переглянуто», «Рекомендовано для
+#: тебе», «Схоже на X») and the genre rails stay snapshot-bounded by
+#: design (their pool IS the snapshot).
+_EXTENDABLE_ROWS = frozenset(
+    {
+        "movie",
+        "series",
+        "anime",
+        "cartoon",
+        "dorama",
+        "recent_movie",
+        "recent_series",
+        "popular",
+    }
+)
+
+#: Form filter for the form-split recent rows: a movie-form recent row
+#: must never pick up series cards from a provider's deeper newest
+#: pages (mirrors the page-1 build's per-form filter).
+_RECENT_ROW_FORM = {"recent_movie": "movie", "recent_series": "series"}
+
+
+def _row_sources(row_type: str) -> list[tuple[str, str]]:
+    """(provider_id, section_id) pairs whose deeper pages extend a row kind.
+
+    Mirrors the home build's page-1 sources: the five type rows come
+    from every provider section whose Model B axes map to that kind
+    (``home.section_row_type``); the form-split recent rows come from
+    the providers' ``newest_section`` (their page-1 source — the form
+    filter applies at item level); «Популярні зараз» comes from the
+    ``popular`` section of whichever provider holds the role.
+    """
+    sources: list[tuple[str, str]] = []
+    for pid, provider in PROVIDERS.items():
+        if row_type in _RECENT_ROW_FORM:
+            if provider.newest_section is not None:
+                sources.append((pid, provider.newest_section))
+        elif row_type == "popular":
+            if provider.has_section("popular"):
+                sources.append((pid, "popular"))
+        else:
+            for section in provider.sections:
+                if section_row_type(section) == row_type:
+                    sources.append((pid, section.id))
+    return sources
+
+
+def _deep_key(row_type: str) -> str:
+    return f"row-deep:{row_type}"
+
+
+async def extend_row_pool(
+    row_type: str,
+    snapshot_items: Sequence[HomeItem],
+) -> list[HomeItem] | None:
+    """The row's pool past the snapshot (spec #305), or None when bounded.
+
+    Called by the facade's Items route when the client requests a page
+    beyond the snapshot row. Fetches provider browse pages 2..N for the
+    row's contributing sections under the shared search budget (depth
+    bounded by ``CS_UK_ROW_MAX_PAGES``, default 5 ≈ 100 cards per row),
+    merges them with the same round-robin + group-key dedupe the home
+    build uses, and returns the snapshot items followed by the new
+    deduped cards.
+
+    None = the row kind does not extend (personalized / genre rails), no
+    contributing sections, or every deeper fetch failed — the caller
+    then serves the snapshot slice unchanged (graceful degradation).
+    The extended pool caches per row kind with the browse-cache TTL and
+    is cleared when the home snapshot rebuilds.
+    """
+    if row_type not in _EXTENDABLE_ROWS or not snapshot_items:
+        return None
+    cached = row_deep_cache.get(_deep_key(row_type))
+    if cached is not None:
+        return cast(list[HomeItem], cached)
+    sources = _row_sources(row_type)
+    if not sources:
+        return None
+    max_pages = max(_config.SETTINGS.row_max_pages, 1)
+    form = _RECENT_ROW_FORM.get(row_type)
+    http = get_client()
+    collected: dict[str, list[SearchResult]] = {}
+
+    async def _fetch(pid: str, section_id: str, page: int) -> None:
+        cache_key = f"deep:{pid}:{section_id}:{page}"
+        cached_page = deep_page_cache.get(cache_key)
+        if cached_page is None:
+            try:
+                results, _ = await PROVIDERS[pid].browse(section_id, page, http)
+            except Exception as e:  # noqa: BLE001 — one failing page degrades, never breaks
+                log.warning(
+                    "deep row fetch skipped provider=%s section=%s page=%d err=%s",
+                    pid,
+                    section_id,
+                    page,
+                    e,
+                )
+                TRACKER.record(pid, ok=False)
+                return
+            TRACKER.record(pid, ok=True)
+            deep_page_cache.set(cache_key, list(results))
+        else:
+            results = cast(list[SearchResult], cached_page)
+        if form is not None:
+            results = [r for r in results if r.form == form]
+        if results:
+            collected.setdefault(pid, []).extend(results)
+
+    tasks = [
+        asyncio.create_task(_fetch(pid, section_id, page))
+        for pid, section_id in sources
+        for page in range(2, max_pages + 1)
+    ]
+    if not tasks:
+        return None
+    # Bound the fan-out the same way the home build does: one hung
+    # provider page must not drag the scroll request past the shared
+    # search budget.
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=False),
+            timeout=_config.SETTINGS.search_total_timeout_s,
+        )
+    except TimeoutError:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        log.warning("deep row extension hit overall budget row=%s sources=%d", row_type, len(sources))
+
+    if not any(collected.values()):
+        return None  # every deeper fetch failed or ran dry → snapshot slice
+
+    raw_total = sum(len(v) for v in collected.values())
+    deeper = round_robin_dedup(collected, limit=raw_total)
+    seen = {it.group_key for it in snapshot_items}
+    pool = list(snapshot_items)
+    for it in deeper:
+        if it.group_key in seen:
+            continue
+        pool.append(it)
+        seen.add(it.group_key)
+    row_deep_cache.set(_deep_key(row_type), pool)
+    return pool
 
 
 def _snapshot_store() -> SnapshotStore:
@@ -500,6 +669,9 @@ async def _warm_profiles(home: HomeResponse) -> None:
     await asyncio.wait(tasks, timeout=_config.SETTINGS.search_total_timeout_s)
     if added:
         home_cache.clear()
+        # The next home rebuild changes the snapshot — drop the
+        # snapshot-anchored deep pools with it (spec #305).
+        row_deep_cache.clear()
 
 
 def _recommendation_rows(rows: Sequence[HomeRow]) -> list[HomeRow]:
@@ -1485,6 +1657,8 @@ __all__ = [
     "await_uakino_ready",
     "blocklist_cache",
     "content_cache",
+    "deep_page_cache",
+    "extend_row_pool",
     "filter_gated_items",
     "gated_cache",
     "get_home",
@@ -1494,6 +1668,7 @@ __all__ = [
     "register_search_groups",
     "resolve_group",
     "resolve_group_content",
+    "row_deep_cache",
     "search_cache",
     "should_skip_uakino_in_fanout",
     "sources_cache",

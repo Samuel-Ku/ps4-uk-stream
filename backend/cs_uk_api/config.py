@@ -97,6 +97,12 @@ class Settings:
     llm_base_url: str | None = None
     llm_key: str | None = None
     llm_model: str | None = None
+    #: Deep rows (spec #305): max upstream browse pages fetched per row
+    #: BEYOND the snapshot page when the client scrolls a home row
+    #: (default 5 ≈ 100 cards per row). Override via
+    #: ``CS_UK_ROW_MAX_PAGES``; deeper requests return the exhausted
+    #: tail. The initial row stays at the snapshot cap.
+    row_max_pages: int = 5
 
 
 def _load_resume_path() -> str | None:
@@ -206,6 +212,7 @@ def load_settings() -> Settings:
         llm_base_url=os.environ.get("CS_UK_LLM_BASE_URL") or None,
         llm_key=os.environ.get("CS_UK_LLM_KEY") or None,
         llm_model=os.environ.get("CS_UK_LLM_MODEL") or None,
+        row_max_pages=int(os.environ.get("CS_UK_ROW_MAX_PAGES", "5")),
     )
 
 

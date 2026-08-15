@@ -47,7 +47,8 @@ The service is LAN-only by design (ADR-0003: one host, one uvicorn
 process, no auth). Tunable knobs: `CS_UK_CACHE_SEARCH`,
 `CS_UK_CACHE_CONTENT`, `CS_UK_CACHE_POSTER`,
 `CS_UK_POSTER_DISK_TTL`, `CS_UK_RESUME_PATH`, `CS_UK_USER_STATE_PATH`,
-`UAKINO_CHROMIUM` — see `CONTEXT.md` §Cache contract.
+`UAKINO_CHROMIUM`, `CS_UK_ROW_MAX_PAGES` — see `CONTEXT.md` §Cache
+contract.
 
 **Continue watching («Продовжити перегляд»)** persists playback
 positions in one versioned JSON file, by default

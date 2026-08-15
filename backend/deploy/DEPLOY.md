@@ -72,6 +72,7 @@ Notes:
 | `CS_UK_CACHE_SEARCH` / `CS_UK_CACHE_CONTENT` / `CS_UK_CACHE_POSTER` | cache TTLs (s), defaults 300 / 1800 / 3600 |
 | `CS_UK_POSTER_DISK_TTL` | poster disk-cache TTL (s), default 7 days |
 | `CS_UK_RESUME_PATH` / `CS_UK_USER_STATE_PATH` | relocate the resume / user-state JSON files |
+| `CS_UK_ROW_MAX_PAGES` | deep-rows depth (spec #305): max upstream browse pages fetched per home row beyond the snapshot when the client scrolls (default 5 ≈ 100 cards per row) |
 | `UAKINO_CHROMIUM` | Chromium binary for the uakino browser session (default `/usr/bin/chromium`) |
 | `CS_UK_LLM_BASE_URL` / `CS_UK_LLM_KEY` / `CS_UK_LLM_MODEL` | optional LLM taste-profile layer (all three set to activate; never commit the key) |
 | `CS_UK_DRIFT_STATE` / `CS_UK_DRIFT_REPORT` | relocate the drift baseline/report files (default `~/.cache/cs-uk-api/drift-{state,report}.json`) |
