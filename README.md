@@ -53,7 +53,7 @@ contract.
 
 ```bash
 cd backend && . .venv/bin/activate
-pytest cs_uk_api/tests -q      # 1020 tests, fixtures only (no live I/O)
+pytest cs_uk_api/tests -q      # 1095 tests, fixtures only (no live I/O)
 ruff check cs_uk_api           # clean
 mypy cs_uk_api                 # strict on the package (tests excluded in pyproject)
 ```

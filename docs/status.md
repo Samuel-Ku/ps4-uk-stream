@@ -12,6 +12,42 @@ Release gate (2026-08-14, v1.0.0): `pytest` 1020 passed; `ruff check
 cs_uk_api` clean; `mypy cs_uk_api` strict-clean on the shipped package
 (test files excluded via `pyproject.toml` `exclude`).
 
+Deepening wave (2026-08-15, spec #309 — Arch T10/T11/T12, issues
+#319/#320/#321): zero wire-visible change; the seams are recorded in
+[`docs/architecture.md`](architecture.md). Pillow added to declared
+dependencies (the poster WebP transcode was an undeclared runtime dep).
+Wave release gate: `pytest` **1036 passed**; `ruff check cs_uk_api`
+clean; `mypy cs_uk_api` strict-clean (56 files). The on-device Switchfin
+sweep pass is pending hardware (repo's standing convention for
+on-console runs).
+
+Round-2 (2026-08-15, spec #323 — Store T1 #324 + T3 #326, Probe T1
+#327): `versioned_store.py` — the deep versioned-JSON-persistence module
+(corrupt-safe load ladder, atomic `mkstemp`+`replace` write, optional
+`DebouncedSave`, shared `atomic_write_text` primitive) — with the
+profile store as the first thin adapter (`Settings.profile_file` opt-in;
+default in-memory, zero change) and the episode-rail sweep's Markdown
+report migrated to the atomic write (the tree's last non-atomic file
+write). `probe.py` names the three probe facts (entry-point selection,
+wire-id split, gated-is-not-a-failure per ADR-0002); the episode-rail
+sweep migrated onto it (row-type/attribution + verdict vocabulary,
+Probe T2 #328) and the throwaway `probe_rail.py` was deleted. The
+user-state/snapshot/drift-baseline adapters wait on the unmerged
+round-1 interface work. Gate: `pytest` **1079 passed**;
+`ruff` clean; `mypy` strict-clean (58 files).
+
+Row registry (2026-08-15, spec #323 — Row T1 #329): one declarative
+table (`cs_uk_api/row_kinds.py`) is now the single source of row-kind
+facts — each home-row kind maps to its title, form filter, sources
+selector, wire mappings (Jellyfin Type / CollectionType / view id) and
+extendability flag. The home builder and the facade read it; the three
+private vocabularies retired (`home._TYPE_ORDER` / `_item_matches_row`,
+`router._VIEW_ID_BY_TYPE` / `_COLLECTION_TYPE_BY_ROW` /
+`_JF_TYPE_BY_ROW` + reverse index). The deep-rows consumer (#305) is
+not in this tree — its `extendable` flag is declared and pinned by the
+consistency test `tests/test_row_kinds.py`. Gate: `pytest` **1095
+passed**; `ruff` clean; `mypy` strict-clean (59 files).
+
 Diagnostics + fix pass (2026-08-08, see `docs/diagnostics-2026-08-08.md`
 and GitHub issues #112–#125): live-gate review of all 19 providers
 found and fixed four code bugs (kinotron series episodes 404,
