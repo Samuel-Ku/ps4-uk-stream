@@ -47,14 +47,25 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote
 
+from .probe import (
+    VERDICT_FAIL as FAIL,
+)
+from .probe import (
+    VERDICT_NO_EPISODES as NO_EPISODES,
+)
+from .probe import (
+    VERDICT_OK as OK,
+)
+from .probe import (
+    attributed_provider,
+    is_episodic_item,
+)
+from .versioned_store import atomic_write_text
+
 #: The hops a series item must survive to be playable on PS4.
 HOP_SHOWS = "Shows"
 HOP_PLAYBACK = "PlaybackInfo"
 HOP_STREAM = "stream"
-
-OK = "ok"
-FAIL = "fail"
-NO_EPISODES = "no_episodes"  # rail resolved but yielded zero episodes
 
 #: HTTP status a hop must return to count as passed.
 PASS_STATUS = 200
@@ -280,6 +291,19 @@ def render_report(providers: Sequence[ProviderResult]) -> str:
     return "\n".join(lines)
 
 
+def write_report(path: str, report: str) -> None:
+    """Write the sweep report atomically (spec #323, Store T3 #326).
+
+    A torn report is worse than the previous one: a reader (or a future
+    drift diff over ``docs/sweep-episode-rail-<date>.md``) may open it
+    mid-write. ``atomic_write_text`` (mkstemp + replace in the same
+    directory) guarantees readers see the old file or the new one, never
+    a half-written one; it never raises. Output bytes are identical to
+    the old ``open(path, "w")`` write (report + trailing newline).
+    """
+    atomic_write_text(path, report + "\n")
+
+
 # --------------------------------------------------------------------------
 # Live driver layer
 # --------------------------------------------------------------------------
@@ -291,17 +315,12 @@ def render_report(providers: Sequence[ProviderResult]) -> str:
 # wrapper ``scripts/sweep_episode_rail.sh`` boots the server and calls
 # ``sweep_episode_rail`` via ``python -m cs_uk_api.sweep_episode_rail``.
 
-#: Item ``type`` values that denote an episodic (series) card — the only
-#: cards with an episode-rail to sweep. Mirrors ``_JF_TYPE_BY_ROW`` in the
-#: facade router (movie is a dead end for this sweep; D3).
-#: Home-row kinds that are episodic (sweepable). Contract #135: rows
-#: are kinded by ``HomeRow.type``; the items inside carry Model B axes,
-#: and a ``form`` of ``series`` is the episodic signal.
-_SERIES_TYPES = frozenset({"series"})
-
-#: Style-free open() of a json body; kept tiny so tests can fake a client
-#: without dragging in httpx. A client is ``Callable[[str, dict], HopResult]``
-#: taking (url, headers) and returning the parsed outcome.
+#: Row-type and provider-attribution facts come from the probing module
+#: (spec #323, Probe T2 #328): ``is_episodic_item`` (Model B
+#: ``form == "series"`` is the episodic signal — a movie is a dead end
+#: for this sweep, D3) and ``attributed_provider`` (first-seen provider).
+#: ``sweep_home`` walks items in ``registered`` order so skipped
+#: providers are recorded, not dropped.
 
 
 def _series_items_by_provider(home: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
@@ -309,19 +328,20 @@ def _series_items_by_provider(home: dict[str, Any]) -> dict[str, list[dict[str, 
 
     A merged ``HomeItem`` lists every contributing provider in
     ``providers``; the first one is the source the facade's resolution map
-    will pick, so it is the right attribution to sweep under. A provider
+    will pick, so it is the right attribution to sweep under (the probe
+    module's ``attributed_provider`` decides in one place). A provider
     with zero series items in the snapshot is simply absent here — the
     caller records it as skipped (acceptance criterion).
     """
     out: dict[str, list[dict[str, Any]]] = {}
     for row in home.get("rows", []):
         for item in row.get("items", []):
-            if item.get("form") not in _SERIES_TYPES:
+            if not is_episodic_item(item):
                 continue
-            providers = item.get("providers") or []
-            if not providers:
+            provider = attributed_provider(item)
+            if provider is None:
                 continue
-            out.setdefault(providers[0], []).append(item)
+            out.setdefault(provider, []).append(item)
     return out
 
 
@@ -508,8 +528,7 @@ def _main(argv: list[str]) -> int:
         report = render_report(results)
         print(report)
         if args.out:
-            with open(args.out, "w", encoding="utf-8") as fh:
-                fh.write(report + "\n")
+            write_report(args.out, report)
         return 0
     return 2
 
