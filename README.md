@@ -74,6 +74,20 @@ providers' own pages by a bounded background warm, similarity is a
 pure weighted-cosine function, and nothing leaves the LAN — no API
 keys, no external services (see `CONTEXT.md` §Recommendations).
 
+**Deep rows (spec #305)** — home rows scroll far beyond the first 20
+cards: when a client pages past a row's snapshot, the facade lazily
+extends the pool from the providers' browse pages 2..N (round-robin +
+group-key dedupe against the snapshot, so page 2+ shows NEW cards
+with an honest `TotalRecordCount`), and the row ends cleanly when the
+bounded depth is exhausted. The depth is capped by
+`CS_UK_ROW_MAX_PAGES` (default 5 upstream pages per provider, ≈100
+cards per row) so upstream load stays under control — the tradeoff is
+that scrolling is deep but finite, not unbounded. Extended pools cache
+at the browse TTL (repeated passes are instant); a failing provider
+page skips that provider and a fully-failed extension degrades to the
+snapshot slice, so browsing never breaks. The personalized and genre
+rails stay snapshot-bounded by design (their pool IS the snapshot).
+
 **LLM taste-profile layer (spec #290, OPTIONAL)** — an optional
 enrichment of the personalized rows against any OpenAI-compatible
 endpoint (OpenAI, OpenRouter, Groq, or a local llama.cpp/ollama

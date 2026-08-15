@@ -1273,6 +1273,14 @@ One manual checklist line for the on-device pass — deliberately NOT a
       `/Items/{id}/Download` 200 + RFC 5987 `filename*` on the backend
       (was 404, ticket #296).
 
+- [ ] Deep rows (spec #305): open a «Фільми» row and scroll it to
+      ~100 cards — the scroll keeps serving NEW cards (no repeats of
+      the first ~20) and the row ends cleanly around the bounded
+      depth (`CS_UK_ROW_MAX_PAGES` × provider pages; wire-verified
+      page-2 distinct cards + honest `TotalRecordCount` on the
+      backend, #306/#307). Also confirm the «Нещодавно переглянуто»
+      and genre rails still end at the snapshot (unchanged behaviour).
+
 - [x] User state (spec #257, verified 2026-08-14): on a detail screen tap
       the heart — it lights and stays lit after an app relaunch (toggle
       answers UserDataResult, mark persists in `user-state.json`, and the

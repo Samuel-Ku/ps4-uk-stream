@@ -234,6 +234,23 @@ boundary validation is `fullmatch` everywhere; uakino movies without a
   1204; +30 — parser/client, scorer enrichment incl. the
   byte-identical no-profile guarantee, refresh wiring, facade
   vocabulary + idea-row view, trigger route).
+- **Deep rows (spec #305, tickets #306–#308, 2026-08-15).** Home
+  rows now scroll far beyond 20 cards: when the client requests a
+  page past a row's snapshot, the view-items route lazily extends the
+  pool from provider browse pages 2..N (bounded by the depth knob
+  `CS_UK_ROW_MAX_PAGES`, default 5 ≈ 100 cards per row), merged with
+  the home build's round-robin + group-key dedupe and deduped against
+  the snapshot — page 2+ serves NEW cards with an honest
+  `TotalRecordCount`, the row ends honestly (short page) when the
+  bounded depth is exhausted, and a failing extension degrades to the
+  snapshot slice. The pool caches per row kind at the browse TTL
+  (underlying pages per provider/section/page) and is cleared when
+  the home snapshot rebuilds. Scope: the browse rails (type,
+  form-split recent, popular) extend; the personalized and genre
+  rails stay snapshot-bounded. Test counts: 1244 passing (was 1234;
+  +10 — extension engine wire/unit tests incl. per-provider flap
+  tolerance, page-2 dedupe + honest count, depth knob, cache reuse,
+  bounded personalized rows, recent-row form filter).
 
 ```bash
 cd backend
