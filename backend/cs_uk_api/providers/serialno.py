@@ -85,6 +85,16 @@ def _parse_fmeta(soup: BeautifulSoup) -> tuple[int | None, list[str], list[Perso
                 # round-trips (kinotron convention).
                 people.append(Person(id=f"serialno:{name}", name=name, role=role))
     return year, genres, people
+#: A dubbing label inside the ``{...}`` prefix of a live flat-payload
+#: file value (e.g. ``{КІНО}https://calypso.tortuga.tw/...``, ticket #332).
+_DUB_PREFIX_RE = re.compile(r"^\{(.*?)\}")
+
+
+def _dub_prefix(file_value: str) -> str | None:
+    m = _DUB_PREFIX_RE.match(file_value)
+    return m.group(1).strip() if m else None
+
+
 def _season_list(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Normalize the decoded player payload to a season list.
 
@@ -310,7 +320,7 @@ class SerialnoProvider(BaseProvider):
         if iframe is None or not iframe.get("src"):
             raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no player iframe on content page")
         player_url = str(iframe["src"])
-        seasons = await self._load_series_seasons(player_url, external_id, http, self.id)
+        seasons, translations = await self._load_series_seasons(player_url, external_id, http, self.id)
         mb_form, mb_styles = model_b_axes("series")
         return ContentResponse(
             id=f"serialno:{external_id}",
@@ -320,7 +330,7 @@ class SerialnoProvider(BaseProvider):
             poster=poster,
             genres=genres,
             people=people,
-            translations=[Translation(id="uk", label="Українська")],
+            translations=translations or [Translation(id="uk", label="Українська")],
             seasons=seasons,
             country=country,
             form=mb_form,
@@ -329,18 +339,19 @@ class SerialnoProvider(BaseProvider):
 
     async def _load_series_seasons(
         self, player_url: str, external_id: str, http: httpx.AsyncClient, provider_id: str
-    ) -> list[Season] | None:
+    ) -> tuple[list[Season] | None, list[Translation]]:
         """Fetch the tortuga.tw player page and decode the obfuscated
         season/episode JSON list.
 
         The decoded ``file:`` payload for a series starts with ``[``
-        and is a list of "dub" objects, each with a ``folder: [...]``
-        of seasons, each with a ``folder: [...]`` of episode dicts
-        carrying ``title``, ``file`` (the m3u8 URL), ``id``,
-        ``poster``, and ``subtitle`` fields.
+        and is either a list of "dub" objects, each with a ``folder:
+        [...]`` of seasons (dub-wrapped), or a flat list of seasons
+        whose episodes carry a ``{DUB_LABEL}`` prefix on their file
+        value. Both shapes carry dubbing-studio names that the dub
+        picker (spec #276) must see as translations (ticket #332).
 
-        Returns ``None`` on parse failure so the caller surfaces an
-        empty seasons list — the live gate will then see no episodes
+        Returns ``(None, [])`` on parse failure so the caller surfaces
+        an empty seasons list — the live gate will then see no episodes
         and stop, instead of crashing."""
         try:
             resp = await self.guarded_get(http, player_url)
@@ -361,10 +372,40 @@ class SerialnoProvider(BaseProvider):
             raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"player json: {e}") from e
         seasons: list[Season] = []
         if not data:
-            return None
+            return None, []
         season_list = _season_list(data)
         if not season_list:
-            return None
+            return None, []
+        # Dub-wrapped shape: the top-level entries are dubbing tracks
+        # (studio titles) whose ``folder`` holds the seasons (ticket #332).
+        # Mirrors ``_season_list``'s shape detection: children carrying a
+        # nested ``folder`` key = dubs; flat seasons carry episodes.
+        first_entry = data[0] if data else {}
+        first_folder = first_entry.get("folder") or [] if isinstance(first_entry, dict) else []
+        is_dub_wrapped = bool(first_folder) and any(
+            isinstance(x, dict) and "folder" in x for x in first_folder
+        )
+        wrapped_dubs = (
+            [
+                str(d.get("title", "")).strip()
+                for d in data
+                if isinstance(d, dict) and str(d.get("title", "")).strip()
+            ]
+            if is_dub_wrapped
+            else []
+        )
+        # Flat shape: dub labels live in the ``{...}`` prefixes of the
+        # episode file values.
+        flat_dubs: list[str] = []
+        for season in season_list:
+            if not isinstance(season, dict):
+                continue
+            for ep in season.get("folder") or []:
+                if isinstance(ep, dict):
+                    label = _dub_prefix(str(ep.get("file", "")))
+                    if label and label not in flat_dubs:
+                        flat_dubs.append(label)
+        dub_titles = wrapped_dubs or flat_dubs
         for s_idx, season in enumerate(season_list, start=1):
             if not isinstance(season, dict):
                 continue
@@ -376,14 +417,18 @@ class SerialnoProvider(BaseProvider):
                 if not isinstance(ep, dict):
                     continue
                 ep_title = str(ep.get("title", "")).strip() or f"Серія {e_idx}"
+                ep_label = _dub_prefix(str(ep.get("file", "")))
+                ep_dubs = [ep_label] if ep_label else dub_titles
                 episodes.append(Episode(
                     number=e_idx,
                     id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
                     title=ep_title,
+                    translations=[Translation(id=t, label=t) for t in ep_dubs if t] or None,
                 ))
             if episodes:
                 seasons.append(Season(number=s_idx, episodes=episodes))
-        return seasons or None
+        translations = [Translation(id=t, label=t) for t in dub_titles if t]
+        return (seasons or None), translations
 
     async def stream(
         self, content_id: str, translation: str | None, http: httpx.AsyncClient
@@ -421,7 +466,7 @@ class SerialnoProvider(BaseProvider):
             raise ProviderError(
                 ProviderErrorCode.PARSE_FAILED, "player payload is not a season/episode list"
             )
-        stream_url = self._select_stream_url(decoded, ep_suffix)
+        stream_url = self._select_stream_url(decoded, ep_suffix, translation)
         if stream_url is None:
             raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"no stream url for {ep_suffix!r}")
         return StreamResponse(
@@ -431,9 +476,15 @@ class SerialnoProvider(BaseProvider):
         )
 
     @staticmethod
-    def _select_stream_url(decoded: str, ep_suffix: str) -> str | None:
+    def _select_stream_url(decoded: str, ep_suffix: str, translation: str | None = None) -> str | None:
         """Resolve the m3u8 URL for a series episode (the season/
         episode JSON list).
+
+        The dub picker's translation id (spec #276) selects the
+        matching dubbing track (ticket #332): on the dub-wrapped shape
+        the top-level entries are dubs titled by studio, on the flat
+        shape the episode files carry a ``{DUB_LABEL}`` prefix. An
+        unmatched translation falls back to the default track.
 
         Returns ``None`` for missing / malformed / out-of-range
         suffixes so the caller surfaces ``parse_failed`` rather than
@@ -452,6 +503,24 @@ class SerialnoProvider(BaseProvider):
             return None
         if not data:
             return None
+        if translation:
+            # Dub-wrapped: pick the dub whose title matches, then the
+            # same season/episode indexes inside it.
+            for dub in data:
+                if not isinstance(dub, dict):
+                    continue
+                if str(dub.get("title", "")).strip() != translation:
+                    continue
+                seasons = dub.get("folder") or []
+                if not isinstance(seasons, list) or s_idx > len(seasons):
+                    continue
+                season = seasons[s_idx - 1]
+                episodes_raw = season.get("folder") if isinstance(season, dict) else []
+                if isinstance(episodes_raw, list) and 1 <= e_idx <= len(episodes_raw):
+                    ep = episodes_raw[e_idx - 1]
+                    if isinstance(ep, dict):
+                        return SerialnoProvider._clean_file_value(str(ep.get("file", ""))) or None
+            # Fall through to the default track when no dub matched.
         season_list = _season_list(data)
         if not season_list:
             return None
@@ -463,18 +532,33 @@ class SerialnoProvider(BaseProvider):
         episodes_raw = season.get("folder") or []
         if not isinstance(episodes_raw, list) or e_idx < 1 or e_idx > len(episodes_raw):
             return None
-        ep = episodes_raw[e_idx - 1]
+        if translation:
+            # Flat shape: prefer the episode whose ``{DUB_LABEL}``
+            # prefix matches the picked translation.
+            candidates = [
+                ep for ep in episodes_raw
+                if isinstance(ep, dict) and _dub_prefix(str(ep.get("file", ""))) == translation
+            ]
+            if candidates:
+                ep = candidates[e_idx - 1] if e_idx <= len(candidates) else candidates[0]
+            else:
+                ep = episodes_raw[e_idx - 1]
+        else:
+            ep = episodes_raw[e_idx - 1]
         if not isinstance(ep, dict):
             return None
-        file_value = str(ep.get("file", ""))
-        # Live Tortuga series files carry an optional `{DUB_LABEL}`
-        # prefix and a trailing `(subtitle:...)` marker; strip both so
-        # the client receives a bare m3u8 URL.
+        return SerialnoProvider._clean_file_value(str(ep.get("file", ""))) or None
+
+    @staticmethod
+    def _clean_file_value(file_value: str) -> str:
+        """Strip the ``{DUB_LABEL}`` prefix and the ``(subtitle:...)``
+        marker from a live Tortuga file value so the client receives a
+        bare m3u8 URL."""
         if file_value.startswith("{"):
             file_value = file_value.split("}", 1)[1]
         if "(subtitle:" in file_value:
             file_value = file_value.split("(subtitle:", 1)[0]
-        return file_value or None
+        return file_value
 
 
 __all__ = ["SerialnoProvider"]

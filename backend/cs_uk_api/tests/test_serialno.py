@@ -128,8 +128,8 @@ async def test_serialno_content_series_parses_title_poster_player():
 @pytest.mark.asyncio
 async def test_serialno_content_description_and_translation():
     """The content response carries the page description (from
-    `.fdesc`) and a single Ukrainian translation (the only language
-    the site ships)."""
+    `.fdesc`) and the dubbing-studio name decoded from the player
+    payload (ticket #332 — the dub-wrapped shape's top entry title)."""
     content_html = _fixture("content_series.html")
     player_html = _fixture("player_embed.html")
     with respx.mock(assert_all_called=True) as router:
@@ -142,7 +142,7 @@ async def test_serialno_content_description_and_translation():
         async with httpx.AsyncClient() as http:
             c = await SerialnoProvider().content("2075-1670", http)
     assert "сатиричн" in c.description
-    assert len(c.translations) == 1 and c.translations[0].id == "uk"
+    assert [t.label for t in c.translations] == ["ТакТребаПродакшн"]
 
 
 @pytest.mark.asyncio
@@ -328,3 +328,105 @@ async def test_serialno_stream_bad_slug_raises():
             with pytest.raises(ProviderError) as exc_info:
                 await SerialnoProvider().stream("2075-../admin:s1e1", None, http)
     assert exc_info.value.code == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# Ticket #332: dubbing-studio names (multi-dub payloads)
+# ---------------------------------------------------------------------------
+
+def _encode_payload(payload: str, salt: int = 42) -> str:
+    """Tortuga-encode a decoded JSON payload (the XOR is symmetric)."""
+    import base64 as b64
+
+    raw = bytes([salt]) + bytes(
+        b ^ ((salt + 7 * i + 13) % 256) for i, b in enumerate(payload.encode("utf-8"))
+    )
+    return b64.b64encode(raw).decode()
+
+
+def _player_page(payload: str) -> str:
+    return f"<html><body><script>file: \"{_encode_payload(payload)}\"</script></body></html>"
+
+
+TWO_DUB_WRAPPED_PAYLOAD = (
+    '[{"title":"ТакТребаПродакшн","folder":[{"title":" Сезон 1","folder":['
+    '{"title":"Серія 1","file":"https://calypso.tortuga.tw/hls/serials/x.s01e01.ttp/index.m3u8"},'
+    '{"title":"Серія 2","file":"https://calypso.tortuga.tw/hls/serials/x.s01e02.ttp/index.m3u8"}]}]},'
+    '{"title":"Інша Студія","folder":[{"title":" Сезон 1","folder":['
+    '{"title":"Серія 1","file":"https://calypso.tortuga.tw/hls/serials/x.s01e01.other/index.m3u8"},'
+    '{"title":"Серія 2","file":"https://calypso.tortuga.tw/hls/serials/x.s01e02.other/index.m3u8"}]}]}'
+    "]"
+)
+
+
+@pytest.mark.asyncio
+async def test_serialno_content_multi_dub_wrapped_exposes_dub_translations():
+    """Ticket #332: the dub-wrapped payload's top entries are dubbing
+    studios — they must surface as content translations, not a uk stub."""
+    content_html = _fixture("content_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://serialno.tv/2075-1670.html").respond(200, text=content_html)
+        router.get("https://tortuga.tw/embed/2083").respond(
+            200, text=_player_page(TWO_DUB_WRAPPED_PAYLOAD)
+        )
+        async with httpx.AsyncClient() as http:
+            c = await SerialnoProvider().content("2075-1670", http)
+    assert [t.label for t in c.translations] == ["ТакТребаПродакшн", "Інша Студія"]
+    assert c.seasons is not None and len(c.seasons) == 1
+    ep = c.seasons[0].episodes[0]
+    assert [t.label for t in (ep.translations or [])] == ["ТакТребаПродакшн", "Інша Студія"]
+
+
+@pytest.mark.asyncio
+async def test_serialno_stream_multi_dub_wrapped_honors_translation():
+    """Ticket #332: the picked studio plays ITS folder's episode."""
+    content_html = _fixture("content_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://serialno.tv/2075-1670.html").respond(200, text=content_html)
+        router.get("https://tortuga.tw/embed/2083").respond(
+            200, text=_player_page(TWO_DUB_WRAPPED_PAYLOAD)
+        )
+        async with httpx.AsyncClient() as http:
+            default = await SerialnoProvider().stream("2075-1670:s1e1", None, http)
+            picked = await SerialnoProvider().stream("2075-1670:s1e1", "Інша Студія", http)
+    assert "s01e01.ttp" in default.url
+    assert "s01e01.other" in picked.url
+
+
+TWO_DUB_FLAT_PAYLOAD = (
+    '[{"title":"Сезон 1","folder":['
+    '{"title":"Серія 1","file":"{КІНО}https://calypso.tortuga.tw/hls/serials/x.s01e01.kino/index.m3u8"},'
+    '{"title":"Серія 1","file":"{HDrezka Studio}https://calypso.tortuga.tw/hls/serials/x.s01e01.rezka/index.m3u8"}]}]'
+)
+
+
+@pytest.mark.asyncio
+async def test_serialno_content_flat_exposes_prefix_dub_labels():
+    """Ticket #332: flat payloads carry the dub in the ``{...}`` file
+    prefix — those labels are the translations."""
+    content_html = _fixture("content_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://serialno.tv/2075-1670.html").respond(200, text=content_html)
+        router.get("https://tortuga.tw/embed/2083").respond(
+            200, text=_player_page(TWO_DUB_FLAT_PAYLOAD)
+        )
+        async with httpx.AsyncClient() as http:
+            c = await SerialnoProvider().content("2075-1670", http)
+    assert [t.label for t in c.translations] == ["КІНО", "HDrezka Studio"]
+
+
+@pytest.mark.asyncio
+async def test_serialno_stream_flat_honors_translation():
+    """Ticket #332: on the flat shape the picked dub label selects the
+    episode entry whose ``{...}`` prefix matches."""
+    content_html = _fixture("content_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://serialno.tv/2075-1670.html").respond(200, text=content_html)
+        router.get("https://tortuga.tw/embed/2083").respond(
+            200, text=_player_page(TWO_DUB_FLAT_PAYLOAD)
+        )
+        async with httpx.AsyncClient() as http:
+            default = await SerialnoProvider().stream("2075-1670:s1e1", None, http)
+            picked = await SerialnoProvider().stream("2075-1670:s1e1", "HDrezka Studio", http)
+    assert "s01e01.kino" in default.url
+    assert "s01e01.rezka" in picked.url
