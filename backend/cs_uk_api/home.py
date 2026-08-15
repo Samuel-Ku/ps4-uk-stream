@@ -39,18 +39,7 @@ from collections.abc import Mapping, Sequence
 
 from .merge import item_group_key, merge_results
 from .models import HomeItem, HomeRow, SearchResult, Section
-
-#: Five-row type-row order, per the issue #70 spec. Anything else in
-#: ``by_type`` is ignored (defensive — the route layer only buckets
-#: sections into these five).
-_TYPE_ORDER: tuple[tuple[str, str], ...] = (
-    ("movie", "Фільми"),
-    ("series", "Серіали"),
-    ("anime", "Аніме"),
-    ("cartoon", "Мультфільми"),
-    ("dorama", "Дорами"),
-)
-
+from .row_kinds import ROW_KINDS, TYPE_KINDS, item_matches_row
 
 #: Cap on raw items collected during the round-robin walk before we
 #: hand off to ``merge_results`` for dedup. The dedup is post-hoc (after
@@ -201,23 +190,6 @@ def section_row_type(section: Section) -> str | None:
     return None
 
 
-def _item_matches_row(type_key: str, item: SearchResult) -> bool:
-    """True when a listing item belongs in the row of the given kind.
-
-    The by-type rows are populated from provider sections whose DECLARED
-    axes key the row — but the items inside are what the upstream site
-    actually filed there. A mis-filed card (e.g. a series whose bare URL
-    an adapter classified as a film, 2026-08-14 eneyida drift) must not
-    leak into the row as a junk card. Form rows check ``item.form``;
-    style rows check the style set (an item without the style tag is
-    still legitimate content from a style section — the row filter only
-    guards against contradictory FORM on form rows).
-    """
-    if type_key in ("movie", "series"):
-        return item.form == type_key
-    return True
-
-
 def build_home_rows(
     *,
     newest: Mapping[str, Sequence[SearchResult]],
@@ -244,11 +216,13 @@ def build_home_rows(
     rows: list[HomeRow] = []
 
     # «Новинки» — emitted iff at least one provider contributed items.
+    # Title comes from the row-kind registry (Row T1 #329) — the single
+    # source of row-kind facts.
     if any(newest.values()):
         deduped = round_robin_dedup(newest, newest_limit)
         rows.append(
             HomeRow(
-                title="Новинки",
+                title=ROW_KINDS["newest"].title,
                 type="newest",
                 items=aggregate_by_group_key(deduped),
             )
@@ -263,24 +237,25 @@ def build_home_rows(
         deduped = round_robin_dedup(popular, newest_limit)
         rows.append(
             HomeRow(
-                title="Популярні зараз",
+                title=ROW_KINDS["popular"].title,
                 type="popular",
                 items=aggregate_by_group_key(deduped),
             )
         )
 
-    # Five type rows, in the spec's mandated order. A type with no
+    # Five type rows, in the registry's home order. A type with no
     # contributing providers is dropped from the response (it would
     # be an empty row, which would be worse than absence for the
     # client).
-    for type_key, label in _TYPE_ORDER:
-        per_pid = by_type.get(type_key, {})
+    for kind in TYPE_KINDS:
+        per_pid = by_type.get(kind, {})
         if not any(per_pid.values()):
             continue
         # Drop items whose FORM contradicts the row (upstream mis-filed
-        # cards must not surface as junk in the wrong row).
+        # cards must not surface as junk in the wrong row) — the
+        # registry's form filter.
         per_pid = {
-            pid: [it for it in items if _item_matches_row(type_key, it)]
+            pid: [it for it in items if item_matches_row(kind, it)]
             for pid, items in per_pid.items()
         }
         deduped = round_robin_dedup(per_pid, newest_limit)
@@ -288,8 +263,8 @@ def build_home_rows(
             continue
         rows.append(
             HomeRow(
-                title=label,
-                type=type_key,
+                title=ROW_KINDS[kind].title,
+                type=kind,
                 items=aggregate_by_group_key(deduped),
             )
         )

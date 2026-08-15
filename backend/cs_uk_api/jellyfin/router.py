@@ -38,6 +38,7 @@ from fastapi import (
 from fastapi.responses import RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
+from .. import config as _config
 from ..catalog_state import (
     get_home,
     group_key_for_external,
@@ -45,13 +46,10 @@ from ..catalog_state import (
     load_home,
     merged_search,
     peek_group_content,
-    playback_positions,
-    record_playback,
     register_search_groups,
     resolve_group,
     resolve_group_content,
 )
-from ..config import SETTINGS
 from ..health import TRACKER
 from ..http_client import get_client
 from ..models import (
@@ -65,8 +63,10 @@ from ..models import (
     StreamResponse,
 )
 from ..poster_proxy import fetch as fetch_poster_bytes
+from ..profile_store import Profile, profile_store
 from ..providers import PROVIDERS
 from ..providers.base import ProviderError
+from ..row_kinds import KINDS_BY_JF_TYPE, ROW_KINDS, VIEW_TYPE_BY_ID
 from .auth import require_token
 from .models import (
     AuthenticationResult,
@@ -165,54 +165,15 @@ def _server_id() -> str:
     A restart keeps the same ServerId (clients pin it in their local
     database), while two different deployments differ.
     """
-    return hashlib.sha256(f"{SETTINGS.host}:{SETTINGS.port}".encode()).hexdigest()[:16]
+    return hashlib.sha256(f"{_config.SETTINGS.host}:{_config.SETTINGS.port}".encode()).hexdigest()[:16]
 
 
-#: The home-row routing keys that can exist in a snapshot (v3 spec §3.1).
-#: A view's ``Id`` is a deterministic uuid5 of one of these keys, so the
-#: mapping is reversible (``_view_type_by_id``) and stable across
-#: restarts — a client's cached library list keeps working.
-_VIEW_TYPES = ("newest", "popular", "movie", "series", "anime", "cartoon", "dorama")
-
-_VIEW_ID_BY_TYPE = {
-    t: uuid.uuid5(uuid.NAMESPACE_URL, f"cs-uk-api-view:{t}").hex for t in _VIEW_TYPES
-}
-_VIEW_TYPE_BY_ID = {vid: t for t, vid in _VIEW_ID_BY_TYPE.items()}
-
-#: Jellyfin ``CollectionType`` per home-row routing key (D5). The movie
-#: row maps to the standard ``movies``; every other row is episodic-ish
-#: and maps to ``tvshows``. No client we target branches deeper than
-#: movie-vs-tvshows here.
-_COLLECTION_TYPE_BY_ROW = {
-    "movie": "movies",
-    "series": "tvshows",
-    "anime": "tvshows",
-    "cartoon": "tvshows",
-    "dorama": "tvshows",
-    "newest": "tvshows",
-    "popular": "tvshows",
-}
-
-#: Home-row kind → Jellyfin item Type. Only Movie/Series are expressible
-#: on the wire (AC: "correct Type (Movie/Series)"); style-tagged rows are
-#: episodic content and become Series. Row kinds come from the Model B
-#: section axes (contract #135) — the legacy ``type`` axis is gone.
-_JF_TYPE_BY_ROW = {
-    "movie": "Movie",
-    "series": "Series",
-    "anime": "Series",
-    "cartoon": "Series",
-    "dorama": "Series",
-}
-
-#: Reverse of ``_JF_TYPE_BY_ROW``: Jellyfin item Type → the home-row
-#: kinds that map to it. Multiple rows collapse onto one wire Type
-#: (series/anime/cartoon/dorama are all "Series"), so this is a
-#: set-valued index — used to translate ``includeItemTypes`` back to
-#: the row kinds the home snapshot is keyed by (ticket #213).
-_HOME_KINDS_BY_JF_TYPE: dict[str, set[str]] = {}
-for _kind, _jf_type in _JF_TYPE_BY_ROW.items():
-    _HOME_KINDS_BY_JF_TYPE.setdefault(_jf_type, set()).add(_kind)
+#: The home-row routing keys, their wire mappings and view ids all live
+#: in the row-kind registry (``row_kinds.ROW_KINDS``, Row T1 #329) — the
+#: single source of row-kind facts. A view's ``Id`` is a deterministic
+#: uuid5 of the kind (``RowKind.view_id``), so the mapping is reversible
+#: (``row_kinds.VIEW_TYPE_BY_ID``) and stable across restarts — a
+#: client's cached library list keeps working.
 
 
 def _parse_include_types(include_item_types: str | None) -> set[str] | None:
@@ -222,12 +183,15 @@ def _parse_include_types(include_item_types: str | None) -> set[str] | None:
     param is present but names nothing we express (→ filter everything
     out, mirroring the client's expectation that an unexpressible type
     yields an empty shelf).
+
+    Translation goes through the registry's reverse wire map
+    (``row_kinds.KINDS_BY_JF_TYPE``) — ticket #213.
     """
     if include_item_types is None:
         return None
     kinds: set[str] = set()
     for t in include_item_types.split(","):
-        kinds.update(_HOME_KINDS_BY_JF_TYPE.get(t.strip(), set()))
+        kinds.update(KINDS_BY_JF_TYPE.get(t.strip(), set()))
     return kinds
 
 
@@ -257,9 +221,9 @@ def _row_dto(row: HomeRow, server_id: str) -> BaseItemDto:
     return BaseItemDto(
         Name=row.title,
         ServerId=server_id,
-        Id=_VIEW_ID_BY_TYPE[row.type],
+        Id=ROW_KINDS[row.type].view_id,
         Type="CollectionFolder",
-        CollectionType=_COLLECTION_TYPE_BY_ROW.get(row.type),
+        CollectionType=ROW_KINDS[row.type].collection_type,
     )
 
 
@@ -283,9 +247,12 @@ def _item_dto(row: HomeRow, item: HomeItem, server_id: str) -> BaseItemDto:
         Name=item.title,
         ServerId=server_id,
         Id=item.group_key,
-        Type=_JF_TYPE_BY_ROW.get(form, "Series"),
+        # The item's FORM keys the wire Type (the registry's jf_type) —
+        # a mixed aggregate row (newest) still renders each card by its
+        # own form. ``form`` is always movie/series, both in the table.
+        Type=ROW_KINDS[form].jf_type,
         ProductionYear=item.year,
-        ParentId=_VIEW_ID_BY_TYPE[row.type],
+        ParentId=ROW_KINDS[row.type].view_id,
     )
     if item.poster is not None:
         dto.ImageTags = {"Primary": _poster_tag(item.poster)}
@@ -436,7 +403,7 @@ def _view_id_for_item(item_id: str) -> str | None:
         return None
     for row in home.rows:
         if any(it.group_key == item_id for it in row.items):
-            return _VIEW_ID_BY_TYPE[row.type]
+            return ROW_KINDS[row.type].view_id
     return None
 
 
@@ -589,7 +556,9 @@ def _search_group_dto(group: SearchGroup, server_id: str) -> BaseItemDto:
         Name=group.title,
         ServerId=server_id,
         Id=group.group_key,
-        Type=_JF_TYPE_BY_ROW.get(group.form, "Series"),
+        # The group's FORM keys the wire Type (the registry's jf_type) —
+        # ``group.form`` is always movie/series, both in the table.
+        Type=ROW_KINDS[group.form].jf_type,
         ProductionYear=group.year,
     )
     if group.poster is not None:
@@ -604,7 +573,7 @@ def _search_hint(group: SearchGroup) -> SearchHint:
         ItemId=group.group_key,
         Id=group.group_key,
         Name=group.title,
-        Type=_JF_TYPE_BY_ROW.get(group.form, "Series"),
+        Type=ROW_KINDS[group.form].jf_type,
         ProductionYear=group.year,
     )
     if group.poster is not None:
@@ -663,7 +632,7 @@ async def system_info_public() -> SystemInfoPublic:
     login screen at all.
     """
     return SystemInfoPublic(
-        LocalAddress=f"{SETTINGS.host}:{SETTINGS.port}",
+        LocalAddress=f"{_config.SETTINGS.host}:{_config.SETTINGS.port}",
         ServerName=_PRODUCT,
         Version=_VERSION,
         ProductName=_PRODUCT,
@@ -684,7 +653,7 @@ async def system_info(
     route: proves the ``require_token`` gate on a real endpoint.
     """
     return SystemInfoPublic(
-        LocalAddress=f"{SETTINGS.host}:{SETTINGS.port}",
+        LocalAddress=f"{_config.SETTINGS.host}:{_config.SETTINGS.port}",
         ServerName=_PRODUCT,
         Version=_VERSION,
         ProductName=_PRODUCT,
@@ -768,7 +737,7 @@ async def authenticate_by_name(
     client's "signed in as X" UI shows what the user typed; nothing is
     stored (sessions are no-ops, D8).
     """
-    token = SETTINGS.jellyfin_token
+    token = _config.SETTINGS.jellyfin_token
     server_id = _server_id()
     user = UserDto(
         Name=body.Username,
@@ -846,7 +815,7 @@ async def items_listing(
     """
     if search_term:
         return await _jf_search(search_term)
-    row_type = _VIEW_TYPE_BY_ID.get(parent_id or "")
+    row_type = VIEW_TYPE_BY_ID.get(parent_id or "")
     if row_type is None:
         return await _hierarchy(parent_id)
     home = await load_home()
@@ -917,6 +886,22 @@ async def _resolve_playback_episode(
     return None, None
 
 
+def _record_playback(item_id: str, position_ticks: int) -> None:
+    """Write a playback report into the active profile (#214).
+
+    Goes through the profile store's single write seam (``install``) so
+    the content profile and any agent-installed profile share the same
+    store. Zero/negative ticks (a just-started item) are report policy
+    — ignored here, not in the store.
+    """
+    if position_ticks <= 0:
+        return
+    current = profile_store.get()
+    profile_store.install(
+        Profile(played={**current.played, item_id: position_ticks})
+    )
+
+
 async def _record_playback_from(request: Request) -> None:
     """Best-effort store of the client's playback report (#214).
 
@@ -932,7 +917,7 @@ async def _record_playback_from(request: Request) -> None:
     item_id = body.get("ItemId")
     position = body.get("PositionTicks")
     if isinstance(item_id, str) and isinstance(position, (int, float)):
-        record_playback(item_id, int(position))
+        _record_playback(item_id, int(position))
 
 
 @router.get(
@@ -950,7 +935,10 @@ async def items_resume(user_id: str) -> BaseItemDtoQueryResult:
     facade has a single fixed user (D4).
     """
     dtos: list[BaseItemDto] = []
-    for item_id, position in playback_positions().items():
+    played = profile_store.get().played
+    for item_id, position in sorted(
+        played.items(), key=lambda kv: kv[1], reverse=True
+    ):
         if item_id.startswith("g2:"):
             try:
                 dto = await item_detail(item_id)
@@ -979,7 +967,10 @@ async def shows_next_up() -> BaseItemDtoQueryResult:
     """
     result: list[BaseItemDto] = []
     seen_series: set[str] = set()
-    for item_id in playback_positions():
+    played = profile_store.get().played
+    for item_id, _ in sorted(
+        played.items(), key=lambda kv: kv[1], reverse=True
+    ):
         if item_id.startswith("g2:"):
             continue  # a movie has no "next"
         _, next_episode = await _resolve_playback_episode(item_id)
@@ -1153,7 +1144,7 @@ async def genres(
     convention (genre ids are the names) so the id round-trips as the
     ``genreIds`` filter when the user taps a genre.
     """
-    row_type = _VIEW_TYPE_BY_ID.get(parent_id or "")
+    row_type = VIEW_TYPE_BY_ID.get(parent_id or "")
     if row_type is None:
         return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
     home = await load_home()
