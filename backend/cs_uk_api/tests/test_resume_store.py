@@ -282,7 +282,7 @@ def test_stopped_report_flushed_immediately(client: TestClient, tmp_path, monkey
     with no further write (acceptance criterion 1, flush criterion)."""
     path = str(tmp_path / "playback.json")
     original = catalog_state._resume_store
-    catalog_state._resume_store = _fresh(path)
+    catalog_state.install_resume_store(_fresh(path))
     try:
         r = client.post(
             "/Sessions/Playing/Stopped",
@@ -294,7 +294,7 @@ def test_stopped_report_flushed_immediately(client: TestClient, tmp_path, monkey
         assert restarted.positions() == {"g2:abc": 1_500_000_000}
         assert restarted.entries()["g2:abc"]["runtime_ticks"] == 2_000_000_000
     finally:
-        catalog_state._resume_store = original
+        catalog_state.install_resume_store(original)
 
 
 # -------------------------------------------------- finished history (#272)

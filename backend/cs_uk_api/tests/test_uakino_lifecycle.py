@@ -30,7 +30,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-import cs_uk_api.catalog_state as catalog_state_mod
+import cs_uk_api.catalog_state.resolution as resolution_mod
 from cs_uk_api import main as main_mod
 from cs_uk_api import uakino_browser
 from cs_uk_api.catalog_state import content_cache, search_cache
@@ -342,7 +342,7 @@ def test_explicit_search_503_warming_when_not_ready(
     )
     # WARM_WAIT_S lives in catalog_state (ticket #106: the shared search
     # owns the uakino wait), so the patch targets that module.
-    monkeypatch.setattr(catalog_state_mod, "WARM_WAIT_S", 0.05)
+    monkeypatch.setattr(resolution_mod, "WARM_WAIT_S", 0.05)
 
     r = client.get("/api/search?q=дюна&provider=uakino")
     assert r.status_code == 503
@@ -375,7 +375,7 @@ async def test_explicit_search_waits_for_ready_then_returns(
     the request returns the uakino results instead of timing out."""
     stub = _StubSession()  # ready_event unset
     uakino_browser._session = stub  # type: ignore[assignment]
-    monkeypatch.setattr(catalog_state_mod, "WARM_WAIT_S", 5.0)
+    monkeypatch.setattr(resolution_mod, "WARM_WAIT_S", 5.0)
     PROVIDERS["uakino"] = _Provider(
         "uakino", results=[_result("uakino", "Дюна", year=2021)]
     )
@@ -401,7 +401,7 @@ def test_content_503_warming_when_not_ready(monkeypatch: pytest.MonkeyPatch) -> 
     stub = _StubSession()  # ready never set
     uakino_browser._session = stub  # type: ignore[assignment]
     PROVIDERS["uakino"] = _Provider("uakino", content=_dune_content())
-    monkeypatch.setattr(catalog_state_mod, "WARM_WAIT_S", 0.05)
+    monkeypatch.setattr(resolution_mod, "WARM_WAIT_S", 0.05)
 
     r = client.get("/api/content/uakino:filmy:12567-dyuna")
     assert r.status_code == 503

@@ -27,7 +27,7 @@ from typing import Any, cast
 import pytest
 from fastapi.testclient import TestClient
 
-import cs_uk_api.catalog_state as catalog_state_mod
+import cs_uk_api.catalog_state.resolution as resolution_mod
 from cs_uk_api import main as main_mod
 from cs_uk_api.catalog_state import home_cache, search_cache
 from cs_uk_api.main import app
@@ -118,16 +118,17 @@ def _ready_uakino_session() -> Iterator[None]:
     saved_get_session = main_mod.get_session
     main_mod.get_session = lambda: _ReadySession()  # type: ignore[assignment]
     # The shared merged search now lives in catalog_state (ticket #106);
-    # its fan-out skip reads the SAME session seam, so both bindings are
-    # stubbed to the ready session.
-    saved_catalog_get_session = catalog_state_mod.get_session
-    catalog_state_mod.get_session = main_mod.get_session  # type: ignore[assignment]
+    # its fan-out skip reads the SAME session seam through the
+    # resolution module (spec #309 T5), so both bindings are stubbed to
+    # the ready session.
+    saved_resolution_get_session = resolution_mod.get_session
+    resolution_mod.get_session = main_mod.get_session  # type: ignore[assignment]
     main_mod.TRACKER.reset()
     try:
         yield
     finally:
         main_mod.get_session = saved_get_session
-        catalog_state_mod.get_session = saved_catalog_get_session
+        resolution_mod.get_session = saved_resolution_get_session
 
 
 class _StubBase(BaseProvider):

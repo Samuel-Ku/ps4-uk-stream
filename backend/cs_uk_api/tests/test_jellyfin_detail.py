@@ -947,7 +947,7 @@ def test_resume_row_capped_at_20_most_recent(client: TestClient) -> None:
         return clock["t"]
 
     original = catalog_state._resume_store
-    catalog_state._resume_store = ResumeStore(None, now=_now)
+    catalog_state.install_resume_store(ResumeStore(None, now=_now))
     try:
         for ep_id in episode_ids:
             record_playback(ep_id, 1000)
@@ -956,7 +956,7 @@ def test_resume_row_capped_at_20_most_recent(client: TestClient) -> None:
         assert resume[0]["Name"] == "Серія 21"  # most recent first
         assert resume[-1]["Name"] == "Серія 2"  # the oldest (Серія 1) is outside the 20
     finally:
-        catalog_state._resume_store = original
+        catalog_state.install_resume_store(original)
 
 
 # ------------------------------------------------------------ runtime on the wire (#250)

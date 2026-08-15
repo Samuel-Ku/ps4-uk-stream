@@ -26,6 +26,8 @@ import json
 
 import pytest
 
+import cs_uk_api.catalog_state._stores as stores_mod
+import cs_uk_api.catalog_state.snapshot as snapshot_mod
 from cs_uk_api.models import HomeResponse, HomeRow, SearchResult
 from cs_uk_api.snapshot_store import SNAPSHOT_VERSION, SnapshotStore
 
@@ -182,27 +184,37 @@ def test_cold_start_serves_persisted_snapshot_without_fanout(
     path = tmp_path / "home-snapshot.json"
     SnapshotStore(str(path)).save(_home(), _sources())
 
+    # The snapshot store re-reads ``_config.SETTINGS.snapshot_path`` at
+    # ``clear_snapshot_store`` time (spec #309 T5: the store lives in
+    # the ``_stores`` internal module).
+    original_store = cs._snapshot_store()
     monkeypatch.setattr(
-        cs._config, "SETTINGS", replace(SETTINGS, snapshot_path=str(path))
+        stores_mod._config, "SETTINGS", replace(SETTINGS, snapshot_path=str(path))
     )
-    cs.clear_snapshot_store()
-    cs.home_cache.clear()
-    cs.sources_cache.clear()
-    cs.PROVIDERS.clear()
-    # The heal rebuild would run against the empty registry; stub it so
-    # the test isolates the restore path.
-    async def _noop_heal() -> None:
-        return None
+    try:
+        cs.clear_snapshot_store()
+        cs.home_cache.clear()
+        cs.sources_cache.clear()
+        cs.PROVIDERS.clear()
+        # The heal rebuild would run against the empty registry; stub it so
+        # the test isolates the restore path.
+        async def _noop_heal() -> None:
+            return None
 
-    monkeypatch.setattr(cs, "_build_home", _noop_heal)
+        monkeypatch.setattr(snapshot_mod, "_build_home", _noop_heal)
 
-    home = asyncio.run(cs.load_home())
-    assert [r.title for r in home.rows] == ["Фільми"]
-    assert home.rows[0].items[0].group_key == "g2:abc"
-    # No provider was registered — the persisted snapshot answered.
-    assert cs.PROVIDERS == {}
+        home = asyncio.run(cs.load_home())
+        assert [r.title for r in home.rows] == ["Фільми"]
+        assert home.rows[0].items[0].group_key == "g2:abc"
+        # No provider was registered — the persisted snapshot answered.
+        assert cs.PROVIDERS == {}
 
-    # Group resolution for a persisted row works without any provider:
-    # the sources map was restored with the snapshot.
-    per_provider = cs.resolve_group("g2:abc")
-    assert per_provider is not None and per_provider["p1"].title == "Дюна"
+        # Group resolution for a persisted row works without any provider:
+        # the sources map was restored with the snapshot.
+        per_provider = cs.resolve_group("g2:abc")
+        assert per_provider is not None and per_provider["p1"].title == "Дюна"
+    finally:
+        # Restore the suite's memory-only store: leaking the temp-path
+        # store would keep serving the persisted file to every later
+        # cold ``load_home`` in the process (test isolation).
+        cs.install_snapshot_store(original_store)

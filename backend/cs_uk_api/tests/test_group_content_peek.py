@@ -36,6 +36,9 @@ from cs_uk_api.catalog_state import (
     gated_cache,
     sources_cache,
 )
+from cs_uk_api.catalog_state import (
+    resolution as resolution_mod,
+)
 from cs_uk_api.models import ContentResponse, SearchResult, Translation
 from cs_uk_api.providers.base import (
     BaseProvider,
@@ -219,7 +222,7 @@ async def test_resolve_group_content_single_flight_shares_failure(
     """#224: when the shared resolution FAILS, concurrent callers get
     the leader's None verdict without each re-storming the upstream —
     run8's open step hit animeon 4x in ~2s for one key."""
-    monkeypatch.setattr(catalog_state, "CONTENT_RETRY_DELAY_S", 0.0)
+    monkeypatch.setattr(resolution_mod, "CONTENT_RETRY_DELAY_S", 0.0)
     _seed_sources("g2:abc", _result("p1", "ext"))
     resolver = _FlakyResolver()
     catalog_state.PROVIDERS["p1"] = resolver
