@@ -45,6 +45,7 @@ from urllib.parse import urljoin
 import httpx
 from bs4 import BeautifulSoup
 
+from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -57,6 +58,10 @@ from ..models import (
 from .base import BaseProvider, ProviderError
 
 BASE_URL = "https://anitube.in.ua"
+# Hosts the upstream may legally redirect to: the DLE CMS. A hostile
+# CMS response must not be able to pivot the fetch to an
+# attacker-controlled host.
+_ALLOWED_HOSTS: frozenset[str] = frozenset({"anitube.in.ua"})
 # ashdi.vip requires the upstream Referer to serve the m3u8 manifest.
 # The upstream Kotlin sets `referer = "https://qeruya.cyou"` for the
 # ashdi branch of `M3u8Helper.generateM3u8`; we mirror that.
@@ -557,7 +562,17 @@ class AnitubeinuaProvider(BaseProvider):
         if section != "page":
             raise ProviderError("not_found", f"unknown section: {section}")
         url = f"{BASE_URL}/anime/page/{page}/"
-        response = await self._get(url, http)
+        # The upstream now 301-redirects the first page
+        # (`/anime/page/1/` -> `/anime/`, issue #297), so fetch through
+        # the SSRF-safe `safe_get` helper which follows allowed
+        # same-host redirects. Pages > 1 still return 200 directly and
+        # are unaffected.
+        try:
+            response = await safe_get(http, url, allowed_hosts=set(_ALLOWED_HOSTS))
+        except httpx.HTTPError as error:
+            raise ProviderError("unreachable", str(error)) from error
+        if response.status_code != 200:
+            raise ProviderError("not_found", f"status {response.status_code}")
         soup = BeautifulSoup(response.text, "lxml")
         results: list[SearchResult] = []
         for card in soup.select("article.story"):

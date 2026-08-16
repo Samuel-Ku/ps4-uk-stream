@@ -152,6 +152,27 @@ async def test_browse_page2_returns_results():
 
 
 @pytest.mark.asyncio
+async def test_browse_page1_follows_redirect():
+    """Issue #297: the upstream now 301-redirects the first page
+    (`/anime/page/1/` -> `/anime/`). `browse()` must follow the same-host
+    redirect (via the SSRF-safe `safe_get`) instead of failing with
+    `not_found` on the 301 — which made anitubeinua contribute NO cards
+    to the home snapshot."""
+    page_html = _fixture("page1.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://anitube.in.ua/anime/page/1/").respond(
+            301, headers={"Location": "/anime/"}
+        )
+        router.get("https://anitube.in.ua/anime/").respond(200, text=page_html)
+        async with httpx.AsyncClient() as http:
+            results, has_next = await AnitubeinuaProvider().browse("page", 1, http)
+    # Same parsed result as the direct page-1 fetch.
+    assert len(results) >= 1
+    assert all("anime" in r.styles for r in results)
+    assert has_next is True
+
+
+@pytest.mark.asyncio
 async def test_browse_unknown_section_raises_not_found():
     """An unknown section must surface as `not_found` before any HTTP
     request is made."""
