@@ -192,6 +192,23 @@ def _select_player_url(tabs: list[dict[str, Any]]) -> str | None:
     return str(first_url) if first_url else None
 
 
+def _title_text(el: Tag | None) -> str:
+    """Faithful element text with collapsed whitespace.
+
+    ``get_text(strip=True)`` concatenates the text nodes WITHOUT
+    separators, so a title whose word is split by an inline element
+    loses the inter-word space — the search page wraps the queried
+    word in ``<mark>`` inside the card title (e.g.
+    «Таємниця <mark>бункер</mark>а») and the words come out glued
+    («Таємницябункера»), splitting one show into two merge groups
+    (issue #246). ``get_text()`` keeps the source's own whitespace;
+    collapse runs to a single space.
+    """
+    if el is None:
+        return ""
+    return " ".join(el.get_text().split())
+
+
 def _parse_card(card: Tag, provider_id: str, media_type: MediaTypeStr) -> SearchResult | None:
     """Parse one `.short-item` listing card.
 
@@ -209,7 +226,7 @@ def _parse_card(card: Tag, provider_id: str, media_type: MediaTypeStr) -> Search
     if not m:
         return None
     title_el = card.select_one("div.th-title.truncate")
-    title = title_el.get_text(strip=True) if title_el else ""
+    title = _title_text(title_el)
     img = card.select_one("img")
     poster_src: str | None = None
     if img is not None:
@@ -249,7 +266,7 @@ def _parse_search_card(a: Tag, provider_id: str) -> SearchResult | None:
     if not m:
         return None
     title_el = a.select_one(".uas-card__title")
-    title = title_el.get_text(strip=True) if title_el else ""
+    title = _title_text(title_el)
     img_el = a.select_one(".uas-card__img")
     poster_src: str | None = None
     if img_el is not None:

@@ -77,6 +77,34 @@ async def test_search_parses_results():
 
 
 @pytest.mark.asyncio
+async def test_search_parses_mark_highlighted_titles_with_spaces():
+    """Issue #246: the site wraps the queried word in ``<mark>`` INSIDE
+    the card title (e.g. «Таємниця <mark>бункер</mark>а»).
+    ``get_text(strip=True)`` concatenates the text nodes without
+    separators, so the words come out glued («Таємницябункера»,
+    «Пекельнийбункер») and the card never merges with the spaced
+    «Таємниця бункера» group on home/search (same show, two groups).
+    The parsed title must keep the source's own word spacing.
+
+    Live capture 2026-08-16 (search «бункер») — the fixture's titles
+    exercise all three <mark> placements: word at start
+    («<mark>Бункер</mark> мільярдерів»), word at end
+    («Пекельний <mark>бункер</mark>»), and word mid-title with a
+    suffix («Таємниця <mark>бункер</mark>а»)."""
+    search_html = _fixture("search_bunker.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(url__regex=r"^https://uaserials\.com/search/.+/$").respond(
+            200, text=search_html
+        )
+        async with httpx.AsyncClient() as http:
+            results = await UASerialsProProvider().search("бункер", http)
+    by_id = {r.id: r.title for r in results}
+    assert by_id["uaserialspro:11281-bunker-milyarderiv"] == "Бункер мільярдерів"
+    assert by_id["uaserialspro:10573-pekelnyi-bunker"] == "Пекельний бункер"
+    assert by_id["uaserialspro:7519-tayemnycya-bunkera-2023"] == "Таємниця бункера"
+
+
+@pytest.mark.asyncio
 async def test_search_classifies_films_as_movie():
     """Films section surfaces cards classified as `movie`."""
     search_html = _fixture("search.html")
