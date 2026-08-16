@@ -17,7 +17,7 @@ from fastapi import HTTPException
 
 from .health import TRACKER
 from .models import ErrorResponse, SearchResult
-from .providers.base import ProviderError, ProviderErrorCode
+from .providers.base import ProviderError
 
 log = logging.getLogger("cs_uk_api")
 
@@ -88,7 +88,7 @@ async def upstream_guard(
 def content_provider_error(e: Exception) -> None:
     """Subscription-gated content is a client-visible 404, not an
     upstream-health signal — the item is deliberately unavailable."""
-    if isinstance(e, ProviderError) and e.code == ProviderErrorCode.GATED:
+    if isinstance(e, ProviderError) and e.code == "gated":
         raise HTTPException(404, detail=ErrorResponse(error=e.code, message=e.message).model_dump()) from e
 
 
@@ -98,9 +98,9 @@ def stream_provider_error(e: Exception) -> None:
     stream is a deliberate "no playable file" verdict → 404."""
     if not isinstance(e, ProviderError):
         return
-    if e.code == ProviderErrorCode.INVALID_TRANSLATION:
+    if e.code == "invalid_translation":
         raise HTTPException(400, detail=ErrorResponse(error=e.code, message=e.message).model_dump()) from e
-    if e.code in (ProviderErrorCode.TRANSLATION_MISSING, ProviderErrorCode.GATED):
+    if e.code in ("translation_missing", "gated"):
         raise HTTPException(404, detail=ErrorResponse(error=e.code, message=e.message).model_dump()) from e
 
 

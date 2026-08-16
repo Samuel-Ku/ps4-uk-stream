@@ -1277,7 +1277,8 @@ def test_shipped_steps_yaml_parses() -> None:
             assert step.nav > 0  # device-driving B6: BACK to the grid
 
     # #151: each open_view step carries its uuid5 view id as a DATA field
-    # (the router's `_VIEW_ID_BY_TYPE`), not as a comment. Read the raw YAML
+    # (the row registry's `RowKind.view_id`, row_kinds.py — formerly the
+    # router's `_VIEW_ID_BY_TYPE`), not as a comment. Read the raw YAML
     # because `load_steps` intentionally drops the unknown field.
     raw = yaml.safe_load(steps_path.read_text(encoding="utf-8")) or {}
     open_steps = [s for s in raw["steps"] if s["phase"] == "open"]

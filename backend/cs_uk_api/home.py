@@ -49,19 +49,7 @@ from collections.abc import Set as AbstractSet
 from .merge import item_group_key, merge_results
 from .models import HomeItem, HomeRow, SearchResult, Section
 from .recommend import ItemProfile
-from .wire_identity import project_group
-
-#: Five-row type-row order, per the issue #70 spec. Anything else in
-#: ``by_type`` is ignored (defensive — the route layer only buckets
-#: sections into these five).
-_TYPE_ORDER: tuple[tuple[str, str], ...] = (
-    ("movie", "Фільми"),
-    ("series", "Серіали"),
-    ("anime", "Аніме"),
-    ("cartoon", "Мультфільми"),
-    ("dorama", "Дорами"),
-)
-
+from .row_kinds import ROW_KINDS, TYPE_KINDS, item_matches_row
 
 #: Cap on raw items collected during the round-robin walk before we
 #: hand off to ``merge_results`` for dedup. The dedup is post-hoc (after
@@ -161,27 +149,36 @@ def round_robin_dedup(
     groups = merge_results(collected)
 
     # Project MergeGroup → HomeItem, preserving the merge core's
-    # first-seen order. Cap at ``limit``. The projection (canonical
-    # fields + member keys + provider union) is the single
-    # ``wire_identity.project_group`` (spec #309).
+    # first-seen order. Cap at ``limit``.
     items: list[HomeItem] = []
     for mg in groups:
         if len(items) >= limit:
             break
-        proj = project_group(mg)
+        sample = mg.sources[0]
+        # Provider union, first-seen order (the merge core preserves
+        # sources in bucket-order = first-seen order).
+        providers = list(dict.fromkeys(s.provider for s in mg.sources))
+        # Issue #89: every per-item group key that contributed to this
+        # merged row. Deduped, first-seen-preserved order. The canonical
+        # ``mg.key`` is the yearful-preferred-min of these — the client
+        # matches a resume entry against ANY member key, not only
+        # ``group_key``. Dedup keeps the payload bounded when one
+        # provider surfaces multiple listings for the same group
+        # (same title+type+year, different upstream ids).
+        member_keys = list(dict.fromkeys(item_group_key(s) for s in mg.sources))
         items.append(
             HomeItem(
-                group_key=proj.key,
-                title=proj.title,
-                year=proj.year,
-                poster=proj.poster,
+                group_key=mg.key,
+                title=sample.title,
+                year=sample.year,
+                poster=sample.poster,
                 # Model B (contract #135): first-seen-wins, like the
                 # other canonical fields.
-                form=proj.form,
-                styles=proj.styles,
-                genres=list(proj.genres),
-                providers=list(proj.providers),
-                member_keys=list(proj.member_keys),
+                form=sample.form,
+                styles=sample.styles,
+                genres=list(sample.genres),
+                providers=providers,
+                member_keys=member_keys,
             )
         )
     return items
@@ -230,23 +227,6 @@ def section_row_type(section: Section) -> str | None:
     if section.form is not None:
         return section.form
     return None
-
-
-def _item_matches_row(type_key: str, item: SearchResult) -> bool:
-    """True when a listing item belongs in the row of the given kind.
-
-    The by-type rows are populated from provider sections whose DECLARED
-    axes key the row — but the items inside are what the upstream site
-    actually filed there. A mis-filed card (e.g. a series whose bare URL
-    an adapter classified as a film, 2026-08-14 eneyida drift) must not
-    leak into the row as a junk card. Form rows check ``item.form``;
-    style rows check the style set (an item without the style tag is
-    still legitimate content from a style section — the row filter only
-    guards against contradictory FORM on form rows).
-    """
-    if type_key in ("movie", "series"):
-        return item.form == type_key
-    return True
 
 
 def build_home_rows(
@@ -311,7 +291,7 @@ def build_home_rows(
             # deduped by group key within the row.
             section_per_pid = by_type.get(form, {})
             filtered_per_pid = {
-                pid: [it for it in items if _item_matches_row(form, it)]
+                pid: [it for it in items if item_matches_row(form, it)]
                 for pid, items in section_per_pid.items()
             }
             topup = round_robin_dedup(filtered_per_pid, newest_limit)
@@ -405,24 +385,25 @@ def build_home_rows(
         deduped = round_robin_dedup(popular, newest_limit)
         rows.append(
             HomeRow(
-                title="Популярні зараз",
+                title=ROW_KINDS["popular"].title,
                 type="popular",
                 items=aggregate_by_group_key(deduped),
             )
         )
 
-    # Five type rows, in the spec's mandated order. A type with no
+    # Five type rows, in the registry's home order. A type with no
     # contributing providers is dropped from the response (it would
     # be an empty row, which would be worse than absence for the
     # client).
-    for type_key, label in _TYPE_ORDER:
-        per_pid = by_type.get(type_key, {})
+    for kind in TYPE_KINDS:
+        per_pid = by_type.get(kind, {})
         if not any(per_pid.values()):
             continue
         # Drop items whose FORM contradicts the row (upstream mis-filed
-        # cards must not surface as junk in the wrong row).
+        # cards must not surface as junk in the wrong row) — the
+        # registry's form filter.
         per_pid = {
-            pid: [it for it in items if _item_matches_row(type_key, it)]
+            pid: [it for it in items if item_matches_row(kind, it)]
             for pid, items in per_pid.items()
         }
         deduped = round_robin_dedup(per_pid, newest_limit)
@@ -430,8 +411,8 @@ def build_home_rows(
             continue
         rows.append(
             HomeRow(
-                title=label,
-                type=type_key,
+                title=ROW_KINDS[kind].title,
+                type=kind,
                 items=aggregate_by_group_key(deduped),
             )
         )

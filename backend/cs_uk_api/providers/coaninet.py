@@ -35,13 +35,14 @@ import httpx
 from ..models import (
     ContentResponse,
     Episode,
+    MediaForm,
     SearchResult,
     Season,
     Section,
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError, ProviderErrorCode, model_b_axes
+from .base import BaseProvider, ProviderError
 
 API_URL = "https://api.coani.net/api"
 SITE_URL = "https://coani.net"
@@ -128,8 +129,7 @@ def _parse_card(item: object) -> SearchResult | None:
     year_value = inner.get("year")
     year = year_value if isinstance(year_value, int) else None
     type_field = inner.get("type")
-    media_type: str = "series" if type_field == _TYPE_SERIAL else "movie"
-    mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
+    media_type: MediaForm = "series" if type_field == _TYPE_SERIAL else "movie"
     return SearchResult(
         id=f"coaninet:{seo_slug}",
         provider="coaninet",
@@ -137,9 +137,24 @@ def _parse_card(item: object) -> SearchResult | None:
         year=year,
         poster=poster,
         url=f"{SITE_URL}/catalog/{film_seo_slug}/{seo_slug}",
-        form=mb_form,
-        styles=mb_styles,
+        form=media_type,
+        styles=frozenset(),
     )
+
+
+async def _get_json(url: str, http: httpx.AsyncClient) -> object:
+    try:
+        resp = await http.get(url, headers={"Referer": f"{SITE_URL}/"})
+    except httpx.HTTPError as e:
+        raise ProviderError("unreachable", str(e)) from e
+    if resp.status_code >= 500:
+        raise ProviderError("upstream_unreachable", f"status {resp.status_code}")
+    if resp.status_code != 200:
+        raise ProviderError("not_found", f"status {resp.status_code}")
+    try:
+        return json.loads(resp.text)
+    except json.JSONDecodeError as e:
+        raise ProviderError("parse_failed", f"invalid json: {e}") from e
 
 
 class CoaninetProvider(BaseProvider):
@@ -147,34 +162,11 @@ class CoaninetProvider(BaseProvider):
     name = "Coaninet"
     types = ("movie", "series")
     sections = COANINET_SECTIONS
-    #: SSRF allowlist (spec #309 T8): every API fetch goes to
-    #: api.coani.net; the coani.net site host is only the Referer and
-    #: the client-facing catalog URL. ``guarded_get`` applies this by
-    #: default.
-    hosts = frozenset({"api.coani.net"})
-
-    async def _get_json(self, url: str, http: httpx.AsyncClient) -> object:
-        try:
-            resp = await self.guarded_get(
-                http, url, headers={"Referer": f"{SITE_URL}/"}
-            )
-        except httpx.HTTPError as e:
-            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
-        if resp.status_code >= 500:
-            raise ProviderError(
-                ProviderErrorCode.UPSTREAM_UNREACHABLE, f"status {resp.status_code}"
-            )
-        if resp.status_code != 200:
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
-        try:
-            return json.loads(resp.text)
-        except json.JSONDecodeError as e:
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"invalid json: {e}") from e
 
     async def search(
         self, query: str, http: httpx.AsyncClient
     ) -> list[SearchResult]:
-        data = await self._get_json(_search_url(query), http)
+        data = await _get_json(_search_url(query), http)
         items: list[object] = []
         if isinstance(data, dict):
             raw = data.get("data")
@@ -191,8 +183,8 @@ class CoaninetProvider(BaseProvider):
         self, section: str, page: int, http: httpx.AsyncClient
     ) -> tuple[list[SearchResult], bool]:
         if section not in ("films", "series"):
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"unknown section: {section}")
-        data = await self._get_json(_section_url(section, page), http)
+            raise ProviderError("not_found", f"unknown section: {section}")
+        data = await _get_json(_section_url(section, page), http)
         items: list[object] = []
         if isinstance(data, dict):
             raw = data.get("data")
@@ -220,16 +212,16 @@ class CoaninetProvider(BaseProvider):
     ) -> ContentResponse:
         # external_id is the season SEO slug from the catalog card.
         if not _SLUG_RE.fullmatch(external_id):
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"bad external_id: {external_id!r}")
-        season_payload = await self._get_json(_season_url(external_id), http)
+            raise ProviderError("not_found", f"bad external_id: {external_id!r}")
+        season_payload = await _get_json(_season_url(external_id), http)
         if (
             not isinstance(season_payload, dict)
             or season_payload.get("type") != "season"
         ):
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "season not a season envelope")
+            raise ProviderError("parse_failed", "season not a season envelope")
         inner = season_payload.get("data")
         if not isinstance(inner, dict):
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "season data missing")
+            raise ProviderError("parse_failed", "season data missing")
         name = inner.get("name") or inner.get("film_name") or external_id
         year_value = inner.get("year")
         year = year_value if isinstance(year_value, int) else None
@@ -247,14 +239,14 @@ class CoaninetProvider(BaseProvider):
             or ""
         )
         type_field = inner.get("type")
-        media_type: str = "series" if type_field == _TYPE_SERIAL else "movie"
+        media_type: MediaForm = "series" if type_field == _TYPE_SERIAL else "movie"
 
         # Pull the episode list (one entry per (number, voice_type))
         # from the id-addressed series endpoint.
         season_id = inner.get("id")
         seasons: list[Season] | None = None
         if isinstance(season_id, int):
-            series_payload = await self._get_json(_series_url(season_id), http)
+            series_payload = await _get_json(_series_url(season_id), http)
             if isinstance(series_payload, dict):
                 items = series_payload.get("data") or []
                 by_number: dict[int, list[dict[str, object]]] = {}
@@ -303,7 +295,6 @@ class CoaninetProvider(BaseProvider):
         ):
             translations_level = "episode"
         translations = [Translation(id="uk", label="Українська")]
-        mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
         return ContentResponse(
             id=f"coaninet:{external_id}",
             title=str(name),
@@ -313,8 +304,8 @@ class CoaninetProvider(BaseProvider):
             translations=translations,
             seasons=seasons,
             translations_level=translations_level,  # type: ignore[arg-type]
-            form=mb_form,
-            styles=mb_styles,
+            form=media_type,
+            styles=frozenset(),
         )
 
     async def stream(
@@ -326,24 +317,24 @@ class CoaninetProvider(BaseProvider):
         # the series payload (POLYPHONIC / SUB).
         slug, _, ep_raw = content_id.partition(":")
         if not _SLUG_RE.fullmatch(slug):
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"bad content_id: {content_id!r}")
+            raise ProviderError("not_found", f"bad content_id: {content_id!r}")
         try:
             episode_number = int(ep_raw or "1")
         except ValueError as e:
             raise ProviderError(
-                ProviderErrorCode.PARSE_FAILED, f"bad content_id: {content_id}"
+                "parse_failed", f"bad content_id: {content_id}"
             ) from e
         # The series endpoint is id-addressed; resolve the slug once.
-        season_payload = await self._get_json(_season_url(slug), http)
+        season_payload = await _get_json(_season_url(slug), http)
         if not isinstance(season_payload, dict):
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "season not an object")
+            raise ProviderError("parse_failed", "season not an object")
         inner = season_payload.get("data")
         season_id = inner.get("id") if isinstance(inner, dict) else None
         if not isinstance(season_id, int):
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "season id missing")
-        data = await self._get_json(_series_url(season_id), http)
+            raise ProviderError("parse_failed", "season id missing")
+        data = await _get_json(_series_url(season_id), http)
         if not isinstance(data, dict):
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "series not an object")
+            raise ProviderError("parse_failed", "series not an object")
         items = data.get("data") or []
         candidates: list[dict[str, object]] = []
         for entry in items:
@@ -356,7 +347,7 @@ class CoaninetProvider(BaseProvider):
                 candidates.append(d)
         if not candidates:
             raise ProviderError(
-                ProviderErrorCode.NOT_FOUND, f"no episode {episode_number} for {slug}"
+                "not_found", f"no episode {episode_number} for {slug}"
             )
         chosen: dict[str, object] | None = None
         if translation:
@@ -371,7 +362,7 @@ class CoaninetProvider(BaseProvider):
         video_url = chosen.get("video")
         if not isinstance(video_url, str) or not video_url:
             raise ProviderError(
-                ProviderErrorCode.PARSE_FAILED, f"no video url for episode {episode_number}"
+                "parse_failed", f"no video url for episode {episode_number}"
             )
         return StreamResponse(
             url=video_url,

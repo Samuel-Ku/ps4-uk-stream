@@ -19,6 +19,7 @@ from cs_uk_api.sweep_episode_rail import (
     render_report,
     sweep_home,
     walk_series,
+    write_report,
 )
 
 
@@ -33,6 +34,19 @@ def _ok(items: list[dict[str, object]]) -> HopResult:
 
 def _err(status: int, error: str | None = None) -> HopResult:
     return HopResult(status=status, json=None, error=error)
+
+
+# ---------- report write (spec #323, Store T3 #326: atomic) ----------
+
+
+def test_write_report_writes_atomically(tmp_path) -> None:
+    """The --out report write goes through the shared atomic primitive:
+    identical bytes, no leftover tmp files."""
+    out = tmp_path / "report.md"
+    write_report(str(out), "| header |")
+    assert out.read_text(encoding="utf-8") == "| header |\n"
+    leftovers = [p.name for p in tmp_path.iterdir() if ".tmp" in p.name]
+    assert leftovers == []
 
 
 # ---------- pickers ----------

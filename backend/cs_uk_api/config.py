@@ -103,6 +103,12 @@ class Settings:
     #: ``CS_UK_ROW_MAX_PAGES``; deeper requests return the exhausted
     #: tail. The initial row stays at the snapshot cap.
     row_max_pages: int = 5
+    # Round-2 persistence (spec #323, Store T1): when set, the viewer
+    # profile store persists the resume memory to this file via the
+    # VersionedFileStore (version token + atomic writes) and restores it
+    # on a cold start. Default unset = in-memory only — round-1
+    # behaviour, zero change unless an operator opts in.
+    profile_file: str | None = None
 
 
 def _load_resume_path() -> str | None:
@@ -213,7 +219,14 @@ def load_settings() -> Settings:
         llm_key=os.environ.get("CS_UK_LLM_KEY") or None,
         llm_model=os.environ.get("CS_UK_LLM_MODEL") or None,
         row_max_pages=int(os.environ.get("CS_UK_ROW_MAX_PAGES", "5")),
+        # Round-2 (spec #323): opt-in versioned resume persistence.
+        profile_file=os.environ.get("CS_UK_PROFILE_FILE") or None,
     )
 
 
+#: The single configuration binding (Arch T12, spec #309): every module
+#: reads settings through this module reference (``config.SETTINGS``) — no
+#: module imports the value into its own binding — and every store is
+#: constructed from this snapshot. Tests patch exactly ONE binding:
+#: ``cs_uk_api.config.SETTINGS``.
 SETTINGS = load_settings()

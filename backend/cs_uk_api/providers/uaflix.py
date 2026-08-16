@@ -18,9 +18,12 @@ from bs4.element import Tag
 
 from ..country import extract_country
 from ..extractors import ExtractResult, RegexExtractor
+from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
+    MediaForm,
+    MediaStyle,
     Person,
     SearchResult,
     Season,
@@ -28,13 +31,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import (
-    BaseProvider,
-    ProviderError,
-    ProviderErrorCode,
-    model_b_axes,
-    split_content_suffix,
-)
+from .base import BaseProvider, MediaTypeStr, ProviderError
 
 
 def _itemprop_values(soup: BeautifulSoup, name: str) -> list[str]:
@@ -90,6 +87,12 @@ def _parse_itemprop_meta(soup: BeautifulSoup) -> tuple[int | None, list[str], li
 # against the captured URL keeps test fixtures in sync with
 # production behavior.
 BASE_URL = "https://uafix.net"
+# Hosts the upstream may legally redirect to: the content page on
+# uafix.net and the PlayerJS iframes on zetvideo.net / ashdi.vip. A
+# hostile CMS response must not be able to pivot either hop elsewhere.
+_ALLOWED_HOSTS: frozenset[str] = frozenset(
+    {"uafix.net", "zetvideo.net", "ashdi.vip"}
+)
 
 # External-id boundary: `<section>-<slug>` (e.g. `serials-djuna-proroctvo`)
 # where both halves are lowercase ASCII with hyphens. Anything else —
@@ -124,7 +127,7 @@ _SECTION_PATHS: dict[str, str] = {
 # Path prefix -> MediaType. Longest prefix first so `/films/` matches
 # `film` (not anything shorter), and `/serials/` matches `series`
 # (not `serial`). Mirrors the upstream Kotlin's `when` ordering.
-_PATH_TYPE: tuple[tuple[str, str], ...] = (
+_PATH_TYPE: tuple[tuple[str, MediaTypeStr], ...] = (
     ("cartoon", "cartoon"),  # /cartoons/
     ("serial", "series"),    # /serials/, /serials/multseial/
     ("anime", "anime"),      # /anime/
@@ -149,11 +152,11 @@ def _external_id_from_url(href: str) -> str:
     """
     m = re.search(r"/([a-z][a-z0-9-]*?)/([a-z0-9][a-z0-9-]*?)(?:/|$|\.html)", href)
     if not m:
-        raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"unrecognized url: {href}")
+        raise ProviderError("parse_failed", f"unrecognized url: {href}")
     return f"{m.group(1)}-{m.group(2)}"
 
 
-def _type_from_url(href: str) -> str:
+def _type_from_url(href: str) -> MediaTypeStr:
     """Map the URL's first path segment to a MediaType."""
     lower = href.lower()
     for needle, t in _PATH_TYPE:
@@ -165,7 +168,7 @@ def _type_from_url(href: str) -> str:
 def _section_url(section: str, page: int) -> str:
     path = _SECTION_PATHS.get(section)
     if path is None:
-        raise ProviderError(ProviderErrorCode.NOT_FOUND, f"unknown section: {section}")
+        raise ProviderError("not_found", f"unknown section: {section}")
     base = f"{BASE_URL}{path}"
     # Page 1 is the index; subsequent pages use `/page/N/`.
     if page <= 1:
@@ -202,7 +205,7 @@ def _episode_content_url(external_id: str, ep_suffix: str) -> str:
     section, _, slug = external_id.partition("-")
     m = re.fullmatch(r"s(\d+)e(\d+)", ep_suffix)
     if not m:
-        raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"bad episode suffix: {ep_suffix!r}")
+        raise ProviderError("parse_failed", f"bad episode suffix: {ep_suffix!r}")
     season_num = int(m.group(1))
     episode_num = int(m.group(2))
     return (
@@ -245,7 +248,11 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
         external_id = _external_id_from_url(href)
     except ProviderError:
         return None
-    mb_form, mb_styles = model_b_axes(_type_from_url(href))  # type: ignore[arg-type]
+    kind = _type_from_url(href)
+    mb_form: MediaForm = kind if kind == "movie" or kind == "series" else "series"
+    mb_styles: frozenset[MediaStyle] = (
+        frozenset() if kind == "movie" or kind == "series" else frozenset({kind})
+    )
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
@@ -279,7 +286,11 @@ def _parse_search_card(card: Tag, provider_id: str) -> SearchResult | None:
         external_id = _external_id_from_url(href)
     except ProviderError:
         return None
-    mb_form, mb_styles = model_b_axes(_type_from_url(href))  # type: ignore[arg-type]
+    kind = _type_from_url(href)
+    mb_form: MediaForm = kind if kind == "movie" or kind == "series" else "series"
+    mb_styles: frozenset[MediaStyle] = (
+        frozenset() if kind == "movie" or kind == "series" else frozenset({kind})
+    )
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
@@ -457,11 +468,6 @@ class UAFlixProvider(BaseProvider):
     #: catalog sweep (ADR-0002) drops the dead card from home/search
     #: instead of failing only at play time.
     can_gate = True
-    #: SSRF allowlist (spec #309 T8): the content page on uafix.net and
-    #: the PlayerJS iframes on zetvideo.net / ashdi.vip. A hostile CMS
-    #: response must not be able to pivot either hop elsewhere.
-    #: ``guarded_get`` applies this by default.
-    hosts = frozenset({"uafix.net", "zetvideo.net", "ashdi.vip"})
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         # DLE-style search: POST with `do`, `subaction`, `story` to the
@@ -478,9 +484,9 @@ class UAFlixProvider(BaseProvider):
                 },
             )
         except httpx.HTTPError as e:
-            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
+            raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError(ProviderErrorCode.UPSTREAM_UNREACHABLE, f"status {resp.status_code}")
+            raise ProviderError("upstream_unreachable", f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         results: list[SearchResult] = []
         for card in soup.select("a.sres-wrap.clearfix"):
@@ -494,11 +500,11 @@ class UAFlixProvider(BaseProvider):
     ) -> tuple[list[SearchResult], bool]:
         url = _section_url(section, page)
         try:
-            resp = await self.guarded_get(http, url)
+            resp = await http.get(url)
         except httpx.HTTPError as e:
-            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
+            raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
+            raise ProviderError("not_found", f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         results: list[SearchResult] = []
         # Listing cards: each `.video-item` wraps an inner `<a class="vi-img">`.
@@ -521,18 +527,18 @@ class UAFlixProvider(BaseProvider):
         self, external_id: str, http: httpx.AsyncClient
     ) -> ContentResponse:
         if not _EXTERNAL_ID_RE.fullmatch(external_id):
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"bad external_id: {external_id!r}")
+            raise ProviderError("not_found", f"bad external_id: {external_id!r}")
         url = _content_url(external_id)
         try:
-            resp = await self.guarded_get(http, url)
+            resp = await http.get(url)
         except httpx.HTTPError as e:
-            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
+            raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
+            raise ProviderError("not_found", f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         title_el = soup.select_one("h1#ftitle")
         if title_el is None:
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "title missing")
+            raise ProviderError("parse_failed", "title missing")
         # The h1 sometimes wraps the real title in `<span itemprop="name">`
         # and adds `дивитись онлайн` suffix. Prefer the span's text if
         # present so we keep just the movie / series name.
@@ -574,9 +580,12 @@ class UAFlixProvider(BaseProvider):
                 or _is_serial_player(player_url)
             ):
                 raise ProviderError(
-                    ProviderErrorCode.GATED, "trailer only — no playable player"
+                    "gated", "trailer only — no playable player"
                 )
-        mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
+        mb_form: MediaForm = media_type if media_type == "movie" or media_type == "series" else "series"
+        mb_styles: frozenset[MediaStyle] = (
+            frozenset() if media_type == "movie" or media_type == "series" else frozenset({media_type})
+        )
         return ContentResponse(
             id=f"uaflix:{external_id}",
             title=title,
@@ -615,8 +624,11 @@ class UAFlixProvider(BaseProvider):
             return None
         player_url = urljoin(_content_url(external_id), player_url)
         try:
-            resp = await self.guarded_get(
-                http, player_url, headers={"Referer": f"{BASE_URL}/"}
+            resp = await safe_get(
+                http,
+                player_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+                headers={"Referer": f"{BASE_URL}/"},
             )
         except httpx.HTTPError:
             return None
@@ -655,20 +667,23 @@ class UAFlixProvider(BaseProvider):
         # Two-hop resolution: content page -> player iframe (zetvideo.net)
         # -> m3u8 URL extracted from PlayerJS `file: "..."` config.
         # No JS execution needed (PlayerJS stores the URL inline).
-        ext_id, ep_suffix = split_content_suffix(content_id)
+        ext_id, ep_suffix = self._split_content_id(content_id)
         if not _EXTERNAL_ID_RE.fullmatch(ext_id):
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"bad external_id: {ext_id!r}")
+            raise ProviderError("not_found", f"bad external_id: {ext_id!r}")
         content_url = (
             _episode_content_url(ext_id, ep_suffix)
             if ep_suffix
             else _content_url(ext_id)
         )
         try:
-            resp = await self.guarded_get(
-                http, content_url, headers={"Referer": f"{BASE_URL}/"}
+            resp = await safe_get(
+                http,
+                content_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+                headers={"Referer": f"{BASE_URL}/"},
             )
         except httpx.HTTPError as e:
-            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
+            raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200 and ep_suffix:
             # Issue #189: serial-player-only titles (e.g. «Вайлд Пак»)
             # have NO per-episode pages — every season/episode lives
@@ -677,18 +692,21 @@ class UAFlixProvider(BaseProvider):
             # still embeds the serial player we index by `s<N>e<M>`.
             content_url = _content_url(ext_id)
             try:
-                resp = await self.guarded_get(
-                    http, content_url, headers={"Referer": f"{BASE_URL}/"}
+                resp = await safe_get(
+                    http,
+                    content_url,
+                    allowed_hosts=set(_ALLOWED_HOSTS),
+                    headers={"Referer": f"{BASE_URL}/"},
                 )
             except httpx.HTTPError as e:
-                raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
+                raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
+            raise ProviderError("not_found", f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         player_url = _extract_player_iframe(soup)
         if player_url is None:
             raise ProviderError(
-                ProviderErrorCode.PARSE_FAILED, "no player iframe found on content page"
+                "parse_failed", "no player iframe found on content page"
             )
         # Upstream often emits a protocol-relative src (`//ashdi.vip/...`,
         # observed live 2026-08-09). The host check below still passes
@@ -696,13 +714,16 @@ class UAFlixProvider(BaseProvider):
         # scheme-less URL, so resolve it against the content page first.
         player_url = urljoin(content_url, player_url)
         try:
-            player_resp = await self.guarded_get(
-                http, player_url, headers={"Referer": f"{BASE_URL}/"}
+            player_resp = await safe_get(
+                http,
+                player_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+                headers={"Referer": f"{BASE_URL}/"},
             )
         except httpx.HTTPError as e:
-            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
+            raise ProviderError("unreachable", str(e)) from e
         if player_resp.status_code != 200:
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {player_resp.status_code}")
+            raise ProviderError("not_found", f"status {player_resp.status_code}")
         extracted = RegexExtractor().extract(player_resp.text)
         if extracted is None or not extracted.url:
             # VOD players expose a direct m3u8 (handled above); serial
@@ -712,7 +733,7 @@ class UAFlixProvider(BaseProvider):
             serial_url = _serial_media_url(player_resp.text, ep_suffix)
             if serial_url is None:
                 raise ProviderError(
-                    ProviderErrorCode.PARSE_FAILED, "no media URL found in player page"
+                    "parse_failed", "no media URL found in player page"
                 )
             extracted = ExtractResult(url=serial_url, type="m3u8")
         return StreamResponse(
@@ -721,6 +742,19 @@ class UAFlixProvider(BaseProvider):
             headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/1.0"},
         )
 
+    @staticmethod
+    def _split_content_id(content_id: str) -> tuple[str, str]:
+        """Split `content_id` into `(external_id, ep_suffix)`.
+
+        `content_id` arrives from `/api/stream` as either
+        `<external_id>` (movie) or `<external_id>:s<N>e<M>` (series
+        episode). The colon after the leading `<section>-` is the
+        boundary marker so hyphens in the slug never confuse us.
+        """
+        if ":" in content_id:
+            ext_id, _, suffix = content_id.partition(":")
+            return ext_id, suffix
+        return content_id, ""
 
 
 __all__ = ["UAFlixProvider"]

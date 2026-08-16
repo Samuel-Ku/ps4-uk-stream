@@ -25,27 +25,29 @@ from pydantic import BaseModel, ValidationError
 
 from ..country import extract_country
 from ..extractors import RegexExtractor
+from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
+    MediaForm,
+    MediaStyle,
     SearchResult,
     Season,
     Section,
     StreamResponse,
     Translation,
 )
-from .base import (
-    BaseProvider,
-    ProviderError,
-    ProviderErrorCode,
-    model_b_axes,
-    split_content_suffix,
-)
+from .base import BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://doramy.world"
 # ashdi.vip hosts the HLS manifest for each episode; the upstream Kotlin
 # uses the same Referer.
 ASHDI_REFERER = "https://ashdi.vip/"
+# Hosts the upstream may legally redirect to: the WordPress CMS and
+# the ashdi player CDN. A hostile CMS response must not be able to
+# pivot the player hop to an attacker-controlled host.
+_ALLOWED_HOSTS: frozenset[str] = frozenset({"doramy.world", "ashdi.vip"})
+
 # Sections exposed by DoramyWorld's main navigation. Per the upstream
 # `mainPage = mainPageOf(...)` declaration in DoramyWorldProvider.kt.
 DORAMYWORLD_SECTIONS: tuple[Section, ...] = (
@@ -59,7 +61,7 @@ DORAMYWORLD_SECTIONS: tuple[Section, ...] = (
 # against any nested path. The upstream maps `/film/` -> Movie and
 # everything else -> AsianDrama; we map `/dorama/` to its own `dorama`
 # MediaType so the front-end can branch on it.
-_PATH_TYPE: tuple[tuple[str, str], ...] = (
+_PATH_TYPE: tuple[tuple[str, MediaTypeStr], ...] = (
     ("film", "movie"),
     ("dorama", "dorama"),
     ("show", "series"),
@@ -158,11 +160,11 @@ def _external_id_from_url(href: str) -> str:
     the API."""
     m = re.search(r"/(film|dorama|show)/([a-z0-9][a-z0-9-]*)/?", href)
     if not m:
-        raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"unrecognized url: {href}")
+        raise ProviderError("parse_failed", f"unrecognized url: {href}")
     return f"{m.group(1)}/{m.group(2)}"
 
 
-def _type_from_url(href: str) -> str:
+def _type_from_url(href: str) -> MediaTypeStr:
     """Map the URL's path segment to a MediaType. Falls back to
     'series' for any URL we don't recognise so the safe default
     mirrors the upstream's else-branch."""
@@ -184,10 +186,10 @@ def _page_number(href: str) -> int:
 def _section_url(section: str, page: int) -> str:
     paths = {s.id: f"/{s.id}/" for s in DORAMYWORLD_SECTIONS}
     if section not in paths:
-        raise ProviderError(ProviderErrorCode.NOT_FOUND, f"unknown section: {section}")
+        raise ProviderError("not_found", f"unknown section: {section}")
     # The upstream Kotlin always appends /page/N/, even for page 1.
     # WordPress 301-redirects `/page/1/` to the canonical section URL
-    # (`/film/page/1/` -> `/film/`); browse() fetches through guarded_get
+    # (`/film/page/1/` -> `/film/`); browse() fetches through safe_get
     # (#171) so the same-host redirect is followed. Pages > 1 return 200.
     return f"{BASE_URL}{paths[section]}page/{page}/"
 
@@ -238,7 +240,11 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
         ext = _external_id_from_url(href)
     except ProviderError:
         return None
-    mb_form, mb_styles = model_b_axes(_type_from_url(href))  # type: ignore[arg-type]
+    kind = _type_from_url(href)
+    mb_form: MediaForm = kind if kind == "movie" or kind == "series" else "series"
+    mb_styles: frozenset[MediaStyle] = (
+        frozenset() if kind == "movie" or kind == "series" else frozenset({kind})
+    )
     return SearchResult(
         id=f"{provider_id}:{ext}",
         provider=provider_id,
@@ -263,10 +269,6 @@ class DoramyWorldProvider(BaseProvider):
     #: and the catalog sweep (``filter_gated_items``) drops it from
     #: home/search instead of surfacing an unplayable movie.
     can_gate = True
-    #: SSRF allowlist: the WordPress CMS and the ashdi player CDN. A
-    #: hostile CMS response must not be able to pivot the player hop to
-    #: an attacker-controlled host.
-    hosts: frozenset[str] = frozenset({"doramy.world", "ashdi.vip"})
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         # WordPress search uses `?s=...` with spaces encoded as `+`. We
@@ -274,11 +276,11 @@ class DoramyWorldProvider(BaseProvider):
         # Kotlin `query.replace(" ", "+")` exactly.
         url = f"{BASE_URL}/?s={query.replace(' ', '+')}"
         try:
-            resp = await self.guarded_get(http, url)
+            resp = await http.get(url)
         except httpx.HTTPError as e:
-            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
+            raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError(ProviderErrorCode.UPSTREAM_UNREACHABLE, f"status {resp.status_code}")
+            raise ProviderError("upstream_unreachable", f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         results: list[SearchResult] = []
         for card in soup.select(_CARD_SELECTOR):
@@ -292,11 +294,11 @@ class DoramyWorldProvider(BaseProvider):
     ) -> tuple[list[SearchResult], bool]:
         url = _section_url(section, page)
         try:
-            resp = await self.guarded_get(http, url)
+            resp = await safe_get(http, url, allowed_hosts=set(_ALLOWED_HOSTS))
         except httpx.HTTPError as e:
-            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
+            raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
+            raise ProviderError("not_found", f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         results: list[SearchResult] = []
         for card in soup.select(_CARD_SELECTOR):
@@ -316,18 +318,18 @@ class DoramyWorldProvider(BaseProvider):
         self, external_id: str, http: httpx.AsyncClient
     ) -> ContentResponse:
         if not _EXTERNAL_ID_RE.fullmatch(external_id):
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"bad external_id: {external_id!r}")
+            raise ProviderError("not_found", f"bad external_id: {external_id!r}")
         url = f"{BASE_URL}/{external_id}/"
         try:
-            resp = await self.guarded_get(http, url)
+            resp = await http.get(url)
         except httpx.HTTPError as e:
-            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
+            raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
+            raise ProviderError("not_found", f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         title_el = soup.select_one("h1.project-title")
         if title_el is None:
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "title missing")
+            raise ProviderError("parse_failed", "title missing")
         # The h1 may contain a `<span class="project-title-eng"> /
         # English</span>` tail; `get_text(strip=True)` collapses both.
         title = title_el.get_text(" ", strip=True)
@@ -348,7 +350,7 @@ class DoramyWorldProvider(BaseProvider):
             # dead card as ``gated`` (ADR-0002) so the catalog sweep
             # drops it from home/search instead of showing an
             # unplayable movie with a fake «Українська» track.
-            raise ProviderError(ProviderErrorCode.GATED, "no player on content page")
+            raise ProviderError("gated", "no player on content page")
         translations: list[Translation] = [
             Translation(
                 id=_translation_id(t.label),
@@ -361,7 +363,10 @@ class DoramyWorldProvider(BaseProvider):
         seasons: list[Season] | None = None
         if translations_models:
             seasons = self._build_seasons(translations_models, external_id, self.id)
-        mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
+        mb_form: MediaForm = media_type if media_type == "movie" or media_type == "series" else "series"
+        mb_styles: frozenset[MediaStyle] = (
+            frozenset() if media_type == "movie" or media_type == "series" else frozenset({media_type})
+        )
         return ContentResponse(
             id=f"doramyworld:{external_id}",
             title=title,
@@ -412,39 +417,44 @@ class DoramyWorldProvider(BaseProvider):
         # `content_id` arrives as "<external_id>:s<N>e<M>". The API
         # strips the `<provider>:` prefix before calling us, so the
         # path through `/api/stream` is straightforward.
-        ext_id, ep_suffix = split_content_suffix(content_id)
+        if ":" not in content_id:
+            raise ProviderError("not_found", f"bad content_id: {content_id!r}")
+        ext_id, _, ep_suffix = content_id.rpartition(":")
         if not _EXTERNAL_ID_RE.fullmatch(ext_id):
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"bad external_id: {ext_id!r}")
+            raise ProviderError("not_found", f"bad external_id: {ext_id!r}")
         if not _EP_SUFFIX_RE.fullmatch(ep_suffix):
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"bad episode suffix: {ep_suffix!r}")
+            raise ProviderError("not_found", f"bad episode suffix: {ep_suffix!r}")
         url = f"{BASE_URL}/{ext_id}/"
         try:
-            resp = await self.guarded_get(http, url)
+            resp = await http.get(url)
         except httpx.HTTPError as e:
-            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
+            raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
+            raise ProviderError("not_found", f"status {resp.status_code}")
         player_models = _parse_player(resp.text)
         if not player_models:
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no data-player on content page")
+            raise ProviderError("parse_failed", "no data-player on content page")
         ashdi_url = self._select_player_url(player_models, ep_suffix, translation)
         if ashdi_url is None:
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"no player url for {ep_suffix!r}")
+            raise ProviderError("not_found", f"no player url for {ep_suffix!r}")
         # ashdi.vip serves a page with `file:'...m3u8...'`. The shared
         # RegexExtractor picks that pattern up cleanly. The URL came
         # from upstream HTML, so it goes through the redirect
         # allowlist (#126).
         try:
-            ashdi_resp = await self.guarded_get(
-                http, ashdi_url, headers={"Referer": ASHDI_REFERER}
+            ashdi_resp = await safe_get(
+                http,
+                ashdi_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+                headers={"Referer": ASHDI_REFERER},
             )
         except httpx.HTTPError as e:
-            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
+            raise ProviderError("unreachable", str(e)) from e
         if ashdi_resp.status_code != 200:
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {ashdi_resp.status_code}")
+            raise ProviderError("not_found", f"status {ashdi_resp.status_code}")
         extracted = RegexExtractor().extract(ashdi_resp.text)
         if extracted is None or not extracted.url:
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no m3u8 in ashdi page")
+            raise ProviderError("parse_failed", "no m3u8 in ashdi page")
         return StreamResponse(
             url=extracted.url,
             type=extracted.type,

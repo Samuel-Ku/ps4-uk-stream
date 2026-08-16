@@ -81,7 +81,7 @@ from ..models import (
 )
 from ..poster_proxy import fetch as fetch_poster_bytes
 from ..providers import PROVIDERS
-from ..providers.base import ProviderError, ProviderErrorCode
+from ..providers.base import ProviderError
 from ..recommend import similarity
 from ..wire_identity import is_group_key
 from .auth import require_token
@@ -1956,7 +1956,7 @@ async def _resolve_stream(
         # failure (ADR-0002 amendment): the item is deliberately
         # unavailable — degrade to the standing 404 without marking
         # the provider down.
-        if e.code == ProviderErrorCode.GATED:
+        if e.code == "gated":
             log.info("jellyfin playback gated provider=%s id=%s", provider_id, item_id)
             return None
         log.warning(

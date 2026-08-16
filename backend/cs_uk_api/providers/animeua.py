@@ -22,14 +22,7 @@ from ..models import (
     Translation,
     TranslationLevel,
 )
-from .base import (
-    BaseProvider,
-    MediaTypeStr,
-    ProviderError,
-    ProviderErrorCode,
-    model_b_axes,
-    split_content_suffix,
-)
+from .base import BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://animeua.club"
 # The ashdi.vip CDN serves the HLS manifest only with this Referer; the
@@ -63,7 +56,7 @@ _DubsMap = dict[str, dict[str, list[tuple[str, str]]]]
 def _external_id(href: str) -> str:
     match = re.search(r"/(\d+-[a-z0-9-]+?)(?:\.html)?/?$", href, re.IGNORECASE)
     if not match:
-        raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"unrecognized url: {href}")
+        raise ProviderError("parse_failed", f"unrecognized url: {href}")
     return match.group(1)
 
 
@@ -81,7 +74,7 @@ def _section_url(section: str, page: int) -> str:
         "ova": "/ova",
     }
     if section not in prefixes:
-        raise ProviderError(ProviderErrorCode.NOT_FOUND, f"unknown section: {section}")
+        raise ProviderError("not_found", f"unknown section: {section}")
     if page <= 1:
         return f"{BASE_URL}{prefixes[section]}/"
     return f"{BASE_URL}{prefixes[section]}/page/{page}/"
@@ -109,13 +102,11 @@ def _parse_cards(html: str, provider: str, media_type: MediaTypeStr) -> list[Sea
         # animeua is an anime-only site: every item carries the anime
         # style; the form comes from the section/fixture type (film vs
         # series — search results are all "anime" = series).
-        mb_form, mb_styles = model_b_axes(
-            "anime", form="movie" if media_type == "movie" else "series"
-        )
         results.append(SearchResult(
             id=f"{provider}:{external_id}", provider=provider,
             title=title, poster=poster, url=urljoin(BASE_URL, str(href)),
-            form=mb_form, styles=mb_styles,
+            form=("movie" if media_type == "movie" else "series"),
+            styles=frozenset({"anime"}),
         ))
     return results
 
@@ -227,10 +218,6 @@ class AnimeUAProvider(BaseProvider):
     sections = ANIMEUA_SECTIONS
     # v3 (issue #70): "Нове аніме" contributes to «Новинки».
     newest_section = "page"
-    #: SSRF allowlist (spec #309 T8): the content pages on animeua.club
-    #: and the ashdi.vip player pages (both go through ``_get``).
-    #: ``guarded_get`` applies this by default.
-    hosts = frozenset({"animeua.club", "ashdi.vip"})
 
     @staticmethod
     def _player_url(soup: BeautifulSoup) -> str | None:
@@ -258,13 +245,11 @@ class AnimeUAProvider(BaseProvider):
 
     async def _get(self, url: str, http: httpx.AsyncClient) -> httpx.Response:
         try:
-            response = await self.guarded_get(
-                http, url, headers={"Referer": f"{BASE_URL}/"}
-            )
+            response = await http.get(url, headers={"Referer": f"{BASE_URL}/"})
         except httpx.HTTPError as error:
-            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(error)) from error
+            raise ProviderError("unreachable", str(error)) from error
         if response.status_code != 200:
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {response.status_code}")
+            raise ProviderError("not_found", f"status {response.status_code}")
         return response
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
@@ -277,9 +262,9 @@ class AnimeUAProvider(BaseProvider):
                 "do": "search", "subaction": "search", "story": query,
             })
         except httpx.HTTPError as error:
-            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(error)) from error
+            raise ProviderError("unreachable", str(error)) from error
         if response.status_code != 200:
-            raise ProviderError(ProviderErrorCode.UPSTREAM_UNREACHABLE, f"status {response.status_code}")
+            raise ProviderError("upstream_unreachable", f"status {response.status_code}")
         return _parse_cards(response.text, self.id, "anime")
 
     async def browse(
@@ -303,12 +288,12 @@ class AnimeUAProvider(BaseProvider):
 
     async def content(self, external_id: str, http: httpx.AsyncClient) -> ContentResponse:
         if not _SLUG_RE.fullmatch(external_id):
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, "bad external_id")
+            raise ProviderError("not_found", "bad external_id")
         response = await self._get(f"{BASE_URL}/{external_id}.html", http)
         soup = BeautifulSoup(response.text, "lxml")
         title_el = soup.select_one(".page__subcol-main h1")
         if title_el is None:
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "title missing")
+            raise ProviderError("parse_failed", "title missing")
         image = soup.select_one("div.page__subcol-side .img-fit-cover img")
         poster = urljoin(BASE_URL, str(image.get("data-src"))) if image and image.get("data-src") else None
         desc_el = soup.select_one(".full-text")
@@ -338,9 +323,6 @@ class AnimeUAProvider(BaseProvider):
         # with the anime style, not the default plain movie; kind="anime"
         # means an anime series (form=series). The axes always carry the
         # anime style — every entry on this site is animation.
-        mb_form, mb_styles = model_b_axes(
-            "anime", form="movie" if kind == "movie" else "series"
-        )
         return ContentResponse(
             id=f"{self.id}:{external_id}",
             title=title_el.get_text(" ", strip=True),
@@ -348,8 +330,8 @@ class AnimeUAProvider(BaseProvider):
             description=description,
             poster=poster,
             translations=translations,
-            form=mb_form,
-            styles=mb_styles,
+            form=("movie" if kind == "movie" else "series"),
+            styles=frozenset({"anime"}),
             seasons=seasons,
             translations_level=translations_level,
             # Ticket #213: the ``.pmovie__genres`` tag list (already
@@ -362,13 +344,16 @@ class AnimeUAProvider(BaseProvider):
     async def stream(
         self, content_id: str, translation: str | None, http: httpx.AsyncClient
     ) -> StreamResponse:
-        external_id, ep_suffix = split_content_suffix(content_id)
+        if ":" in content_id:
+            external_id, _, ep_suffix = content_id.rpartition(":")
+        else:
+            external_id, ep_suffix = content_id, ""
         if not _SLUG_RE.fullmatch(external_id):
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, "bad external_id")
+            raise ProviderError("not_found", "bad external_id")
         response = await self._get(f"{BASE_URL}/{external_id}.html", http)
         player_url = self._player_url(BeautifulSoup(response.text, "lxml"))
         if not player_url:
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no player iframe found")
+            raise ProviderError("parse_failed", "no player iframe found")
         player = await self._get(player_url, http)
         raw = _file_value(player.text)
         dubs = _parse_dubs(raw)
@@ -378,7 +363,7 @@ class AnimeUAProvider(BaseProvider):
             # Film player: the `file:` value is the direct m3u8 URL.
             url = raw if raw and not ep_suffix else None
         if url is None:
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"no stream URL for {ep_suffix!r}")
+            raise ProviderError("parse_failed", f"no stream URL for {ep_suffix!r}")
         return StreamResponse(
             url=url,
             type="m3u8",
@@ -391,9 +376,9 @@ class AnimeUAProvider(BaseProvider):
         """Return the dub ids available for a specific episode, or None
         when the episode cannot be resolved (caller falls back to
         content-level translations)."""
-        external_id, ep_suffix = split_content_suffix(content_id)
-        if not ep_suffix:
+        if ":" not in content_id:
             return None
+        external_id, _, ep_suffix = content_id.rpartition(":")
         if not _SLUG_RE.fullmatch(external_id):
             return None
         response = await self._get(f"{BASE_URL}/{external_id}.html", http)

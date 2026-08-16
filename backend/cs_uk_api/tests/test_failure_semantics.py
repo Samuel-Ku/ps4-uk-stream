@@ -19,6 +19,7 @@ The contract (per ADR-0002):
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 import httpx
 from fastapi.testclient import TestClient
@@ -206,30 +207,13 @@ def test_search_returns_502_with_search_timeout_when_overall_budget_fires():
     results, the route returns 502 with ErrorResponse(error="search_timeout")."""
 
     import cs_uk_api.config as config_mod
-    import cs_uk_api.main as main_mod
 
     saved = dict(PROVIDERS)
     saved_settings = config_mod.SETTINGS
-    patched = type(saved_settings)(
-        host=saved_settings.host,
-        port=saved_settings.port,
-        upstream_timeout_s=0.05,
-        search_total_timeout_s=0.1,  # 100ms total budget
-        poster_size_cap_bytes=saved_settings.poster_size_cap_bytes,
-        poster_allowed_hosts=saved_settings.poster_allowed_hosts,
-        cache_search_s=saved_settings.cache_search_s,
-        cache_content_s=saved_settings.cache_content_s,
-        cache_home_s=saved_settings.cache_home_s,
-        cache_poster_s=saved_settings.cache_poster_s,
-        cache_gated_s=saved_settings.cache_gated_s,
-        poster_cache_dir=saved_settings.poster_cache_dir,
-        poster_disk_ttl_s=saved_settings.poster_disk_ttl_s,
-        providers=saved_settings.providers,
-        block_russian=saved_settings.block_russian,
-        home_row_limit=saved_settings.home_row_limit,
-    )
+    # Arch T12: patch ONE binding (config.SETTINGS) — no positional
+    # Settings reconstruction.
+    patched = replace(saved_settings, upstream_timeout_s=0.05, search_total_timeout_s=0.1)
     config_mod.SETTINGS = patched
-    main_mod.SETTINGS = patched
     try:
         PROVIDERS.clear()
         PROVIDERS["hanga"] = _hang_provider("hanga", 5.0)
@@ -243,7 +227,6 @@ def test_search_returns_502_with_search_timeout_when_overall_budget_fires():
         PROVIDERS.clear()
         PROVIDERS.update(saved)
         config_mod.SETTINGS = saved_settings
-        main_mod.SETTINGS = saved_settings
         search_cache.clear()
 
 
@@ -289,30 +272,13 @@ def test_search_does_not_cache_502_responses():
     that succeeds returns 200."""
 
     import cs_uk_api.config as config_mod
-    import cs_uk_api.main as main_mod
 
     saved = dict(PROVIDERS)
     saved_settings = config_mod.SETTINGS
-    patched = type(saved_settings)(
-        host=saved_settings.host,
-        port=saved_settings.port,
-        upstream_timeout_s=0.05,
-        search_total_timeout_s=0.05,
-        poster_size_cap_bytes=saved_settings.poster_size_cap_bytes,
-        poster_allowed_hosts=saved_settings.poster_allowed_hosts,
-        cache_search_s=saved_settings.cache_search_s,
-        cache_content_s=saved_settings.cache_content_s,
-        cache_home_s=saved_settings.cache_home_s,
-        cache_poster_s=saved_settings.cache_poster_s,
-        cache_gated_s=saved_settings.cache_gated_s,
-        poster_cache_dir=saved_settings.poster_cache_dir,
-        poster_disk_ttl_s=saved_settings.poster_disk_ttl_s,
-        providers=saved_settings.providers,
-        block_russian=saved_settings.block_russian,
-        home_row_limit=saved_settings.home_row_limit,
-    )
+    # Arch T12: patch ONE binding (config.SETTINGS) — no positional
+    # Settings reconstruction.
+    patched = replace(saved_settings, upstream_timeout_s=0.05, search_total_timeout_s=0.05)
     config_mod.SETTINGS = patched
-    main_mod.SETTINGS = patched
     try:
         PROVIDERS.clear()
         PROVIDERS["hang"] = _hang_provider("hang", 1.0)
@@ -332,7 +298,6 @@ def test_search_does_not_cache_502_responses():
         PROVIDERS.clear()
         PROVIDERS.update(saved)
         config_mod.SETTINGS = saved_settings
-        main_mod.SETTINGS = saved_settings
         search_cache.clear()
 
 
@@ -342,30 +307,13 @@ def test_search_returns_200_with_partial_results_when_overall_budget_fires():
     AND synthetic timeout rows for the in-flight providers. 502 is
     reserved for the all-timeout case."""
     import cs_uk_api.config as config_mod
-    import cs_uk_api.main as main_mod
 
     saved = dict(PROVIDERS)
     saved_settings = config_mod.SETTINGS
-    patched = type(saved_settings)(
-        host=saved_settings.host,
-        port=saved_settings.port,
-        upstream_timeout_s=0.05,
-        search_total_timeout_s=0.1,  # 100ms total budget
-        poster_size_cap_bytes=saved_settings.poster_size_cap_bytes,
-        poster_allowed_hosts=saved_settings.poster_allowed_hosts,
-        cache_search_s=saved_settings.cache_search_s,
-        cache_content_s=saved_settings.cache_content_s,
-        cache_home_s=saved_settings.cache_home_s,
-        cache_poster_s=saved_settings.cache_poster_s,
-        cache_gated_s=saved_settings.cache_gated_s,
-        poster_cache_dir=saved_settings.poster_cache_dir,
-        poster_disk_ttl_s=saved_settings.poster_disk_ttl_s,
-        providers=saved_settings.providers,
-        block_russian=saved_settings.block_russian,
-        home_row_limit=saved_settings.home_row_limit,
-    )
+    # Arch T12: patch ONE binding (config.SETTINGS) — no positional
+    # Settings reconstruction.
+    patched = replace(saved_settings, upstream_timeout_s=0.05, search_total_timeout_s=0.1)
     config_mod.SETTINGS = patched
-    main_mod.SETTINGS = patched
     try:
         PROVIDERS.clear()
         # Fast provider: returns immediately.
@@ -391,7 +339,6 @@ def test_search_returns_200_with_partial_results_when_overall_budget_fires():
         PROVIDERS.clear()
         PROVIDERS.update(saved)
         config_mod.SETTINGS = saved_settings
-        main_mod.SETTINGS = saved_settings
         search_cache.clear()
 
 

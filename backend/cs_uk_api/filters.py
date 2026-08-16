@@ -13,7 +13,7 @@ Two callers share them:
     ``form`` / ``styles`` match semantics (CONTEXT.md «Section schema»).
 
 None of these read settings, so moving them out of the route module does
-not change the ``main_mod.SETTINGS`` monkeypatch seam the tests use.
+not change the ``config.SETTINGS`` test patch point (Arch T12).
 """
 
 from __future__ import annotations

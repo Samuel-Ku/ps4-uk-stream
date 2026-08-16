@@ -33,7 +33,7 @@ from cs_uk_api.catalog_state import content_cache, home_cache, sources_cache
 from cs_uk_api.config import SETTINGS
 from cs_uk_api.models import ContentResponse, SearchResult, Section, Translation
 from cs_uk_api.providers import PROVIDERS
-from cs_uk_api.providers.base import BaseProvider, model_b_axes
+from cs_uk_api.providers.base import BaseProvider
 
 #: The router *module* (the ``cs_uk_api.jellyfin`` package re-exports
 #: ``router`` as the APIRouter, shadowing the submodule under that name).
@@ -58,7 +58,11 @@ def _item(
     poster: str | None = None,
     genres: list[str] | None = None,
 ) -> SearchResult:
-    mb_form, mb_styles = model_b_axes(cast(Any, media_type))
+    mb_form, mb_styles = (
+        (media_type, frozenset())
+        if media_type in ("movie", "series")
+        else ("series", frozenset({media_type}))
+    )
     return SearchResult(
         id=f"{pid}:{n}",
         provider=pid,

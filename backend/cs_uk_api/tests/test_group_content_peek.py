@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterator
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
@@ -43,12 +43,15 @@ from cs_uk_api.models import ContentResponse, SearchResult, Translation
 from cs_uk_api.providers.base import (
     BaseProvider,
     ProviderError,
-    model_b_axes,
 )
 
 
 def _result(pid: str, ext: str, media_type: str = "movie") -> SearchResult:
-    mb_form, mb_styles = model_b_axes(cast(Any, media_type))
+    mb_form, mb_styles = (
+        (media_type, frozenset())
+        if media_type in ("movie", "series")
+        else ("series", frozenset({media_type}))
+    )
     return SearchResult(
         id=f"{pid}:{ext}",
         provider=pid,
@@ -61,7 +64,11 @@ def _result(pid: str, ext: str, media_type: str = "movie") -> SearchResult:
 
 
 def _content(pid: str, ext: str, media_type: str = "series") -> ContentResponse:
-    mb_form, mb_styles = model_b_axes(cast(Any, media_type))
+    mb_form, mb_styles = (
+        (media_type, frozenset())
+        if media_type in ("movie", "series")
+        else ("series", frozenset({media_type}))
+    )
     return ContentResponse(
         id=f"{pid}:{ext}",
         title=f"{pid}-{ext}",

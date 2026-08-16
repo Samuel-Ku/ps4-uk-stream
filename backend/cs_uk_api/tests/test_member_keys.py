@@ -29,14 +29,11 @@ search fan-out machinery.
 """
 from __future__ import annotations
 
-from typing import Any, cast
-
 import pytest
 
 from cs_uk_api.home import round_robin_dedup
 from cs_uk_api.merge import group_key_from, item_group_key
 from cs_uk_api.models import SearchResult
-from cs_uk_api.providers.base import model_b_axes
 
 
 def _make_item(
@@ -45,7 +42,7 @@ def _make_item(
     year: int | None = None,
     n: str = "1",
 ) -> SearchResult:
-    mb_form, mb_styles = model_b_axes(cast(Any, "movie"))
+    mb_form, mb_styles = "movie", frozenset()
     return SearchResult(
         id=f"{pid}:{n}",
         provider=pid,

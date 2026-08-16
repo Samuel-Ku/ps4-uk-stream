@@ -11,26 +11,22 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from ..country import extract_country
+from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
+    MediaForm,
+    MediaStyle,
     SearchResult,
     Season,
     Section,
     StreamResponse,
     Translation,
 )
-from ..wire_identity import MOVIE_SUFFIX
-from .base import (
-    BaseProvider,
-    MediaTypeStr,
-    ProviderError,
-    ProviderErrorCode,
-    model_b_axes,
-    split_content_suffix,
-)
+from .base import MOVIE_SUFFIX, BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://eneyida.tv"
+_ALLOWED_HOSTS: frozenset[str] = frozenset({"eneyida.tv", "hdvbua.pro"})
 ENEYIDA_SECTIONS = (
     Section(id="films", title="Фільми", form="movie"),
     Section(id="series", title="Серіали", form="series"),
@@ -95,7 +91,7 @@ def _card_kind(card: Tag, href: str) -> str | None:
 
 def _section_url(section: str, page: int) -> str:
     if section not in {"films", "series"}:
-        raise ProviderError(ProviderErrorCode.NOT_FOUND, f"unknown section: {section}")
+        raise ProviderError("not_found", f"unknown section: {section}")
     root = f"{BASE_URL}/{section}/"
     return root if page <= 1 else f"{root}page/{page}/"
 
@@ -117,7 +113,11 @@ def _parse_card(
     img = card.select_one("img")
     poster_src = (img.get("data-src") or img.get("src")) if img else None
     resolved_kind = kind or _card_kind(card, str(a["href"])) or "movie"
-    mb_form, mb_styles = model_b_axes(cast(MediaTypeStr, resolved_kind))
+    _kind = cast(MediaTypeStr, resolved_kind)
+    mb_form: MediaForm = _kind if _kind == "movie" or _kind == "series" else "series"
+    mb_styles: frozenset[MediaStyle] = (
+        frozenset() if _kind == "movie" or _kind == "series" else frozenset({_kind})
+    )
     _, _, slug = ext.partition("/")
     id_kind = "series" if resolved_kind == "series" else "films"
     return SearchResult(
@@ -202,12 +202,12 @@ def _player_url(html: str) -> str | None:
     iframe = BeautifulSoup(tag, "lxml").select_one("iframe")
     if iframe is not None:
         src = str(iframe.get("src") or "")
-        if urlsplit(src).hostname in EneyidaProvider.hosts:
+        if urlsplit(src).hostname in _ALLOWED_HOSTS:
             return _ensure_md_token(src)
     m = _PLAYER_RE.search(tag)
     if m:
         url = m.group(0)
-        if urlsplit(url).hostname in EneyidaProvider.hosts and "?tr" not in url:
+        if urlsplit(url).hostname in _ALLOWED_HOSTS and "?tr" not in url:
             return _ensure_md_token(url)
     return None
 
@@ -222,11 +222,6 @@ class EneyidaProvider(BaseProvider):
     #: (``filter_gated_items``) drops dead cards from home/search instead
     #: of surfacing titles that fail only at play time (#158).
     can_gate = True
-    #: SSRF allowlist (spec #309 T8): the CMS on eneyida.tv and the
-    #: hdvbua.pro player embeds — also the ``_player_url`` host filter
-    #: (a hostile CMS iframe must not pivot the fetch elsewhere).
-    #: ``guarded_get`` applies this by default.
-    hosts = frozenset({"eneyida.tv", "hdvbua.pro"})
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         try:
@@ -235,9 +230,9 @@ class EneyidaProvider(BaseProvider):
                 data={"do": "search", "subaction": "search", "story": query},
             )
         except httpx.HTTPError as e:
-            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
+            raise ProviderError("unreachable", str(e)) from e
         if r.status_code != 200:
-            raise ProviderError(ProviderErrorCode.UPSTREAM_UNREACHABLE, f"status {r.status_code}")
+            raise ProviderError("upstream_unreachable", f"status {r.status_code}")
         return [
             x
             for c in BeautifulSoup(r.text, "lxml").select("article.short")
@@ -249,11 +244,11 @@ class EneyidaProvider(BaseProvider):
     ) -> tuple[list[SearchResult], bool]:
         url = _section_url(section, page)
         try:
-            r = await self.guarded_get(http, url)
+            r = await http.get(url)
         except httpx.HTTPError as e:
-            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
+            raise ProviderError("unreachable", str(e)) from e
         if r.status_code != 200:
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {r.status_code}")
+            raise ProviderError("not_found", f"status {r.status_code}")
         soup = BeautifulSoup(r.text, "lxml")
         # Section-kind override: the listing URL carries the section, but
         # the CARDS use bare URLs (upstream drift) — the section is the
@@ -271,24 +266,26 @@ class EneyidaProvider(BaseProvider):
     async def content(self, external_id: str, http: httpx.AsyncClient) -> ContentResponse:
         kind, _, slug = external_id.partition("/")
         if not kind or not slug:
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "invalid external_id")
+            raise ProviderError("parse_failed", "invalid external_id")
         if not _SLUG_RE.fullmatch(slug):
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, "bad external_id")
+            raise ProviderError("not_found", "bad external_id")
         try:
-            r = await self.guarded_get(http, f"{BASE_URL}/{kind}/{slug}.html")
+            r = await safe_get(
+                http, f"{BASE_URL}/{kind}/{slug}.html", allowed_hosts=set(_ALLOWED_HOSTS)
+            )
         except httpx.HTTPError as e:
-            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
+            raise ProviderError("unreachable", str(e)) from e
         if r.status_code != 200:
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {r.status_code}")
+            raise ProviderError("not_found", f"status {r.status_code}")
         soup = BeautifulSoup(r.text, "lxml")
         h1 = soup.select_one("h1")
         if not h1:
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "title missing")
+            raise ProviderError("parse_failed", "title missing")
         country: str | None = extract_country(soup)
         img = soup.select_one(".full img") or soup.select_one("img[src*='/uploads/']")
         player = _player_url(r.text)
         if not player:
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "player missing")
+            raise ProviderError("parse_failed", "player missing")
         typ: MediaTypeStr = "series" if kind == "series" else "movie"
         seasons, dub_translations = await self._seasons(player, external_id, http)
         if seasons:
@@ -309,7 +306,10 @@ class EneyidaProvider(BaseProvider):
                     episodes=[Episode(number=1, id=f"{self.id}:{external_id}{MOVIE_SUFFIX}", title="Фільм")],
                 )
             ]
-        mb_form, mb_styles = model_b_axes(typ)
+        mb_form: MediaForm = typ if typ == "movie" or typ == "series" else "series"
+        mb_styles: frozenset[MediaStyle] = (
+            frozenset() if typ == "movie" or typ == "series" else frozenset({typ})
+        )
         return ContentResponse(
             id=f"{self.id}:{external_id}",
             title=h1.get_text(strip=True),
@@ -325,11 +325,11 @@ class EneyidaProvider(BaseProvider):
         self, player: str, ext: str, http: httpx.AsyncClient
     ) -> tuple[list[Season] | None, list[Translation]]:
         try:
-            r = await self.guarded_get(http, player)
+            r = await http.get(player)
         except httpx.HTTPError:
             return None, []
         if r.status_code == 200 and _content_unavailable(r.text):
-            raise ProviderError(ProviderErrorCode.GATED, "upstream content removed")
+            raise ProviderError("gated", "upstream content removed")
         raw = _file_url(r.text) if r.status_code == 200 else None
         try:
             data = cast(list[dict[str, Any]], json.loads(raw or "[]"))
@@ -356,9 +356,8 @@ class EneyidaProvider(BaseProvider):
         # phantom seasons for dubs.
         if not any(_is_season_titled(e) for e in season_entries if isinstance(e, dict)):
             dubs = [e for e in season_entries if isinstance(e, dict)]
-            episodes: list[Episode] = []
             first_dub_folder = dubs[0].get("folder", []) if dubs else []
-            episodes = [
+            episodes: list[Episode] = [
                 Episode(
                     number=j,
                     id=f"{self.id}:{ext}:s1e{j}",
@@ -412,32 +411,34 @@ class EneyidaProvider(BaseProvider):
     async def stream(
         self, content_id: str, translation: str | None, http: httpx.AsyncClient
     ) -> StreamResponse:
-        ext, suffix = split_content_suffix(content_id)
+        ext, _, suffix = content_id.partition(":")
         kind, _, slug = ext.partition("/")
         if not kind or not slug:
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "invalid content_id")
+            raise ProviderError("parse_failed", "invalid content_id")
         if not _SLUG_RE.fullmatch(slug):
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, "bad external_id")
+            raise ProviderError("not_found", "bad external_id")
         try:
-            r = await self.guarded_get(http, f"{BASE_URL}/{kind}/{slug}.html")
+            r = await safe_get(
+                http, f"{BASE_URL}/{kind}/{slug}.html", allowed_hosts=set(_ALLOWED_HOSTS)
+            )
         except httpx.HTTPError as e:
-            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
+            raise ProviderError("unreachable", str(e)) from e
         player = _player_url(r.text)
         if not player:
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "player missing")
+            raise ProviderError("parse_failed", "player missing")
         try:
-            p = await self.guarded_get(http, player)
+            p = await safe_get(http, player, allowed_hosts=set(_ALLOWED_HOSTS))
         except httpx.HTTPError as e:
-            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
+            raise ProviderError("unreachable", str(e)) from e
         if p.status_code == 200 and _content_unavailable(p.text):
-            raise ProviderError(ProviderErrorCode.GATED, "upstream content removed")
+            raise ProviderError("gated", "upstream content removed")
         raw = _file_url(p.text) if p.status_code == 200 else None
         if not raw:
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "media missing")
+            raise ProviderError("parse_failed", "media missing")
         if suffix and suffix != "__movie__":
             m = re.fullmatch(r"s(\d+)e(\d+)", suffix)
             if not m:
-                raise ProviderError(ProviderErrorCode.PARSE_FAILED, "bad episode")
+                raise ProviderError("parse_failed", "bad episode")
             s_idx, e_idx = int(m[1]) - 1, int(m[2]) - 1
             try:
                 payload = cast(list[dict[str, Any]], json.loads(raw))
@@ -458,7 +459,7 @@ class EneyidaProvider(BaseProvider):
                     picked_dub = _dub_index(entries, translation)
                     raw = entries[picked_dub if picked_dub is not None else s_idx]["folder"][e_idx]["file"]
             except (KeyError, IndexError, TypeError, json.JSONDecodeError) as e:
-                raise ProviderError(ProviderErrorCode.PARSE_FAILED, "episode missing") from e
+                raise ProviderError("parse_failed", "episode missing") from e
         else:
             # Issue #165: a movie whose player payload is a
             # series-structured folder array (a /films/ page that is

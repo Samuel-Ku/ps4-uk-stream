@@ -6,7 +6,15 @@
 
 ---
 
-> **Shipped (Model B, contract step #135, 2026-08-10):** the sections below document the shipped model — the decided target IS the wire contract. Every content item (search/browse/content/home) carries required `form` + `styles` axes; `Section` declares its `form`/`styles` filter axes; all providers populate them via the shared `model_b_axes` mapping; `/api/search` + `/api/browse` filter on them (tickets #129–#135). The legacy `MediaType`/`type` field is gone from models, providers, and API responses — `anime`/`cartoon`/`dorama` ship as `styles`, never conflated with `movie`/`series`.
+> **Architecture notes (spec #309, deepening wave):** the module seams —
+> catalog accessors, wire identity, provider vocabulary, profile store,
+> configuration binding — are recorded in
+> [`docs/architecture.md`](docs/architecture.md). This file stays the
+> domain glossary (the *what* and *why*); the notes hold the *where*.
+
+---
+
+> **Shipped (Model B, contract step #135, 2026-08-10):** the sections below document the shipped model — the decided target IS the wire contract. Every content item (search/browse/content/home) carries required `form` + `styles` axes; `Section` declares its `form`/`styles` filter axes; providers populate them directly with the typed `form`/`styles` values (the legacy `model_b_axes` mapping was removed in contract step #319); `/api/search` + `/api/browse` filter on them (tickets #129–#135, #319). The legacy `MediaType`/`type` field is gone from models, providers, and API responses — `anime`/`cartoon`/`dorama` ship as `styles`, never conflated with `movie`/`series`.
 
 ## Catalog taxonomy (Model B — form + style)
 
@@ -556,7 +564,7 @@ Rules:
 
 > No value carrying a domain schema is ever persisted beyond process lifetime.
 
-A schema change is a code change is a restart is an empty cache — so a version prefix could never differ from the one that wrote the entry. The poster disk caches satisfy the invariant by storing opaque image bytes under a content-addressed key. **Persisting any domain object (offline catalog, warm-start snapshot, disk-backed `content:` layer) breaks this invariant and makes a version token mandatory** — ADR-0003 must be revisited first.
+A schema change is a code change is a restart is an empty cache — so a version prefix could never differ from the one that wrote the entry. The poster disk caches satisfy the invariant by storing opaque image bytes under a content-addressed key. **Persisting any domain object (offline catalog, warm-start snapshot, disk-backed `content:` layer) breaks this invariant and makes a version token mandatory** — ADR-0003 must be revisited first. The viewer-profile persistence (spec #323) is the first such value: it persists through `versioned_store.py` with a version token + atomic writes (see [`docs/architecture.md`](docs/architecture.md) §6).
 
 The resume state file is exactly that exception: it persists a domain schema, so it carries a **mandatory version token** (`v` field, see above) and a mismatched file is ignored (warn + empty) — the remedy ADR-0003's consequences section prescribes. See the ADR note.
 

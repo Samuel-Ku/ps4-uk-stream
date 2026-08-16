@@ -29,16 +29,18 @@ os.environ.setdefault("CS_UK_USER_STATE_PATH", "")
 # paths.
 os.environ.setdefault("CS_UK_SNAPSHOT_PATH", "")
 
-import pytest  # noqa: E402
+import pytest
 
-from cs_uk_api import llm  # noqa: E402
-from cs_uk_api.catalog_state import _stores  # noqa: E402
-from cs_uk_api.health import TRACKER  # noqa: E402
-from cs_uk_api.main import _browse_cache  # noqa: E402
-from cs_uk_api.poster_proxy import _cache as _poster_cache  # noqa: E402
-from cs_uk_api.providers import PROVIDERS  # noqa: E402
-from cs_uk_api.providers import _registry  # noqa: E402
-from cs_uk_api.watchdog import WATCHDOG  # noqa: E402
+from cs_uk_api import llm
+from cs_uk_api.catalog_state import _stores
+from cs_uk_api.health import TRACKER
+from cs_uk_api.main import _browse_cache
+from cs_uk_api.poster_proxy import _cache as _poster_cache
+from cs_uk_api.providers import (
+    PROVIDERS,
+    _registry,
+)
+from cs_uk_api.watchdog import WATCHDOG
 
 #: Every module-level mutable store the suite shares (ticket #330).
 #: Order-independent hygiene: each is cleared before every test so no

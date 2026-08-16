@@ -17,6 +17,7 @@ import httpx
 import pytest
 import respx
 
+import cs_uk_api.config as config_mod
 from cs_uk_api import poster_proxy
 from cs_uk_api.config import SETTINGS
 from cs_uk_api.poster_proxy import fetch
@@ -37,8 +38,10 @@ def _dns(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _settings(monkeypatch, tmp_path):
+    # Arch T12: the ONE settings binding is config.SETTINGS — poster_proxy
+    # reads it lazily through the config module.
     monkeypatch.setattr(
-        poster_proxy,
+        config_mod,
         "SETTINGS",
         replace(
             SETTINGS,

@@ -24,26 +24,26 @@ from bs4 import BeautifulSoup
 from bs4.element import Tag
 
 from ..country import extract_country
+from ..http_client import safe_get
 from ..models import (
     ContentResponse,
     Episode,
+    MediaForm,
+    MediaStyle,
     SearchResult,
     Season,
     Section,
     StreamResponse,
     Translation,
 )
-from ..wire_identity import MOVIE_SUFFIX
 from ._tortuga import decode as _tor_decrypt
-from .base import (
-    BaseProvider,
-    ProviderError,
-    ProviderErrorCode,
-    model_b_axes,
-    split_content_suffix,
-)
+from .base import MOVIE_SUFFIX, BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://kinovezha.tv"
+# Hosts the upstream may legally redirect to: the DLE CMS and the
+# tortuga player. A hostile CMS response must not be able to pivot
+# either hop to an attacker-controlled host.
+_ALLOWED_HOSTS: frozenset[str] = frozenset({"kinovezha.tv", "tortuga.tw"})
 
 # Sections exposed by KinoVezha's main navigation. Per the upstream
 # Kotlin source's `mainPage = mainPageOf(...)`:
@@ -71,7 +71,7 @@ _SECTION_KIND: dict[str, str] = {
 # `/s-cartoons/` is classified as `series` (not `movie` via `cartoon`).
 # Per the upstream Kotlin's conditional: tags contain "Мультсеріали"
 # or "Серіали" → TvSeries, else TvType.Movie.
-_PATH_TYPE: tuple[tuple[str, str], ...] = (
+_PATH_TYPE: tuple[tuple[str, MediaTypeStr], ...] = (
     ("s-cartoons", "series"),  # /s-cartoons/ — Мультсеріали
     ("series", "series"),      # /series/ — Серіали
     ("cartoon", "movie"),      # /cartoons/ — Мультфільми
@@ -85,7 +85,7 @@ _PATH_TYPE: tuple[tuple[str, str], ...] = (
 # singular and plural forms are needed — upstream titles a Мультсеріал
 # page's Жанр row «Мультсеріал» (singular, observed live 2026-08-09).
 # Longest needles first so "Мультсеріали" beats "Серіали".
-_TAG_TYPE: tuple[tuple[str, str], ...] = (
+_TAG_TYPE: tuple[tuple[str, MediaTypeStr], ...] = (
     ("мультсеріали", "series"),
     ("мультсеріал", "series"),
     ("серіали", "series"),
@@ -113,13 +113,14 @@ def _dub_prefix(file_value: str) -> str | None:
     m = _DUB_PREFIX_RE.match(file_value)
     return m.group(1).strip() if m else None
 
+
 # external_id is a numeric-prefixed slug (e.g. "2831-enn-droyid"). Gate
 # both content() and stream() against values that could escape the URL
 # path before interpolation.
 _SLUG_RE = re.compile(r"\d+-[a-z0-9][a-z0-9-]*")
 
 
-def _classify_from_tags(tags_text: str) -> str:
+def _classify_from_tags(tags_text: str) -> MediaTypeStr:
     """Map the Жанр list text to a MediaType. Mirrors the upstream
     conditional: contains "Мультсеріали" or "Серіали" → series; else
     movie. Longest-prefix-first so "Мультсеріали" beats "Серіали"."""
@@ -130,7 +131,7 @@ def _classify_from_tags(tags_text: str) -> str:
     return "movie"
 
 
-def _classify_from_url(href: str) -> str:
+def _classify_from_url(href: str) -> MediaTypeStr:
     """Map a section path to a MediaType. Used by the browse helper."""
     lower = href.lower()
     for needle, t in _PATH_TYPE:
@@ -152,7 +153,7 @@ def _section_url(section: str, page: int) -> str:
         "s-cartoons": "/s-cartoons",
     }
     if section not in paths:
-        raise ProviderError(ProviderErrorCode.NOT_FOUND, f"unknown section: {section}")
+        raise ProviderError("not_found", f"unknown section: {section}")
     # The upstream Kotlin always requests `$url/page/` (no trailing
     # slash) + `page` integer. DLE serves both shapes, but the page
     # block only renders at the `/page/N/` shape, so we mirror that.
@@ -190,7 +191,11 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
     external_id = _external_id_from_url(href)
     if not external_id:
         return None
-    mb_form, mb_styles = model_b_axes(_classify_from_url(href))  # type: ignore[arg-type]
+    kind = _classify_from_url(href)
+    mb_form: MediaForm = kind if kind == "movie" or kind == "series" else "series"
+    mb_styles: frozenset[MediaStyle] = (
+        frozenset() if kind == "movie" or kind == "series" else frozenset({kind})
+    )
     return SearchResult(
         id=f"{provider_id}:{external_id}",
         provider=provider_id,
@@ -245,11 +250,6 @@ class KinoVezhaProvider(BaseProvider):
     name = "КіноВежа"
     types = ("movie", "series")
     sections = KINOVEZHA_SECTIONS
-    #: SSRF allowlist (spec #309 T8): the DLE CMS and the tortuga
-    #: player. A hostile CMS response must not be able to pivot either
-    #: hop to an attacker-controlled host. ``guarded_get`` applies this
-    #: by default.
-    hosts = frozenset({"kinovezha.tv", "tortuga.tw"})
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         # DLE-style POST search. The site is a DLE CMS so the same
@@ -260,9 +260,9 @@ class KinoVezhaProvider(BaseProvider):
                 data={"do": "search", "subaction": "search", "story": quote(query)},
             )
         except httpx.HTTPError as e:
-            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
+            raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError(ProviderErrorCode.UPSTREAM_UNREACHABLE, f"status {resp.status_code}")
+            raise ProviderError("upstream_unreachable", f"status {resp.status_code}")
         return _parse_cards(resp.text, self.id)
 
     async def browse(
@@ -270,15 +270,19 @@ class KinoVezhaProvider(BaseProvider):
     ) -> tuple[list[SearchResult], bool]:
         url = _section_url(section, page)
         # The upstream now 301-redirects the first page (`/films/page/1/`
-        # -> `/films/`), so fetch through the SSRF-safe ``guarded_get``
+        # -> `/films/`), so fetch through the SSRF-safe `safe_get` helper
         # (same host allowlist as stream()) which follows allowed same-host
         # redirects. Pages > 1 still return 200 directly and are unaffected.
         try:
-            resp = await self.guarded_get(http, url)
+            resp = await safe_get(
+                http,
+                url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+            )
         except httpx.HTTPError as e:
-            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
+            raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
+            raise ProviderError("not_found", f"status {resp.status_code}")
         results = _parse_cards(resp.text, self.id)
         # Pagination: `<div class="pagination" id="pagination">` with
         # sibling anchors to `/section/page/N/`. Any link to a higher
@@ -304,18 +308,18 @@ class KinoVezhaProvider(BaseProvider):
         self, external_id: str, http: httpx.AsyncClient
     ) -> ContentResponse:
         if not _SLUG_RE.fullmatch(external_id):
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, "bad external_id")
+            raise ProviderError("not_found", "bad external_id")
         url = f"{BASE_URL}/{external_id}.html"
         try:
-            resp = await self.guarded_get(http, url)
+            resp = await http.get(url)
         except httpx.HTTPError as e:
-            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
+            raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
+            raise ProviderError("not_found", f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         title_el = soup.select_one(".inner-page__title")
         if title_el is None:
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "title missing")
+            raise ProviderError("parse_failed", "title missing")
         # Poster is the first `<img>` inside the `.inner-page__poster`
         # block — same `.img-fit-cover img` selector as the upstream
         # `load()` function. Some content pages use `data-src` (lazy
@@ -359,7 +363,10 @@ class KinoVezhaProvider(BaseProvider):
             seasons = [Season(number=1, episodes=[Episode(
                 number=1, id=f"{self.id}:{external_id}{MOVIE_SUFFIX}", title=title_el.get_text(strip=True),
             )])]
-        mb_form, mb_styles = model_b_axes(media_type)  # type: ignore[arg-type]
+        mb_form: MediaForm = media_type if media_type == "movie" or media_type == "series" else "series"
+        mb_styles: frozenset[MediaStyle] = (
+            frozenset() if media_type == "movie" or media_type == "series" else frozenset({media_type})
+        )
         return ContentResponse(
             id=f"kinovezha:{external_id}",
             title=title_el.get_text(strip=True),
@@ -385,24 +392,29 @@ class KinoVezhaProvider(BaseProvider):
             return None
         return str(iframe["src"])
 
+    @staticmethod
     async def _load_series_seasons(
-        self, player_url: str, external_id: str, http: httpx.AsyncClient, provider_id: str
+        player_url: str, external_id: str, http: httpx.AsyncClient, provider_id: str
     ) -> tuple[list[Season] | None, list[Translation]]:
         try:
-            resp = await self.guarded_get(http, player_url)
+            resp = await safe_get(
+                http,
+                player_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+            )
         except httpx.HTTPError as e:
-            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
+            raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
+            raise ProviderError("not_found", f"status {resp.status_code}")
         decoded = _resolve_file_value(resp.text)
         if decoded is None:
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no file value on player page")
+            raise ProviderError("parse_failed", "no file value on player page")
         if not decoded.startswith("["):
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "player payload is not a season/episode list")
+            raise ProviderError("parse_failed", "player payload is not a season/episode list")
         try:
             data = _parse_player_json(decoded)
         except json.JSONDecodeError as e:
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"player json: {e}") from e
+            raise ProviderError("parse_failed", f"player json: {e}") from e
         # Ticket #332: the episode file values carry the dubbing studio
         # in a ``{label}`` prefix (``{OZZ}…``) — collect every distinct
         # label so the dub picker surfaces real studio names.
@@ -442,34 +454,45 @@ class KinoVezhaProvider(BaseProvider):
         # the content URL — calling `http.get(content_id)` raises
         # `ValueError: unknown url type` (caught by code-reviewer on
         # UFDub).
-        ext_id, ep_suffix = split_content_suffix(content_id)
+        if MOVIE_SUFFIX in content_id:
+            ext_id = content_id.split(MOVIE_SUFFIX, 1)[0]
+            ep_suffix = ""
+        elif ":" in content_id:
+            ext_id, _, ep_suffix = content_id.rpartition(":")
+        else:
+            ext_id = content_id
+            ep_suffix = ""
         if not _SLUG_RE.fullmatch(ext_id):
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, "bad external_id")
+            raise ProviderError("not_found", "bad external_id")
         content_url = f"{BASE_URL}/{ext_id}.html"
         try:
-            resp = await self.guarded_get(http, content_url)
+            resp = await http.get(content_url)
         except httpx.HTTPError as e:
-            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
+            raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {resp.status_code}")
+            raise ProviderError("not_found", f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         player_url = self._extract_player_url(soup)
         if player_url is None:
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no player iframe on content page")
+            raise ProviderError("parse_failed", "no player iframe on content page")
         # The player URL came from upstream HTML, so it goes through
-        # the allowlist via ``guarded_get`` (#126).
+        # the redirect allowlist (#126).
         try:
-            player_resp = await self.guarded_get(http, player_url)
+            player_resp = await safe_get(
+                http,
+                player_url,
+                allowed_hosts=set(_ALLOWED_HOSTS),
+            )
         except httpx.HTTPError as e:
-            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
+            raise ProviderError("unreachable", str(e)) from e
         if player_resp.status_code != 200:
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"status {player_resp.status_code}")
+            raise ProviderError("not_found", f"status {player_resp.status_code}")
         decoded = _resolve_file_value(player_resp.text)
         if decoded is None:
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no file value on player page")
+            raise ProviderError("parse_failed", "no file value on player page")
         stream_url = self._select_stream_url(decoded, ep_suffix, translation)
         if stream_url is None:
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"no stream url for {ep_suffix!r}")
+            raise ProviderError("parse_failed", f"no stream url for {ep_suffix!r}")
         return StreamResponse(url=stream_url, type="m3u8", headers={
             "Referer": BASE_URL + "/",
             "User-Agent": "cs-uk-api/1.0",

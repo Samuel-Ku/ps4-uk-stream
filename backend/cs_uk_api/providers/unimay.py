@@ -26,7 +26,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError, ProviderErrorCode
+from .base import BaseProvider, ProviderError
 
 API_URL = "https://api.unimay.media"
 MAIN_URL = "https://www.unimay.media"
@@ -97,6 +97,19 @@ def _release_url(code: str) -> str:
     return f"{API_URL}/v1/release?code={quote(code)}"
 
 
+async def _get_json(url: str, http: httpx.AsyncClient) -> object:
+    try:
+        resp = await http.get(url, headers={"Referer": f"{MAIN_URL}/"})
+    except httpx.HTTPError as e:
+        raise ProviderError("unreachable", str(e)) from e
+    if resp.status_code != 200:
+        raise ProviderError("upstream_unreachable", f"status {resp.status_code}")
+    try:
+        return json.loads(resp.text)
+    except json.JSONDecodeError as e:
+        raise ProviderError("parse_failed", f"invalid json: {e}") from e
+
+
 class UnimayProvider(BaseProvider):
     id = "unimay"
     name = "Unimay"
@@ -104,32 +117,11 @@ class UnimayProvider(BaseProvider):
     sections = UNIMAY_SECTIONS
     # v3 (issue #70): "Останні релізи" contributes to «Новинки».
     newest_section = "updates"
-    #: SSRF allowlist (spec #309 T7): every API fetch goes to
-    #: api.unimay.media; the www/img hosts are only Referer/poster URL
-    #: decoration, never fetched by the backend. ``guarded_get`` applies
-    #: this by default.
-    hosts = frozenset({"api.unimay.media"})
-
-    async def _get_json(self, url: str, http: httpx.AsyncClient) -> object:
-        try:
-            resp = await self.guarded_get(
-                http, url, headers={"Referer": f"{MAIN_URL}/"}
-            )
-        except httpx.HTTPError as e:
-            raise ProviderError(ProviderErrorCode.UNREACHABLE, str(e)) from e
-        if resp.status_code != 200:
-            raise ProviderError(
-                ProviderErrorCode.UPSTREAM_UNREACHABLE, f"status {resp.status_code}"
-            )
-        try:
-            return json.loads(resp.text)
-        except json.JSONDecodeError as e:
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"invalid json: {e}") from e
 
     async def search(
         self, query: str, http: httpx.AsyncClient
     ) -> list[SearchResult]:
-        data = await self._get_json(_search_url(query), http)
+        data = await _get_json(_search_url(query), http)
         results: list[SearchResult] = []
         # The Kotlin casts to `SearchModel::class.java` and walks
         # `.content`. Items lacking a `code` (rare) are skipped.
@@ -163,7 +155,7 @@ class UnimayProvider(BaseProvider):
             return await self._browse_updates(page, http)
         if section == "projects":
             return await self._browse_projects(page, http)
-        raise ProviderError(ProviderErrorCode.NOT_FOUND, f"unknown section: {section}")
+        raise ProviderError("not_found", f"unknown section: {section}")
 
     async def _browse_updates(
         self, page: int, http: httpx.AsyncClient
@@ -171,7 +163,7 @@ class UnimayProvider(BaseProvider):
         # Upstream: page != 1 for the updates section returns empty.
         if page != 1:
             return [], False
-        data = await self._get_json(
+        data = await _get_json(
             f"{API_URL}/v1/list/series/updates?size=15", http
         )
         results: list[SearchResult] = []
@@ -200,7 +192,7 @@ class UnimayProvider(BaseProvider):
     async def _browse_projects(
         self, page: int, http: httpx.AsyncClient
     ) -> tuple[list[SearchResult], bool]:
-        data = await self._get_json(_projects_url(page), http)
+        data = await _get_json(_projects_url(page), http)
         results: list[SearchResult] = []
         for item in (data.get("content") or []) if isinstance(data, dict) else []:
             if not isinstance(item, dict):
@@ -230,9 +222,9 @@ class UnimayProvider(BaseProvider):
     async def content(
         self, external_id: str, http: httpx.AsyncClient
     ) -> ContentResponse:
-        data = await self._get_json(_release_url(external_id), http)
+        data = await _get_json(_release_url(external_id), http)
         if not isinstance(data, dict):
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "release not an object")
+            raise ProviderError("parse_failed", "release not an object")
         names = data.get("names") or {}
         images = data.get("images") or {}
         title = str(names.get("ukr") or names.get("eng") or external_id)
@@ -275,10 +267,10 @@ class UnimayProvider(BaseProvider):
         try:
             episode_number = int(ep_raw or "1")
         except ValueError as e:
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"bad content_id: {content_id}") from e
-        data = await self._get_json(_release_url(code), http)
+            raise ProviderError("parse_failed", f"bad content_id: {content_id}") from e
+        data = await _get_json(_release_url(code), http)
         if not isinstance(data, dict):
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "release not an object")
+            raise ProviderError("parse_failed", "release not an object")
         playlist = data.get("playlist") or []
         episode = next(
             (
@@ -301,11 +293,11 @@ class UnimayProvider(BaseProvider):
                 None,
             )
         if episode is None:
-            raise ProviderError(ProviderErrorCode.NOT_FOUND, f"no episode for {content_id}")
+            raise ProviderError("not_found", f"no episode for {content_id}")
         hls = episode.get("hls") or {}
         url = hls.get("master")
         if not url:
-            raise ProviderError(ProviderErrorCode.PARSE_FAILED, "episode has no hls.master")
+            raise ProviderError("parse_failed", "episode has no hls.master")
         return StreamResponse(
             url=str(url),
             type="m3u8",

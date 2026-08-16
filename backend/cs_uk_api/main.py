@@ -14,11 +14,17 @@ import cs_uk_api.providers._registry  # noqa: F401
 
 from . import catalog
 from . import catalog_warm as catalog_warm_mod
+from . import config as _config
 from . import watchdog as watchdog_mod
 from .cache import TtlCache
 from .catalog_state import _GATE_CHECK_TIMEOUT_S
 from .catalog_state import await_uakino_ready as _await_uakino_ready
+from .catalog_state import blocklist_cache as _catalog_blocklist_cache
+from .catalog_state import content_cache as _catalog_content_cache
 from .catalog_state import filter_gated_items as _filter_gated_items
+from .catalog_state import home_cache as _catalog_home_cache
+from .catalog_state import search_cache as _catalog_search_cache
+from .catalog_state import sources_cache as _catalog_sources_cache
 from .config import SETTINGS
 from .filters import parse_form_filter as _parse_form_filter
 from .filters import parse_style_filter as _parse_style_filter
@@ -50,7 +56,6 @@ from .models import (
 from .poster_proxy import fetch as fetch_poster
 from .providers import PROVIDERS
 from .providers.base import BaseProvider
-from .providers.base import model_b_axes as _model_b_axes
 from .service import (
     content_provider_error as _content_provider_error,
 )
@@ -75,6 +80,16 @@ if not os.path.exists(DEFAULT_CHROMIUM):
 #: main owns outright; every other catalog cache lives in
 #: ``catalog_state`` behind the ``catalog`` interface (spec #309 T4).
 _browse_cache = TtlCache(default_ttl_s=SETTINGS.cache_search_s)
+
+#: Back-compat aliases (tests import these): the shared merged-search /
+#: content / home / blocklist caches live in ``catalog_state`` (ticket
+#: #101/#106), shared by the native ``/api/*`` routes and the Jellyfin
+#: facade. Clearing them clears the shared state.
+_search_cache = _catalog_search_cache
+_content_cache = _catalog_content_cache
+_blocklist_cache = _catalog_blocklist_cache
+_home_cache = _catalog_home_cache
+_home_sources_cache = _catalog_sources_cache
 
 #: Bounded drain for the background warm/heartbeat task in lifespan
 #: shutdown so a mid-warm Chromium launch cannot hang the teardown.
@@ -198,7 +213,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # app's first requests never hit a 17-21s cold scrape. OFF in tests
     # (conftest sets CS_UK_CATALOG_WARM=0) so a TestClient lifespan
     # never triggers real provider scrapes.
-    if SETTINGS.catalog_warm_enabled:
+    if _config.SETTINGS.catalog_warm_enabled:
         _catalog_warm_task = asyncio.create_task(_catalog_warm_loop())
     # Daily LLM taste-profile refresh (spec #290): scheduled only when
     # the layer is configured — no knobs, no task, no LLM calls.
@@ -326,7 +341,7 @@ async def health() -> dict[str, object]:
                 # NOT "pending" — it will never finish, so the runner's
                 # warm gate must not block on it. Report done: there is
                 # nothing to wait for.
-                "status": "done" if not SETTINGS.catalog_warm_enabled else "pending",
+                "status": "done" if not _config.SETTINGS.catalog_warm_enabled else "pending",
                 "home_warmed": False,
                 "content_warmed": 0,
                 "failed": 0,
@@ -358,7 +373,7 @@ def _provider_forms(p: BaseProvider) -> list[MediaForm]:
     """The provider's ``MediaForm`` rollup, deduped in a stable order."""
     seen: list[MediaForm] = []
     for kind in p.types:
-        form = _model_b_axes(kind)[0]
+        form: MediaForm = "movie" if kind == "movie" else "series"
         if form not in seen:
             seen.append(form)
     return seen
@@ -368,7 +383,8 @@ def _provider_styles(p: BaseProvider) -> list[MediaStyle]:
     """The provider's style-tag rollup (∅ on the wire when none)."""
     styles: set[MediaStyle] = set()
     for kind in p.types:
-        styles.update(_model_b_axes(kind)[1])
+        if kind in ("anime", "cartoon", "dorama"):
+            styles.add(kind)
     return sorted(styles)
 
 

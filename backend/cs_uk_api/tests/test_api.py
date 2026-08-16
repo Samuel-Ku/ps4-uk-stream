@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 
 from fastapi.testclient import TestClient
 
@@ -280,24 +281,9 @@ def test_content_route_respects_block_russian_disabled(monkeypatch):
     from cs_uk_api.providers.base import BaseProvider
 
     original = config_mod.SETTINGS
-    config_mod.SETTINGS = type(original)(
-        host=original.host,
-        port=original.port,
-        upstream_timeout_s=original.upstream_timeout_s,
-        search_total_timeout_s=original.search_total_timeout_s,
-        poster_size_cap_bytes=original.poster_size_cap_bytes,
-        poster_allowed_hosts=original.poster_allowed_hosts,
-        cache_search_s=original.cache_search_s,
-        cache_content_s=original.cache_content_s,
-        cache_home_s=original.cache_home_s,
-        cache_poster_s=original.cache_poster_s,
-        cache_gated_s=original.cache_gated_s,
-        poster_cache_dir=original.poster_cache_dir,
-        poster_disk_ttl_s=original.poster_disk_ttl_s,
-        providers=original.providers,
-        block_russian=False,
-        home_row_limit=original.home_row_limit,
-    )
+    # Arch T12: patch ONE binding (config.SETTINGS) — no positional
+    # Settings reconstruction.
+    config_mod.SETTINGS = replace(original, block_russian=False)
     try:
         catalog_state.blocklist_cache.clear()
         catalog_state.content_cache.clear()

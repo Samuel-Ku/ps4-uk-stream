@@ -16,6 +16,7 @@ import httpx
 import pytest
 import respx
 
+import cs_uk_api.config as config_mod
 from cs_uk_api import poster_proxy
 from cs_uk_api.config import SETTINGS
 from cs_uk_api.poster_proxy import fetch, is_allowed
@@ -36,8 +37,10 @@ def _public_dns(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _allowlist(monkeypatch):
+    # Arch T12: the ONE settings binding is config.SETTINGS — poster_proxy
+    # reads it lazily through the config module.
     monkeypatch.setattr(
-        poster_proxy,
+        config_mod,
         "SETTINGS",
         # poster_cache_dir=None: keep these tests on the memory layer; the
         # disk layer is exercised in test_poster_disk_cache.py.

@@ -31,8 +31,9 @@
 # SDK-style call would log as a bare `GET /Items` and fail these
 # `/Shows/…` expects.
 #
-# Each `open_view` step carries the router's `_VIEW_ID_BY_TYPE` uuid5
-# value as a `view_id:` DATA field (issue #151), not as a comment:
+# Each `open_view` step carries the row registry's `RowKind.view_id`
+# (row_kinds.py, Row T1 #329 — formerly the router's `_VIEW_ID_BY_TYPE`)
+# uuid5 value as a `view_id:` DATA field (issue #151), not as a comment:
 # `uuid.uuid5(NAMESPACE_URL, "cs-uk-api-view:{type}")`. The runner never
 # matches on it — it matches wire lines (the middleware logs
 # `request.url.path`, and the view id only appears in the stripped query
