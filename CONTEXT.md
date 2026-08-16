@@ -646,6 +646,19 @@ class SearchResponse(BaseModel):
 - **No `retryable: bool` on `ProviderFailure`** — no backend retry today; a field that always says `false` is noise.
 - **No per-item `status` field on `SearchResult`** — results are not failures; conflating them prevents future per-item health.
 - **No `failures: []` emitted when empty** — Pydantic omission (`exclude_unset`-style) is the floor; an empty array is indistinguishable from "no providers failed" and adds payload bytes.
+- **No per-search-result kind probe for bare-URL cards (issue #244,
+  decision (a) — accepted, 2026-08-16).** kinovezha's search cards
+  carry NO kind signal — bare `/N-slug.html` links with only
+  title/year/original-title (unlike eneyida's season label) — so they
+  classify as `movie` by default. Browse is unaffected (the section-
+  kind override forces the form); the search card still opens the
+  authoritative series detail (`content()` is authoritative, with the
+  seasons). A per-result content probe was rejected (blows the 12 s
+  search budget across 19 providers); lazy reclassification on open
+  was rejected (search responses are cached at the 5 m TTL, so the
+  list label would not update, and mutating group projections post-
+  open touches the shared merge/resolution machinery for a cosmetic
+  label). Accepted: the card may read "movie" until opened.
 
 If any of these start biting in production, each can be added as a **non-breaking optional field** (`retryable: bool | None = None`, `failures_always: bool = False`, etc.) without touching existing clients. The current shape is the floor, not the ceiling.
 
