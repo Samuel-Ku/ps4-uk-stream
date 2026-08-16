@@ -66,7 +66,9 @@ def test_store_ignores_version_mismatch(tmp_path, caplog) -> None:
     state, warning logged, no crash."""
     path = tmp_path / "user-state.json"
     path.write_text(
-        json.dumps({"v": 999, "favorites": ["g2:abc"], "played": ["g2:abc"]}),
+        json.dumps(
+            {"version": 999, "data": {"favorites": ["g2:abc"], "played": ["g2:abc"]}}
+        ),
         encoding="utf-8",
     )
     store = _fresh(str(path))
@@ -90,17 +92,18 @@ def test_store_missing_file_is_clean(tmp_path) -> None:
 
 
 def test_store_atomic_write_round_trips(tmp_path) -> None:
-    """The written file is the full versioned snapshot — a fresh store
-    reads it back without a flush (the write happened synchronously)."""
+    """The written file is the full versioned snapshot (spec #323
+    envelope) — a fresh store reads it back without a flush (the write
+    happened synchronously)."""
     path = str(tmp_path / "user-state.json")
     store = _fresh(path)
     store.set_favorite("g2:abc", True)
     store.set_played("g2:abc", True)
     with open(path, encoding="utf-8") as fh:
         raw = json.loads(fh.read())
-    assert raw["v"] == USER_STATE_VERSION
-    assert set(raw["favorites"]) == {"g2:abc"}
-    assert set(raw["played"]) == {"g2:abc"}
+    assert raw["version"] == USER_STATE_VERSION
+    assert set(raw["data"]["favorites"]) == {"g2:abc"}
+    assert set(raw["data"]["played"]) == {"g2:abc"}
 
 
 def test_store_bounded_lists_dedup(tmp_path) -> None:

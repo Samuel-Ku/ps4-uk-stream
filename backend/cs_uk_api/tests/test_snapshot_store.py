@@ -100,7 +100,8 @@ def test_corrupt_file_degrades_to_none(tmp_path: pytest.TempPathFactory) -> None
 def test_version_mismatch_degrades_to_none(tmp_path: pytest.TempPathFactory) -> None:
     path = tmp_path / "snapshot.json"
     path.write_text(
-        json.dumps({"v": SNAPSHOT_VERSION + 99, "rows": []}), encoding="utf-8"
+        json.dumps({"version": SNAPSHOT_VERSION + 99, "data": {"rows": []}}),
+        encoding="utf-8",
     )
     home, sources = SnapshotStore(str(path)).load()
     assert home is None
@@ -109,7 +110,10 @@ def test_version_mismatch_degrades_to_none(tmp_path: pytest.TempPathFactory) -> 
 
 def test_bad_rows_shape_degrades_to_none(tmp_path: pytest.TempPathFactory) -> None:
     path = tmp_path / "snapshot.json"
-    path.write_text(json.dumps({"v": SNAPSHOT_VERSION, "rows": "nope"}), encoding="utf-8")
+    path.write_text(
+        json.dumps({"version": SNAPSHOT_VERSION, "data": {"rows": "nope"}}),
+        encoding="utf-8",
+    )
     home, sources = SnapshotStore(str(path)).load()
     assert home is None
     assert sources is None
@@ -122,13 +126,15 @@ def test_partially_corrupt_sources_are_skipped(tmp_path: pytest.TempPathFactory)
     path.write_text(
         json.dumps(
             {
-                "v": SNAPSHOT_VERSION,
-                "rows": [_row().model_dump(mode="json")],
-                "sources": {
-                    "g2:abc": {
-                        "p1": _source_item().model_dump(mode="json"),
-                        "p2": "garbage",
-                    }
+                "version": SNAPSHOT_VERSION,
+                "data": {
+                    "rows": [_row().model_dump(mode="json")],
+                    "sources": {
+                        "g2:abc": {
+                            "p1": _source_item().model_dump(mode="json"),
+                            "p2": "garbage",
+                        }
+                    },
                 },
             }
         ),
@@ -153,15 +159,16 @@ def test_save_creates_missing_parent_dir(tmp_path: pytest.TempPathFactory) -> No
 
 
 def test_saved_file_is_versioned_atomic_json(tmp_path: pytest.TempPathFactory) -> None:
-    """The on-disk shape: one versioned JSON object with rows + sources,
-    no leftover temp files after the write."""
+    """The on-disk shape (spec #323 envelope): one versioned JSON object
+    with rows + sources under ``data``, no leftover temp files after the
+    write."""
     path = tmp_path / "snapshot.json"
     SnapshotStore(str(path)).save(_home(), _sources())
 
     payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload["v"] == SNAPSHOT_VERSION
-    assert [r["title"] for r in payload["rows"]] == ["Фільми"]
-    assert payload["sources"]["g2:abc"]["p1"]["title"] == "Дюна"
+    assert payload["version"] == SNAPSHOT_VERSION
+    assert [r["title"] for r in payload["data"]["rows"]] == ["Фільми"]
+    assert payload["data"]["sources"]["g2:abc"]["p1"]["title"] == "Дюна"
     assert list(tmp_path.glob("*.tmp")) == []
 
 
