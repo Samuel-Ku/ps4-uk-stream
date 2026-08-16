@@ -212,6 +212,19 @@ the LAST `::`) and streams THAT translation.
   remembered** (v3 decision) — films always start on the default dub.
 - **Single-translation items are untouched**: one thin source, no
   picker, no memory recording (D6 path).
+- **Known limitation (issue #243, triage decision (a) — accepted,
+  2026-08-16).** Single-translation content whose HLS file is a
+  dual-audio mux (e.g. uaflix zetvideo `ukr_eng` files — «Таємниця
+  бункера» s1e9) still shows mpv's UNNAMED in-band audio tracks in
+  Switchfin's picker: the CDN playlists carry no `EXT-X-MEDIA` groups
+  and the TS audio PIDs carry no language/title metadata, and the
+  client consults the facade's `MediaStreams` only when the media has
+  ≤1 audio track. The second track lives INSIDE the TS segments, so a
+  manifest-only rewrite cannot name it — fixing it would mean
+  remuxing/proxying the segments through the LAN host (option (b),
+  deferred to a dedicated spec) or an upstream Switchfin change
+  (option (c)). Accepted: both tracks play, the viewer just cannot
+  tell them apart by name.
 
 ### Dashboard surface (spec #280)
 

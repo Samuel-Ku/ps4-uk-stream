@@ -1261,6 +1261,14 @@ One manual checklist line for the on-device pass — deliberately NOT a
       `user-state.json`, LRU 50, movies never remembered; wire-verified
       multi-source PlaybackInfo + `mediaSourceId` stream switch on the
       backend).
+      **Remaining case (issue #243, decision (a) — accepted, not a
+      checklist item):** single-translation content whose HLS is a
+      dual-audio mux (uaflix zetvideo `ukr_eng`, «Таємниця бункера»
+      s1e9) shows mpv's unnamed in-band tracks in the picker — the
+      facade's named MediaStreams only apply to ≤1-audio-track media.
+      Tracks play; they just cannot be told apart by name. A fix needs
+      segment remux/proxy (deferred, needs a spec) or an upstream
+      Switchfin change.
 
 - [ ] Dashboard (spec #280): the dashboard renders counts/storage/users
       (sidebar → Dashboard): library size matches the catalog, the
