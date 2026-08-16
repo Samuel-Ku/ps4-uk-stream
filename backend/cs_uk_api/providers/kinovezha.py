@@ -103,6 +103,16 @@ _PAGINATION_LINK = re.compile(r"/page/(\d+)/?")
 # an inline script on the player page.
 _FILE_RE = re.compile(r"""file\s*:\s*["']([^"']+)["']""")
 
+#: A dubbing label inside the ``{...}`` prefix of a live series episode
+#: file value (e.g. ``{OZZ}https://…/index.m3u8(subtitle:…)``, ticket #332).
+_DUB_PREFIX_RE = re.compile(r"^\{(.*?)\}")
+
+
+def _dub_prefix(file_value: str) -> str | None:
+    """The dubbing-studio label from a ``{...}`` file prefix, or None."""
+    m = _DUB_PREFIX_RE.match(file_value)
+    return m.group(1).strip() if m else None
+
 # external_id is a numeric-prefixed slug (e.g. "2831-enn-droyid"). Gate
 # both content() and stream() against values that could escape the URL
 # path before interpolation.
@@ -338,8 +348,13 @@ class KinoVezhaProvider(BaseProvider):
         # is the first `<iframe>` with a non-empty src.
         player_url = self._extract_player_url(soup)
         seasons: list[Season] | None = None
+        translations: list[Translation] = [Translation(id="uk", label="Українська")]
         if media_type == "series" and player_url:
-            seasons = await self._load_series_seasons(player_url, external_id, http, self.id)
+            seasons, translations = await self._load_series_seasons(
+                player_url, external_id, http, self.id
+            )
+            if not translations:
+                translations = [Translation(id="uk", label="Українська")]
         elif player_url:
             seasons = [Season(number=1, episodes=[Episode(
                 number=1, id=f"{self.id}:{external_id}{MOVIE_SUFFIX}", title=title_el.get_text(strip=True),
@@ -350,7 +365,7 @@ class KinoVezhaProvider(BaseProvider):
             title=title_el.get_text(strip=True),
             description=description,
             poster=poster,
-            translations=[Translation(id="uk", label="Українська")],
+            translations=translations,
             seasons=seasons,
             country=country,
             form=mb_form,
@@ -372,7 +387,7 @@ class KinoVezhaProvider(BaseProvider):
 
     async def _load_series_seasons(
         self, player_url: str, external_id: str, http: httpx.AsyncClient, provider_id: str
-    ) -> list[Season] | None:
+    ) -> tuple[list[Season] | None, list[Translation]]:
         try:
             resp = await self.guarded_get(http, player_url)
         except httpx.HTTPError as e:
@@ -388,6 +403,10 @@ class KinoVezhaProvider(BaseProvider):
             data = _parse_player_json(decoded)
         except json.JSONDecodeError as e:
             raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"player json: {e}") from e
+        # Ticket #332: the episode file values carry the dubbing studio
+        # in a ``{label}`` prefix (``{OZZ}…``) — collect every distinct
+        # label so the dub picker surfaces real studio names.
+        dub_labels: list[str] = []
         seasons: list[Season] = []
         for s_idx, season in enumerate(data, start=1):
             episodes_raw = season.get("folder") or []
@@ -398,14 +417,19 @@ class KinoVezhaProvider(BaseProvider):
                 if not isinstance(ep, dict):
                     continue
                 ep_title = str(ep.get("title", "")).strip() or f"Серія {e_idx}"
+                label = _dub_prefix(str(ep.get("file", "")))
+                if label and label not in dub_labels:
+                    dub_labels.append(label)
                 episodes.append(Episode(
                     number=e_idx,
                     id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
                     title=ep_title,
+                    translations=[Translation(id=label, label=label)] if label else None,
                 ))
             if episodes:
                 seasons.append(Season(number=s_idx, episodes=episodes))
-        return seasons
+        translations = [Translation(id=t, label=t) for t in dub_labels]
+        return seasons or None, translations
 
     async def stream(
         self, content_id: str, translation: str | None, http: httpx.AsyncClient
@@ -443,7 +467,7 @@ class KinoVezhaProvider(BaseProvider):
         decoded = _resolve_file_value(player_resp.text)
         if decoded is None:
             raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no file value on player page")
-        stream_url = self._select_stream_url(decoded, ep_suffix)
+        stream_url = self._select_stream_url(decoded, ep_suffix, translation)
         if stream_url is None:
             raise ProviderError(ProviderErrorCode.PARSE_FAILED, f"no stream url for {ep_suffix!r}")
         return StreamResponse(url=stream_url, type="m3u8", headers={
@@ -452,9 +476,15 @@ class KinoVezhaProvider(BaseProvider):
         })
 
     @staticmethod
-    def _select_stream_url(decoded: str, ep_suffix: str) -> str | None:
+    def _select_stream_url(
+        decoded: str, ep_suffix: str, translation: str | None = None
+    ) -> str | None:
         """Resolve the m3u8 URL for either a movie (single URL) or a
         series episode (JSON list of seasons + episodes).
+
+        The dub picker's translation id (spec #276) selects the episode
+        entry whose ``{label}`` prefix matches (ticket #332); an
+        unmatched or absent translation falls back to the first entry.
 
         Returns ``None`` for out-of-range suffixes so the caller surfaces
         ``parse_failed`` rather than silently returning the first
@@ -479,7 +509,19 @@ class KinoVezhaProvider(BaseProvider):
         episodes_raw = season.get("folder") or []
         if not isinstance(episodes_raw, list) or e_idx < 1 or e_idx > len(episodes_raw):
             return None
-        ep = episodes_raw[e_idx - 1]
+        if translation:
+            # Flat shape: prefer the episode whose ``{DUB_LABEL}``
+            # prefix matches the picked translation.
+            candidates = [
+                ep for ep in episodes_raw
+                if isinstance(ep, dict) and _dub_prefix(str(ep.get("file", ""))) == translation
+            ]
+            if candidates:
+                ep = candidates[e_idx - 1] if e_idx <= len(candidates) else candidates[0]
+            else:
+                ep = episodes_raw[e_idx - 1]
+        else:
+            ep = episodes_raw[e_idx - 1]
         if not isinstance(ep, dict):
             return None
         file_value = str(ep.get("file", ""))

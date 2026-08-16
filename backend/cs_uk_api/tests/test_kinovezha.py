@@ -394,3 +394,107 @@ async def test_kinovezha_stream_bad_content_id_raises_not_found():
             with pytest.raises(ProviderError) as exc:
                 await KinoVezhaProvider().stream("../../etc/passwd", None, http)
     assert exc.value.code == "not_found"
+
+# ---------------------------------------------------------------------------
+# Ticket #332: dubbing-studio names (flat `{label}` file prefixes)
+# ---------------------------------------------------------------------------
+
+def _encode_payload(payload: str, salt: int = 42) -> str:
+    """Tortuga-encode a decoded JSON payload (the XOR is symmetric)."""
+    import base64 as b64
+
+    raw = bytes([salt]) + bytes(
+        b ^ ((salt + 7 * i + 13) % 256) for i, b in enumerate(payload.encode("utf-8"))
+    )
+    return b64.b64encode(raw).decode()
+
+
+def _player_page(payload: str) -> str:
+    return f"<html><body><script>file: \"{_encode_payload(payload)}\"</script></body></html>"
+
+
+TWO_DUB_FLAT_PAYLOAD = (
+    '[{"title":"Сезон 1","folder":['
+    '{"title":"Серія 1","file":"{КІНО}https://calypso.tortuga.tw/hls/serials/x.s01e01.kino/index.m3u8"},'
+    '{"title":"Серія 1","file":"{HDrezka Studio}https://calypso.tortuga.tw/hls/serials/x.s01e01.rezka/index.m3u8"}]}]'
+)
+
+
+@pytest.mark.asyncio
+async def test_kinovezha_content_series_surfaces_dub_label():
+    """Ticket #332: the series episode files carry the dubbing studio in
+    a ``{label}`` prefix (``{OZZ}…``) — content() must surface it as the
+    translation instead of a generic «Українська»."""
+    content_html = _fixture("content_series.html")
+    player_html = _fixture("player_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://kinovezha.tv/2831-enn-droyid.html").respond(
+            200, text=content_html
+        )
+        router.get("https://tortuga.tw/embed/2859").respond(
+            200, text=player_html
+        )
+        async with httpx.AsyncClient() as http:
+            c = await KinoVezhaProvider().content("2831-enn-droyid", http)
+    assert [t.label for t in c.translations] == ["OZZ"]
+    assert [t.id for t in c.translations] == ["OZZ"]
+
+
+@pytest.mark.asyncio
+async def test_kinovezha_content_flat_exposes_prefix_dub_labels():
+    """Ticket #332: a flat payload carrying two dubs in ``{...}`` file
+    prefixes surfaces both studio names as translations."""
+    content_html = _fixture("content_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://kinovezha.tv/2831-enn-droyid.html").respond(
+            200, text=content_html
+        )
+        router.get("https://tortuga.tw/embed/2859").respond(
+            200, text=_player_page(TWO_DUB_FLAT_PAYLOAD)
+        )
+        async with httpx.AsyncClient() as http:
+            c = await KinoVezhaProvider().content("2831-enn-droyid", http)
+    assert [t.label for t in c.translations] == ["КІНО", "HDrezka Studio"]
+
+
+@pytest.mark.asyncio
+async def test_kinovezha_stream_flat_honors_translation():
+    """Ticket #332: the picked dub label selects the episode entry whose
+    ``{...}`` prefix matches, instead of always the first entry."""
+    content_html = _fixture("content_series.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://kinovezha.tv/2831-enn-droyid.html").respond(
+            200, text=content_html
+        )
+        router.get("https://tortuga.tw/embed/2859").respond(
+            200, text=_player_page(TWO_DUB_FLAT_PAYLOAD)
+        )
+        async with httpx.AsyncClient() as http:
+            default = await KinoVezhaProvider().stream(
+                "2831-enn-droyid:s1e1", None, http
+            )
+            picked = await KinoVezhaProvider().stream(
+                "2831-enn-droyid:s1e1", "HDrezka Studio", http
+            )
+    assert "s01e01.kino" in default.url
+    assert "s01e01.rezka" in picked.url
+
+
+def test_kinovezha_select_stream_url_honors_translation():
+    """Unit seam: `_select_stream_url` picks the episode whose
+    ``{label}`` prefix matches the translation, and defaults to the
+    first entry when the translation is None or unmatched."""
+    decoded = (
+        '[{"title":"Сезон 1","folder":['
+        '{"title":"Серія 1","file":"{КІНО}https://x/k.m3u8"},'
+        '{"title":"Серія 1","file":"{HDrezka Studio}https://x/r.m3u8"}]}]'
+    )
+    assert KinoVezhaProvider._select_stream_url(decoded, "s1e1") == "https://x/k.m3u8"
+    assert (
+        KinoVezhaProvider._select_stream_url(decoded, "s1e1", "HDrezka Studio")
+        == "https://x/r.m3u8"
+    )
+    assert (
+        KinoVezhaProvider._select_stream_url(decoded, "s1e1", "NoSuchStudio")
+        == "https://x/k.m3u8"
+    )
