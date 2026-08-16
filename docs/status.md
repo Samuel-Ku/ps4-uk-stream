@@ -256,7 +256,7 @@ boundary validation is `fullmatch` everywhere; uakino movies without a
 cd backend
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
-uvicorn cs_uk_api.main:app --host 0.0.0.0 --port 8000
+uvicorn cs_uk_api.main:app --host 0.0.0.0 --port 8003
 ```
 
 Run the tests:
