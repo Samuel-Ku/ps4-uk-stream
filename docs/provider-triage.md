@@ -122,6 +122,37 @@ The adapter correctly follows kinotron → ashdi and finds nothing to
 parse; this is the documented dead-embed/gated condition (ADR-0002), and
 the gate's by-design top-hit retry (issue #39) covers it.
 
+## Degraded-provider re-check (2026-08-16, spec #298)
+
+Follow-up to the 2026-08-15 verdicts above: the SAME three providers
+(kinotron, cikavaideya, simpsonsuatv) hit a fresh degraded window on
+2026-08-16 — detected by the nightly drift sweep, which had been
+scheduled under spec #298 (ticket #300).
+
+| Provider | Window | Root cause | Verdict |
+| -------- | ------ | ---------- | ------- |
+| kinotron | 03:10–13:42 UTC | shared origin `91.240.20.12` unreachable (TCP connect timeout, 100% ping loss) | **transient** — recovered |
+| cikavaideya | 03:10–13:42 UTC | same shared origin | **transient** — recovered |
+| simpsonsuatv | 03:10–13:42 UTC | same shared origin | **transient** — recovered |
+
+Details:
+
+- All three domains (`kinotron.tv`, `cikava-ideya.top`, `simpsonsua.tv`)
+  resolve to the SAME origin `91.240.20.12` (confirmed via Google DoH —
+  not a local DNS artifact). The origin answered no ping and no TCP on
+  port 80/443 from the backend host; control checks to other providers
+  (`kinovezha.tv` → 301) were fine, and the sibling domain
+  `kinotron.com.ua` (`89.184.75.80`) stayed up.
+- The drift sweep at 03:10 passed all three (healthy baseline), the
+  13:36 run failed them (first consecutive failure — counter 0→1), and
+  the 13:42 run passed again (counter reset to 0, baseline refreshed).
+  The failure never reached the two-consecutive threshold, so **no issue
+  was filed** and the monitor self-healed — exactly the spec #298 design
+  (single failures are not drift; the counter/window self-heals).
+- No adapter changes: the adapters' parsing is unaffected (healthy
+  signatures `count 18/18/4` restored identically on recovery); the
+  outage was pure upstream unavailability.
+
 ## Per-provider "owner" field (suggested order)
 
 Group 1 (simple, HTML-based, `<15 KB`):
