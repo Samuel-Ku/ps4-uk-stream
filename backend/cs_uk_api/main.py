@@ -383,7 +383,7 @@ def _provider_styles(p: BaseProvider) -> list[MediaStyle]:
     """The provider's style-tag rollup (∅ on the wire when none)."""
     styles: set[MediaStyle] = set()
     for kind in p.types:
-        if kind in ("anime", "cartoon", "dorama"):
+        if kind == "anime" or kind == "cartoon" or kind == "dorama":
             styles.add(kind)
     return sorted(styles)
 

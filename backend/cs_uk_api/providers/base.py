@@ -84,7 +84,7 @@ def model_b_axes(
     ``types`` directly (spec #309 T10), but the tests construct
     ``SearchResult`` fixtures through this mapping.
     """
-    if media_type in ("movie", "series"):
+    if media_type == "movie" or media_type == "series":
         return media_type, frozenset()
     style = _STYLE_BY_TYPE[media_type]
     return (form or "series"), frozenset({style})
