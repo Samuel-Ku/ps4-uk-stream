@@ -1305,3 +1305,29 @@ Backend-side verification of the same behaviour (no device needed):
 `POST/DELETE /Users/{user}/FavoriteItems/{id}` and `/PlayedItems/{id}`
 → UserDataResult, and `UserData` on card/detail/episode DTOs (see
 `test_user_state.py` / `test_jellyfin_detail.py` #257 tests).
+
+## Run #19 (2026-08-16, on-device sweep for issue #240) — **FULL PASS** ✅
+
+Ran the issue #240 verification sweep on the PHONE instead of the PS4
+(the console was offline; the user chose the OnePlus 8 Pro). Fresh
+`switchfin_test.py --skip-calibrate --port 8003` run (backend cold-
+started with capture enabled): **43 passed, 0 skipped, 0 failed** — all
+8 view rows (Нещодавно додані: Фільми/Серіали, Популярні зараз,
+Фільми, Серіали, Аніме, Мультфільми, Дорами) open + detail + play with
+real streaming, all nav steps reached the Views grid visually (4–6
+BACKs), handshake + warmup + restart all green. The regenerated
+`capture.real-client.jsonl` fixture (1606 records) keeps the contract
+suite green.
+
+**Search re-verified on-device (the #240 checklist item the runner does
+not automate):** from the Views grid → sidebar search icon (147, 424) →
+on-screen keyboard. The 2026-08-11 key map drifted — today's grid sits
+at columns x≈370/505/639/772/904/1036 and rows y≈485/609/732/856/981/
+1104 (landscape 3168×1440), so locate keys by screenshot, not by the
+old constants. Typed `AVATAR` via hold-taps: the backend log shows the
+incremental `searchTerm` fan-out (A → AV → AVA → AVAT → AVATA → AVATAR
+across all providers, e.g. `animeon /api/anime?search=…`,
+`unimay /v1/release/search?query=…`, `uaserials /search/AVA/`) and the
+Suggest column rendered 10 result cards. A cold merged search (8–21 s)
+pops the client's B1 "Timeout was reached" dialog mid-typing — the
+results still render behind it; dismiss with KEYCODE_BACK.
