@@ -451,3 +451,94 @@ async def test_klontv_select_episode_url_rejects_garbage_suffix():
     )
     assert KlonTVProvider._select_episode_url(raw, "s1e2garbage") is None
     assert KlonTVProvider._select_episode_url(raw, "s1e2") is not None
+
+
+@pytest.mark.asyncio
+async def test_klontv_content_series_surfaces_dub_translations():
+    """Ticket #332: the PlayerJS playlist is a list of "dub" objects
+    each titled by its dubbing studio (BambooUA, Yaniam, …). content()
+    must surface every studio title as a translation so the dub picker
+    shows real names instead of a single «Українська»."""
+    content_html = _fixture("content_series.html")
+    player_html = _fixture("player_series_multidub.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://klonua.com/serialy/8431-duna.html").respond(
+            200, text=content_html
+        )
+        router.get("https://ashdi.vip/serial/6212").respond(
+            200, text=player_html
+        )
+        async with httpx.AsyncClient() as http:
+            c = await KlonTVProvider().content("series/8431-duna", http)
+    labels = [t.label for t in c.translations]
+    assert labels == ["BambooUA", "Субтитри | BambooUA", "Yaniam"]
+    # Translation id is the studio title (per-provider scoped, spec #276).
+    assert [t.id for t in c.translations] == labels
+
+
+@pytest.mark.asyncio
+async def test_klontv_stream_series_honors_translation_pick():
+    """Ticket #332: stream() must resolve the picked translation's dub
+    rather than always playing the first dub."""
+    content_html = _fixture("content_series.html")
+    player_html = _fixture("player_series_multidub.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://klonua.com/serialy/8431-duna.html").respond(
+            200, text=content_html
+        )
+        router.get("https://ashdi.vip/serial/6212").respond(
+            200, text=player_html
+        )
+        async with httpx.AsyncClient() as http:
+            s = await KlonTVProvider().stream(
+                "series/8431-duna:s1e1", "Yaniam", http
+            )
+    assert s.url == "https://ashdi.vip/vod/yaniam-s1e1.m3u8"
+
+
+@pytest.mark.asyncio
+async def test_klontv_stream_series_unmatched_translation_falls_back():
+    """An unmatched translation id falls back to the first dub rather
+    than surfacing parse_failed."""
+    content_html = _fixture("content_series.html")
+    player_html = _fixture("player_series_multidub.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://klonua.com/serialy/8431-duna.html").respond(
+            200, text=content_html
+        )
+        router.get("https://ashdi.vip/serial/6212").respond(
+            200, text=player_html
+        )
+        async with httpx.AsyncClient() as http:
+            s = await KlonTVProvider().stream(
+                "series/8431-duna:s1e1", "Невідомий дубляж", http
+            )
+    assert s.url == "https://ashdi.vip/vod/bamboo-s1e1.m3u8"
+
+
+def test_klontv_select_episode_url_honors_translation():
+    """Unit seam: `_select_episode_url` picks the dub whose title
+    matches the translation, and defaults to the first dub when the
+    translation is None or unmatched."""
+    raw = (
+        '[{"title":" BambooUA","folder":[{"title":" Сезон 1","folder":['
+        '{"title":"Серія 1","file":"https://ashdi.vip/vod/b1.m3u8"},'
+        '{"title":"Серія 2","file":"https://ashdi.vip/vod/b2.m3u8"}]}]},'
+        '{"title":" Yaniam","folder":[{"title":" Сезон 1","folder":['
+        '{"title":"Серія 1","file":"https://ashdi.vip/vod/y1.m3u8"},'
+        '{"title":"Серія 2","file":"https://ashdi.vip/vod/y2.m3u8"}]}]}]'
+    )
+    # No translation -> first dub.
+    assert (
+        KlonTVProvider._select_episode_url(raw, "s1e2") == "https://ashdi.vip/vod/b2.m3u8"
+    )
+    # Picked translation -> the matching dub's episode.
+    assert (
+        KlonTVProvider._select_episode_url(raw, "s1e2", "Yaniam")
+        == "https://ashdi.vip/vod/y2.m3u8"
+    )
+    # Unmatched translation -> first dub.
+    assert (
+        KlonTVProvider._select_episode_url(raw, "s1e1", "NoSuchStudio")
+        == "https://ashdi.vip/vod/b1.m3u8"
+    )

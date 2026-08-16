@@ -193,6 +193,11 @@ def _strip_query_param(url: str, name: str) -> str:
     - `?multivoice&foo=bar` becomes `?foo=bar` (not `foo=bar`).
     - `?multivoice=1` becomes `` (empty query, not `=1`).
     - A bare `?multivoice` (no other params) collapses the trailing `?`.
+
+    `?multivoice` is stripped because it is a client-side PlayerJS flag: the
+    ashdi.vip payload returns the same dub list with or without it (verified
+    live 2026-08-16), so the studio pick is served by `translations`, not the
+    query param.
     """
     parts = urlsplit(url)
     if not parts.query:
@@ -422,8 +427,15 @@ class KlonTVProvider(BaseProvider):
         if media_type != "series" and "/serial/" in player_url:
             media_type = "series"
         seasons: list[Season] | None = None
+        translations: list[Translation] = [Translation(id="uk", label="Українська")]
         if media_type == "series":
-            seasons = await self._build_series_seasons(player_url, external_id, http, self.id)
+            seasons, translations = await self._build_series_seasons(
+                player_url, external_id, http, self.id
+            )
+            # A series payload without dub titles keeps the generic
+            # single-dub fallback (ticket #332).
+            if not translations:
+                translations = [Translation(id="uk", label="Українська")]
         else:
             # Movie: single playable URL, surfaced as season 1 episode 1
             # with the `__movie__` suffix sentinel so stream() can pick
@@ -440,7 +452,7 @@ class KlonTVProvider(BaseProvider):
             title=title_el.get_text(strip=True),
             description=description,
             poster=poster,
-            translations=[Translation(id="uk", label="Українська")],
+            translations=translations,
             seasons=seasons,
             country=country,
             form=mb_form,
@@ -453,21 +465,24 @@ class KlonTVProvider(BaseProvider):
 
     async def _build_series_seasons(
         self, player_url: str, external_id: str, http: httpx.AsyncClient, provider_id: str
-    ) -> list[Season] | None:
+    ) -> tuple[list[Season] | None, list[Translation]]:
         """Fetch the player page and decode the PlayerJS playlist.
 
         The PlayerJS `file: '[...]'` payload is a JSON array of "dub"
         objects, each with a `folder: [...]` of seasons, each with a
         `folder: [...]` of episode dicts:
-            `[{"title": " Кіно", "folder": [{"title": " Сезон 1",
+            `[{"title": " BambooUA", "folder": [{"title": " Сезон 1",
               "folder": [{"title": "Серія 1", "file": "https://...m3u8",
               ...}, ...]}, ...]}]`
 
-        Each episode becomes a `Season` of `Episode`s. We pick the
-        first dub (matching the upstream Kotlin's implicit "play the
-        first available dub" behaviour). Returns None on parse failure
-        so the caller surfaces an empty seasons list — the live gate
-        will then see no episodes and stop, instead of crashing.
+        Each dub's `title` is the dubbing studio. The season/episode
+        structure is identical across dubs, so seasons are built from
+        the first dub (matching the upstream Kotlin's implicit "play the
+        first available dub" default) while every studio title is
+        surfaced as a translation for the dub picker (ticket #332).
+        Returns `(None, [])` on parse failure so the caller surfaces an
+        empty seasons list — the live gate will then see no episodes
+        and stop, instead of crashing.
         """
         try:
             resp = await self.guarded_get(
@@ -476,18 +491,25 @@ class KlonTVProvider(BaseProvider):
                 headers={"Referer": BASE_URL + "/"},
             )
         except httpx.HTTPError:
-            return None
+            return None, []
         if resp.status_code != 200:
-            return None
+            return None, []
         raw = _file_url(resp.text)
         if raw is None:
-            return None
+            return None, []
         try:
             dubs = cast(list[dict[str, Any]], json.loads(raw))
         except json.JSONDecodeError:
-            return None
+            return None, []
         if not dubs:
-            return None
+            return None, []
+        dub_titles: list[str] = []
+        for dub in dubs:
+            if not isinstance(dub, dict):
+                continue
+            title = str(dub.get("title", "")).strip()
+            if title and title not in dub_titles:
+                dub_titles.append(title)
         seasons: list[Season] = []
         for dub in dubs:
             season_list = dub.get("folder") or []
@@ -502,9 +524,10 @@ class KlonTVProvider(BaseProvider):
                     for e_idx, ep in enumerate(episodes_raw, start=1)
                 ]
                 seasons.append(Season(number=s_idx, episodes=episodes))
-            # Only the first dub; matches the upstream behaviour.
+            # Only the first dub's structure; matches the upstream behaviour.
             break
-        return seasons or None
+        translations = [Translation(id=t, label=t) for t in dub_titles]
+        return seasons or None, translations
 
     async def stream(
         self, content_id: str, translation: str | None, http: httpx.AsyncClient
@@ -567,7 +590,7 @@ class KlonTVProvider(BaseProvider):
         # series id, and the JSON blob is not a playable URL).
         media_url: str | None
         if ep_suffix:
-            media_url = self._select_episode_url(raw, ep_suffix)
+            media_url = self._select_episode_url(raw, ep_suffix, translation)
         elif raw.startswith("["):
             media_url = None
         else:
@@ -583,8 +606,14 @@ class KlonTVProvider(BaseProvider):
         )
 
     @staticmethod
-    def _select_episode_url(raw: str, ep_suffix: str) -> str | None:
+    def _select_episode_url(
+        raw: str, ep_suffix: str, translation: str | None = None
+    ) -> str | None:
         """Resolve a series episode URL from the PlayerJS playlist JSON.
+
+        The dub picker's translation id (spec #276) selects the dub
+        whose `title` matches (ticket #332); an unmatched or absent
+        translation falls back to the first dub — the upstream default.
 
         Returns None when the suffix is malformed or out of range, so
         the caller surfaces an explicit `parse_failed` — there is no
@@ -601,7 +630,16 @@ class KlonTVProvider(BaseProvider):
             return None
         if not dubs:
             return None
-        seasons = (dubs[0].get("folder") or [])
+        selected = dubs[0]
+        if translation:
+            for dub in dubs:
+                if (
+                    isinstance(dub, dict)
+                    and str(dub.get("title", "")).strip() == translation
+                ):
+                    selected = dub
+                    break
+        seasons = selected.get("folder") or []
         if not (1 <= s_idx <= len(seasons)):
             return None
         episodes_raw = seasons[s_idx - 1].get("folder") or []
