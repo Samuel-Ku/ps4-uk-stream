@@ -192,6 +192,22 @@ async def test_doramyworld_content_dorama_parses_seasons():
 
 
 @pytest.mark.asyncio
+async def test_doramyworld_content_dorama_multidub_surfaces_both_translations():
+    """A page whose data-player carries two translations (BOM-BOM and
+    imnotbad) surfaces both as translations for the dub picker (#332)."""
+    content_html = _fixture("content_dorama_multidub.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://doramy.world/dorama/pidsnizhnyk/").respond(
+            200, text=content_html
+        )
+        async with httpx.AsyncClient() as http:
+            c = await DoramyWorldProvider().content("dorama/pidsnizhnyk", http)
+    ids = [t.id for t in c.translations]
+    assert "bom-bom" in ids
+    assert "imnotbad" in ids
+
+
+@pytest.mark.asyncio
 async def test_doramyworld_content_film_parses_seasons():
     """Film pages surface a single season with one episode."""
     content_html = _fixture("content_film.html")
@@ -293,6 +309,36 @@ async def test_doramyworld_stream_series_episode_resolves_m3u8():
             )
     assert s.url.endswith(".m3u8")
     assert s.type == "m3u8"
+
+
+@pytest.mark.asyncio
+async def test_doramyworld_stream_series_multidub_honors_translation_pick():
+    """Picking a translation id selects that translation's episode URL:
+    imnotbad's s1e1 is vod/249707, not BOM-BOM's vod/239112 (#332)."""
+    content_html = _fixture("content_dorama_multidub.html")
+    player_bombom = _fixture("player_vod_dorama.html").replace(
+        "s01ep01_167245/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "s01ep01_bombom/index.m3u8"
+    )
+    player_imnotbad = _fixture("player_vod_dorama.html").replace(
+        "s01ep01_167245/hls/Da+Xjn6RkuZVhAb3/index.m3u8", "s01ep01_imnotbad/index.m3u8"
+    )
+    with respx.mock(assert_all_called=False) as router:
+        router.get("https://doramy.world/dorama/pidsnizhnyk/").respond(
+            200, text=content_html
+        )
+        bombom_route = router.get("https://ashdi.vip/vod/239112").respond(
+            200, text=player_bombom
+        )
+        imnotbad_route = router.get("https://ashdi.vip/vod/249707").respond(
+            200, text=player_imnotbad
+        )
+        async with httpx.AsyncClient() as http:
+            s = await DoramyWorldProvider().stream(
+                "dorama/pidsnizhnyk:s1e1", "imnotbad", http
+            )
+    assert imnotbad_route.called
+    assert not bombom_route.called
+    assert "s01ep01_imnotbad/index.m3u8" in s.url
 
 
 @pytest.mark.asyncio

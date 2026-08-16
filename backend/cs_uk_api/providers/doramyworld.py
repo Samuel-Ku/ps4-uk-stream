@@ -427,7 +427,7 @@ class DoramyWorldProvider(BaseProvider):
         player_models = _parse_player(resp.text)
         if not player_models:
             raise ProviderError(ProviderErrorCode.PARSE_FAILED, "no data-player on content page")
-        ashdi_url = self._select_player_url(player_models, ep_suffix)
+        ashdi_url = self._select_player_url(player_models, ep_suffix, translation)
         if ashdi_url is None:
             raise ProviderError(ProviderErrorCode.NOT_FOUND, f"no player url for {ep_suffix!r}")
         # ashdi.vip serves a page with `file:'...m3u8...'`. The shared
@@ -453,9 +453,15 @@ class DoramyWorldProvider(BaseProvider):
 
     @staticmethod
     def _select_player_url(
-        translations: list[_PlayerTranslation], ep_suffix: str
+        translations: list[_PlayerTranslation],
+        ep_suffix: str,
+        translation: str | None = None,
     ) -> str | None:
         """Resolve the ashdi URL for a season/episode suffix.
+
+        The dub picker's translation id (spec #276) selects the
+        translation whose label maps to it (ticket #332); an unmatched or
+        absent translation falls back to the first — the upstream default.
 
         Returns None when the suffix is malformed or out of range so the
         caller can surface an explicit ``not_found``. There is no silent
@@ -468,10 +474,15 @@ class DoramyWorldProvider(BaseProvider):
         s_idx, e_idx = int(m.group(1)), int(m.group(2))
         if not translations:
             return None
-        first = translations[0]
-        if not (1 <= s_idx <= len(first.seasons)):
+        selected = translations[0]
+        if translation:
+            for t in translations:
+                if _translation_id(t.label) == translation:
+                    selected = t
+                    break
+        if not (1 <= s_idx <= len(selected.seasons)):
             return None
-        season = first.seasons[s_idx - 1]
+        season = selected.seasons[s_idx - 1]
         if not (1 <= e_idx <= len(season.episodes)):
             return None
         url = season.episodes[e_idx - 1]
