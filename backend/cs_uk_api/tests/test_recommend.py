@@ -8,8 +8,7 @@ builder's timing or concurrency internals.
 
 from __future__ import annotations
 
-from cs_uk_api.llm import RowIdea, TasteProfile
-from cs_uk_api.models import ContentResponse, HomeItem
+from cs_uk_api.models import ContentResponse, HomeItem, RowIdea, TasteProfile
 from cs_uk_api.recommend import (
     LLM_IDEA_ROW_TYPES,
     QUERY_MATCH_BOOST,

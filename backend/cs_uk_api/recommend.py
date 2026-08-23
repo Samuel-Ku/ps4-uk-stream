@@ -7,9 +7,17 @@ providers' content pages, scored by a weighted cosine, with recent
 search queries adding a fixed boost and already-watched items excluded.
 
 This module is deliberately pure — no I/O, no provider access — so the
-scorer and the row composition are unit-testable and the scorer can be
-replaced later (an LLM ranker) without touching the rows (spec #252
-§LLM layer: the scorer is the pluggable seam).
+scorer and the row composition are unit-testable.
+
+Honest status of the "pluggable scorer" idea (spec #252 §LLM layer):
+there is NO injected ranker here and no scorer seam. The LLM taste
+profile (spec #290) is a strictly-additive WEIGHT ENRICHMENT of this
+same weighted cosine — per-genre multipliers inside ``similarity`` /
+``taste_score``, theme tags riding the existing query-boost mechanics,
+and up to two curated idea rows filtered from the same candidate pool —
+not a separate ranking strategy; nothing swaps the scorer out. Scorer
+injection (a ranker parameter this module accepted) remains a possible
+FUTURE direction, not a current seam.
 """
 
 from __future__ import annotations
@@ -19,8 +27,7 @@ from collections.abc import Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 
-from .llm import TasteProfile
-from .models import ContentResponse, HomeItem, HomeRow
+from .models import ContentResponse, HomeItem, HomeRow, TasteProfile
 
 #: «Рекомендовано для тебе» row cap (spec #252).
 RECOMMENDED_LIMIT = 20

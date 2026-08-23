@@ -21,12 +21,12 @@ from cs_uk_api.config import SETTINGS
 from cs_uk_api.llm import (
     MAX_ROW_IDEAS,
     ProfileError,
-    TasteProfile,
     active_profile,
     fetch_profile,
     parse_profile,
     set_active_profile,
 )
+from cs_uk_api.models import TasteProfile
 from cs_uk_api.recommend import ItemProfile
 
 _GOOD = {
