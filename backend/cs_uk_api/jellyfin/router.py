@@ -23,12 +23,9 @@ import logging
 import os
 import re
 import sys
-import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
-from urllib.parse import quote, unquote, urljoin, urlparse
+from urllib.parse import quote, unquote
 
-import httpx
 from fastapi import (
     APIRouter,
     Depends,
@@ -38,7 +35,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
 from ..catalog import (
@@ -85,6 +82,8 @@ from ..providers.base import ProviderError
 from ..recommend import similarity
 from ..wire_identity import is_group_key
 from .auth import require_token
+from .hls_proxy import _STREAM_MEMO as _STREAM_MEMO  # re-export: suite clears the memo via router
+from .hls_proxy import proxy_download, proxy_stream, segment_target, serve_segment
 from .models import (
     ActivityLogEntryQueryResult,
     AuthenticationResult,
@@ -2294,246 +2293,16 @@ async def item_special_features(user_id: str, item_id: str) -> list[object]:
     return []
 
 
-#: ``StreamResponse.type`` → the ``Content-Type`` the client expects (D7).
-_STREAM_CTYPE = {
-    "mp4": "video/mp4",
-    "m3u8": "application/vnd.apple.mpegurl",
-    "hls": "application/vnd.apple.mpegurl",
-}
-
-#: ``URI="..."`` attributes inside an HLS manifest (EXT-X-KEY, EXT-X-MAP,
-#: EXT-X-MEDIA, child playlists) — rewritten like every plain segment line.
-_URI_ATTR_RE = re.compile(r'URI="([^"]*)"')
-
-_MAX_PROXY_HOPS = 5
-
-#: Per-item memo of the provider headers + CDN host the byte/segment proxy
-#: must use. The manifest is fetched once; segments arrive en masse during
-#: playback, and re-running the provider's ``stream()`` (one upstream
-#: scrape per call) for every segment would hammer the provider. A short
-#: TTL memo fuels segments; expiry falls back to one re-resolution. It
-#: deliberately memoizes the provider HEADER MAP and the chosen CDN host
-#: — NOT the upstream URL, which stays ADR-0003's "never cached"
-#: (session-scoped/token-signed); the fresh ``stream()`` on expiry is
-#: exactly the "a miss costs one request" cost the ADR accepts.
-_STREAM_MEMO: dict[str, tuple[float, str, dict[str, str], frozenset[str]]] = {}
-_STREAM_MEMO_TTL_S = 15 * 60
-
-
-def _cdn_host(url: str) -> str | None:
-    """The lowercase hostname of an http(s) URL, or None."""
-    host = urlparse(url).hostname
-    return host.lower() if host else None
-
-
-def _registrable_domain(host: str) -> str:
-    """The last two labels of a hostname — the anchor the stream proxy's
-    CDN check compares against.
-
-    Live HLS trees routinely hand child playlists to a SIBLING subdomain
-    of the same domain (``api.unimay.media`` hands the tree to
-    ``cdn.unimay.media``), and a two-label anchor is exactly stable
-    across those siblings while still excluding foreign registrants:
-    ``evil.example`` can never equal ``cdn.example``. Co.UK-style
-    multi-label public suffixes are out of scope — no UA provider CDN
-    uses one.
-    """
-    labels = host.split(".")
-    if len(labels) <= 2:
-        return host
-    return ".".join(labels[-2:])
-
-
-def _stream_target_allowed(url: str, cdn_host: str, allowed: frozenset[str] = frozenset()) -> bool:
-    """Whether the byte proxy may reach ``url``: a host on the same
-    registrable domain as the CDN the provider selected for the item
-    (``cdn.example`` and its ``media.``/``api.`` siblings are one CDN),
-    or a registrable domain the provider explicitly sanctioned in
-    ``StreamResponse.allowed_domains`` (a 302 gateway may hand bytes to
-    a foreign CDN the provider picked, e.g. ufdub episodes on Dropbox).
-
-    This is the stream proxy's standing posture: the facade fetches bytes
-    only from the CDN a provider picked — a sibling subdomain of the same
-    domain is still the picked CDN, a foreign registrable domain is not
-    (unless provider-sanctioned), and a client pointing the segment route
-    at an arbitrary host fails closed (mirrors the poster proxy's
-    allowlist).
-    """
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https") or parsed.hostname is None:
-        return False
-    host = parsed.hostname.lower()
-    return (
-        _registrable_domain(host) == _registrable_domain(cdn_host)
-        or _registrable_domain(host) in allowed
-    )
-
-
-def _is_hls_stream(stream: StreamResponse) -> bool:
-    return stream.type in ("m3u8", "hls") or stream.url.endswith(".m3u8")
-
-
-def _segment_url(item_id: str, upstream: str) -> str:
-    """Backend URL a rewritten media reference re-enters through."""
-    return f"/Videos/{item_id}/segment?url={quote(upstream, safe='')}"
-
-
-def _rewrite_m3u8(body: str, manifest_url: str, item_id: str) -> str:
-    """Rewrite a fetched manifest so every media reference re-enters the
-    backend: plain segment/child-playlist lines AND ``URI="..."``
-    attributes (key files, EXT-X-MAP init segments) become
-    ``/Videos/{item_id}/segment`` fetches. Relative references resolve
-    against the manifest URL (urljoin) — the client only ever talks to
-    the backend, which owns the provider headers."""
-    lines: list[str] = []
-    for line in body.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            lines.append("")
-            continue
-        if stripped.startswith("#"):
-            lines.append(
-                _URI_ATTR_RE.sub(
-                    lambda m: f'URI="{_segment_url(item_id, urljoin(manifest_url, m.group(1)))}"',
-                    line,
-                )
-            )
-        else:
-            lines.append(_segment_url(item_id, urljoin(manifest_url, stripped)))
-    return "\n".join(lines) + "\n"
-
-
-def _memo_stream(
-    item_id: str, cdn_host: str, headers: dict[str, str], allowed: frozenset[str]
-) -> None:
-    """Writer for the segment memo. Values are returned by reference, so
-    the store hands out copies — never the live provider dict."""
-    _STREAM_MEMO[item_id] = (time.monotonic(), cdn_host, dict(headers), allowed)
-
-
-async def _proxy_target(item_id: str) -> tuple[str, dict[str, str], frozenset[str]] | None:
-    """(cdn_host, provider headers, allowed domains) the segment proxy
-    must use.
-
-    Serves from the memo when fresh; otherwise re-resolves the stream
-    once and memoizes. None → 404 (D2)."""
-    hit = _STREAM_MEMO.get(item_id)
-    if hit is not None and time.monotonic() - hit[0] < _STREAM_MEMO_TTL_S:
-        return hit[1], dict(hit[2]), hit[3]
-    stream = await _resolve_stream(item_id)
-    if stream is None:
-        return None
-    cdn_host = _cdn_host(stream.url)
-    if cdn_host is None:
-        return None
-    _memo_stream(item_id, cdn_host, stream.headers, stream.allowed_domains)
-    return cdn_host, dict(stream.headers), stream.allowed_domains
-
-
-async def _open_upstream(
-    http: httpx.AsyncClient,
-    url: str,
-    headers: dict[str, str],
-    range_header: str | None,
-    cdn_host: str,
-    hops: int = 0,
-    allowed: frozenset[str] = frozenset(),
-) -> tuple[httpx.Response, Callable[[], Awaitable[None]]] | None:
-    """Open a validating byte stream to ``url``, following redirects by
-    hand and re-validating EVERY hop against the item's CDN host.
-
-    Returns ``(resp, closer)`` where the closer releases the upstream
-    stream once the caller is done feeding bytes; None fails closed
-    (D2 posture — never raises). Only a 2xx response opens a stream: a
-    403/416/500 CDN verdict is a playback-grade failure the facade cannot
-    meaningfully relay, so it becomes the same 404 an unresolvable id
-    gets.
-    """
-    if hops > _MAX_PROXY_HOPS or not _stream_target_allowed(url, cdn_host, allowed):
-        return None
-    req_headers = dict(headers)
-    if range_header is not None:
-        req_headers["Range"] = range_header
-    try:
-        cm = http.stream("GET", url, headers=req_headers)
-        resp = await cm.__aenter__()
-    except httpx.HTTPError:
-        return None
-    if 300 <= resp.status_code < 400:
-        location = resp.headers.get("Location")
-        await cm.__aexit__(None, None, None)
-        if location is None:
-            return None
-        return await _open_upstream(
-            http, urljoin(url, location), headers, range_header, cdn_host, hops + 1, allowed
-        )
-    if resp.status_code < 200 or resp.status_code >= 300:
-        await cm.__aexit__(None, None, None)
-        return None
-
-    async def _closer() -> None:
-        await cm.__aexit__(None, None, None)
-
-    return resp, _closer
-
-
-async def _fetch_manifest(
-    http: httpx.AsyncClient,
-    url: str,
-    headers: dict[str, str],
-    cdn_host: str,
-    hops: int = 0,
-    allowed: frozenset[str] = frozenset(),
-) -> httpx.Response | None:
-    """Fetch a small HLS manifest with hop revalidation; only a 200 counts."""
-    if hops > _MAX_PROXY_HOPS or not _stream_target_allowed(url, cdn_host, allowed):
-        return None
-    try:
-        resp = await http.get(url, headers=headers)
-    except httpx.HTTPError:
-        return None
-    if 300 <= resp.status_code < 400:
-        location = resp.headers.get("Location")
-        if location is None:
-            return None
-        return await _fetch_manifest(
-            http, urljoin(url, location), headers, cdn_host, hops + 1, allowed
-        )
-    if resp.status_code != 200:
-        log.warning("jellyfin manifest non-200 url=%s status=%s", url, resp.status_code)
-        return None
-    return resp
-
-
-def _streaming_response(
-    resp: httpx.Response,
-    close: Callable[[], Awaitable[None]],
-    fallback_ctype: str,
-) -> StreamingResponse:
-    """Wrap an upstream byte stream as the facade's response.
-
-    Upstream's own status, ``Content-Type``, ``Content-Range`` and
-    ``Accept-Ranges`` ride along (a file proxy must answer a ``Range``
-    with the CDN's 206 honestly); only a missing Content-Type falls back
-    to the provider type's expected value. The upstream stream is released
-    when the response body finishes — or when the client disconnects.
-    """
-    out_headers: dict[str, str] = {}
-    for name in ("Content-Type", "Content-Range", "Accept-Ranges"):
-        value = resp.headers.get(name)
-        if value is not None:
-            out_headers[name] = value
-    if "Content-Type" not in out_headers:
-        out_headers["Content-Type"] = fallback_ctype
-
-    async def body() -> AsyncIterator[bytes]:
-        try:
-            async for chunk in resp.aiter_bytes():
-                yield chunk
-        finally:
-            await close()
-
-    return StreamingResponse(body(), status_code=resp.status_code, headers=out_headers)
+# ------------------------------------------------- HLS byte proxy (#342, D7)
+#
+# The byte/segment proxy itself — content-type map, ``URI=`` rewrite,
+# registrable-domain SSRF guard, per-item header memo, redirect-following
+# upstream opener, manifest fetcher and streaming wrapper — lives in
+# ``hls_proxy`` (ticket #342). The routes below stay thin: they resolve a
+# playable id (``_resolve_stream``), decide redirect-vs-proxy, and hand
+# the resolved stream + the shared httpx client (resolved at call time,
+# so tests can swap it) to the proxy module. A None from the module is
+# the standing 404 (D2).
 
 
 @router.get("/Videos/{item_id:path}/stream")
@@ -2545,12 +2314,10 @@ async def video_stream(
     """Conditional stream handler (D7): redirect, or the byte proxy.
 
     ``StreamResponse`` with no header map → 302 straight to the CDN URL
-    (no proxying). With a header map the backend owns the bytes: mp4
-    files forward the client's ``Range`` and echo the CDN's
-    206/Content-Range/Accept-Ranges back; HLS manifests are fetched (with
-    the provider's headers), every segment/``URI=`` reference rewritten to
-    ``/Videos/{id}/segment``, and served as the mpegurl content type — so
-    the client's segments stay behind the facade too.
+    (no proxying). With a header map the backend owns the bytes — mp4
+    files forward the client's ``Range``, HLS manifests are fetched,
+    rewritten, and served as mpegurl so segments stay behind the facade
+    too (see ``hls_proxy.proxy_stream``).
 
     Spec #276: ``mediaSourceId`` is the dub source echoed from
     PlaybackInfo (``<item_id>::<translation_id>``) — it switches the
@@ -2571,42 +2338,15 @@ async def video_stream(
         await _record_dub_choice(item_id, translation_id)
     if not stream.headers:
         return RedirectResponse(stream.url, status_code=302)
-
-    cdn_host = _cdn_host(stream.url)
-    if cdn_host is None:
-        raise HTTPException(status_code=404, detail="item_unavailable")
-    _memo_stream(item_id, cdn_host, stream.headers, stream.allowed_domains)
-    http = get_client()
-
-    if _is_hls_stream(stream):
-        manifest = await _fetch_manifest(
-            http, stream.url, stream.headers, cdn_host, allowed=stream.allowed_domains
-        )
-        if manifest is None:
-            raise HTTPException(status_code=404, detail="item_unavailable")
-        body = _rewrite_m3u8(
-            manifest.content.decode("utf-8", errors="replace"), stream.url, item_id
-        )
-        # Whatever the upstream claims, a served manifest is a playlist
-        # body and gets the mpegurl content-type (D7). If the provider
-        # ever mislabels type (mp4) on a .m3u8 URL, the playlist
-        # detection above decides, so ctype must not follow the label.
-        return Response(content=body, media_type=_STREAM_CTYPE["m3u8"])
-
-    opened = await _open_upstream(
-        http,
-        stream.url,
-        stream.headers,
-        request.headers.get("range"),
-        cdn_host,
-        allowed=stream.allowed_domains,
+    response = await proxy_stream(
+        item_id=item_id,
+        stream=stream,
+        http=get_client(),
+        range_header=request.headers.get("range"),
     )
-    if opened is None:
+    if response is None:
         raise HTTPException(status_code=404, detail="item_unavailable")
-    upstream, closer = opened
-    return _streaming_response(
-        upstream, closer, _STREAM_CTYPE.get(stream.type, "application/octet-stream")
-    )
+    return response
 
 
 @router.get("/Items/{item_id:path}/Download")
@@ -2640,96 +2380,36 @@ async def item_download(item_id: str) -> Response:
             f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{encoded}'
         )
 
-    if not stream.headers:
-        # No provider headers: stream the upstream body directly (the
-        # stream route would 302; a download needs the file itself).
-        cdn_host = _cdn_host(stream.url)
-        if cdn_host is None:
-            raise HTTPException(status_code=404, detail="item_unavailable")
-        http = get_client()
-        opened = await _open_upstream(
-            http, stream.url, {}, None, cdn_host, allowed=stream.allowed_domains
-        )
-        if opened is None:
-            raise HTTPException(status_code=404, detail="item_unavailable")
-        upstream, closer = opened
-        resp = _streaming_response(
-            upstream, closer, _STREAM_CTYPE.get(stream.type, "application/octet-stream")
-        )
-        resp.headers["Content-Disposition"] = disposition
-        return resp
-
-    cdn_host = _cdn_host(stream.url)
-    if cdn_host is None:
-        raise HTTPException(status_code=404, detail="item_unavailable")
-    _memo_stream(item_id, cdn_host, stream.headers, stream.allowed_domains)
-    http = get_client()
-
-    if _is_hls_stream(stream):
-        manifest = await _fetch_manifest(
-            http, stream.url, stream.headers, cdn_host, allowed=stream.allowed_domains
-        )
-        if manifest is None:
-            raise HTTPException(status_code=404, detail="item_unavailable")
-        body = _rewrite_m3u8(
-            manifest.content.decode("utf-8", errors="replace"), stream.url, item_id
-        )
-        return Response(
-            content=body,
-            media_type=_STREAM_CTYPE["m3u8"],
-            headers={"Content-Disposition": disposition},
-        )
-
-    opened = await _open_upstream(
-        http,
-        stream.url,
-        stream.headers,
-        None,
-        cdn_host,
-        allowed=stream.allowed_domains,
+    # The byte proxy is forced here even when the stream route would 302,
+    # so the Content-Disposition name can ride along (spec #280).
+    response = await proxy_download(
+        item_id=item_id, stream=stream, http=get_client(), content_disposition=disposition
     )
-    if opened is None:
+    if response is None:
         raise HTTPException(status_code=404, detail="item_unavailable")
-    upstream, closer = opened
-    resp = _streaming_response(
-        upstream, closer, _STREAM_CTYPE.get(stream.type, "application/octet-stream")
-    )
-    resp.headers["Content-Disposition"] = disposition
-    return resp
+    return response
 
 
 @router.get("/Videos/{item_id:path}/segment")
 async def video_segment(item_id: str, url: str = Query(...)) -> Response:
     """Proxy one rewritten HLS reference (D7).
 
-    ``url`` is an upstream reference embedded by ``_rewrite_m3u8`` (already
-    percent-encoded, decoded once by FastAPI): an ordinary segment, or
-    another playlist — a master's variant, or a variant's own segment
-    list. Segment bytes flow through the byte proxy; a playlist reference
-    is fetched and re-rewritten exactly like the top manifest, so a
-    multi-level playlist tree keeps every descendant reference pointed at
-    the backend (the client's requests always carry the provider headers).
-    The host must match the item's CDN host (dot-boundary) — anything
-    else fails closed to 404 — and Referer-gated CDNs still serve.
+    ``url`` is an upstream reference embedded by the manifest rewriter
+    (already percent-encoded, decoded once by FastAPI): an ordinary
+    segment, or another playlist — a master's variant, or a variant's own
+    segment list, recursively re-rewritten so a multi-level tree keeps
+    every descendant reference pointed at the backend (see
+    ``hls_proxy.serve_segment``). The host must match the item's CDN
+    (dot-boundary) — anything else fails closed to 404 — and
+    Referer-gated CDNs still serve.
     """
-    target = await _proxy_target(item_id)
+    target = await segment_target(item_id, resolve_stream=_resolve_stream)
     if target is None:
         raise HTTPException(status_code=404, detail="item_unavailable")
-    cdn_host, headers, allowed = target
-    http = get_client()
-
-    if url.rstrip("/").lower().endswith(".m3u8"):
-        manifest = await _fetch_manifest(http, url, headers, cdn_host, allowed=allowed)
-        if manifest is None:
-            raise HTTPException(status_code=404, detail="item_unavailable")
-        body = _rewrite_m3u8(manifest.content.decode("utf-8", errors="replace"), url, item_id)
-        return Response(content=body, media_type=_STREAM_CTYPE["m3u8"])
-
-    opened = await _open_upstream(http, url, headers, None, cdn_host, allowed=allowed)
-    if opened is None:
+    response = await serve_segment(item_id=item_id, url=url, target=target, http=get_client())
+    if response is None:
         raise HTTPException(status_code=404, detail="item_unavailable")
-    upstream, closer = opened
-    return _streaming_response(upstream, closer, "application/octet-stream")
+    return response
 
 
 # ------------------------------------------------------------ user state (#257)
