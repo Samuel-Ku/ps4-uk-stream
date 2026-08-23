@@ -37,6 +37,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
+from ..wire_identity import episode_wire_id, parse_episode_tail
 from .base import BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://doramy.world"
@@ -81,11 +82,6 @@ _PAGE_RE = re.compile(r"/page/(\d+)/?|\bpaged=(\d+)")
 # is a kebab-case slug. Used to validate external_id at the provider
 # boundary so callers cannot inject path traversal.
 _EXTERNAL_ID_RE = re.compile(r"(film|dorama|show)/[a-z0-9][a-z0-9-]*")
-
-# Episode-id suffix grammar: `s<N>e<M>` (1-based). Matched directly
-# against the bare suffix (without the leading ':').
-_EP_SUFFIX_RE = re.compile(r"s(\d+)e(\d+)$")
-
 
 # --- JSON DTOs mirroring the upstream data-player payload --------------------
 
@@ -400,7 +396,7 @@ class DoramyWorldProvider(BaseProvider):
             episodes = [
                 Episode(
                     number=e_idx,
-                    id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
+                    id=episode_wire_id(provider_id, external_id, s_idx, e_idx),
                     title=f"Серія {e_idx}",
                 )
                 for e_idx, _ in enumerate(season.episodes, start=1)
@@ -422,7 +418,7 @@ class DoramyWorldProvider(BaseProvider):
         ext_id, _, ep_suffix = content_id.rpartition(":")
         if not _EXTERNAL_ID_RE.fullmatch(ext_id):
             raise ProviderError("not_found", f"bad external_id: {ext_id!r}")
-        if not _EP_SUFFIX_RE.fullmatch(ep_suffix):
+        if parse_episode_tail(ep_suffix) is None:
             raise ProviderError("not_found", f"bad episode suffix: {ep_suffix!r}")
         url = f"{BASE_URL}/{ext_id}/"
         try:
@@ -478,10 +474,10 @@ class DoramyWorldProvider(BaseProvider):
         ``first available episode`` fallback -- that would mask a missing
         suffix in the caller.
         """
-        m = _EP_SUFFIX_RE.fullmatch(ep_suffix)
-        if not m:
+        parsed = parse_episode_tail(ep_suffix)
+        if parsed is None:
             return None
-        s_idx, e_idx = int(m.group(1)), int(m.group(2))
+        s_idx, e_idx = parsed
         if not translations:
             return None
         selected = translations[0]

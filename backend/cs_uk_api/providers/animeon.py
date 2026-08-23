@@ -55,6 +55,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
+from ..wire_identity import MOVIE_SUFFIX
 from .base import BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://animeon.club"
@@ -875,7 +876,7 @@ class AnimeONProvider(BaseProvider):
         # encoded `e<N>:<blob>` suffix.
         if ":" in content_id:
             parts = content_id.split(":", 2)
-            if len(parts) == 2 and parts[1] == "__movie__":
+            if len(parts) == 2 and parts[1] == MOVIE_SUFFIX[1:]:
                 if not _EXTERNAL_ID_RE.fullmatch(parts[0]):
                     raise ProviderError("not_found", "bad content_id")
                 return await self._movie_stream(int(parts[0]), translation, http)

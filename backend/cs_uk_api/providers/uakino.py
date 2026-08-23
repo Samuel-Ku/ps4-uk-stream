@@ -23,6 +23,7 @@ from ..models import (
     Translation,
 )
 from ..uakino_browser import _UA, BASE_URL, UakinoSessionProtocol, get_session
+from ..wire_identity import MOVIE_SUFFIX
 from .base import BaseProvider, MediaTypeStr, ProviderError
 
 # ashdi.vip serves the playlist page; m3u8 manifests and segment URLs
@@ -45,8 +46,11 @@ UAKINO_SECTIONS: tuple[Section, ...] = (
 # The section segment comes straight from the listing link so content()
 # can rebuild the genre-less content URL without a genre->section map.
 # We gate both content() and stream() against the charset so a
-# caller-supplied value cannot inject "../" into the URL path.
-_CONTENT_ID_RE = re.compile(r"^([a-z0-9_-]+):(\d+)-([a-z0-9][a-z0-9-]*)(:__movie__)?$")
+# caller-supplied value cannot inject "../" into the URL path. The
+# movie sentinel is composed from the wire-identity constant (#346).
+_CONTENT_ID_RE = re.compile(
+    rf"^([a-z0-9_-]+):(\d+)-([a-z0-9][a-z0-9-]*)({MOVIE_SUFFIX})?$"
+)
 # Legacy cache entries looked like "film-dune-2021"; keep accepting the
 # kind-prefixed form by mapping film->filmy, serial->seriesss.
 _LEGACY_ID_RE = re.compile(r"^(film|serial)-(\d+)-([a-z0-9][a-z0-9-]*)$")

@@ -26,6 +26,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
+from ..wire_identity import split_wire_id
 from .base import BaseProvider, ProviderError
 
 API_URL = "https://api.unimay.media"
@@ -263,7 +264,8 @@ class UnimayProvider(BaseProvider):
         # ``dandadan:1``). The upstream splits on ``", "`` (comma +
         # space) — we use ``:`` since the code can contain hyphens and
         # ``:`` is guaranteed not to appear in any release code.
-        code, _, ep_raw = content_id.partition(":")
+        code, ep_tail = split_wire_id(content_id)
+        ep_raw = ep_tail.removeprefix(":")
         try:
             episode_number = int(ep_raw or "1")
         except ValueError as e:

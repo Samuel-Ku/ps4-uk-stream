@@ -23,7 +23,13 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import MOVIE_SUFFIX, BaseProvider, MediaTypeStr, ProviderError
+from ..wire_identity import (
+    MOVIE_SUFFIX,
+    episode_wire_id,
+    parse_episode_tail,
+    split_wire_id,
+)
+from .base import BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://eneyida.tv"
 _ALLOWED_HOSTS: frozenset[str] = frozenset({"eneyida.tv", "hdvbua.pro"})
@@ -360,7 +366,7 @@ class EneyidaProvider(BaseProvider):
             episodes: list[Episode] = [
                 Episode(
                     number=j,
-                    id=f"{self.id}:{ext}:s1e{j}",
+                    id=episode_wire_id(self.id, ext, 1, j),
                     title=str(e.get("title", "")).strip(),
                 )
                 for j, e in enumerate(first_dub_folder, 1)
@@ -395,7 +401,7 @@ class EneyidaProvider(BaseProvider):
             episodes = [
                 Episode(
                     number=j,
-                    id=f"{self.id}:{ext}:s{i}e{j}",
+                    id=episode_wire_id(self.id, ext, i, j),
                     title=str(e.get("title", "")).strip(),
                     translations=[Translation(id=t, label=t) for t in episode_dubs] or None,
                 )
@@ -411,7 +417,8 @@ class EneyidaProvider(BaseProvider):
     async def stream(
         self, content_id: str, translation: str | None, http: httpx.AsyncClient
     ) -> StreamResponse:
-        ext, _, suffix = content_id.partition(":")
+        ext, tail = split_wire_id(content_id)
+        suffix = tail.removeprefix(":")
         kind, _, slug = ext.partition("/")
         if not kind or not slug:
             raise ProviderError("parse_failed", "invalid content_id")
@@ -435,11 +442,11 @@ class EneyidaProvider(BaseProvider):
         raw = _file_url(p.text) if p.status_code == 200 else None
         if not raw:
             raise ProviderError("parse_failed", "media missing")
-        if suffix and suffix != "__movie__":
-            m = re.fullmatch(r"s(\d+)e(\d+)", suffix)
-            if not m:
+        if suffix and suffix != MOVIE_SUFFIX[1:]:
+            parsed = parse_episode_tail(suffix)
+            if parsed is None:
                 raise ProviderError("parse_failed", "bad episode")
-            s_idx, e_idx = int(m[1]) - 1, int(m[2]) - 1
+            s_idx, e_idx = parsed[0] - 1, parsed[1] - 1
             try:
                 payload = cast(list[dict[str, Any]], json.loads(raw))
                 first = payload[0]

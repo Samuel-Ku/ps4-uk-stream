@@ -38,9 +38,11 @@ from cs_uk_api.providers.base import model_b_axes
 from cs_uk_api.wire_identity import (
     GROUP_KEY_PREFIX,
     MOVIE_SUFFIX,
+    episode_wire_id,
     group_key,
     is_group_key,
     is_movie_wire_id,
+    parse_episode_tail,
     project_group,
     provider_union,
     split_episode_tail,
@@ -191,6 +193,39 @@ def test_split_episode_tail_rejects_non_episodes() -> None:
     assert split_episode_tail("g2:" + "0" * 16) is None
     assert split_episode_tail("eneyida:films/9366-duna:__movie__") is None
     assert split_episode_tail("p1:serial-1") is None
+
+
+# ---------------------------------------------------------------------------
+# sNeM tail parse + build primitives (#346)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_parse_episode_tail_accepts_bare_and_colon_forms() -> None:
+    """The two forms adapters hold — the bare rpartition suffix and the
+    colon-included ``split_episode_tail`` tail — parse identically."""
+    assert parse_episode_tail("s2e10") == (2, 10)
+    assert parse_episode_tail(":s2e10") == (2, 10)
+    assert parse_episode_tail("s1e1") == (1, 1)
+
+
+@pytest.mark.unit
+def test_parse_episode_tail_rejects_malformed() -> None:
+    assert parse_episode_tail("") is None
+    assert parse_episode_tail(":") is None
+    assert parse_episode_tail("e5") is None
+    assert parse_episode_tail("s2e10x") is None
+    assert parse_episode_tail("__movie__") is None
+
+
+@pytest.mark.unit
+def test_episode_wire_id_builds_the_pinned_shape() -> None:
+    """The builder emits exactly the shape the adapters hand-formatted:
+    round-trips through the episode-tail grammar."""
+    wid = episode_wire_id("ufdub", "dorama-408-ona", 3, 12)
+    assert wid == "ufdub:dorama-408-ona:s3e12"
+    assert split_episode_tail(wid) == ("ufdub:dorama-408-ona", ":s3e12")
+    assert is_movie_wire_id(episode_wire_id("p", "x", 1, 1)) is False
 
 
 # ---------------------------------------------------------------------------

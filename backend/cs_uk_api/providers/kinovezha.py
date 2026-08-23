@@ -37,7 +37,13 @@ from ..models import (
     Translation,
 )
 from ._tortuga import decode as _tor_decrypt
-from .base import MOVIE_SUFFIX, BaseProvider, MediaTypeStr, ProviderError
+from ..wire_identity import (
+    MOVIE_SUFFIX,
+    is_movie_wire_id,
+    parse_episode_tail,
+    strip_movie_suffix,
+)
+from .base import BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://kinovezha.tv"
 # Hosts the upstream may legally redirect to: the DLE CMS and the
@@ -454,8 +460,8 @@ class KinoVezhaProvider(BaseProvider):
         # the content URL — calling `http.get(content_id)` raises
         # `ValueError: unknown url type` (caught by code-reviewer on
         # UFDub).
-        if MOVIE_SUFFIX in content_id:
-            ext_id = content_id.split(MOVIE_SUFFIX, 1)[0]
+        if is_movie_wire_id(content_id):
+            ext_id = strip_movie_suffix(content_id)
             ep_suffix = ""
         elif ":" in content_id:
             ext_id, _, ep_suffix = content_id.rpartition(":")
@@ -517,11 +523,10 @@ class KinoVezhaProvider(BaseProvider):
             return decoded if not ep_suffix else None
         if not ep_suffix:
             return None
-        m = re.fullmatch(r"s(\d+)e(\d+)", ep_suffix)
-        if not m:
+        parsed = parse_episode_tail(ep_suffix)
+        if parsed is None:
             return None
-        s_idx = int(m.group(1))
-        e_idx = int(m.group(2))
+        s_idx, e_idx = parsed
         try:
             data = _parse_player_json(decoded)
         except json.JSONDecodeError:

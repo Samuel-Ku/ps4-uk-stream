@@ -191,6 +191,37 @@ def split_episode_tail(item_id: str) -> tuple[str, str] | None:
     return item_id[: match.start()], item_id[match.start() :]
 
 
+#: The season/episode tail shape the ``s{N}e{M}`` builders emit and the
+#: adapters' stream() paths parse (#346). ``parse_episode_tail`` accepts
+#: the tail with or without its leading colon so both the raw id suffix
+#: and a :func:`split_episode_tail` result feed it unchanged.
+SEASON_EPISODE_TAIL_RE = re.compile(r"s(\d+)e(\d+)$")
+
+
+def parse_episode_tail(tail: str) -> tuple[int, int] | None:
+    """Parse an ``s<N>e<M>`` episode tail -> ``(season, episode)`` or None.
+
+    Accepts ``":s2e10"`` (a :func:`split_episode_tail` tail) or
+    ``"s2e10"`` (the bare rpartition suffix most adapters hold). Anything
+    else — empty, bare-``:eN``, malformed — is None; the caller surfaces
+    its own error.
+    """
+    match = SEASON_EPISODE_TAIL_RE.fullmatch(tail.lstrip(":"))
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def episode_wire_id(provider: str, external: str, season: int, episode: int) -> str:
+    """Build the series-episode wire id ``<provider>:<external>:s<N>e<M>``.
+
+    The single builder for the ``:s{N}e{M}`` tail (#346) — every adapter
+    emits episode ids through this instead of hand-formatting the
+    grammar.
+    """
+    return f"{provider}:{external}:s{season}e{episode}"
+
+
 # ---------------------------------------------------------------------------
 # Movie-suffix sentinel
 # ---------------------------------------------------------------------------

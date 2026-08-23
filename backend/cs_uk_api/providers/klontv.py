@@ -36,7 +36,14 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import MOVIE_SUFFIX, BaseProvider, MediaTypeStr, ProviderError
+from ..wire_identity import (
+    MOVIE_SUFFIX,
+    episode_wire_id,
+    is_movie_wire_id,
+    parse_episode_tail,
+    strip_movie_suffix,
+)
+from .base import BaseProvider, MediaTypeStr, ProviderError
 
 
 def _jsonld_doc(soup: BeautifulSoup) -> dict[str, Any] | None:
@@ -526,7 +533,7 @@ class KlonTVProvider(BaseProvider):
                 episodes = [
                     Episode(
                         number=e_idx,
-                        id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
+                        id=episode_wire_id(provider_id, external_id, s_idx, e_idx),
                         title=str(ep.get("title", "")).strip(),
                     )
                     for e_idx, ep in enumerate(episodes_raw, start=1)
@@ -545,8 +552,8 @@ class KlonTVProvider(BaseProvider):
         # "<external_id>:s<N>e<M>" (series episode). /api/stream
         # strips the `<provider>:` prefix before calling us, so the
         # incoming value is the external_id with the suffix attached.
-        if MOVIE_SUFFIX in content_id:
-            ext_id = content_id.split(MOVIE_SUFFIX, 1)[0]
+        if is_movie_wire_id(content_id):
+            ext_id = strip_movie_suffix(content_id)
             ep_suffix = ""
         elif ":" in content_id:
             ext_id, _, ep_suffix = content_id.rpartition(":")
@@ -638,10 +645,10 @@ class KlonTVProvider(BaseProvider):
         silent "first available episode" fallback (that would mask a
         missing suffix in the caller, a known regression pattern).
         """
-        m = re.fullmatch(r"s(\d+)e(\d+)", ep_suffix)
-        if not m:
+        parsed = parse_episode_tail(ep_suffix)
+        if parsed is None:
             return None
-        s_idx, e_idx = int(m.group(1)), int(m.group(2))
+        s_idx, e_idx = parsed
         try:
             dubs = cast(list[dict[str, Any]], json.loads(raw))
         except json.JSONDecodeError:

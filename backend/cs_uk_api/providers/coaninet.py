@@ -42,6 +42,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
+from ..wire_identity import split_wire_id
 from .base import BaseProvider, ProviderError
 
 API_URL = "https://api.coani.net/api"
@@ -315,7 +316,8 @@ class CoaninetProvider(BaseProvider):
         # (e.g. ``medalist-season-1:1``). A bare slug means episode 1.
         # Voice type is optional and matches the ``voice_type`` field in
         # the series payload (POLYPHONIC / SUB).
-        slug, _, ep_raw = content_id.partition(":")
+        slug, ep_tail = split_wire_id(content_id)
+        ep_raw = ep_tail.removeprefix(":")
         if not _SLUG_RE.fullmatch(slug):
             raise ProviderError("not_found", f"bad content_id: {content_id!r}")
         try:

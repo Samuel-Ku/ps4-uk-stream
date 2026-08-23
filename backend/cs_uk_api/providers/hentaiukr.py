@@ -28,6 +28,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
+from ..wire_identity import split_wire_id
 from .base import BaseProvider, ProviderError
 
 BASE_URL = "https://hentaiukr.com"
@@ -208,7 +209,8 @@ class HentaiUkrProvider(BaseProvider):
         # integer id because the URL slug is not part of the
         # `SearchResult.id` we exposed to clients. 1-based indices.
         _ = translation  # single-dub site; translation is ignored
-        external_id, _, ep_raw = content_id.partition(":")
+        external_id, ep_tail = split_wire_id(content_id)
+        ep_raw = ep_tail.removeprefix(":")
         if not external_id:
             raise ProviderError("parse_failed", f"bad content_id: {content_id}")
         if ep_raw:

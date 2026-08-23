@@ -24,7 +24,14 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import MOVIE_SUFFIX, BaseProvider, MediaTypeStr, ProviderError
+from ..wire_identity import (
+    MOVIE_SUFFIX,
+    episode_wire_id,
+    is_movie_wire_id,
+    parse_episode_tail,
+    strip_movie_suffix,
+)
+from .base import BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://cikava-ideya.top"
 # Hosts the upstream may legally redirect to: the CMS and the ashdi
@@ -407,7 +414,7 @@ class CikavaIdeyaProvider(BaseProvider):
             episodes = [
                 Episode(
                     number=e_idx,
-                    id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
+                    id=episode_wire_id(provider_id, external_id, s_idx, e_idx),
                     title=k.strip(),
                 )
                 for e_idx, k in enumerate(ep_keys, start=1)
@@ -423,8 +430,8 @@ class CikavaIdeyaProvider(BaseProvider):
         # (movie, explicit suffix from the content listing), or
         # "<external_id>:s<N>e<M>" (series episode). `/api/stream`
         # strips the `<provider>:` prefix before calling us.
-        if MOVIE_SUFFIX in content_id:
-            ext_id = content_id.split(MOVIE_SUFFIX, 1)[0]
+        if is_movie_wire_id(content_id):
+            ext_id = strip_movie_suffix(content_id)
             ep_suffix = ""
         elif ":" in content_id:
             ext_id, _, ep_suffix = content_id.rpartition(":")
@@ -487,10 +494,10 @@ class CikavaIdeyaProvider(BaseProvider):
             return player1 if not ep_suffix else None
         if not ep_suffix:
             return None
-        m = re.fullmatch(r"s(\d+)e(\d+)", ep_suffix)
-        if not m:
+        parsed = parse_episode_tail(ep_suffix)
+        if parsed is None:
             return None
-        s_idx, e_idx = int(m.group(1)), int(m.group(2))
+        s_idx, e_idx = parsed
         # Same real-season ordering `_build_seasons` numbers, so a
         # `:s<N>e<M>` id produced by content() resolves here to the same
         # episode a trailer-only key can never shadow.

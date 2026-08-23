@@ -40,6 +40,7 @@ from ..models import (
     Translation,
 )
 from ._tortuga import decode as _tor_decrypt
+from ..wire_identity import episode_wire_id, parse_episode_tail
 from .base import BaseProvider, ProviderError
 
 BASE_URL = "https://serialno.tv"
@@ -421,7 +422,7 @@ class SerialnoProvider(BaseProvider):
                 ep_dubs = [ep_label] if ep_label else dub_titles
                 episodes.append(Episode(
                     number=e_idx,
-                    id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
+                    id=episode_wire_id(provider_id, external_id, s_idx, e_idx),
                     title=ep_title,
                     translations=[Translation(id=t, label=t) for t in ep_dubs if t] or None,
                 ))
@@ -501,11 +502,10 @@ class SerialnoProvider(BaseProvider):
         regression pattern caught by code-reviewer on KinoTron)."""
         if not ep_suffix:
             return None
-        m = re.fullmatch(r"s(\d+)e(\d+)", ep_suffix)
-        if not m:
+        parsed = parse_episode_tail(ep_suffix)
+        if parsed is None:
             return None
-        s_idx = int(m.group(1))
-        e_idx = int(m.group(2))
+        s_idx, e_idx = parsed
         try:
             data = _parse_player_json(decoded)
         except json.JSONDecodeError:

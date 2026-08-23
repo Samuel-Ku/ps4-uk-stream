@@ -22,7 +22,8 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import MOVIE_SUFFIX, BaseProvider, MediaTypeStr, ProviderError
+from ..wire_identity import is_movie_wire_id, parse_episode_tail, strip_movie_suffix
+from .base import BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://ufdub.com"
 # Hosts the upstream may legally redirect to. The content page lives on
@@ -409,8 +410,8 @@ class UFDubProvider(BaseProvider):
         # array. Follow both hops (HTML + regex only, spec ground rule #4).
         # `content_id` is either the bare external id (`film-48-...` for
         # movies) or `<external>:s1e<N>` for a series episode.
-        if MOVIE_SUFFIX in content_id:
-            ext_id = content_id.split(MOVIE_SUFFIX, 1)[0]
+        if is_movie_wire_id(content_id):
+            ext_id = strip_movie_suffix(content_id)
             ep_suffix = ""
         elif ":" in content_id:
             ext_id, _, ep_suffix = content_id.rpartition(":")
@@ -458,12 +459,12 @@ class UFDubProvider(BaseProvider):
                 "parse_failed", "no media URL found in player page"
             )
         if ep_suffix:
-            m = re.fullmatch(r"s(\d+)e(\d+)", ep_suffix)
-            if not m:
+            parsed = parse_episode_tail(ep_suffix)
+            if parsed is None:
                 raise ProviderError(
                     "not_found", f"bad episode suffix: {ep_suffix!r}"
                 )
-            season, episode = int(m.group(1)), int(m.group(2))
+            season, episode = parsed
             if season != 1 or episode < 1 or episode > len(episodes):
                 raise ProviderError(
                     "not_found", f"episode out of range: {ep_suffix!r}"
