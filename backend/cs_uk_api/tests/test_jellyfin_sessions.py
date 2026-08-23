@@ -24,7 +24,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from cs_uk_api.catalog_state import clear_playback, install_profiles
+from cs_uk_api._catalog_state import clear_playback, install_profiles
 from cs_uk_api.config import SETTINGS
 
 TOKEN = SETTINGS.jellyfin_token
