@@ -18,17 +18,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import io
 import logging
 import os
 import re
 import sys
-import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
-from urllib.parse import quote, unquote, urljoin, urlparse
+from urllib.parse import quote, unquote
 
-import httpx
 from fastapi import (
     APIRouter,
     Depends,
@@ -38,7 +34,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
 from ..catalog import (
@@ -84,7 +80,11 @@ from ..providers import PROVIDERS
 from ..providers.base import ProviderError
 from ..recommend import similarity
 from ..wire_identity import is_group_key
+from . import dto, images
 from .auth import require_token
+from .dto import JF_TYPE_BY_ROW, safe_filename
+from .hls_proxy import _STREAM_MEMO as _STREAM_MEMO  # re-export: suite clears the memo via router
+from .hls_proxy import proxy_download, proxy_stream, segment_target, serve_segment
 from .models import (
     ActivityLogEntryQueryResult,
     AuthenticationResult,
@@ -96,7 +96,6 @@ from .models import (
     ItemCounts,
     MediaSourceInfo,
     MediaStreamInfo,
-    PersonDto,
     PlaybackInfoResponse,
     SearchHint,
     SearchHintResult,
@@ -317,25 +316,14 @@ _COLLECTION_TYPE_BY_ROW = {
     "llm_idea_2": "tvshows",
 }
 
-#: Home-row kind → Jellyfin item Type. Only Movie/Series are expressible
-#: on the wire (AC: "correct Type (Movie/Series)"); style-tagged rows are
-#: episodic content and become Series. Row kinds come from the Model B
-#: section axes (contract #135) — the legacy ``type`` axis is gone.
-_JF_TYPE_BY_ROW = {
-    "movie": "Movie",
-    "series": "Series",
-    "anime": "Series",
-    "cartoon": "Series",
-    "dorama": "Series",
-}
-
-#: Reverse of ``_JF_TYPE_BY_ROW``: Jellyfin item Type → the home-row
+#: Reverse of ``dto.JF_TYPE_BY_ROW`` (the kind → Type table now lives
+#: with the DTO mapping, ticket #344): Jellyfin item Type → the home-row
 #: kinds that map to it. Multiple rows collapse onto one wire Type
 #: (series/anime/cartoon/dorama are all "Series"), so this is a
 #: set-valued index — used to translate ``includeItemTypes`` back to
 #: the row kinds the home snapshot is keyed by (ticket #213).
 _HOME_KINDS_BY_JF_TYPE: dict[str, set[str]] = {}
-for _kind, _jf_type in _JF_TYPE_BY_ROW.items():
+for _kind, _jf_type in JF_TYPE_BY_ROW.items():
     _HOME_KINDS_BY_JF_TYPE.setdefault(_jf_type, set()).add(_kind)
 
 
@@ -366,83 +354,60 @@ def _parse_genre_ids(genre_ids: str | None) -> set[str] | None:
     return {g for g in (x.strip() for x in genre_ids.split(",")) if g}
 
 
-def _poster_tag(poster_url: str) -> str:
-    """Opaque ``ImageTags.Primary`` value (D9).
-
-    Deterministic in the poster URL, so a client-side image cache
-    busts exactly when the upstream art changes and not otherwise.
-    """
-    return hashlib.sha256(poster_url.encode()).hexdigest()[:16]
-
-
 def _user_data(item_id: str | None) -> UserDataResult | None:
     """The UserDataResult for an item id (spec #257).
 
-    IsFavorite/Played come from the persisted user-state store;
-    PlaybackPositionTicks from the playback store; PlayedPercentage
-    derives from the position/runtime when known, else 100 when played
-    and 0 otherwise. None when there is no id to look up (a view row,
-    a season without a concrete item).
+    Resolution wrapper (ticket #344): IsFavorite/Played come from the
+    persisted user-state store and PlaybackPositionTicks from the
+    playback store — read HERE; the wire shaping delegates to
+    ``dto.user_data``.
     """
     if item_id is None:
         return None
-    result = UserDataResult(IsFavorite=is_favorite(item_id), Played=is_played(item_id))
     pos = playback_positions().get(item_id)
-    if pos is not None:
-        position = pos.position_ticks
-        runtime = pos.runtime_ticks
-        result.PlaybackPositionTicks = position
-        if runtime and runtime > 0:
-            result.PlayedPercentage = round(min(100.0, position / runtime * 100), 2)
-        elif result.Played:
-            result.PlayedPercentage = 100.0
-    elif result.Played:
-        result.PlayedPercentage = 100.0
-    result.PlayCount = 1 if result.Played else 0
-    return result
+    return dto.user_data(
+        item_id,
+        favorite=is_favorite(item_id),
+        played=is_played(item_id),
+        position_ticks=pos.position_ticks if pos else None,
+        runtime_ticks=pos.runtime_ticks if pos else None,
+    )
 
 
 def _row_dto(row: HomeRow, server_id: str) -> BaseItemDto:
     """One virtual library (D5): a ``CollectionFolder`` whose ``Id`` the
     client echoes back as ``parentId`` on ``/Items``."""
-    return BaseItemDto(
-        Name=row.title,
-        ServerId=server_id,
-        Id=_view_id_for(row.type),
-        Type="CollectionFolder",
-        CollectionType=_COLLECTION_TYPE_BY_ROW.get(row.type),
+    return dto.row_dto(
+        row.title,
+        server_id,
+        view_id=_view_id_for(row.type),
+        collection_type=_COLLECTION_TYPE_BY_ROW.get(row.type),
     )
 
 
 def _item_dto(row: HomeRow, item: HomeItem, server_id: str) -> BaseItemDto:
     """One library card: Movie/Series item carrying the ``g2:`` id.
 
-    ``ImageTags.Primary`` is set only when the card carries a poster
-    (D9). ``year`` is surfaced as ``ProductionYear`` (Jellyfin's field);
-    ``ParentId`` is the view the card came from.
+    Resolution wrapper (ticket #344): the card's Type is re-verified
+    against the item's RESOLVED content when one is cached; the shaping
+    itself (D9 poster tag, ParentId view, UserData) delegates to
+    ``dto.item_dto``.
 
-    Ticket #216: the card's Type is re-verified against the item's
-    RESOLVED content when one is cached — the section/URL heuristic is a
-    cheap guess, the content page is the truth, and the grid must not
-    promise a Type the detail page will contradict. ``peek_group_content``
-    is a cache-only read (never fetches), so the re-verification is free;
-    an unresolved card keeps the snapshot's own form.
+    Ticket #216: the section/URL heuristic is a cheap guess, the content
+    page is the truth, and the grid must not promise a Type the detail
+    page will contradict. ``peek_group_content`` is a cache-only read
+    (never fetches), so the re-verification is free; an unresolved card
+    keeps the snapshot's own form.
     """
     resolved = peek_group_content(item.group_key)
     form = resolved.form if resolved is not None else item.form
-    dto = BaseItemDto(
-        Name=item.title,
-        ServerId=server_id,
-        Id=item.group_key,
-        Type=_JF_TYPE_BY_ROW.get(form, "Series"),
-        ProductionYear=item.year,
-        ParentId=_view_id_for(row.type),
-        # Spec #257: hearts/played checkmarks/progress render from UserData.
-        UserData=_user_data(item.group_key),
+    return dto.item_dto(
+        item,
+        server_id,
+        jf_type=JF_TYPE_BY_ROW.get(form, "Series"),
+        parent_view_id=_view_id_for(row.type),
+        user_data_value=_user_data(item.group_key),
     )
-    if item.poster is not None:
-        dto.ImageTags = {"Primary": _poster_tag(item.poster)}
-    return dto
 
 
 def _home_items() -> list[tuple[HomeRow, HomeItem]]:
@@ -539,12 +504,7 @@ def _snapshot_counts() -> ItemCounts:
             content = peek_group_content(group_key)
             if content is not None and content.seasons:
                 episodes += sum(len(s.episodes) for s in content.seasons)
-    return ItemCounts(
-        MovieCount=movies,
-        SeriesCount=series,
-        EpisodeCount=episodes,
-        ItemCount=movies + series,
-    )
+    return dto.item_counts(movies=movies, series=series, episodes=episodes)
 
 
 def _is_series_key(group_key: str) -> bool:
@@ -629,34 +589,24 @@ def _card_for_group(group_key: str) -> HomeItem | None:
 def _card_dto(group_key: str, card: HomeItem, server_id: str) -> BaseItemDto:
     """Degraded detail built purely from the home snapshot card (#224).
 
-    The card-data counterpart of ``_content_dto``: a known card whose
-    live ``content()`` resolution failed transiently (run8: animeon
-    ``unreachable``/502 for the popular first card) still answers the
-    detail with the card's own data — title, type, year, genres,
-    poster tag, parent view — instead of a hard 404 that blanks the
-    whole page mid-run. Same lookups ``_content_dto`` falls back to
-    (#219 genres, #220 year, D9 poster). Deliberate 404s (cold cache,
-    gated, blocked, unknown ids, season suffixes) never reach here —
-    see ``is_hard_unavailable``.
+    Resolution wrapper (ticket #344): the parent view and the canonical
+    poster URL are scanned from the cached home here; the shaping
+    delegates to ``dto.card_detail_dto``. The card-data counterpart of
+    ``_content_dto``: a known card whose live ``content()`` resolution
+    failed transiently (run8: animeon ``unreachable``/502 for the
+    popular first card) still answers the detail with the card's own
+    data — title, type, year, genres, poster tag, parent view — instead
+    of a hard 404 that blanks the whole page mid-run. Deliberate 404s
+    (cold cache, gated, blocked, unknown ids, season suffixes) never
+    reach here — see ``is_hard_unavailable``.
     """
-    dto = BaseItemDto(
-        Name=card.title,
-        ServerId=server_id,
-        Id=group_key,
-        Type="Movie" if card.form == "movie" else "Series",
-        ProductionYear=card.year,
-        Genres=list(card.genres),
+    return dto.card_detail_dto(
+        group_key,
+        card,
+        server_id,
+        parent_view_id=_view_id_for_item(group_key),
+        poster_url=_poster_for(group_key),
     )
-    parent = _view_id_for_item(group_key)
-    if parent is not None:
-        dto.ParentId = parent
-    poster = _poster_for(group_key)
-    if poster is not None:
-        dto.ImageTags = {"Primary": _poster_tag(poster)}
-    # Spec #280: the download manager names the saved file from
-    # ``MediaSources[].Name`` — a stable title-based name on the detail.
-    _attach_download_source(dto, card.title)
-    return dto
 
 
 def _poster_for(item_id: str) -> str | None:
@@ -698,109 +648,45 @@ def _view_id_for_item(item_id: str) -> str | None:
 def _content_dto(group_key: str, content: ContentResponse, server_id: str) -> BaseItemDto:
     """Movie/Series detail built from a resolved ContentResponse.
 
-    ``ImageTags.Primary`` iff the poster route would serve the item a
-    poster (D9). The image tag is derived from the SAME home-card poster
-    ``/Items/{id}/Images/Primary`` resolves — not ``content.poster`` —
-    so the tag and the route always agree (a card with no art means no
-    tag AND a 404 image, never a dangling tag). Translations stay
-    server-side — the wire carries no translation surface. The item id
-    is the stateless ``g2:`` group key, so the client's bookmarks and
-    the native route agree.
+    Resolution wrapper (ticket #344): the card fallbacks (year #220,
+    genres #219), the owning view id and the canonical poster URL are
+    scanned here; the shaping delegates to ``dto.content_detail_dto``.
+
+    The poster URL follows the D9 coherence rule: the SAME home-card
+    poster ``/Items/{id}/Images/Primary`` resolves wins; only a card
+    without art falls back to ``content.poster`` — so the tag and the
+    route always agree (a card with no art means no tag AND a 404
+    image, never a dangling tag). Translations stay server-side — the
+    wire carries no translation surface. The item id is the stateless
+    ``g2:`` group key, so the client's bookmarks and the native route
+    agree.
     """
-    dto = BaseItemDto(
-        Name=content.title,
-        ServerId=server_id,
-        Id=group_key,
-        Type="Movie" if content.form == "movie" else "Series",
-        # Ticket #220: the content page carries the year when the
-        # provider exposes one (ufdub's ``Рік:`` block); otherwise fall
-        # back to the snapshot card's year so the badge renders where
-        # either source has the data.
-        ProductionYear=content.year if content.year is not None else _year_for_group(group_key),
-        Overview=content.description,
-        # Ticket #213: the detail page renders a genre row when present
-        # (Switchfin ``media_movie``/``media_series`` show labelGenres
-        # iff non-empty). Ticket #219: the content page often does NOT
-        # repeat the card's genres (ufdub lists them on the card only) —
-        # fall back to the snapshot card's genres so the row renders
-        # where the data exists.
-        Genres=list(content.genres or _genres_for_group(group_key)),
-    )
-    # Ticket #221: the People rail renders from BaseItemDto.People —
-    # populated when the resolved provider's content page exposed cast
-    # (kinotron/uaserialspro actor lists, klontv JSON-LD). Empty people
-    # stays an empty list; Switchfin hides the rail then.
-    dto.People = [PersonDto(Id=p.id, Name=p.name, Role=p.role) for p in content.people]
-    # Ticket #222: the rating badge renders from CommunityRating — set
-    # when the provider exposed a real score (klontv's JSON-LD
-    # aggregateRating); None stays omitted so the badge hides instead
-    # of showing 0.
-    dto.CommunityRating = content.rating
-    parent = _view_id_for_item(group_key)
-    if parent is not None:
-        dto.ParentId = parent
-    poster = _poster_for(group_key)
-    if poster is None:
-        poster = content.poster
-    if poster is not None:
-        dto.ImageTags = {"Primary": _poster_tag(poster)}
-    # Spec #257: the detail screen's heart reads UserData.
-    dto.UserData = _user_data(group_key)
-    # Spec #280: the download manager names the saved file from
-    # ``MediaSources[].Name`` — a stable title-based name on the detail.
-    _attach_download_source(dto, content.title)
-    return dto
-
-
-def _attach_download_source(dto: BaseItemDto, title: str) -> None:
-    """Give a detail DTO the download-source entry (spec #280).
-
-    The client's download manager reads ``MediaSources[].Name`` for the
-    saved file's path; without it the Download button has no name to
-    write. The source is deliberately minimal — just the stable
-    title-based file name (the actual container is learned at download
-    time from the provider's stream, so ``Container`` is omitted here
-    rather than guessed).
-    """
-    item_id = dto.Id or ""
-    dto.MediaSources = [
-        MediaSourceInfo(
-            Id=item_id,
-            Container="",
-            Path=f"/Items/{item_id}/Download",
-            PlaySessionId="",
-            Name=f"{_safe_filename(title)}.mp4",
-        )
-    ]
-
-
-def _season_dto(group_key: str, season: Season, server_id: str, series_name: str) -> BaseItemDto:
-    """One Season under a series (D2 ids ``<group_key>:S<n>``, D3).
-
-    Carries the indexing fields Jellyfin clients breadcrumb on —
-    ``IndexNumber`` = season number. Seasons get no ``ImageTags`` (D9).
-    """
-    return BaseItemDto(
-        Name=f"Сезон {season.number}",
-        ServerId=server_id,
-        Id=f"{group_key}:S{season.number}",
-        Type="Season",
-        ParentId=group_key,
-        SeriesId=group_key,
-        SeriesName=series_name,
-        IndexNumber=season.number,
+    poster_url = _poster_for(group_key)
+    if poster_url is None:
+        poster_url = content.poster
+    return dto.content_detail_dto(
+        group_key,
+        content,
+        server_id,
+        fallback_year=_year_for_group(group_key),
+        fallback_genres=_genres_for_group(group_key),
+        parent_view_id=_view_id_for_item(group_key),
+        poster_url=poster_url,
+        user_data_value=_user_data(group_key),
     )
 
 
 def _episode_wire_id(provider_id: str, episode_id: str) -> str:
     """The existing provider-scoped episode id, unchanged (D2).
 
-    Providers are not uniform about whether ``episode.id`` already
-    carries its ``{provider}:`` prefix (``uakino``/``kinotron`` embed
-    it; most others emit a bare ``{external}:sXeY``). Reproduce exactly
-    the id a native client hands ``/api/stream`` — parent provider
-    prefix only when the episode id does not already start with it — so
-    the PlaybackInfo/stream tickets can consume it unchanged.
+    Id grammar stays in the router (ticket #344): wire-identity
+    consolidation is another wave's job. Providers are not uniform about
+    whether ``episode.id`` already carries its ``{provider}:`` prefix
+    (``uakino``/``kinotron`` embed it; most others emit a bare
+    ``{external}:sXeY``). Reproduce exactly the id a native client hands
+    ``/api/stream`` — parent provider prefix only when the episode id
+    does not already start with it — so the PlaybackInfo/stream tickets
+    can consume it unchanged.
     """
     if episode_id.startswith(f"{provider_id}:"):
         return episode_id
@@ -815,31 +701,19 @@ def _episode_dto(
     server_id: str,
     series_name: str,
 ) -> BaseItemDto:
-    """One Episode satellite (D2: id keeps the provider-scoped episode
-    suffix the PlaybackInfo/stream tickets consume; D3: ParentId = the
-    owning season id).
-
-    ``IndexNumber`` = number inside the season, ``ParentIndexNumber`` =
-    the season number. No ``ImageTags`` (D9).
-    """
-    return BaseItemDto(
-        Name=episode.title,
-        ServerId=server_id,
-        Id=_episode_wire_id(provider_id, episode.id),
-        Type="Episode",
-        ParentId=f"{group_key}:S{season.number}",
-        SeriesId=group_key,
-        SeriesName=series_name,
-        IndexNumber=episode.number,
-        ParentIndexNumber=season.number,
-        # Ticket #223: the app asks for these fields explicitly
-        # (``fields=...Overview``) — emit them when the provider's
-        # episode data carries them (animeon's ``aired``); otherwise
-        # omitted by ``response_model_exclude_none``.
-        Overview=episode.description or None,
-        PremiereDate=episode.premiere_date,
-        # Spec #257: the played checkmark on episode rows reads UserData.
-        UserData=_user_data(_episode_wire_id(provider_id, episode.id)),
+    """One Episode satellite (D2/D3): resolution wrapper — the
+    provider-scoped wire id (id grammar stays in the router, ticket
+    #344) and its UserData are resolved here; the shaping delegates to
+    ``dto.episode_dto``."""
+    wire_id = _episode_wire_id(provider_id, episode.id)
+    return dto.episode_dto(
+        group_key,
+        season,
+        episode,
+        server_id,
+        series_name,
+        wire_id=wire_id,
+        user_data_value=_user_data(wire_id),
     )
 
 
@@ -857,39 +731,15 @@ async def _user_views() -> BaseItemDtoQueryResult:
 
 
 def _search_group_dto(group: SearchGroup, server_id: str) -> BaseItemDto:
-    """One search-result card (ticket #106): the merged group in the same
-    listing shape as ``_item_dto`` (D5/D9) — ``g2:`` id, Movie/Series
-    Type from the group's canonical type, ``ImageTags.Primary`` present
-    *iff* the card has a poster.
-
-    No ``ParentId``: a searched card is not tied to a home row — search
-    covers the whole catalog, not a view.
-    """
-    dto = BaseItemDto(
-        Name=group.title,
-        ServerId=server_id,
-        Id=group.group_key,
-        Type=_JF_TYPE_BY_ROW.get(group.form, "Series"),
-        ProductionYear=group.year,
-    )
-    if group.poster is not None:
-        dto.ImageTags = {"Primary": _poster_tag(group.poster)}
-    return dto
+    """One search-result card (ticket #106): pure pass-through to
+    ``dto.search_card_dto`` (ticket #344)."""
+    return dto.search_card_dto(group, server_id)
 
 
 def _search_hint(group: SearchGroup) -> SearchHint:
-    """One search-box hint (ticket #106): the same merged card in the
-    ``SearchHint`` shape ``/Search/Hints`` serves."""
-    hint = SearchHint(
-        ItemId=group.group_key,
-        Id=group.group_key,
-        Name=group.title,
-        Type=_JF_TYPE_BY_ROW.get(group.form, "Series"),
-        ProductionYear=group.year,
-    )
-    if group.poster is not None:
-        hint.ImageTags = {"Primary": _poster_tag(group.poster)}
-    return hint
+    """One search-box hint (ticket #106): pure pass-through to
+    ``dto.search_hint`` (ticket #344)."""
+    return dto.search_hint(group)
 
 
 async def _jf_search_groups(search_term: str) -> list[SearchGroup]:
@@ -1571,15 +1421,7 @@ async def genres(
                 continue
             for genre in item.genres:
                 counts[genre] = counts.get(genre, 0) + 1
-    dtos = [
-        BaseItemDto(
-            Name=genre,
-            ServerId=server_id,
-            Id=genre,
-            ChildCount=count,
-        )
-        for genre, count in sorted(counts.items())
-    ]
+    dtos = [dto.genre_shelf_entry(genre, server_id, count) for genre, count in sorted(counts.items())]
     return BaseItemDtoQueryResult(Items=dtos, TotalRecordCount=len(dtos))
 
 
@@ -1656,7 +1498,7 @@ async def _hierarchy(parent_id: str | None) -> BaseItemDtoQueryResult:
     provider_id = next(iter(content.id.split(":")), "")
     if season_number is None:
         # Series → its seasons; a movie resolves with seasons=None above.
-        dtos = [_season_dto(group_key, s, server_id, content.title) for s in content.seasons]
+        dtos = [dto.season_dto(group_key, s, server_id, content.title) for s in content.seasons]
     else:
         season = next((s for s in content.seasons if s.number == season_number), None)
         if season is None:
@@ -1732,7 +1574,7 @@ async def item_detail(item_id: str) -> BaseItemDto:
         season = next((s for s in content.seasons if s.number == season_number), None)
         if season is None:
             raise HTTPException(status_code=404, detail="item_unavailable")
-        return _season_dto(group_key, season, _server_id(), content.title)
+        return dto.season_dto(group_key, season, _server_id(), content.title)
     return _content_dto(group_key, content, _server_id())
 
 
@@ -1765,42 +1607,16 @@ async def item_primary_image(
     return await _serve_item_image(item_id, format=format, maxWidth=maxWidth)
 
 
-#: Transcode memo: ``(poster_url, max_width) → WebP bytes``. The client
-#: retries a bad poster dozens of times per second (observed 533), so
-#: the conversion must cost one Pillow pass per poster, not per request.
-_WEBP_MEMO: dict[tuple[str, int | None], bytes] = {}
-_WEBP_MEMO_MAX = 256
-
-
-def _as_webp(poster_url: str, body: bytes, max_width: int | None) -> bytes:
-    """``body`` as WebP bytes (Pillow), resized to ``max_width`` when
-    larger; the original back on any decode error (a transcode failure
-    must not turn a served poster into a 404)."""
-    key = (poster_url, max_width)
-    hit = _WEBP_MEMO.get(key)
-    if hit is not None:
-        return hit
-    try:
-        from PIL import Image, ImageOps
-
-        logo: Image.Image = Image.open(io.BytesIO(body))
-        if max_width and logo.width > max_width:
-            logo = ImageOps.contain(logo, (max_width, max_width))
-        out = io.BytesIO()
-        logo.convert("RGB").save(out, format="WEBP", quality=82)
-        hit = out.getvalue()
-    except Exception:  # noqa: BLE001
-        hit = body
-    if len(_WEBP_MEMO) >= _WEBP_MEMO_MAX:
-        _WEBP_MEMO.clear()
-    _WEBP_MEMO[key] = hit
-    return hit
-
-
 async def _serve_item_image(
     item_id: str, *, format: str | None = None, maxWidth: int | None = None
 ) -> Response:
-    """The poster for ``item_id`` as an inline image response, or 404."""
+    """The poster for ``item_id`` as an inline image response, or 404.
+
+    Resolution (poster URL lookup + the shared poster-cache fetch) stays
+    here; the WebP verdict/transcode delegates to the image module
+    (ticket #343). ``fetch_poster_bytes`` resolves through THIS module at
+    call time — the suite stubs it here.
+    """
     poster_url = _poster_for(item_id)
     if poster_url is None and is_group_key(item_id):
         # Item not in the home snapshot (surfaced via Latest/search);
@@ -1813,43 +1629,10 @@ async def _serve_item_image(
     if fetched is None:
         raise HTTPException(status_code=404, detail="poster_unavailable")
     body, ctype = fetched
-    wants_webp = format is not None and format.lower().lstrip("/") in ("webp", "webp,kwebp")
-    if wants_webp and not ctype.startswith("image/webp"):
-        body = _as_webp(poster_url, body, maxWidth)
+    if images.wants_webp(format) and not ctype.startswith("image/webp"):
+        body = images.as_webp(poster_url, body, maxWidth)
         ctype = "image/webp"
     return Response(content=body, media_type=ctype)
-
-
-#: Placeholder avatar bytes per format — the facade has no user concept,
-#: but Switchfin's server list ALWAYS requests each saved user's avatar
-#: (``apiUserImage``) and its HTTP layer logs any 4xx as a console error
-#: ("http status 404"). A transparent placeholder answers 200 while still
-#: rendering as "no avatar": the client's own default glyph shows through
-#: the transparency.
-_AVATAR_MEMO: dict[str, bytes] = {}
-
-
-def _placeholder_avatar(format: str | None) -> tuple[bytes, str]:
-    """A transparent placeholder image in the requested format.
-
-    Switchfin's PS4 build requests ``format=Webp`` and decodes the body
-    as WebP whenever the URL contains ``Webp`` (``Image::doRequest``), so
-    the placeholder must be real WebP bytes — a PNG answer to a WebP URL
-    silently fails to decode and renders nothing.
-    """
-    wants_webp = format is not None and format.lower().lstrip("/") in ("webp", "webp,kwebp")
-    key = "webp" if wants_webp else "png"
-    hit = _AVATAR_MEMO.get(key)
-    if hit is not None:
-        return hit, "image/webp" if wants_webp else "image/png"
-    from PIL import Image
-
-    img = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
-    out = io.BytesIO()
-    img.save(out, format="WEBP" if wants_webp else "PNG")
-    hit = out.getvalue()
-    _AVATAR_MEMO[key] = hit
-    return hit, "image/webp" if wants_webp else "image/png"
 
 
 @router.get(
@@ -1863,7 +1646,7 @@ async def user_primary_image(user_id: str, format: str | None = None) -> Respons
     on the console when it's missing. Public like every other image
     endpoint (token-less image loading, see ``item_primary_image``).
     """
-    body, ctype = _placeholder_avatar(format)
+    body, ctype = images.placeholder_avatar(format)
     return Response(content=body, media_type=ctype)
 
 
@@ -2294,246 +2077,16 @@ async def item_special_features(user_id: str, item_id: str) -> list[object]:
     return []
 
 
-#: ``StreamResponse.type`` → the ``Content-Type`` the client expects (D7).
-_STREAM_CTYPE = {
-    "mp4": "video/mp4",
-    "m3u8": "application/vnd.apple.mpegurl",
-    "hls": "application/vnd.apple.mpegurl",
-}
-
-#: ``URI="..."`` attributes inside an HLS manifest (EXT-X-KEY, EXT-X-MAP,
-#: EXT-X-MEDIA, child playlists) — rewritten like every plain segment line.
-_URI_ATTR_RE = re.compile(r'URI="([^"]*)"')
-
-_MAX_PROXY_HOPS = 5
-
-#: Per-item memo of the provider headers + CDN host the byte/segment proxy
-#: must use. The manifest is fetched once; segments arrive en masse during
-#: playback, and re-running the provider's ``stream()`` (one upstream
-#: scrape per call) for every segment would hammer the provider. A short
-#: TTL memo fuels segments; expiry falls back to one re-resolution. It
-#: deliberately memoizes the provider HEADER MAP and the chosen CDN host
-#: — NOT the upstream URL, which stays ADR-0003's "never cached"
-#: (session-scoped/token-signed); the fresh ``stream()`` on expiry is
-#: exactly the "a miss costs one request" cost the ADR accepts.
-_STREAM_MEMO: dict[str, tuple[float, str, dict[str, str], frozenset[str]]] = {}
-_STREAM_MEMO_TTL_S = 15 * 60
-
-
-def _cdn_host(url: str) -> str | None:
-    """The lowercase hostname of an http(s) URL, or None."""
-    host = urlparse(url).hostname
-    return host.lower() if host else None
-
-
-def _registrable_domain(host: str) -> str:
-    """The last two labels of a hostname — the anchor the stream proxy's
-    CDN check compares against.
-
-    Live HLS trees routinely hand child playlists to a SIBLING subdomain
-    of the same domain (``api.unimay.media`` hands the tree to
-    ``cdn.unimay.media``), and a two-label anchor is exactly stable
-    across those siblings while still excluding foreign registrants:
-    ``evil.example`` can never equal ``cdn.example``. Co.UK-style
-    multi-label public suffixes are out of scope — no UA provider CDN
-    uses one.
-    """
-    labels = host.split(".")
-    if len(labels) <= 2:
-        return host
-    return ".".join(labels[-2:])
-
-
-def _stream_target_allowed(url: str, cdn_host: str, allowed: frozenset[str] = frozenset()) -> bool:
-    """Whether the byte proxy may reach ``url``: a host on the same
-    registrable domain as the CDN the provider selected for the item
-    (``cdn.example`` and its ``media.``/``api.`` siblings are one CDN),
-    or a registrable domain the provider explicitly sanctioned in
-    ``StreamResponse.allowed_domains`` (a 302 gateway may hand bytes to
-    a foreign CDN the provider picked, e.g. ufdub episodes on Dropbox).
-
-    This is the stream proxy's standing posture: the facade fetches bytes
-    only from the CDN a provider picked — a sibling subdomain of the same
-    domain is still the picked CDN, a foreign registrable domain is not
-    (unless provider-sanctioned), and a client pointing the segment route
-    at an arbitrary host fails closed (mirrors the poster proxy's
-    allowlist).
-    """
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https") or parsed.hostname is None:
-        return False
-    host = parsed.hostname.lower()
-    return (
-        _registrable_domain(host) == _registrable_domain(cdn_host)
-        or _registrable_domain(host) in allowed
-    )
-
-
-def _is_hls_stream(stream: StreamResponse) -> bool:
-    return stream.type in ("m3u8", "hls") or stream.url.endswith(".m3u8")
-
-
-def _segment_url(item_id: str, upstream: str) -> str:
-    """Backend URL a rewritten media reference re-enters through."""
-    return f"/Videos/{item_id}/segment?url={quote(upstream, safe='')}"
-
-
-def _rewrite_m3u8(body: str, manifest_url: str, item_id: str) -> str:
-    """Rewrite a fetched manifest so every media reference re-enters the
-    backend: plain segment/child-playlist lines AND ``URI="..."``
-    attributes (key files, EXT-X-MAP init segments) become
-    ``/Videos/{item_id}/segment`` fetches. Relative references resolve
-    against the manifest URL (urljoin) — the client only ever talks to
-    the backend, which owns the provider headers."""
-    lines: list[str] = []
-    for line in body.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            lines.append("")
-            continue
-        if stripped.startswith("#"):
-            lines.append(
-                _URI_ATTR_RE.sub(
-                    lambda m: f'URI="{_segment_url(item_id, urljoin(manifest_url, m.group(1)))}"',
-                    line,
-                )
-            )
-        else:
-            lines.append(_segment_url(item_id, urljoin(manifest_url, stripped)))
-    return "\n".join(lines) + "\n"
-
-
-def _memo_stream(
-    item_id: str, cdn_host: str, headers: dict[str, str], allowed: frozenset[str]
-) -> None:
-    """Writer for the segment memo. Values are returned by reference, so
-    the store hands out copies — never the live provider dict."""
-    _STREAM_MEMO[item_id] = (time.monotonic(), cdn_host, dict(headers), allowed)
-
-
-async def _proxy_target(item_id: str) -> tuple[str, dict[str, str], frozenset[str]] | None:
-    """(cdn_host, provider headers, allowed domains) the segment proxy
-    must use.
-
-    Serves from the memo when fresh; otherwise re-resolves the stream
-    once and memoizes. None → 404 (D2)."""
-    hit = _STREAM_MEMO.get(item_id)
-    if hit is not None and time.monotonic() - hit[0] < _STREAM_MEMO_TTL_S:
-        return hit[1], dict(hit[2]), hit[3]
-    stream = await _resolve_stream(item_id)
-    if stream is None:
-        return None
-    cdn_host = _cdn_host(stream.url)
-    if cdn_host is None:
-        return None
-    _memo_stream(item_id, cdn_host, stream.headers, stream.allowed_domains)
-    return cdn_host, dict(stream.headers), stream.allowed_domains
-
-
-async def _open_upstream(
-    http: httpx.AsyncClient,
-    url: str,
-    headers: dict[str, str],
-    range_header: str | None,
-    cdn_host: str,
-    hops: int = 0,
-    allowed: frozenset[str] = frozenset(),
-) -> tuple[httpx.Response, Callable[[], Awaitable[None]]] | None:
-    """Open a validating byte stream to ``url``, following redirects by
-    hand and re-validating EVERY hop against the item's CDN host.
-
-    Returns ``(resp, closer)`` where the closer releases the upstream
-    stream once the caller is done feeding bytes; None fails closed
-    (D2 posture — never raises). Only a 2xx response opens a stream: a
-    403/416/500 CDN verdict is a playback-grade failure the facade cannot
-    meaningfully relay, so it becomes the same 404 an unresolvable id
-    gets.
-    """
-    if hops > _MAX_PROXY_HOPS or not _stream_target_allowed(url, cdn_host, allowed):
-        return None
-    req_headers = dict(headers)
-    if range_header is not None:
-        req_headers["Range"] = range_header
-    try:
-        cm = http.stream("GET", url, headers=req_headers)
-        resp = await cm.__aenter__()
-    except httpx.HTTPError:
-        return None
-    if 300 <= resp.status_code < 400:
-        location = resp.headers.get("Location")
-        await cm.__aexit__(None, None, None)
-        if location is None:
-            return None
-        return await _open_upstream(
-            http, urljoin(url, location), headers, range_header, cdn_host, hops + 1, allowed
-        )
-    if resp.status_code < 200 or resp.status_code >= 300:
-        await cm.__aexit__(None, None, None)
-        return None
-
-    async def _closer() -> None:
-        await cm.__aexit__(None, None, None)
-
-    return resp, _closer
-
-
-async def _fetch_manifest(
-    http: httpx.AsyncClient,
-    url: str,
-    headers: dict[str, str],
-    cdn_host: str,
-    hops: int = 0,
-    allowed: frozenset[str] = frozenset(),
-) -> httpx.Response | None:
-    """Fetch a small HLS manifest with hop revalidation; only a 200 counts."""
-    if hops > _MAX_PROXY_HOPS or not _stream_target_allowed(url, cdn_host, allowed):
-        return None
-    try:
-        resp = await http.get(url, headers=headers)
-    except httpx.HTTPError:
-        return None
-    if 300 <= resp.status_code < 400:
-        location = resp.headers.get("Location")
-        if location is None:
-            return None
-        return await _fetch_manifest(
-            http, urljoin(url, location), headers, cdn_host, hops + 1, allowed
-        )
-    if resp.status_code != 200:
-        log.warning("jellyfin manifest non-200 url=%s status=%s", url, resp.status_code)
-        return None
-    return resp
-
-
-def _streaming_response(
-    resp: httpx.Response,
-    close: Callable[[], Awaitable[None]],
-    fallback_ctype: str,
-) -> StreamingResponse:
-    """Wrap an upstream byte stream as the facade's response.
-
-    Upstream's own status, ``Content-Type``, ``Content-Range`` and
-    ``Accept-Ranges`` ride along (a file proxy must answer a ``Range``
-    with the CDN's 206 honestly); only a missing Content-Type falls back
-    to the provider type's expected value. The upstream stream is released
-    when the response body finishes — or when the client disconnects.
-    """
-    out_headers: dict[str, str] = {}
-    for name in ("Content-Type", "Content-Range", "Accept-Ranges"):
-        value = resp.headers.get(name)
-        if value is not None:
-            out_headers[name] = value
-    if "Content-Type" not in out_headers:
-        out_headers["Content-Type"] = fallback_ctype
-
-    async def body() -> AsyncIterator[bytes]:
-        try:
-            async for chunk in resp.aiter_bytes():
-                yield chunk
-        finally:
-            await close()
-
-    return StreamingResponse(body(), status_code=resp.status_code, headers=out_headers)
+# ------------------------------------------------- HLS byte proxy (#342, D7)
+#
+# The byte/segment proxy itself — content-type map, ``URI=`` rewrite,
+# registrable-domain SSRF guard, per-item header memo, redirect-following
+# upstream opener, manifest fetcher and streaming wrapper — lives in
+# ``hls_proxy`` (ticket #342). The routes below stay thin: they resolve a
+# playable id (``_resolve_stream``), decide redirect-vs-proxy, and hand
+# the resolved stream + the shared httpx client (resolved at call time,
+# so tests can swap it) to the proxy module. A None from the module is
+# the standing 404 (D2).
 
 
 @router.get("/Videos/{item_id:path}/stream")
@@ -2545,12 +2098,10 @@ async def video_stream(
     """Conditional stream handler (D7): redirect, or the byte proxy.
 
     ``StreamResponse`` with no header map → 302 straight to the CDN URL
-    (no proxying). With a header map the backend owns the bytes: mp4
-    files forward the client's ``Range`` and echo the CDN's
-    206/Content-Range/Accept-Ranges back; HLS manifests are fetched (with
-    the provider's headers), every segment/``URI=`` reference rewritten to
-    ``/Videos/{id}/segment``, and served as the mpegurl content type — so
-    the client's segments stay behind the facade too.
+    (no proxying). With a header map the backend owns the bytes — mp4
+    files forward the client's ``Range``, HLS manifests are fetched,
+    rewritten, and served as mpegurl so segments stay behind the facade
+    too (see ``hls_proxy.proxy_stream``).
 
     Spec #276: ``mediaSourceId`` is the dub source echoed from
     PlaybackInfo (``<item_id>::<translation_id>``) — it switches the
@@ -2571,42 +2122,15 @@ async def video_stream(
         await _record_dub_choice(item_id, translation_id)
     if not stream.headers:
         return RedirectResponse(stream.url, status_code=302)
-
-    cdn_host = _cdn_host(stream.url)
-    if cdn_host is None:
-        raise HTTPException(status_code=404, detail="item_unavailable")
-    _memo_stream(item_id, cdn_host, stream.headers, stream.allowed_domains)
-    http = get_client()
-
-    if _is_hls_stream(stream):
-        manifest = await _fetch_manifest(
-            http, stream.url, stream.headers, cdn_host, allowed=stream.allowed_domains
-        )
-        if manifest is None:
-            raise HTTPException(status_code=404, detail="item_unavailable")
-        body = _rewrite_m3u8(
-            manifest.content.decode("utf-8", errors="replace"), stream.url, item_id
-        )
-        # Whatever the upstream claims, a served manifest is a playlist
-        # body and gets the mpegurl content-type (D7). If the provider
-        # ever mislabels type (mp4) on a .m3u8 URL, the playlist
-        # detection above decides, so ctype must not follow the label.
-        return Response(content=body, media_type=_STREAM_CTYPE["m3u8"])
-
-    opened = await _open_upstream(
-        http,
-        stream.url,
-        stream.headers,
-        request.headers.get("range"),
-        cdn_host,
-        allowed=stream.allowed_domains,
+    response = await proxy_stream(
+        item_id=item_id,
+        stream=stream,
+        http=get_client(),
+        range_header=request.headers.get("range"),
     )
-    if opened is None:
+    if response is None:
         raise HTTPException(status_code=404, detail="item_unavailable")
-    upstream, closer = opened
-    return _streaming_response(
-        upstream, closer, _STREAM_CTYPE.get(stream.type, "application/octet-stream")
-    )
+    return response
 
 
 @router.get("/Items/{item_id:path}/Download")
@@ -2640,96 +2164,36 @@ async def item_download(item_id: str) -> Response:
             f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{encoded}'
         )
 
-    if not stream.headers:
-        # No provider headers: stream the upstream body directly (the
-        # stream route would 302; a download needs the file itself).
-        cdn_host = _cdn_host(stream.url)
-        if cdn_host is None:
-            raise HTTPException(status_code=404, detail="item_unavailable")
-        http = get_client()
-        opened = await _open_upstream(
-            http, stream.url, {}, None, cdn_host, allowed=stream.allowed_domains
-        )
-        if opened is None:
-            raise HTTPException(status_code=404, detail="item_unavailable")
-        upstream, closer = opened
-        resp = _streaming_response(
-            upstream, closer, _STREAM_CTYPE.get(stream.type, "application/octet-stream")
-        )
-        resp.headers["Content-Disposition"] = disposition
-        return resp
-
-    cdn_host = _cdn_host(stream.url)
-    if cdn_host is None:
-        raise HTTPException(status_code=404, detail="item_unavailable")
-    _memo_stream(item_id, cdn_host, stream.headers, stream.allowed_domains)
-    http = get_client()
-
-    if _is_hls_stream(stream):
-        manifest = await _fetch_manifest(
-            http, stream.url, stream.headers, cdn_host, allowed=stream.allowed_domains
-        )
-        if manifest is None:
-            raise HTTPException(status_code=404, detail="item_unavailable")
-        body = _rewrite_m3u8(
-            manifest.content.decode("utf-8", errors="replace"), stream.url, item_id
-        )
-        return Response(
-            content=body,
-            media_type=_STREAM_CTYPE["m3u8"],
-            headers={"Content-Disposition": disposition},
-        )
-
-    opened = await _open_upstream(
-        http,
-        stream.url,
-        stream.headers,
-        None,
-        cdn_host,
-        allowed=stream.allowed_domains,
+    # The byte proxy is forced here even when the stream route would 302,
+    # so the Content-Disposition name can ride along (spec #280).
+    response = await proxy_download(
+        item_id=item_id, stream=stream, http=get_client(), content_disposition=disposition
     )
-    if opened is None:
+    if response is None:
         raise HTTPException(status_code=404, detail="item_unavailable")
-    upstream, closer = opened
-    resp = _streaming_response(
-        upstream, closer, _STREAM_CTYPE.get(stream.type, "application/octet-stream")
-    )
-    resp.headers["Content-Disposition"] = disposition
-    return resp
+    return response
 
 
 @router.get("/Videos/{item_id:path}/segment")
 async def video_segment(item_id: str, url: str = Query(...)) -> Response:
     """Proxy one rewritten HLS reference (D7).
 
-    ``url`` is an upstream reference embedded by ``_rewrite_m3u8`` (already
-    percent-encoded, decoded once by FastAPI): an ordinary segment, or
-    another playlist — a master's variant, or a variant's own segment
-    list. Segment bytes flow through the byte proxy; a playlist reference
-    is fetched and re-rewritten exactly like the top manifest, so a
-    multi-level playlist tree keeps every descendant reference pointed at
-    the backend (the client's requests always carry the provider headers).
-    The host must match the item's CDN host (dot-boundary) — anything
-    else fails closed to 404 — and Referer-gated CDNs still serve.
+    ``url`` is an upstream reference embedded by the manifest rewriter
+    (already percent-encoded, decoded once by FastAPI): an ordinary
+    segment, or another playlist — a master's variant, or a variant's own
+    segment list, recursively re-rewritten so a multi-level tree keeps
+    every descendant reference pointed at the backend (see
+    ``hls_proxy.serve_segment``). The host must match the item's CDN
+    (dot-boundary) — anything else fails closed to 404 — and
+    Referer-gated CDNs still serve.
     """
-    target = await _proxy_target(item_id)
+    target = await segment_target(item_id, resolve_stream=_resolve_stream)
     if target is None:
         raise HTTPException(status_code=404, detail="item_unavailable")
-    cdn_host, headers, allowed = target
-    http = get_client()
-
-    if url.rstrip("/").lower().endswith(".m3u8"):
-        manifest = await _fetch_manifest(http, url, headers, cdn_host, allowed=allowed)
-        if manifest is None:
-            raise HTTPException(status_code=404, detail="item_unavailable")
-        body = _rewrite_m3u8(manifest.content.decode("utf-8", errors="replace"), url, item_id)
-        return Response(content=body, media_type=_STREAM_CTYPE["m3u8"])
-
-    opened = await _open_upstream(http, url, headers, None, cdn_host, allowed=allowed)
-    if opened is None:
+    response = await serve_segment(item_id=item_id, url=url, target=target, http=get_client())
+    if response is None:
         raise HTTPException(status_code=404, detail="item_unavailable")
-    upstream, closer = opened
-    return _streaming_response(upstream, closer, "application/octet-stream")
+    return response
 
 
 # ------------------------------------------------------------ user state (#257)
@@ -2828,20 +2292,16 @@ def _title_for(item_id: str) -> str | None:
     return None
 
 
-def _safe_filename(title: str) -> str:
-    """A filename-safe rendering of a title (spec #280)."""
-    cleaned = re.sub(r'[\\/:*?"<>|\r\n\t ]+', "_", title).strip("_")
-    return cleaned or "item"
-
-
 def _download_filename(item_id: str, stream_type: str) -> str:
     """Content-Disposition filename for ``/Items/{id}/Download``.
 
     ``<safe-title>.<container>`` where the container is the provider's
     actual stream type (mp4/m3u8…) so the saved file is usable offline.
+    The filename-safe rendering lives in ``dto.safe_filename`` (shared
+    with the download-source attach, ticket #344).
     """
     title = _title_for(item_id) or item_id.rsplit(":", 1)[-1]
-    return f"{_safe_filename(title)}.{stream_type}"
+    return f"{safe_filename(title)}.{stream_type}"
 
 
 async def _resolve_download(
