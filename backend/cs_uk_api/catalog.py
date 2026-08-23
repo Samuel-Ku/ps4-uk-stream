@@ -288,7 +288,7 @@ async def search(
 #: sweep timeout degrades to "keep the cards" — stream()/content() still
 #: refuse gated items). Public name for the constant the implementation
 #: keeps private (#345).
-GATE_CHECK_TIMEOUT_S: float = _catalog_state._GATE_CHECK_TIMEOUT_S
+GATE_CHECK_TIMEOUT_S: float = _catalog_state.GATE_CHECK_TIMEOUT_S
 
 
 async def filter_gated_items(

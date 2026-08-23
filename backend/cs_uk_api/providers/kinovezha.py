@@ -38,6 +38,7 @@ from ..models import (
 )
 from ..wire_identity import (
     MOVIE_SUFFIX,
+    episode_wire_id,
     is_movie_wire_id,
     parse_episode_tail,
     strip_movie_suffix,
@@ -444,7 +445,7 @@ class KinoVezhaProvider(BaseProvider):
                     dub_labels.append(label)
                 episodes.append(Episode(
                     number=e_idx,
-                    id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
+                    id=episode_wire_id(provider_id, external_id, s_idx, e_idx),
                     title=ep_title,
                     translations=[Translation(id=label, label=label)] if label else None,
                 ))

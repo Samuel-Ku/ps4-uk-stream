@@ -65,7 +65,7 @@ WARM_WAIT_S: float = 15.0
 #: task finishes the sweep and re-caches the cleaned home seconds
 #: later. The 30-min home cache absorbs the re-cache.
 _GATE_CHECK_CONCURRENCY = 24
-_GATE_CHECK_TIMEOUT_S = 12.0
+GATE_CHECK_TIMEOUT_S = 12.0
 
 #: Delay before the one detail-scrape retry (B23): providers flake once
 #: under load (animeon ``unreachable``) and succeed on a second attempt.

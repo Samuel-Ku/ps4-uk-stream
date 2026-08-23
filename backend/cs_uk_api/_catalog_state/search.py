@@ -39,7 +39,7 @@ from ..providers.base import BaseProvider
 from ..wire_identity import project_group
 from ._stores import record_search_query, search_cache
 from .resolution import (
-    _GATE_CHECK_TIMEOUT_S,
+    GATE_CHECK_TIMEOUT_S,
     await_uakino_ready,
     filter_gated_items,
     should_skip_uakino_in_fanout,
@@ -216,7 +216,7 @@ async def merged_search(
             try:
                 results_by_pid[prov.id] = await asyncio.wait_for(
                     filter_gated_items(results_by_pid[prov.id], http),
-                    timeout=_GATE_CHECK_TIMEOUT_S,
+                    timeout=GATE_CHECK_TIMEOUT_S,
                 )
             except TimeoutError:
                 pass

@@ -296,3 +296,52 @@ def test_provider_union_first_seen_wins() -> None:
     assert list(union) == ["p1", "p2"]
     assert union["p1"] is first  # first-seen wins, not the later duplicate
     assert union["p2"] is third
+
+
+# --- #346: one grammar test over representative ids from every adapter family ---
+# (DLE sites, tortuga sites, browser-session site, bare-:eN animeon form)
+
+import pytest
+
+from cs_uk_api.wire_identity import (
+    MOVIE_SUFFIX,
+    episode_wire_id,
+    is_movie_wire_id,
+    parse_episode_tail,
+    split_wire_id,
+    strip_movie_suffix,
+)
+
+_REPRESENTATIVE_EPISODE_IDS = [
+    ("ufdub", "dorama-408-moya-sestra", 1, 1),
+    ("uakino", "6268-tyl", 2, 10),
+    ("animeon", "918", 1, 7),
+    ("kinovezha", "serial-x", 3, 12),
+    ("eneyida", "1234-dim-drakona", 1, 5),
+    ("uaserialspro", "4567", 4, 2),
+]
+
+
+@pytest.mark.parametrize("provider,external,season,episode", _REPRESENTATIVE_EPISODE_IDS)
+def test_episode_wire_id_round_trip(provider, external, season, episode):
+    wire = episode_wire_id(provider, external, season, episode)
+    assert wire == f"{provider}:{external}:s{season}e{episode}"
+    composite, tail = split_episode_tail_public(wire)
+    assert composite == f"{provider}:{external}"
+    assert parse_episode_tail(tail) == (season, episode)
+    assert parse_episode_tail(tail[1:]) == (season, episode)  # bare rpartition form
+    assert split_wire_id(wire) == (provider, f"{external}:s{season}e{episode}")
+
+
+def split_episode_tail_public(item_id):
+    from cs_uk_api.wire_identity import split_episode_tail
+
+    return split_episode_tail(item_id)
+
+
+def test_movie_suffix_round_trip():
+    for provider, external, _s, _e in _REPRESENTATIVE_EPISODE_IDS:
+        movie_id = f"{provider}:{external}{MOVIE_SUFFIX}"
+        assert is_movie_wire_id(movie_id)
+        assert strip_movie_suffix(movie_id) == f"{provider}:{external}"
+        assert not is_movie_wire_id(episode_wire_id(provider, external, 1, 1))

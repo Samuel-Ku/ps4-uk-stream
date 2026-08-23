@@ -60,8 +60,8 @@ from ._stores import (
 )
 from .resolution import (
     _GATE_CHECK_CONCURRENCY,
-    _GATE_CHECK_TIMEOUT_S,
     CONTENT_RETRY_DELAY_S,
+    GATE_CHECK_TIMEOUT_S,
     WARM_WAIT_S,
     await_uakino_ready,
     cached_provider_content,
@@ -81,10 +81,9 @@ from .warm import recommendation_stats, refresh_profile
 
 __all__ = [
     "CONTENT_RETRY_DELAY_S",
+    "GATE_CHECK_TIMEOUT_S",
     "WARM_WAIT_S",
-    # resolution
     "_GATE_CHECK_CONCURRENCY",
-    "_GATE_CHECK_TIMEOUT_S",
     # stores / caches
     "_HOME_KEY",
     "_SOURCES_KEY",

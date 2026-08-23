@@ -41,7 +41,7 @@ from ._stores import (
 )
 from .resolution import (
     _GATE_CHECK_CONCURRENCY,
-    _GATE_CHECK_TIMEOUT_S,
+    GATE_CHECK_TIMEOUT_S,
     episode_group_key,
     filter_gated_items,
 )
@@ -244,7 +244,7 @@ async def _build_home() -> HomeResponse:
             if items and maybe_provider is not None and maybe_provider.can_gate:
                 sweep.append(asyncio.create_task(_sweep(per_pid, pid)))
     if sweep:
-        _done, pending = await asyncio.wait(sweep, timeout=_GATE_CHECK_TIMEOUT_S)
+        _done, pending = await asyncio.wait(sweep, timeout=GATE_CHECK_TIMEOUT_S)
         if pending:
             # Issue #168: a cold sweep of every can_gate listing can
             # outlive the budget (animeon's content() does several

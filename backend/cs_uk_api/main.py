@@ -17,7 +17,7 @@ from . import catalog_warm as catalog_warm_mod
 from . import config as _config
 from . import watchdog as watchdog_mod
 from .cache import TtlCache
-from .catalog import GATE_CHECK_TIMEOUT_S as _GATE_CHECK_TIMEOUT_S
+from .catalog import GATE_CHECK_TIMEOUT_S
 from .catalog import await_uakino_ready as _await_uakino_ready
 from .catalog import filter_gated_items as _filter_gated_items
 from .config import SETTINGS
@@ -426,7 +426,7 @@ async def browse(
         try:
             results = await asyncio.wait_for(
                 _filter_gated_items(results, get_client()),
-                timeout=_GATE_CHECK_TIMEOUT_S,
+                timeout=GATE_CHECK_TIMEOUT_S,
             )
         except TimeoutError:
             pass  # keep the cards; stream() still refuses gated items
