@@ -28,7 +28,7 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from ..country import extract_country
-from ..http_client import safe_get
+from ..http_client import provider_safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -84,7 +84,6 @@ def _parse_fmeta(soup: BeautifulSoup) -> tuple[int | None, list[str], list[Perso
 # Hosts the upstream may legally redirect to: the DLE CMS and the
 # tortuga player. A hostile CMS response must not be able to pivot
 # either hop to an attacker-controlled host.
-_ALLOWED_HOSTS: frozenset[str] = frozenset({"serialno.tv", "tortuga.tw"})
 
 #: A dubbing label inside the ``{...}`` prefix of a live flat-payload
 #: file value (e.g. ``{КІНО}https://calypso.tortuga.tw/...``, ticket #332).
@@ -225,6 +224,8 @@ class SerialnoProvider(BaseProvider):
     name = "Serialno"
     types = ("series",)
     sections = SERIALNO_SECTIONS
+    #: Site + the Tortuga player gateway it embeds (ADR-0005).
+    allowed_hosts = frozenset({"serialno.tv", "tortuga.tw"})
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         # DLE search form posts to /index.php?do=search with the
@@ -333,9 +334,12 @@ class SerialnoProvider(BaseProvider):
             styles=frozenset(),
         )
 
-    @staticmethod
     async def _load_series_seasons(
-        player_url: str, external_id: str, http: httpx.AsyncClient, provider_id: str
+        self,
+        player_url: str,
+        external_id: str,
+        http: httpx.AsyncClient,
+        provider_id: str,
     ) -> tuple[list[Season] | None, list[Translation]]:
         """Fetch the tortuga.tw player page and decode the obfuscated
         season/episode JSON list.
@@ -351,10 +355,10 @@ class SerialnoProvider(BaseProvider):
         an empty seasons list — the live gate will then see no episodes
         and stop, instead of crashing."""
         try:
-            resp = await safe_get(
+            resp = await provider_safe_get(
                 http,
+                self,
                 player_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
             )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
@@ -458,10 +462,10 @@ class SerialnoProvider(BaseProvider):
             raise ProviderError("parse_failed", "no player iframe on content page")
         player_url = str(iframe["src"])
         try:
-            player_resp = await safe_get(
+            player_resp = await provider_safe_get(
                 http,
+                self,
                 player_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
             )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e

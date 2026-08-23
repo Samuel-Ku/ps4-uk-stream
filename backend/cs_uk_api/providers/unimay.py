@@ -26,6 +26,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
+from ..http_client import provider_safe_get
 from ..wire_identity import split_wire_id
 from .base import BaseProvider, ProviderError
 
@@ -98,9 +99,11 @@ def _release_url(code: str) -> str:
     return f"{API_URL}/v1/release?code={quote(code)}"
 
 
-async def _get_json(url: str, http: httpx.AsyncClient) -> object:
+async def _get_json(provider: UnimayProvider, url: str, http: httpx.AsyncClient) -> object:
     try:
-        resp = await http.get(url, headers={"Referer": f"{MAIN_URL}/"})
+        resp = await provider_safe_get(
+            http, provider, url, headers={"Referer": f"{MAIN_URL}/"}
+        )
     except httpx.HTTPError as e:
         raise ProviderError("unreachable", str(e)) from e
     if resp.status_code != 200:
@@ -116,13 +119,19 @@ class UnimayProvider(BaseProvider):
     name = "Unimay"
     types = ("movie", "anime")
     sections = UNIMAY_SECTIONS
+    #: The unimay API/site plus its image + HLS CDN hosts — include-
+    #: rather-than-exclude so any future fetch of a returned CDN URL
+    #: still fails safe instead of open (ADR-0005).
+    allowed_hosts = frozenset(
+        {"api.unimay.media", "www.unimay.media", "img.unimay.media", "cdn.unimay.media"}
+    )
     # v3 (issue #70): "Останні релізи" contributes to «Новинки».
     newest_section = "updates"
 
     async def search(
         self, query: str, http: httpx.AsyncClient
     ) -> list[SearchResult]:
-        data = await _get_json(_search_url(query), http)
+        data = await _get_json(self, _search_url(query), http)
         results: list[SearchResult] = []
         # The Kotlin casts to `SearchModel::class.java` and walks
         # `.content`. Items lacking a `code` (rare) are skipped.
@@ -164,7 +173,7 @@ class UnimayProvider(BaseProvider):
         # Upstream: page != 1 for the updates section returns empty.
         if page != 1:
             return [], False
-        data = await _get_json(
+        data = await _get_json(self, 
             f"{API_URL}/v1/list/series/updates?size=15", http
         )
         results: list[SearchResult] = []
@@ -193,7 +202,7 @@ class UnimayProvider(BaseProvider):
     async def _browse_projects(
         self, page: int, http: httpx.AsyncClient
     ) -> tuple[list[SearchResult], bool]:
-        data = await _get_json(_projects_url(page), http)
+        data = await _get_json(self, _projects_url(page), http)
         results: list[SearchResult] = []
         for item in (data.get("content") or []) if isinstance(data, dict) else []:
             if not isinstance(item, dict):
@@ -223,7 +232,7 @@ class UnimayProvider(BaseProvider):
     async def content(
         self, external_id: str, http: httpx.AsyncClient
     ) -> ContentResponse:
-        data = await _get_json(_release_url(external_id), http)
+        data = await _get_json(self, _release_url(external_id), http)
         if not isinstance(data, dict):
             raise ProviderError("parse_failed", "release not an object")
         names = data.get("names") or {}
@@ -270,7 +279,7 @@ class UnimayProvider(BaseProvider):
             episode_number = int(ep_raw or "1")
         except ValueError as e:
             raise ProviderError("parse_failed", f"bad content_id: {content_id}") from e
-        data = await _get_json(_release_url(code), http)
+        data = await _get_json(self, _release_url(code), http)
         if not isinstance(data, dict):
             raise ProviderError("parse_failed", "release not an object")
         playlist = data.get("playlist") or []

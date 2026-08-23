@@ -22,6 +22,7 @@ from ..models import (
     Translation,
     TranslationLevel,
 )
+from ..http_client import provider_safe_get
 from ..wire_identity import episode_wire_id, parse_episode_tail
 from .base import BaseProvider, MediaTypeStr, ProviderError
 
@@ -219,6 +220,9 @@ class AnimeUAProvider(BaseProvider):
     sections = ANIMEUA_SECTIONS
     # v3 (issue #70): "Нове аніме" contributes to «Новинки».
     newest_section = "page"
+    #: The animeua.club CMS plus the ashdi.vip player pages its
+    #: iframe srcs point at (ADR-0005).
+    allowed_hosts = frozenset({"animeua.club", "ashdi.vip"})
 
     @staticmethod
     def _player_url(soup: BeautifulSoup) -> str | None:
@@ -246,7 +250,9 @@ class AnimeUAProvider(BaseProvider):
 
     async def _get(self, url: str, http: httpx.AsyncClient) -> httpx.Response:
         try:
-            response = await http.get(url, headers={"Referer": f"{BASE_URL}/"})
+            response = await provider_safe_get(
+                http, self, url, headers={"Referer": f"{BASE_URL}/"}
+            )
         except httpx.HTTPError as error:
             raise ProviderError("unreachable", str(error)) from error
         if response.status_code != 200:

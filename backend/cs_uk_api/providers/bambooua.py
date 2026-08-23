@@ -29,6 +29,7 @@ from ..models import (
     StreamType,
     Translation,
 )
+from ..http_client import provider_safe_get
 from ..wire_identity import (
     MOVIE_SUFFIX,
     episode_wire_id,
@@ -357,6 +358,13 @@ class BambooUAProvider(BaseProvider):
     #: Gated titles resolve to a sponsor promo clip; the catalog build
     #: drops those sources before they surface as cards.
     can_gate = True
+    #: The bambooua.com CMS plus its two HLS hosts (hls2/ongoing3) that
+    #: stream URLs point at — declared even though the backend only
+    #: returns them to the client, so any future fetch fails safe
+    #: rather than silent (ADR-0005).
+    allowed_hosts = frozenset(
+        {"bambooua.com", "hls2.bambooua.com", "ongoing3.bambooua.com"}
+    )
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         # The upstream POSTs to the bare mainUrl with the DLE search
@@ -392,7 +400,7 @@ class BambooUAProvider(BaseProvider):
     ) -> tuple[list[SearchResult], bool]:
         url = _section_url(section, page)
         try:
-            resp = await http.get(url)
+            resp = await provider_safe_get(http, self, url)
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
@@ -421,7 +429,7 @@ class BambooUAProvider(BaseProvider):
             raise ProviderError("not_found", "bad external_id")
         url = f"{BASE_URL}/{external_id}.html"
         try:
-            resp = await http.get(url)
+            resp = await provider_safe_get(http, self, url)
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
@@ -528,7 +536,7 @@ class BambooUAProvider(BaseProvider):
             raise ProviderError("not_found", "bad external_id")
         url = f"{BASE_URL}/{ext_id}.html"
         try:
-            resp = await http.get(url)
+            resp = await provider_safe_get(http, self, url)
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:

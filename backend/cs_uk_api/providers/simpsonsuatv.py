@@ -35,7 +35,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup, Tag
 
-from ..http_client import safe_get
+from ..http_client import provider_safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -56,7 +56,6 @@ ASHDI_REFERER = BASE_URL + "/"
 # Hosts the upstream may legally redirect to. Anything outside this
 # set is treated as a not_found error so a hostile CMS response can't
 # pivot the request to an attacker-controlled host.
-_ALLOWED_HOSTS: frozenset[str] = frozenset({"simpsonsua.tv", "ashdi.vip"})
 
 # How many season subpages a show page may fetch at once. A show like
 # The Simpsons has 37 seasons; sequential fetches pushed content() past
@@ -372,6 +371,8 @@ class SimpsonsUATvProvider(BaseProvider):
     name = "SimpsonsUA"
     types = ("cartoon", "series")
     sections = SIMPSONSUATV_SECTIONS
+    #: Site + the ashdi.vip player pages it embeds (ADR-0005).
+    allowed_hosts = frozenset({"simpsonsua.tv", "ashdi.vip"})
     # v3 (issue #70): "Останні оновлення" contributes to «Новинки».
     # (The second section, ``"page"``, is the full catalogue and does
     # NOT opt into «Новинки» — only the ``updates`` slot does.)
@@ -391,16 +392,16 @@ class SimpsonsUATvProvider(BaseProvider):
         if headers:
             merged.update(headers)
         try:
-            response = await safe_get(
+            response = await provider_safe_get(
                 http,
+                self,
                 url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers=merged,
                 params=params,
             )
         except httpx.HTTPError as error:
             raise ProviderError("unreachable", str(error)) from error
-        if response.url.host not in _ALLOWED_HOSTS:
+        if response.url.host not in self.allowed_hosts:
             raise ProviderError("not_found", "unexpected upstream host")
         if response.status_code != 200:
             raise ProviderError("not_found", f"status {response.status_code}")
@@ -667,7 +668,9 @@ class SimpsonsUATvProvider(BaseProvider):
         """Fetch the player page (ashdi.vip) and pull the
         `file: '...m3u8'` URL out of the inline PlayerJS script."""
         try:
-            response = await http.get(player_url, headers={"Referer": ASHDI_REFERER})
+            response = await provider_safe_get(
+                http, self, player_url, headers={"Referer": ASHDI_REFERER}
+            )
         except httpx.HTTPError as error:
             raise ProviderError("unreachable", str(error)) from error
         if response.status_code != 200:

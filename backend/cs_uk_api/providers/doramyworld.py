@@ -25,7 +25,7 @@ from pydantic import BaseModel, ValidationError
 
 from ..country import extract_country
 from ..extractors import RegexExtractor
-from ..http_client import safe_get
+from ..http_client import provider_safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -47,7 +47,6 @@ ASHDI_REFERER = "https://ashdi.vip/"
 # Hosts the upstream may legally redirect to: the WordPress CMS and
 # the ashdi player CDN. A hostile CMS response must not be able to
 # pivot the player hop to an attacker-controlled host.
-_ALLOWED_HOSTS: frozenset[str] = frozenset({"doramy.world", "ashdi.vip"})
 
 # Sections exposed by DoramyWorld's main navigation. Per the upstream
 # `mainPage = mainPageOf(...)` declaration in DoramyWorldProvider.kt.
@@ -260,6 +259,8 @@ class DoramyWorldProvider(BaseProvider):
     name = "DoramyWorld"
     types = ("movie", "series", "dorama")
     sections = DORAMYWORLD_SECTIONS
+    #: Site + the ashdi.vip player pages it embeds (ADR-0005).
+    allowed_hosts = frozenset({"doramy.world", "ashdi.vip"})
     #: Issue #188: a content page without a player (no ``data-player``
     #: at all) is an unplayable dead card — content() raises ``gated``
     #: and the catalog sweep (``filter_gated_items``) drops it from
@@ -290,7 +291,7 @@ class DoramyWorldProvider(BaseProvider):
     ) -> tuple[list[SearchResult], bool]:
         url = _section_url(section, page)
         try:
-            resp = await safe_get(http, url, allowed_hosts=set(_ALLOWED_HOSTS))
+            resp = await provider_safe_get(http, self, url)
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
@@ -438,10 +439,10 @@ class DoramyWorldProvider(BaseProvider):
         # from upstream HTML, so it goes through the redirect
         # allowlist (#126).
         try:
-            ashdi_resp = await safe_get(
+            ashdi_resp = await provider_safe_get(
                 http,
+                self,
                 ashdi_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"Referer": ASHDI_REFERER},
             )
         except httpx.HTTPError as e:

@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup, Tag
 
 from ..country import extract_country
 from ..extractors import RegexExtractor
-from ..http_client import safe_get
+from ..http_client import provider_safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -37,7 +37,6 @@ BASE_URL = "https://cikava-ideya.top"
 # Hosts the upstream may legally redirect to: the CMS and the ashdi
 # player CDN. A hostile CMS response must not be able to pivot the
 # player hop to an attacker-controlled host.
-_ALLOWED_HOSTS: frozenset[str] = frozenset({"cikava-ideya.top", "ashdi.vip"})
 # ashdi.vip hosts the HLS manifest for each episode. The upstream
 # Kotlin source sets the Referer to "https://tortuga.wtf/" so that the
 # CDN serves the manifest.
@@ -243,7 +242,9 @@ def _load_player1(soup: BeautifulSoup) -> str | dict[str, Any]:
     return player1
 
 
-async def _probe_ashdi_gate(player_url: str, http: httpx.AsyncClient) -> None:
+async def _probe_ashdi_gate(
+    provider: CikavaIdeyaProvider, player_url: str, http: httpx.AsyncClient
+) -> None:
     """Best-effort content()-time dead-VOD probe (#185).
 
     Fetch the representative ashdi.vip player page and raise
@@ -259,10 +260,10 @@ async def _probe_ashdi_gate(player_url: str, http: httpx.AsyncClient) -> None:
     KNOWN-gated items), so ``stream()`` keeps the marker check as the
     play-time backstop."""
     try:
-        ashdi_resp = await safe_get(
+        ashdi_resp = await provider_safe_get(
             http,
+            provider,
             player_url,
-            allowed_hosts=set(_ALLOWED_HOSTS),
             headers={"Referer": ASHDI_REFERER},
         )
     except (httpx.HTTPError, ProviderError):
@@ -276,6 +277,8 @@ class CikavaIdeyaProvider(BaseProvider):
     name = "Цікава Ідея"
     types = ("movie", "series")
     sections = CIKAVA_SECTIONS
+    #: Site + the ashdi.vip player pages it embeds (ADR-0005).
+    allowed_hosts = frozenset({"cikava-ideya.top", "ashdi.vip"})
     #: Gated verdicts (removed / trailer-only / no-player titles, dead
     #: ashdi embeds) must flow through `filter_gated_items` so the
     #: ADR-0002 catalog sweep drops those cards from home during
@@ -375,7 +378,7 @@ class CikavaIdeyaProvider(BaseProvider):
             else self._select_player_url(player1, "s1e1")
         )
         if player_url is not None:
-            await _probe_ashdi_gate(player_url, http)
+            await _probe_ashdi_gate(self, player_url, http)
         seasons = self._build_seasons(player1, external_id, self.id)
         kind = _classify_from_tags(tags_text)
         mb_form: MediaForm = kind if kind == "movie" or kind == "series" else "series"
@@ -456,10 +459,10 @@ class CikavaIdeyaProvider(BaseProvider):
         # The URL came from upstream HTML, so it goes through the
         # redirect allowlist (#126).
         try:
-            ashdi_resp = await safe_get(
+            ashdi_resp = await provider_safe_get(
                 http,
+                self,
                 player_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"Referer": ASHDI_REFERER},
             )
         except httpx.HTTPError as e:

@@ -23,7 +23,7 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from ..country import extract_country
-from ..http_client import safe_get
+from ..http_client import provider_safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -151,7 +151,6 @@ ASHDI_REFERER = "https://tortuga.wtf/"
 # Hosts the upstream may legally redirect to: the CMS on klonua.com
 # and the player CDN on ashdi.vip. A hostile CMS response must not be
 # able to pivot either hop to an attacker-controlled host.
-_ALLOWED_HOSTS: frozenset[str] = frozenset({"klonua.com", "ashdi.vip"})
 
 # Sections exposed by KlonTV's main navigation. Per the upstream
 # `mainPage = mainPageOf(...)` in KlonTVProvider.kt, but the v2
@@ -312,6 +311,8 @@ class KlonTVProvider(BaseProvider):
     name = "KlonTV"
     types = ("movie", "series")
     sections = KLONTV_SECTIONS
+    #: Site + the ashdi.vip player pages it embeds (ADR-0005).
+    allowed_hosts = frozenset({"klonua.com", "ashdi.vip"})
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         # DLE search form posts to the site root with `do`/`subaction`/
@@ -379,10 +380,10 @@ class KlonTVProvider(BaseProvider):
         # redirects instead of surfacing a dead not_found for a card
         # whose player page is alive.
         try:
-            resp = await safe_get(
+            resp = await provider_safe_get(
                 http,
+                self,
                 url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"Referer": BASE_URL + "/"},
             )
         except httpx.HTTPError as e:
@@ -476,9 +477,12 @@ class KlonTVProvider(BaseProvider):
             genres=genres,
         )
 
-    @staticmethod
     async def _build_series_seasons(
-        player_url: str, external_id: str, http: httpx.AsyncClient, provider_id: str
+        self,
+        player_url: str,
+        external_id: str,
+        http: httpx.AsyncClient,
+        provider_id: str,
     ) -> tuple[list[Season] | None, list[Translation]]:
         """Fetch the player page and decode the PlayerJS playlist.
 
@@ -499,10 +503,10 @@ class KlonTVProvider(BaseProvider):
         and stop, instead of crashing.
         """
         try:
-            resp = await safe_get(
+            resp = await provider_safe_get(
                 http,
+                self,
                 _strip_query_param(player_url, "multivoice"),
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"Referer": BASE_URL + "/"},
             )
         except httpx.HTTPError:
@@ -570,10 +574,10 @@ class KlonTVProvider(BaseProvider):
         # between sections (e.g. /filmy/ -> /serialy/) must still
         # resolve its player page instead of surfacing not_found.
         try:
-            resp = await safe_get(
+            resp = await provider_safe_get(
                 http,
+                self,
                 content_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"Referer": BASE_URL + "/"},
             )
         except httpx.HTTPError as e:
@@ -594,10 +598,10 @@ class KlonTVProvider(BaseProvider):
         # header the upstream Kotlin uses. The URL came from upstream
         # HTML, so it goes through the redirect allowlist (#117).
         try:
-            player_resp = await safe_get(
+            player_resp = await provider_safe_get(
                 http,
+                self,
                 _strip_query_param(player_url, "multivoice"),
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"Referer": BASE_URL + "/"},
             )
         except httpx.HTTPError as e:

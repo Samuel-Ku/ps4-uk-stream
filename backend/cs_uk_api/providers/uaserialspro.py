@@ -41,7 +41,7 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from ..country import extract_country
-from ..http_client import safe_get
+from ..http_client import provider_safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -68,7 +68,6 @@ BASE_URL = "https://uaserials.com"
 # Hosts the upstream may legally redirect to: the DLE CMS and the
 # tortuga player. A hostile CMS response must not be able to pivot
 # either hop to an attacker-controlled host.
-_ALLOWED_HOSTS: frozenset[str] = frozenset({"uaserials.com", "tortuga.tw"})
 # tortuga.tw serves the HLS manifest with this Referer (mirrors the
 # upstream Kotlin source).
 TORTUGA_REFERER = "https://tortuga.tw/"
@@ -299,6 +298,8 @@ class UASerialsProProvider(BaseProvider):
     name = "UASerialsPro"
     types = ("movie", "series", "anime")
     sections = UASERIALSPRO_SECTIONS
+    #: Site + the Tortuga player gateway it embeds (ADR-0005).
+    allowed_hosts = frozenset({"uaserials.com", "tortuga.tw"})
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         # The site uses `/search/<query>/` for search. We quote the
@@ -413,10 +414,10 @@ class UASerialsProProvider(BaseProvider):
         # The player URL came from decrypted upstream HTML, so it goes
         # through the redirect allowlist (#126).
         try:
-            player_resp = await safe_get(
+            player_resp = await provider_safe_get(
                 http,
+                self,
                 player_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"User-Agent": USER_AGENT, "Referer": BASE_URL + "/"},
             )
         except httpx.HTTPError as e:
@@ -550,10 +551,10 @@ class UASerialsProProvider(BaseProvider):
         # The player URL came from decrypted upstream HTML, so it goes
         # through the redirect allowlist (#126).
         try:
-            player_resp = await safe_get(
+            player_resp = await provider_safe_get(
                 http,
+                self,
                 player_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"User-Agent": USER_AGENT, "Referer": BASE_URL + "/"},
             )
         except httpx.HTTPError as e:

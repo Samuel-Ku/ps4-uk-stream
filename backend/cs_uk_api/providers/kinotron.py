@@ -9,7 +9,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from ..country import extract_country
-from ..http_client import safe_get
+from ..http_client import provider_safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -34,7 +34,6 @@ BASE_URL = "https://kinotron.tv"
 # Hosts the upstream may legally redirect to: the DLE CMS and the ashdi
 # player. A hostile CMS response must not be able to pivot either hop
 # to an attacker-controlled host.
-_ALLOWED_HOSTS: frozenset[str] = frozenset({"kinotron.tv", "ashdi.vip"})
 SECTIONS = (
     Section(id="films", title="Фільми", form="movie"),
     Section(id="serials", title="Серіали", form="series"),
@@ -98,6 +97,8 @@ class KinoTronProvider(BaseProvider):
     name = "KinoTron"
     types = ("movie", "series", "cartoon", "anime")
     sections = SECTIONS
+    #: Site + the ashdi.vip player pages it embeds (ADR-0005).
+    allowed_hosts = frozenset({"kinotron.tv", "ashdi.vip"})
     #: ``content()`` gates trailer-only (youtube-only) pages (#163) so
     #: the catalog sweep drops dead cards from home/search.
     can_gate = True
@@ -185,7 +186,7 @@ class KinoTronProvider(BaseProvider):
         # player) which follows allowed same-host redirects. Pages > 1
         # still return 200 directly and are unaffected.
         try:
-            response = await safe_get(http, url, allowed_hosts=set(_ALLOWED_HOSTS))
+            response = await provider_safe_get(http, self, url)
         except httpx.HTTPError as error:
             raise ProviderError("unreachable", str(error)) from error
         if response.status_code != 200:

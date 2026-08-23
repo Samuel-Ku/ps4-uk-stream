@@ -9,7 +9,7 @@ import httpx
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 
-from ..http_client import safe_get
+from ..http_client import provider_safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -26,10 +26,6 @@ from ..wire_identity import is_movie_wire_id, parse_episode_tail, strip_movie_su
 from .base import BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://ufdub.com"
-# Hosts the upstream may legally redirect to. The content page lives on
-# ufdub.com and the player on video.ufdub.com; a hostile CMS response
-# must not be able to pivot either hop to an attacker-controlled host.
-_ALLOWED_HOSTS: frozenset[str] = frozenset({"ufdub.com", "video.ufdub.com"})
 
 UFDUB_SECTIONS: tuple[Section, ...] = (
     Section(id="filmy", title="Фільми", form="movie"),
@@ -227,6 +223,9 @@ class UFDubProvider(BaseProvider):
     name = "UFDub"
     types = ("movie", "series", "anime", "dorama")
     sections = UFDUB_SECTIONS
+    #: The content page lives on ufdub.com, the player on video.ufdub.com;
+    #: a hostile CMS response must not pivot either hop elsewhere (ADR-0005).
+    allowed_hosts = frozenset({"ufdub.com", "video.ufdub.com"})
     #: ``content()`` gates cards whose player page has no playable
     #: media (issue #164: upstream emits an empty ``var a = []`` for
     #: dead titles) so the ADR-0002 catalog sweep drops them instead
@@ -389,10 +388,10 @@ class UFDubProvider(BaseProvider):
         if player_url is None:
             return []
         try:
-            resp = await safe_get(
+            resp = await provider_safe_get(
                 http,
+                self,
                 player_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"Referer": f"{BASE_URL}/"},
             )
         except httpx.HTTPError as e:
@@ -426,10 +425,10 @@ class UFDubProvider(BaseProvider):
         kind, slug = split
         content_url = f"{BASE_URL}/{kind}/{ext_id[len(kind) + 1:]}.html"
         try:
-            resp = await safe_get(
+            resp = await provider_safe_get(
                 http,
+                self,
                 content_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"Referer": f"{BASE_URL}/"},
             )
         except httpx.HTTPError as e:
@@ -443,10 +442,10 @@ class UFDubProvider(BaseProvider):
                 "parse_failed", "no player iframe found on content page"
             )
         try:
-            player_resp = await safe_get(
+            player_resp = await provider_safe_get(
                 http,
+                self,
                 player_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"Referer": f"{BASE_URL}/"},
             )
         except httpx.HTTPError as e:

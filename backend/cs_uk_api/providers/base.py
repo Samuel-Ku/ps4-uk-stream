@@ -111,6 +111,15 @@ class BaseProvider(abc.ABC):
     #: build then resolves their cards and drops gated ones before
     #: merging rows, so a promo clip never surfaces as a playable card.
     can_gate: bool = False
+    #: Hosts this provider may FETCH upstream (ADR-0005): its own site,
+    #: its API host and the player/CDN pages it resolves mid-flight.
+    #: Declared here, enforced centrally by
+    #: :func:`cs_uk_api.http_client.provider_safe_get` on every request
+    #: AND every redirect hop — so a hostile CMS page cannot point the
+    #: backend at an arbitrary host from its LAN position (SSRF). An
+    #: adapter that omits a declaration fails closed: the empty default
+    #: admits no fetch at all.
+    allowed_hosts: frozenset[str] = frozenset()
 
     def has_section(self, section_id: str) -> bool:
         return any(s.id == section_id for s in self.sections)

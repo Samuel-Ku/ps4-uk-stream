@@ -6,7 +6,7 @@ import httpx
 import pytest
 import respx
 
-from cs_uk_api.http_client import safe_get
+from cs_uk_api.http_client import provider_safe_get, safe_get
 from cs_uk_api.providers.base import ProviderError
 
 
@@ -82,3 +82,56 @@ async def test_safe_get_rejects_disallowed_initial_host():
                     http, "https://evil.test/steal", allowed_hosts={"example.test"}
                 )
     assert "disallowed host" in exc_info.value.message
+
+
+# ---------------------------------------------------------------------------
+# provider_safe_get — the ADR-0005 declaration-enforcing wrapper
+# ---------------------------------------------------------------------------
+
+
+class _Allowlisted:
+    """Stand-in for a provider instance: just the declaration."""
+
+    id = "stub"
+    allowed_hosts = frozenset({"example.test"})
+
+
+@pytest.mark.asyncio
+async def test_provider_safe_get_uses_the_provider_declaration():
+    """The wrapper reads ``provider.allowed_hosts`` so adapters never
+    pass host sets by hand."""
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://example.test/a").respond(200, text="ok")
+        async with httpx.AsyncClient() as http:
+            r = await provider_safe_get(http, _Allowlisted(), "https://example.test/a")
+    assert r.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_provider_safe_get_fails_closed_without_a_declaration():
+    """An adapter that OMITS ``allowed_hosts`` (the empty default) can
+    fetch nothing — omission fails closed instead of failing open."""
+    with respx.mock(assert_all_called=False) as router:
+        router.get("https://example.test/a").respond(200, text="ok")
+        async with httpx.AsyncClient() as http:
+
+            class _Undeclared(_Allowlisted):
+                allowed_hosts = frozenset()
+
+            with pytest.raises(ProviderError) as exc_info:
+                await provider_safe_get(http, _Undeclared(), "https://example.test/a")
+    assert "disallowed host" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_provider_safe_get_rejects_redirect_off_the_declaration():
+    """Redirect hops are checked against the SAME declaration."""
+    with respx.mock(assert_all_called=False) as router:
+        router.get("https://example.test/a/").respond(
+            301, headers={"Location": "https://evil.test/steal"}
+        )
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError):
+                await provider_safe_get(
+                    http, _Allowlisted(), "https://example.test/a/"
+                )

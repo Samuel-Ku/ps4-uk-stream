@@ -42,6 +42,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
+from ..http_client import provider_safe_get
 from ..wire_identity import split_wire_id
 from .base import BaseProvider, ProviderError
 
@@ -143,9 +144,11 @@ def _parse_card(item: object) -> SearchResult | None:
     )
 
 
-async def _get_json(url: str, http: httpx.AsyncClient) -> object:
+async def _get_json(provider: CoaninetProvider, url: str, http: httpx.AsyncClient) -> object:
     try:
-        resp = await http.get(url, headers={"Referer": f"{SITE_URL}/"})
+        resp = await provider_safe_get(
+            http, provider, url, headers={"Referer": f"{SITE_URL}/"}
+        )
     except httpx.HTTPError as e:
         raise ProviderError("unreachable", str(e)) from e
     if resp.status_code >= 500:
@@ -163,11 +166,17 @@ class CoaninetProvider(BaseProvider):
     name = "Coaninet"
     types = ("movie", "series")
     sections = COANINET_SECTIONS
+    #: The coani.net API + site plus the s1/s3 stream hosts its series
+    #: payloads point at (mercure.coani.net is SSE — never fetched by
+    #: the backend). Include-don't-exclude per ADR-0005.
+    allowed_hosts = frozenset(
+        {"coani.net", "api.coani.net", "s1.coani.net", "s3.coani.net"}
+    )
 
     async def search(
         self, query: str, http: httpx.AsyncClient
     ) -> list[SearchResult]:
-        data = await _get_json(_search_url(query), http)
+        data = await _get_json(self, _search_url(query), http)
         items: list[object] = []
         if isinstance(data, dict):
             raw = data.get("data")
@@ -185,7 +194,7 @@ class CoaninetProvider(BaseProvider):
     ) -> tuple[list[SearchResult], bool]:
         if section not in ("films", "series"):
             raise ProviderError("not_found", f"unknown section: {section}")
-        data = await _get_json(_section_url(section, page), http)
+        data = await _get_json(self, _section_url(section, page), http)
         items: list[object] = []
         if isinstance(data, dict):
             raw = data.get("data")
@@ -214,7 +223,7 @@ class CoaninetProvider(BaseProvider):
         # external_id is the season SEO slug from the catalog card.
         if not _SLUG_RE.fullmatch(external_id):
             raise ProviderError("not_found", f"bad external_id: {external_id!r}")
-        season_payload = await _get_json(_season_url(external_id), http)
+        season_payload = await _get_json(self, _season_url(external_id), http)
         if (
             not isinstance(season_payload, dict)
             or season_payload.get("type") != "season"
@@ -247,7 +256,7 @@ class CoaninetProvider(BaseProvider):
         season_id = inner.get("id")
         seasons: list[Season] | None = None
         if isinstance(season_id, int):
-            series_payload = await _get_json(_series_url(season_id), http)
+            series_payload = await _get_json(self, _series_url(season_id), http)
             if isinstance(series_payload, dict):
                 items = series_payload.get("data") or []
                 by_number: dict[int, list[dict[str, object]]] = {}
@@ -327,14 +336,14 @@ class CoaninetProvider(BaseProvider):
                 "parse_failed", f"bad content_id: {content_id}"
             ) from e
         # The series endpoint is id-addressed; resolve the slug once.
-        season_payload = await _get_json(_season_url(slug), http)
+        season_payload = await _get_json(self, _season_url(slug), http)
         if not isinstance(season_payload, dict):
             raise ProviderError("parse_failed", "season not an object")
         inner = season_payload.get("data")
         season_id = inner.get("id") if isinstance(inner, dict) else None
         if not isinstance(season_id, int):
             raise ProviderError("parse_failed", "season id missing")
-        data = await _get_json(_series_url(season_id), http)
+        data = await _get_json(self, _series_url(season_id), http)
         if not isinstance(data, dict):
             raise ProviderError("parse_failed", "series not an object")
         items = data.get("data") or []
