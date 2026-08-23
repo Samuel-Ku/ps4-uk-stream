@@ -16,14 +16,9 @@ from ..models import (
     Section,
     StreamResponse,
 )
+from ..wire_identity import MOVIE_SUFFIX as MOVIE_SUFFIX  # re-export (spec #340)
 
 MediaTypeStr = Literal["movie", "series", "anime", "cartoon", "dorama"]
-
-#: The single canonical movie wire-id sentinel (spec #309, contract step
-#: #319). A movie's episode id is ``<external>:__movie__`` so stream() can
-#: route it without a season/episode map; every provider that emits or
-#: parses that shape imports this constant instead of redefining it.
-MOVIE_SUFFIX = ":__movie__"
 
 
 def parse_actor_list(

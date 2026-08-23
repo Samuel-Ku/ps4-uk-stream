@@ -1,10 +1,11 @@
-"""Wire identity module (spec #309, step 1) — id grammar + projection.
+"""Wire identity module (spec #309, step 1; #340 consolidation) — id grammar + projection.
 
-Pins the single home of the three wire id grammars:
+Pins the single home of the wire id grammars:
 
   - the group-key prefix (``g2:``) and its recognizer ``is_group_key``;
   - the episode-tail grammar (``:s1e1`` / ``:e5`` / ``:eN:<blob>``);
   - the movie-suffix sentinel (``:__movie__``);
+  - the ``provider:external`` composite split;
 
 and the single projection function for merged groups (canonical fields +
 member keys) that the home rows, the search groups and the group-key
@@ -14,13 +15,23 @@ Invariant: these are the SAME values the old per-module copies produced
 — the migration must be wire-invisible (US11). ``merge.group_key``
 builds every key from ``wire_identity.group_key``, so a version bump
 edits one file (US4).
+
+Import direction (spec #340): ``wire_identity`` is a leaf — it imports
+nothing but models + stdlib, never ``merge``; the guard tests below
+enforce it.
 """
 from __future__ import annotations
 
+import ast
+import os
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
+import cs_uk_api.wire_identity
 from cs_uk_api.merge import item_group_key, merge_results
 from cs_uk_api.models import SearchResult
 from cs_uk_api.providers.base import model_b_axes
@@ -58,6 +69,69 @@ def _make_item(
 # ---------------------------------------------------------------------------
 # Group-key prefix
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Import-direction guard (spec #340): wire_identity is a leaf
+# ---------------------------------------------------------------------------
+
+
+def _wire_identity_source() -> str:
+    import cs_uk_api.wire_identity
+
+    return Path(cs_uk_api.wire_identity.__file__).read_text(encoding="utf-8")
+
+
+@pytest.mark.unit
+def test_wire_identity_has_no_merge_import_anywhere() -> None:
+    """AST guard: ``wire_identity`` must not import ``merge`` — at module
+    level, inside a function body (the old lazy cycle-break), or under
+    ``TYPE_CHECKING``. The dependency edge is one-way: merge →
+    wire_identity, never the reverse (spec #340)."""
+    tree = ast.parse(_wire_identity_source())
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "merge" or alias.name.startswith("merge."):
+                    offenders.append(f"line {node.lineno}: import {alias.name}")
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if (
+                node.level > 0
+                and module.split(".")[0] == "merge"
+                or module in ("cs_uk_api.merge", "merge")
+                or module.startswith("cs_uk_api.merge.")
+            ):
+                names = ", ".join(a.name for a in node.names)
+                offenders.append(f"line {node.lineno}: from {module} import {names}")
+    assert not offenders, f"wire_identity imports merge: {offenders}"
+
+
+@pytest.mark.unit
+def test_importing_wire_identity_does_not_pull_merge_transitively() -> None:
+    """Runtime guard: a fresh interpreter that imports ONLY
+    ``cs_uk_api.wire_identity`` must not end up with
+    ``cs_uk_api.merge`` in ``sys.modules`` — the grammar module stays a
+    models+stdlib leaf (spec #340)."""
+    backend_root = str(Path(cs_uk_api.wire_identity.__file__).resolve().parents[2])
+    program = (
+        "import sys; "
+        "import cs_uk_api.wire_identity; "
+        "sys.exit(1 if 'cs_uk_api.merge' in sys.modules else 0)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", program],
+        capture_output=True,
+        text=True,
+        cwd=backend_root,
+        env={**os.environ, "PYTHONPATH": backend_root},
+        timeout=60,
+    )
+    assert result.returncode == 0, (
+        "importing cs_uk_api.wire_identity pulled in cs_uk_api.merge:\n"
+        f"{result.stdout}{result.stderr}"
+    )
 
 
 @pytest.mark.unit

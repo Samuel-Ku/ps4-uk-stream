@@ -7,8 +7,9 @@ monitor, the episode-rail sweep, the triage scripts — must agree on:
      provider's content: ``newest_section`` -> declared sections ->
      search (the fallback every provider has).
   2. **Wire-id splitting** — ``provider:external`` -> ``(provider,
-     external)``. This is THE canonical copy: the 8th in-tree
-     implementation of the same split lives here now.
+      external)``. The canonical copy lives in ``wire_identity``
+      (spec #340); this module re-exports it so existing probe
+      imports keep working.
   3. **Verdict normalization** — a ``gated`` ``ProviderError`` is a
      policy outcome, NOT a failure (ADR-0002): it must never flip a
      probe's health verdict. ``is_probe_failure`` decides in one place
@@ -25,6 +26,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from .providers.base import BaseProvider, ProviderError
+from .wire_identity import split_wire_id as split_wire_id  # canonical home: wire_identity (#340)
 
 #: Probe verdict vocabulary — the one vocabulary every probe (drift,
 #: episode-rail sweep, triage) reports in. ``gated`` (a policy outcome)
@@ -69,19 +71,6 @@ def select_entry_points(provider: BaseProvider) -> tuple[EntryPoint, ...]:
         entries.append(EntryPoint(kind="section", section=section.id))
     entries.append(EntryPoint(kind="search"))
     return tuple(entries)
-
-
-def split_wire_id(composite: str) -> tuple[str, str]:
-    """``provider:external`` -> ``(provider, external)`` — the canonical split.
-
-    Splits on the FIRST colon only: external ids may legitimately carry
-    colons (episode wire ids like ``uakino:6268:e1`` or
-    ``ufdub:dorama-408-123:s1e1``). A composite without a colon yields an
-    empty external (``("x", "")``) — callers that require a valid
-    provider prefix validate that themselves.
-    """
-    provider, _, external = composite.partition(":")
-    return provider, external
 
 
 def attributed_provider(item: Mapping[str, Any]) -> str | None:
