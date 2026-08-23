@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_serializer
@@ -422,3 +423,31 @@ class GroupSourceContentResponse(ContentResponse):
     #: can drive ``/api/content/{groupKey}?source=<p>`` directly from
     #: this echo without a second listings round-trip.
     sources: list[SearchResult] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# LLM taste-profile value types (spec #290)
+#
+# The validated v1 profile is a plain frozen dataclass VALUE shared by two
+# layers: ``llm.py`` fetches/parses/validates it, and the pure scorer in
+# ``recommend.py`` consumes it. The type lives here so the pure core never
+# imports the LLM client module (its httpx/config chain) — the dependency
+# points one way: llm → models ← recommend. ``llm`` re-exports these names
+# for its existing call sites.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RowIdea:
+    title: str
+    genres: tuple[str, ...]
+    max: int
+
+
+@dataclass(frozen=True)
+class TasteProfile:
+    """The validated LLM taste profile (v1)."""
+
+    genre_weights: dict[str, float] = field(default_factory=dict)
+    theme_tags: tuple[str, ...] = ()
+    row_ideas: tuple[RowIdea, ...] = ()

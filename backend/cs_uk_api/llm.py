@@ -5,7 +5,9 @@ profile (per-genre weights, theme tags, up to two personalized row
 ideas with Ukrainian copy) generated from the viewer's watch history
 and search queries by ONE OpenAI-compatible chat-completions call. The
 interface is OpenAI-compatible, so OpenAI, OpenRouter, Groq or a local
-llama.cpp/ollama server all work.
+llama.cpp/ollama server all work. The profile VALUE TYPES live in
+``models.py`` (the pure scorer reads them without this module's httpx/
+config chain); this module owns the fetching/parsing/validation LOGIC.
 
 The layer is strictly additive and defensive:
 
@@ -29,12 +31,12 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import httpx
 
 from .config import SETTINGS
+from .models import RowIdea, TasteProfile
 
 log = logging.getLogger(__name__)
 
@@ -48,20 +50,10 @@ WEIGHT_MAX = 2.0
 MAX_ROW_IDEAS = 2
 
 
-@dataclass(frozen=True)
-class RowIdea:
-    title: str
-    genres: tuple[str, ...]
-    max: int
-
-
-@dataclass(frozen=True)
-class TasteProfile:
-    """The validated LLM taste profile (v1)."""
-
-    genre_weights: dict[str, float] = field(default_factory=dict)
-    theme_tags: tuple[str, ...] = ()
-    row_ideas: tuple[RowIdea, ...] = ()
+# The profile VALUE TYPES (RowIdea / TasteProfile) live in models.py —
+# the pure scorer consumes them without importing this module's httpx/
+# config chain. Re-exported here so existing call sites
+# (``from cs_uk_api.llm import TasteProfile``) keep working.
 
 
 #: The module-level active profile — installed by the refresh function

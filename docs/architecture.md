@@ -11,7 +11,7 @@ Two wave tickets are the anchor for this document:
   consumer now speaks the typed vocabulary (`MediaForm` / `MediaStyle` /
   `MediaTypeStr`) directly.
 - #320 (Arch T11) — profile store seam: one `install/get/warm` module for
-  the facade's viewer state.
+  the facade's viewer state. (Since removed — #338, see §4.)
 - #321 (Arch T12) — configuration seam: stores are constructed with a
   settings argument (re-instantiable); one `config.SETTINGS` binding and
   one test patch point.
@@ -110,32 +110,26 @@ The contract step (#319) removed the legacy `model_b_axes` mapping and the
 `_STYLE_BY_TYPE` table from `base.py`; literal call sites now inline the
 typed values into constructors (`form="series", styles=frozenset({"anime"})`).
 
-## 4. Profile store — `cs_uk_api/profile_store`
+## 4. Profile store — REMOVED (`cs_uk_api/profile_store`, ticket #338)
 
-One seam for the facade's viewer state (the single fixed user, D4):
+The #320 (Arch T11) viewer-profile seam was **removed** (ticket #338).
+Grep-verified: no production module ever imported it; its only consumer
+was a test seeding fixture. Its two halves were already superseded:
 
-- `Profile` — typed, immutable (frozen) dataclass; `played:
-  Mapping[str, int]` maps a wire id to its position ticks (resume memory,
-  ticket #214).
-- `ProfileStore.install(profile)` — the **one write path** (playback
-  reports, tests, agent/LLM setup all go through it; no direct dict
-  mutation anywhere).
-- `ProfileStore.get()` — the active profile; a cold store answers the
-  empty default so callers never branch on cold-vs-warm.
-- `ProfileStore.warm()` — the materialize primitive; round-2 persistence
-  (spec #323) and the catalog-warm pipeline plug in here.
+- The viewer state it pretended to own (played/resume memory) is owned
+  by the disk-backed resume and user-state stores in
+  `catalog_state/_stores.py` (`ResumeStore` via `record_playback` /
+  `clear_playback`; `UserStateStore` for favorites / played marks / dub
+  memory, spec #247/#257/#276).
+- The content taste profiles always lived in the catalog stores
+  (`catalog_state._stores._profiles`, installed wholesale via the
+  `install_profiles()` / read via `get_profiles()` accessors, spec
+  #252).
 
-The module singleton `profile_store` is the production binding; tests
-reset it through `install(Profile())`.
-
-Round-2 persistence (spec #323, Store T1 #324): when
-`Settings.profile_file` is configured (env `CS_UK_PROFILE_FILE`;
-default unset = in-memory only, zero change), the store is a thin
-adapter over the shared `VersionedFileStore` — a cold store restores
-the persisted profile (corrupt/mismatched files degrade to the empty
-default) and every `install()` saves atomically. Install writes
-directly; the module's `DebouncedSave` wrapper is for adapters with
-high-frequency writes.
+There is deliberately no replacement seam: tests seed those stores
+directly through the helpers above (conftest resets them before every
+test), and `Settings.profile_file` remains declared with no consumer
+(removing the knob is config-surface work outside #338's zone).
 
 ## 5. Configuration binding — `cs_uk_api/config`
 
@@ -150,8 +144,6 @@ The operator seam (T12):
   - `catalog_state.CatalogStores(settings)` — the six cache stores
     (home/search/content/blocklist/gated/sources), TTLs from the snapshot;
     module singleton `STORES` is the one production binding.
-  - `profile_store.ProfileStore(settings)` — settings held for the
-    warm()/persistence layer.
   - `poster_proxy._cache` and `main._browse_cache` — TTLs from the
     snapshot at construction.
   - Tests re-instantiate stores from custom settings instead of import
@@ -179,10 +171,12 @@ byte-parallel implementation:
 - **`DebouncedSave`** — optional coalescing wrapper (`request` /
   `flush` / `close`) for adapters with high-frequency writes.
 
-Adapters: the profile store (section 4) and the episode-rail sweep's
+Adapters: the episode-rail sweep's
 Markdown report (`sweep_episode_rail.write_report`, Store T3 #326) —
 the previously non-atomic `open(path, "w")` write now goes through
-`atomic_write_text`. The user-state / snapshot / drift-baseline stores
+`atomic_write_text`. (The profile-store adapter named here when the
+section was written was removed with its module — §4.) The user-state /
+snapshot / drift-baseline stores
 named in the spec belong to the unmerged round-1 interface work and are
 not in this tree yet (their versioned adapters land with it).
 
@@ -263,9 +257,9 @@ extendable) and will be read when that wave lands.
   double `SETTINGS` patches, no positional reconstruction).
 - **Persistence (spec #323, Store T1 #324 + T3 #326):** `versioned_store.py`
   ladder / atomicity / debounce / `atomic_write_text` covered by
-  `tests/test_versioned_store.py`; profile adapter round-trip +
-  corrupt/version degradation in `tests/test_profile_store.py`; the
+  `tests/test_versioned_store.py`; the
   sweep report write (`write_report`) in `tests/test_sweep_episode_rail.py`.
+  (The profile-store adapter tests were removed with the module — §4.)
 - **Probing (spec #323, Probe T1 #327 + T2 #328):** the three probe
   facts (plus row-type/attribution) covered by `tests/test_probe.py`;
   the episode-rail sweep consumes the module's verdict vocabulary and
