@@ -27,9 +27,9 @@ from typing import Any, cast
 import pytest
 from fastapi.testclient import TestClient
 
-import cs_uk_api.catalog_state.resolution as resolution_mod
+import cs_uk_api._catalog_state.resolution as resolution_mod
 from cs_uk_api import main as main_mod
-from cs_uk_api.catalog_state import home_cache, search_cache
+from cs_uk_api._catalog_state import home_cache, search_cache
 from cs_uk_api.main import app
 from cs_uk_api.merge import item_group_key, merge_results
 from cs_uk_api.models import (
@@ -578,7 +578,7 @@ def test_search_group_key_matches_home_group_key_on_year_soft(
     The test exercises BOTH routes — fetching /api/search and /api/home
     with the same year-soft data and asserting the keys round-trip.
     """
-    from cs_uk_api.catalog_state import home_cache
+    from cs_uk_api._catalog_state import home_cache
     from cs_uk_api.merge import item_group_key
 
     # Yearful + yearless scenario — the two items have DIFFERENT per-item

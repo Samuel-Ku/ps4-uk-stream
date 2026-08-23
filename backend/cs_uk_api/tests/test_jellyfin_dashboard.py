@@ -19,7 +19,7 @@ import pytest
 import respx
 from fastapi.testclient import TestClient
 
-from cs_uk_api.catalog_state import blocklist_cache, content_cache, home_cache, sources_cache
+from cs_uk_api._catalog_state import blocklist_cache, content_cache, home_cache, sources_cache
 from cs_uk_api.config import SETTINGS
 
 jf_router = __import__("cs_uk_api.jellyfin.router", fromlist=["router"])

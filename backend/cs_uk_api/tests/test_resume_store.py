@@ -22,7 +22,7 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
-from cs_uk_api import catalog_state
+from cs_uk_api import _catalog_state as catalog_state
 from cs_uk_api.config import SETTINGS
 from cs_uk_api.resume_store import ResumeStore
 

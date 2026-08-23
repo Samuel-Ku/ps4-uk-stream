@@ -29,7 +29,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from .catalog_state import load_home, resolve_group_content
+from . import catalog
 from .models import ContentResponse, HomeResponse
 
 log = logging.getLogger(__name__)
@@ -37,6 +37,22 @@ log = logging.getLogger(__name__)
 
 class _ResolveContent(Protocol):
     async def __call__(self, group_key: str) -> ContentResponse | None: ...
+
+
+async def load_home() -> HomeResponse:
+    """The shared home snapshot build, through the catalog seam
+    (``catalog.refresh_snapshot``). Module-level so the tests can patch
+    this runner's view without touching the shared seam module."""
+    return await catalog.refresh_snapshot()
+
+
+async def resolve_group_content(group_key: str) -> ContentResponse | None:
+    """One group key's content detail, through the catalog seam
+    (``catalog.resolve_item``) with the typed verdict flattened back to
+    the runner's answer: OK -> the content, UNAVAILABLE -> None — exactly
+    the answers the implementation's resolver gives. Module-level so the
+    tests can patch this runner's view without touching the shared seam."""
+    return (await catalog.resolve_item(group_key)).content
 
 
 @dataclass

@@ -1,6 +1,6 @@
 """Internal profile-warming module (spec #309 T5) — taste layer.
 
-Covers ``cs_uk_api.catalog_state.warm`` directly: the profile install
+Covers ``cs_uk_api._catalog_state.warm`` directly: the profile install
 seam, the recommendation-row insertion, the background warm's
 home-invalidation contract, and the health counts. The wire-level
 behaviour is pinned in test_jellyfin_views / test_jellyfin_detail /
@@ -15,8 +15,8 @@ from typing import Any, cast
 
 import pytest
 
-from cs_uk_api import catalog_state
-from cs_uk_api.catalog_state.warm import (
+from cs_uk_api import _catalog_state as catalog_state
+from cs_uk_api._catalog_state.warm import (
     _warm_profiles,
     _with_recommendation_rows,
     recommendation_stats,

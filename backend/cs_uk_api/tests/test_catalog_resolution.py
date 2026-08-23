@@ -1,6 +1,6 @@
 """Internal resolution module (spec #309 T5) — group-key machinery.
 
-Covers ``cs_uk_api.catalog_state.resolution`` directly: ``g2:``
+Covers ``cs_uk_api._catalog_state.resolution`` directly: ``g2:``
 resolution from the sources map, the episode-tail reverse lookup
 (exact + numeric fallback), search-group registration folding into the
 map, the subscription-gate sweep verdicts, and the hard-unavailable
@@ -16,8 +16,8 @@ from typing import Any, cast
 
 import pytest
 
-from cs_uk_api import catalog_state
-from cs_uk_api.catalog_state.resolution import (
+from cs_uk_api import _catalog_state as catalog_state
+from cs_uk_api._catalog_state.resolution import (
     episode_group_key,
     filter_gated_items,
     group_key_for_external,

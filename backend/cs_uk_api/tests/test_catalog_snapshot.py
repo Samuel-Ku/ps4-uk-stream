@@ -1,6 +1,6 @@
 """Internal snapshot module (spec #309 T5) — home build + deep rows.
 
-Covers ``cs_uk_api.catalog_state.snapshot`` directly: the sources-map
+Covers ``cs_uk_api._catalog_state.snapshot`` directly: the sources-map
 projection (member keys resolve the full provider union), the cold →
 built ``load_home`` read path, the deep-row pool clearing on rebuild,
 and the bounded non-extendable rows. The wire-level behaviour is pinned
@@ -16,8 +16,8 @@ from typing import Any, cast
 
 import pytest
 
-from cs_uk_api import catalog_state
-from cs_uk_api.catalog_state.snapshot import (
+from cs_uk_api import _catalog_state as catalog_state
+from cs_uk_api._catalog_state.snapshot import (
     _EXTENDABLE_ROWS,
     _build_sources_map,
     _cache_home,

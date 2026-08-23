@@ -43,7 +43,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from cs_uk_api.catalog_state import home_cache, search_cache, sources_cache
+from cs_uk_api._catalog_state import home_cache, search_cache, sources_cache
 from cs_uk_api.main import app
 from cs_uk_api.models import (
     ContentResponse,

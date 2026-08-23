@@ -28,15 +28,15 @@ from typing import Any
 
 import pytest
 
-from cs_uk_api import catalog_state
-from cs_uk_api.catalog_state import (
+from cs_uk_api import _catalog_state as catalog_state
+from cs_uk_api._catalog_state import (
     _SOURCES_KEY,
     blocklist_cache,
     content_cache,
     gated_cache,
     sources_cache,
 )
-from cs_uk_api.catalog_state import (
+from cs_uk_api._catalog_state import (
     resolution as resolution_mod,
 )
 from cs_uk_api.models import ContentResponse, SearchResult, Translation

@@ -29,7 +29,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from cs_uk_api import catalog
-from cs_uk_api.catalog_state import content_cache, home_cache, sources_cache
+from cs_uk_api._catalog_state import content_cache, home_cache, sources_cache
 from cs_uk_api.config import SETTINGS
 from cs_uk_api.models import ContentResponse, SearchResult, Section, Translation
 from cs_uk_api.providers import PROVIDERS
@@ -504,7 +504,7 @@ def _seed_similar_profiles(client: TestClient, profiles: dict[str, Any]) -> dict
     Similar route. The background profile warm is off in the suite, so
     this mirrors exactly what ``_warm_profiles`` would have stored.
     """
-    import cs_uk_api.catalog_state as cs
+    import cs_uk_api._catalog_state as cs
     from cs_uk_api.recommend import ItemProfile
 
     home_cache.clear()
@@ -1095,7 +1095,7 @@ def _seed_genre_profiles(client: TestClient) -> None:
     """Warm content profiles for the snapshot groups so the genre rails
     appear (spec #263: rails build from the profile store), then rebuild
     the snapshot with them."""
-    import cs_uk_api.catalog_state as cs
+    import cs_uk_api._catalog_state as cs
     from cs_uk_api.recommend import ItemProfile
 
     home_cache.clear()
@@ -1126,7 +1126,7 @@ def test_new_episodes_row_is_a_view(client: TestClient) -> None:
     the merged group via the sources map, so the row appears even
     though the card itself is a series, not an episode."""
 
-    from cs_uk_api.catalog_state import clear_playback, record_playback
+    from cs_uk_api._catalog_state import clear_playback, record_playback
 
     PROVIDERS["animeon"] = _ViewsStub(
         "animeon",
@@ -1175,7 +1175,7 @@ def test_recently_watched_row_is_a_view(client: TestClient) -> None:
     переглянуто» row at position 4 and its card opens through the
     existing view/items route."""
 
-    from cs_uk_api.catalog_state import clear_playback, record_playback
+    from cs_uk_api._catalog_state import clear_playback, record_playback
 
     PROVIDERS["animeon"] = _ViewsStub(
         "animeon",
@@ -1226,7 +1226,7 @@ def test_recently_watched_row_includes_finished(client: TestClient) -> None:
     shelf) still appears in «Нещодавно переглянуто» — the row is the
     browsable history, not the continue-watching shelf."""
 
-    from cs_uk_api.catalog_state import clear_playback, record_playback
+    from cs_uk_api._catalog_state import clear_playback, record_playback
 
     PROVIDERS["animeon"] = _ViewsStub(
         "animeon",

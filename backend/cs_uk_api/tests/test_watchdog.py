@@ -237,7 +237,7 @@ def test_health_exposes_recommendation_profile_counts() -> None:
     """#253 AC5: the existing /api/health surface exposes profile-store
     counts (profiles / queries / watched) — debuggable without a new
     endpoint."""
-    from cs_uk_api import catalog_state
+    from cs_uk_api import _catalog_state as catalog_state
 
     # Other test modules share the process-wide store — start from a
     # clean slate so the counts are exact.

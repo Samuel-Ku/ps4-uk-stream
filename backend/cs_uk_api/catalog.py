@@ -1,9 +1,9 @@
 """Typed catalog interface (spec #309 step 2 / ticket #311).
 
 The small typed seam the routes will import instead of reaching into
-``catalog_state`` internals: cache keys, dict shapes and first-seen
+``_catalog_state`` internals: cache keys, dict shapes and first-seen
 ordering stop crossing the seam (US1/US2). This module only DELEGATES to
-``catalog_state`` — the expand phase: every accessor preserves the
+``_catalog_state`` — the expand phase: every accessor preserves the
 delegate's exact semantics, so existing callers keep working unchanged
 (US11) and the step-3 migration moves them onto this surface without
 behavior risk.
@@ -22,17 +22,19 @@ Accessor groups (~9):
   - profiles: ``profiles()`` (get) / ``refresh_profile()`` (install)
 
 Cache-key construction is deliberately absent here — it stays inside
-``catalog_state`` (the implementation), per the ticket's AC.
+``_catalog_state`` (the implementation), per the ticket's AC.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from . import catalog_state
+import httpx
+
+from . import _catalog_state
 from .models import (
     ContentResponse,
     HomeItem,
@@ -80,11 +82,11 @@ class PlaybackPosition:
 def snapshot() -> HomeResponse | None:
     """The cached home snapshot, WITHOUT triggering a build.
 
-    None on a cold cache (the same answer ``catalog_state.get_home``
+    None on a cold cache (the same answer ``_catalog_state.get_home``
     gives) — cheap reads (poster, similar shelf) must not fan out to
     every provider.
     """
-    return catalog_state.get_home()
+    return _catalog_state.get_home()
 
 
 async def refresh_snapshot() -> HomeResponse:
@@ -95,7 +97,7 @@ async def refresh_snapshot() -> HomeResponse:
     persisted snapshot (ticket #269) serves instantly at any age while
     the full fan-out rebuilds in the background.
     """
-    return await catalog_state.load_home()
+    return await _catalog_state.load_home()
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +114,7 @@ async def resolve_item(group_key: str) -> ItemResolution:
     identical semantics; callers match on ``verdict`` instead of testing
     ``content is None``.
     """
-    content = await catalog_state.resolve_group_content(group_key)
+    content = await _catalog_state.resolve_group_content(group_key)
     if content is not None:
         return ItemResolution(verdict=ItemVerdict.OK, content=content)
     return ItemResolution(verdict=ItemVerdict.UNAVAILABLE)
@@ -127,7 +129,7 @@ def peek_group_content(group_key: str) -> ContentResponse | None:
     on its first cache-miss, so callers degrade identically ("keep the
     card's own guess") without paying a fetch.
     """
-    return catalog_state.peek_group_content(group_key)
+    return _catalog_state.peek_group_content(group_key)
 
 
 def is_hard_unavailable(group_key: str) -> bool:
@@ -140,7 +142,7 @@ def is_hard_unavailable(group_key: str) -> bool:
     render) and the D2 404 — a gated/blocked verdict must NEVER be
     masked by the degradation.
     """
-    return catalog_state.is_hard_unavailable(group_key)
+    return _catalog_state.is_hard_unavailable(group_key)
 
 
 def group_sources(group_key: str) -> list[SearchResult]:
@@ -150,7 +152,7 @@ def group_sources(group_key: str) -> list[SearchResult]:
     shows). The dict shape the delegate keeps internally stops crossing
     the seam — callers get the ordered card list directly.
     """
-    per_provider = catalog_state.resolve_group(group_key)
+    per_provider = _catalog_state.resolve_group(group_key)
     if per_provider is None:
         return []
     return list(per_provider.values())
@@ -164,7 +166,7 @@ def first_source(group_key: str) -> tuple[str, SearchResult] | None:
     behind the interface (US: the first-seen-provider ordering stops
     crossing the seam).
     """
-    per_provider = catalog_state.resolve_group(group_key)
+    per_provider = _catalog_state.resolve_group(group_key)
     if per_provider is None:
         return None
     return next(iter(per_provider.items()))
@@ -177,7 +179,7 @@ def episode_group_key(item_id: str) -> str | None:
     wire id (``ufdub:dorama-408-...:s1e1``), whose ``provider:external``
     prefix identifies the merged group (reverse lookup, #214).
     """
-    return catalog_state.episode_group_key(item_id)
+    return _catalog_state.episode_group_key(item_id)
 
 
 def group_source(group_key: str, provider: str) -> SearchResult | None:
@@ -187,7 +189,7 @@ def group_source(group_key: str, provider: str) -> SearchResult | None:
     The native source-switching route's lookup — replaces reaching into
     the ``{provider: SearchResult}`` dict on the seam.
     """
-    per_provider = catalog_state.resolve_group(group_key)
+    per_provider = _catalog_state.resolve_group(group_key)
     if per_provider is None:
         return None
     return per_provider.get(provider)
@@ -220,7 +222,7 @@ async def provider_content(provider_id: str, external_id: str) -> ProviderConten
     ``gated``/blocklisted verdict comes back typed so the native route
     answers its own 404s exactly as before.
     """
-    verdict, content = await catalog_state.cached_provider_content(
+    verdict, content = await _catalog_state.cached_provider_content(
         provider_id, external_id
     )
     return ProviderContent(verdict=ContentVerdict(verdict), content=content)
@@ -245,7 +247,7 @@ async def extend_row_pool(
     extend (personalized / genre rails) or every deeper fetch failed —
     the caller then serves the snapshot slice unchanged.
     """
-    return await catalog_state.extend_row_pool(row_type, snapshot_items)
+    return await _catalog_state.extend_row_pool(row_type, snapshot_items)
 
 
 # ---------------------------------------------------------------------------
@@ -269,11 +271,49 @@ async def search(
     surface without a separate manual ``register_search_groups`` call
     (US3: a missed registration can never 404 a searched card).
     """
-    resp = await catalog_state.merged_search(
+    resp = await _catalog_state.merged_search(
         query, provider=provider, form=form, style_filter=style_filter
     )
-    catalog_state.register_search_groups(resp.groups)
+    _catalog_state.register_search_groups(resp.groups)
     return resp
+
+
+# ---------------------------------------------------------------------------
+# Listing hygiene + uakino lifecycle (shared by the native routes)
+# ---------------------------------------------------------------------------
+
+
+#: Time budget for one subscription-gate sweep (the browse route wraps
+#: ``filter_gated_items`` in ``asyncio.wait_for`` with this timeout; a
+#: sweep timeout degrades to "keep the cards" — stream()/content() still
+#: refuse gated items). Public name for the constant the implementation
+#: keeps private (#345).
+GATE_CHECK_TIMEOUT_S: float = _catalog_state._GATE_CHECK_TIMEOUT_S
+
+
+async def filter_gated_items(
+    items: Sequence[SearchResult], http: httpx.AsyncClient
+) -> list[SearchResult]:
+    """Subscription-gate sweep over one listing (can_gate providers).
+
+    Drops cards whose only stream is the sponsor promo clip; verdicts
+    are cached (gated/content stores) so a card is resolved once. Only
+    KNOWN-gated cards are dropped — a transient upstream error keeps
+    the card. The same sweep the shared home/search builds run; the
+    browse route is just its only explicit caller.
+    """
+    return await _catalog_state.filter_gated_items(items, http)
+
+
+async def await_uakino_ready() -> None:
+    """Gate an explicit uakino route on the browser session being ready.
+
+    A deterministic startup marker raises 502 — the session is dead for
+    the process lifetime, so waiting is pointless. A session still
+    warming raises 503 ``warming`` after the bounded wait so the client
+    can back off and retry (issue #193/#196).
+    """
+    await _catalog_state.await_uakino_ready()
 
 
 # ---------------------------------------------------------------------------
@@ -284,12 +324,12 @@ async def search(
 def playback_positions() -> Mapping[str, PlaybackPosition]:
     """Every recorded position, most-progressed first, typed.
 
-    item_id -> PlaybackPosition. Same entries ``catalog_state`` holds;
+    item_id -> PlaybackPosition. Same entries ``_catalog_state`` holds;
     the bare tuple shape stops crossing the seam.
     """
     return {
         item_id: PlaybackPosition(position_ticks=pos, runtime_ticks=runtime)
-        for item_id, (pos, runtime) in catalog_state.playback_entries().items()
+        for item_id, (pos, runtime) in _catalog_state.playback_entries().items()
     }
 
 
@@ -298,19 +338,19 @@ def recent_playback(limit: int = 20) -> Mapping[str, PlaybackPosition]:
     rail's input, with the runtime for the wire bar (#250)."""
     return {
         item_id: PlaybackPosition(position_ticks=pos, runtime_ticks=runtime)
-        for item_id, (pos, runtime) in catalog_state.recent_playback_entries(limit).items()
+        for item_id, (pos, runtime) in _catalog_state.recent_playback_entries(limit).items()
     }
 
 
 def recent_history(limit: int = 20) -> list[str]:
     """Played item ids in most-recently-seen order, active AND finished —
     the «Нещодавно переглянуто» row's input (spec #272)."""
-    return catalog_state.recent_history_entries(limit)
+    return _catalog_state.recent_history_entries(limit)
 
 
 def flush_playback() -> None:
     """Flush pending playback state to disk (lifespan shutdown, #248)."""
-    catalog_state.flush_playback()
+    _catalog_state.flush_playback()
 
 
 def record_position(
@@ -323,7 +363,7 @@ def record_position(
     """Record the client's playback position. Last report wins; zero
     positions are ignored; ``flush=True`` (the Stopped path) persists the
     state file synchronously."""
-    catalog_state.record_playback(
+    _catalog_state.record_playback(
         item_id, position_ticks, runtime_ticks=runtime_ticks, flush=flush
     )
 
@@ -335,37 +375,37 @@ def record_position(
 
 def is_favorite(item_id: str) -> bool:
     """True when the item is marked favorite (persisted user state)."""
-    return catalog_state.is_favorite(item_id)
+    return _catalog_state.is_favorite(item_id)
 
 
 def set_favorite(item_id: str, is_favorite: bool) -> None:
     """Mark or unmark an item as favorite (spec #257)."""
-    catalog_state.set_favorite(item_id, is_favorite)
+    _catalog_state.set_favorite(item_id, is_favorite)
 
 
 def is_played(item_id: str) -> bool:
     """True when the item is marked played (persisted user state)."""
-    return catalog_state.is_played(item_id)
+    return _catalog_state.is_played(item_id)
 
 
 def set_played(item_id: str, played: bool) -> None:
     """Mark or unmark an item as played (spec #257)."""
-    catalog_state.set_played(item_id, played)
+    _catalog_state.set_played(item_id, played)
 
 
 def remember_dub(series_group_key: str, translation_label: str) -> None:
     """Record the viewer's dub choice for a series (spec #276)."""
-    catalog_state.remember_dub(series_group_key, translation_label)
+    _catalog_state.remember_dub(series_group_key, translation_label)
 
 
 def dub_for(series_group_key: str) -> str | None:
     """The remembered dub label for a series (spec #276), or None."""
-    return catalog_state.dub_for(series_group_key)
+    return _catalog_state.dub_for(series_group_key)
 
 
 def dub_memory() -> dict[str, str]:
     """The whole dub memory (group key -> label), for tests (spec #276)."""
-    return catalog_state.dub_memory()
+    return _catalog_state.dub_memory()
 
 
 # ---------------------------------------------------------------------------
@@ -380,7 +420,7 @@ def profiles() -> Mapping[str, ItemProfile]:
     \"no signal yet\" answer — callers fall back, never branch on a
     sentinel.
     """
-    return catalog_state.get_profiles()
+    return _catalog_state.get_profiles()
 
 
 async def refresh_profile(*, client: Any | None = None) -> bool:
@@ -390,7 +430,7 @@ async def refresh_profile(*, client: Any | None = None) -> bool:
     previous profile — or none — stays active and False is returned.
     Never raises. ``client`` is the injectable seam tests use.
     """
-    return await catalog_state.refresh_profile(client=client)
+    return await _catalog_state.refresh_profile(client=client)
 
 
 def install_profiles(mapping: Mapping[str, ItemProfile]) -> None:
@@ -398,9 +438,9 @@ def install_profiles(mapping: Mapping[str, ItemProfile]) -> None:
     seam). Tests seed state through this instead of mutating the store's
     internals; the LLM warm installs through the same function (step 6).
     """
-    catalog_state.install_profiles(mapping)
+    _catalog_state.install_profiles(mapping)
 
 
 def recommendation_stats() -> dict[str, int]:
     """Profile-store counts for the health surface (#253 AC5)."""
-    return catalog_state.recommendation_stats()
+    return _catalog_state.recommendation_stats()

@@ -307,7 +307,7 @@ async def test_refresh_profile_installs_and_clears_home(monkeypatch) -> None:
     the new rows surface on the next build — True on install."""
     from dataclasses import replace
 
-    import cs_uk_api.catalog_state as cs
+    import cs_uk_api._catalog_state as cs
 
     monkeypatch.setattr(
         llm_mod, "SETTINGS", replace(SETTINGS, llm_base_url="x", llm_key="k", llm_model="m")
@@ -360,7 +360,7 @@ async def test_refresh_profile_failure_keeps_previous(monkeypatch) -> None:
     broken model can't ruin the current taste state."""
     from dataclasses import replace
 
-    import cs_uk_api.catalog_state as cs
+    import cs_uk_api._catalog_state as cs
 
     monkeypatch.setattr(
         llm_mod, "SETTINGS", replace(SETTINGS, llm_base_url="x", llm_key="k", llm_model="m")
@@ -391,7 +391,7 @@ async def test_refresh_profile_disabled_knobs_returns_false(monkeypatch) -> None
     call, no profile, False (the layer is invisible until enabled)."""
     from dataclasses import replace
 
-    import cs_uk_api.catalog_state as cs
+    import cs_uk_api._catalog_state as cs
 
     monkeypatch.setattr(
         llm_mod, "SETTINGS", replace(SETTINGS, llm_base_url=None, llm_key=None, llm_model=None)

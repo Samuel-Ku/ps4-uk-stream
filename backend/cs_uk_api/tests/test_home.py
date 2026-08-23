@@ -38,7 +38,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from cs_uk_api import health
-from cs_uk_api.catalog_state import home_cache
+from cs_uk_api._catalog_state import home_cache
 from cs_uk_api.home import (
     aggregate_by_group_key,
     build_genre_rows,
@@ -1013,7 +1013,7 @@ def test_home_cache_uses_30_minute_ttl() -> None:
 def test_home_cache_set_with_short_ttl_expires() -> None:
     """Manual short-TTL set on the home cache expires promptly — confirms
     the cache primitive is wired and TTL is the only invalidation mechanism."""
-    from cs_uk_api.catalog_state import home_cache
+    from cs_uk_api._catalog_state import home_cache
 
     home_cache.set("test:expire", {"v": 1}, ttl_s=0)
     # ttl_s=0 → expires_at == now → already past on the next tick.

@@ -1,6 +1,6 @@
 """Internal search module (spec #309 T5) — merged fan-out.
 
-Covers ``cs_uk_api.catalog_state.search.merged_search`` directly: the
+Covers ``cs_uk_api._catalog_state.search.merged_search`` directly: the
 empty-query short-circuit, the shared cache hit, per-provider failure
 attribution in registration order (ADR-0002), and the search-query
 taste signal. The wire-level behaviour is pinned in test_search_grouping
@@ -16,8 +16,8 @@ from typing import Any, cast
 
 import pytest
 
-from cs_uk_api import catalog_state
-from cs_uk_api.catalog_state.search import merged_search
+from cs_uk_api import _catalog_state as catalog_state
+from cs_uk_api._catalog_state.search import merged_search
 from cs_uk_api.models import SearchResult
 from cs_uk_api.providers import PROVIDERS
 from cs_uk_api.providers.base import BaseProvider, model_b_axes

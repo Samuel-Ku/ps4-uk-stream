@@ -24,7 +24,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from cs_uk_api.catalog_state import content_cache, search_cache
+from cs_uk_api._catalog_state import content_cache, search_cache
 from cs_uk_api.main import (
     _browse_cache,
     app,
