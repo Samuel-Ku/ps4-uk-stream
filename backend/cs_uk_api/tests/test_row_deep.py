@@ -18,9 +18,9 @@ from typing import Any, cast
 import pytest
 from fastapi.testclient import TestClient
 
-from cs_uk_api import catalog_state as cs
+from cs_uk_api import _catalog_state as cs
 from cs_uk_api import config as _config
-from cs_uk_api.catalog_state import home_cache, sources_cache
+from cs_uk_api._catalog_state import home_cache, sources_cache
 from cs_uk_api.config import SETTINGS
 from cs_uk_api.models import SearchResult, Section
 from cs_uk_api.providers import PROVIDERS
@@ -341,7 +341,7 @@ def test_items_personalized_row_stays_snapshot_bounded(client: TestClient) -> No
     «Нещодавно переглянуто» row serves the honest snapshot end (short
     page, snapshot count) and never triggers an extension fetch."""
 
-    from cs_uk_api.catalog_state import clear_playback, record_playback
+    from cs_uk_api._catalog_state import clear_playback, record_playback
 
     provider = _movie_provider()
     PROVIDERS["p"] = provider
@@ -413,7 +413,7 @@ def test_extend_row_pool_recent_row_filters_by_form() -> None:
     )
     PROVIDERS["p"] = provider
     # The row is built by the real home fan-out (newest section page 1).
-    from cs_uk_api.catalog_state import load_home
+    from cs_uk_api._catalog_state import load_home
 
     home = asyncio_run(load_home())
     recent_movie = next(r for r in home.rows if r.type == "recent_movie")

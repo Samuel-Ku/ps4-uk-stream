@@ -3,7 +3,7 @@ from dataclasses import replace
 
 from fastapi.testclient import TestClient
 
-from cs_uk_api import catalog_state, uakino_browser
+from cs_uk_api import _catalog_state as catalog_state, uakino_browser
 from cs_uk_api.main import app
 
 client = TestClient(app)

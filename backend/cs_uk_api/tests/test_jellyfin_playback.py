@@ -40,7 +40,7 @@ from urllib.parse import quote
 import pytest
 from fastapi.testclient import TestClient
 
-from cs_uk_api.catalog_state import blocklist_cache, content_cache, home_cache, sources_cache
+from cs_uk_api._catalog_state import blocklist_cache, content_cache, home_cache, sources_cache
 from cs_uk_api.config import SETTINGS
 from cs_uk_api.models import (
     ContentResponse,
@@ -645,7 +645,7 @@ def test_playback_info_remembered_dub_orders_first(client: TestClient) -> None:
     """#276 T2: after a dub is remembered for a series, the next
     PlaybackInfo defaults to it — the remembered source is first and
     carries Index 1 (the client's default selected index)."""
-    import cs_uk_api.catalog_state as cs
+    import cs_uk_api._catalog_state as cs
 
     _stub, _movie_gk, ep_id = _seeded_multi(client)
     # Remember «Оригінал» for the series (the group behind the episode).
@@ -667,7 +667,7 @@ def test_stream_source_id_switches_translation(client: TestClient) -> None:
     """#276 T2: a stream request echoing a multi-source id resolves that
     translation — the provider's stream() receives the picked translation
     id, and the series dub choice is remembered."""
-    import cs_uk_api.catalog_state as cs
+    import cs_uk_api._catalog_state as cs
 
     stub, _movie_gk, ep_id = _seeded_multi(client)
     cs.clear_user_state()
@@ -690,7 +690,7 @@ def test_stream_source_id_switches_translation(client: TestClient) -> None:
 def test_stream_plain_id_keeps_default_and_no_memory(client: TestClient) -> None:
     """#276 T2: the plain item id (single-translation path) streams the
     default translation and records nothing — unchanged D6 behaviour."""
-    import cs_uk_api.catalog_state as cs
+    import cs_uk_api._catalog_state as cs
 
     stub, _movie_gk, ep_id = _seeded_multi(client)
     cs.clear_user_state()
@@ -707,7 +707,7 @@ def test_stream_plain_id_keeps_default_and_no_memory(client: TestClient) -> None
 def test_stream_movie_never_records_dub(client: TestClient) -> None:
     """#276 v3: a movie stream with a source id never records dub memory
     — films always start on the default dub."""
-    import cs_uk_api.catalog_state as cs
+    import cs_uk_api._catalog_state as cs
 
     stub, movie_gk, _ep_id = _seeded_multi(client)
     cs.clear_user_state()

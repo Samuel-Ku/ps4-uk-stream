@@ -26,8 +26,8 @@ import json
 
 import pytest
 
-import cs_uk_api.catalog_state._stores as stores_mod
-import cs_uk_api.catalog_state.snapshot as snapshot_mod
+import cs_uk_api._catalog_state._stores as stores_mod
+import cs_uk_api._catalog_state.snapshot as snapshot_mod
 from cs_uk_api.models import HomeResponse, HomeRow, SearchResult
 from cs_uk_api.snapshot_store import SNAPSHOT_VERSION, SnapshotStore
 
@@ -185,7 +185,7 @@ def test_cold_start_serves_persisted_snapshot_without_fanout(
     import asyncio
     from dataclasses import replace
 
-    import cs_uk_api.catalog_state as cs
+    import cs_uk_api._catalog_state as cs
     from cs_uk_api.config import SETTINGS
 
     path = tmp_path / "home-snapshot.json"

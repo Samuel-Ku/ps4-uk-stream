@@ -16,7 +16,7 @@ from dataclasses import replace
 from fastapi.testclient import TestClient
 
 import cs_uk_api.config as config_mod
-from cs_uk_api import catalog_state
+from cs_uk_api import _catalog_state as catalog_state
 from cs_uk_api.main import app
 from cs_uk_api.models import ContentResponse, Translation
 from cs_uk_api.providers import PROVIDERS

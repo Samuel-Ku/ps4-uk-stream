@@ -30,7 +30,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from cs_uk_api.catalog_state import blocklist_cache, content_cache, home_cache, sources_cache
+from cs_uk_api._catalog_state import blocklist_cache, content_cache, home_cache, sources_cache
 from cs_uk_api.config import SETTINGS
 
 jf_router = importlib.import_module("cs_uk_api.jellyfin.router")

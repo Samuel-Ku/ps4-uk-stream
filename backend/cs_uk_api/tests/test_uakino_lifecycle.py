@@ -30,10 +30,10 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-import cs_uk_api.catalog_state.resolution as resolution_mod
+import cs_uk_api._catalog_state.resolution as resolution_mod
 from cs_uk_api import main as main_mod
 from cs_uk_api import uakino_browser
-from cs_uk_api.catalog_state import content_cache, search_cache
+from cs_uk_api._catalog_state import content_cache, search_cache
 from cs_uk_api.health import TRACKER
 from cs_uk_api.main import app
 from cs_uk_api.models import (

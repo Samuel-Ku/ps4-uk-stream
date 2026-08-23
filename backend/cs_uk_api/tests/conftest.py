@@ -32,7 +32,7 @@ os.environ.setdefault("CS_UK_SNAPSHOT_PATH", "")
 import pytest
 
 from cs_uk_api import llm
-from cs_uk_api.catalog_state import _stores
+from cs_uk_api._catalog_state import _stores
 from cs_uk_api.health import TRACKER
 from cs_uk_api.main import _browse_cache
 from cs_uk_api.poster_proxy import _cache as _poster_cache

@@ -43,8 +43,8 @@ from typing import Any, cast
 import pytest
 from fastapi.testclient import TestClient
 
-from cs_uk_api import catalog, catalog_state
-from cs_uk_api.catalog_state import (
+from cs_uk_api import _catalog_state as catalog_state, catalog
+from cs_uk_api._catalog_state import (
     blocklist_cache,
     clear_playback,
     content_cache,

@@ -113,7 +113,7 @@ class _FreeStub(BaseProvider):
 @pytest.fixture(autouse=True)
 def _isolate() -> Iterator[None]:
     """Snapshot + restore PROVIDERS and every cache the sweep/facade reads."""
-    from cs_uk_api import catalog_state
+    from cs_uk_api import _catalog_state as catalog_state
     from cs_uk_api import main as main_mod
 
     saved = dict(PROVIDERS)
@@ -143,7 +143,7 @@ async def test_sweep_share_one_semaphore_bounds_total_concurrency() -> None:
     tasks × 24 each = hundreds of simultaneous requests, upstreams
     throttle, the sweep blows its budget, and gated cards leak into
     home."""
-    from cs_uk_api.catalog_state import _GATE_CHECK_CONCURRENCY, filter_gated_items
+    from cs_uk_api._catalog_state import _GATE_CHECK_CONCURRENCY, filter_gated_items
 
     class _SlowGated(_GatedStub):
         id = "slow-gated"
@@ -175,7 +175,7 @@ async def test_sweep_share_one_semaphore_bounds_total_concurrency() -> None:
 async def test_filter_gated_items_drops_gated_and_caches_verdict() -> None:
     """Gated cards are dropped; the verdict is cached so the next sweep
     is a pure cache hit (no re-resolution)."""
-    from cs_uk_api.catalog_state import filter_gated_items, gated_cache
+    from cs_uk_api._catalog_state import filter_gated_items, gated_cache
 
     PROVIDERS["gated-stub"] = _GatedStub()
     PROVIDERS["free-stub"] = _FreeStub()
@@ -197,7 +197,7 @@ async def test_filter_gated_items_drops_gated_and_caches_verdict() -> None:
 async def test_filter_gated_items_keeps_transient_upstream_errors() -> None:
     """A non-gated upstream failure must NOT drop the card (dead
     providers are health-tracked elsewhere)."""
-    from cs_uk_api.catalog_state import filter_gated_items
+    from cs_uk_api._catalog_state import filter_gated_items
 
     class _Flaky(_GatedStub):
         id = "flaky-stub"
@@ -220,8 +220,8 @@ async def test_resolve_group_content_gated_backstop_no_health_down() -> None:
     normally warms ``gated_cache`` during ``load_home``; a sweep timeout
     or a title added after the home build would otherwise leave the
     group-content path recording ``ok=False`` on a gated title."""
-    from cs_uk_api import catalog_state
-    from cs_uk_api.catalog_state import resolve_group_content
+    from cs_uk_api import _catalog_state as catalog_state
+    from cs_uk_api._catalog_state import resolve_group_content
     from cs_uk_api.health import TRACKER
     from cs_uk_api.merge import item_group_key
 
@@ -254,8 +254,8 @@ async def test_resolve_group_content_retries_transient_failure() -> None:
     succeeds on retry must resolve — the item is valid, so the detail
     path must not 404 it — and the health tracker sees only the final ok
     verdict."""
-    from cs_uk_api import catalog_state
-    from cs_uk_api.catalog_state import resolve_group_content
+    from cs_uk_api import _catalog_state as catalog_state
+    from cs_uk_api._catalog_state import resolve_group_content
     from cs_uk_api.health import TRACKER
     from cs_uk_api.merge import item_group_key
 
@@ -312,8 +312,8 @@ async def test_resolve_group_content_404_after_both_attempts_fail() -> None:
     """B23 (#211): when the retry ALSO fails, the item stays unavailable
     and the health tracker records the down verdict (only after the final
     attempt)."""
-    from cs_uk_api import catalog_state
-    from cs_uk_api.catalog_state import resolve_group_content
+    from cs_uk_api import _catalog_state as catalog_state
+    from cs_uk_api._catalog_state import resolve_group_content
     from cs_uk_api.health import TRACKER
     from cs_uk_api.merge import item_group_key
 
@@ -360,7 +360,7 @@ async def test_resolve_group_content_404_after_both_attempts_fail() -> None:
 async def test_load_home_drops_gated_only_title() -> None:
     """A title available ONLY through a gated source disappears from the
     home rows (the sweep drops it before the rows are built)."""
-    from cs_uk_api.catalog_state import load_home
+    from cs_uk_api._catalog_state import load_home
 
     PROVIDERS.clear()
     gated = _GatedStub()
@@ -374,7 +374,7 @@ async def test_load_home_drops_gated_only_title() -> None:
 async def test_load_home_keeps_group_with_working_source() -> None:
     """A merged title survives when ANOTHER provider carries it: the
     gated source stops contributing, the group keeps the free source."""
-    from cs_uk_api.catalog_state import load_home, resolve_group
+    from cs_uk_api._catalog_state import load_home, resolve_group
 
     PROVIDERS.clear()
     gated = _GatedStub()
