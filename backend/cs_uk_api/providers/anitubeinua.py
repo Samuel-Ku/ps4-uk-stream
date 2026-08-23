@@ -45,7 +45,7 @@ from urllib.parse import urljoin
 import httpx
 from bs4 import BeautifulSoup
 
-from ..http_client import safe_get
+from ..http_client import provider_safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -55,13 +55,13 @@ from ..models import (
     StreamResponse,
     Translation,
 )
+from ..wire_identity import episode_wire_id, parse_episode_tail
 from .base import BaseProvider, ProviderError
 
 BASE_URL = "https://anitube.in.ua"
 # Hosts the upstream may legally redirect to: the DLE CMS. A hostile
 # CMS response must not be able to pivot the fetch to an
 # attacker-controlled host.
-_ALLOWED_HOSTS: frozenset[str] = frozenset({"anitube.in.ua"})
 # ashdi.vip requires the upstream Referer to serve the m3u8 manifest.
 # The upstream Kotlin sets `referer = "https://qeruya.cyou"` for the
 # ashdi branch of `M3u8Helper.generateM3u8`; we mirror that.
@@ -75,10 +75,6 @@ ANITUBEINUA_SECTIONS: tuple[Section, ...] = (
 # External id: numeric news id, hyphen, slug. Used as a security
 # boundary to refuse path traversal at content() and stream().
 _EXTERNAL_ID_RE = re.compile(r"\d+-[a-z0-9-]+")
-
-# Episode id pattern: `s<N>e<M>`. See module docstring for the season
-# numbering (1 = SUB, 2 = DUB).
-_EPISODE_RE = re.compile(r"s(\d+)e(\d+)")
 
 # DLE login hash is read from the first <script> on the content page
 # (matches the upstream `substringAfterLast("dle_login_hash = '")`).
@@ -353,7 +349,7 @@ def _build_seasons(playlist: dict[str, Any], external_id: str, provider_id: str)
             episodes_out.append(
                 Episode(
                     number=e_idx,
-                    id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
+                    id=episode_wire_id(provider_id, external_id, s_idx, e_idx),
                     title=ep.title,
                     translations=translations,
                 )
@@ -453,6 +449,9 @@ class AnitubeinuaProvider(BaseProvider):
     name = "Anitubeinua"
     types = ("anime",)
     sections = ANITUBEINUA_SECTIONS
+    #: Site + the ashdi.vip player/m3u8 hop resolved mid-stream
+    #: (ADR-0005; the m3u8 URL comes from the ashdi playlist).
+    allowed_hosts = frozenset({"anitube.in.ua", "ashdi.vip"})
     # v3 (issue #70): "Нові" contributes to «Новинки».
     newest_section = "page"
 
@@ -568,7 +567,7 @@ class AnitubeinuaProvider(BaseProvider):
         # same-host redirects. Pages > 1 still return 200 directly and
         # are unaffected.
         try:
-            response = await safe_get(http, url, allowed_hosts=set(_ALLOWED_HOSTS))
+            response = await provider_safe_get(http, self, url)
         except httpx.HTTPError as error:
             raise ProviderError("unreachable", str(error)) from error
         if response.status_code != 200:
@@ -642,12 +641,12 @@ class AnitubeinuaProvider(BaseProvider):
             ext_id, ep_part = content_id, ""
         if not _EXTERNAL_ID_RE.fullmatch(ext_id):
             raise ProviderError("not_found", f"bad external_id: {ext_id!r}")
-        m = _EPISODE_RE.fullmatch(ep_part)
-        if not m:
+        parsed = parse_episode_tail(ep_part)
+        if parsed is None:
             raise ProviderError(
                 "parse_failed", f"malformed episode suffix: {ep_part!r}"
             )
-        season_idx, episode_idx = int(m.group(1)), int(m.group(2))
+        season_idx, episode_idx = parsed
         playlist = await self._load_playlist(ext_id, http)
         studio_id = self._resolve_studio_id(playlist, translation, season_idx)
         if studio_id is None:
@@ -671,7 +670,9 @@ class AnitubeinuaProvider(BaseProvider):
         `/vod/`; the upstream Kotlin normalizes the path before
         fetching the m3u8. We just GET the iframe URL as-is."""
         try:
-            player_resp = await http.get(
+            player_resp = await provider_safe_get(
+                http,
+                self,
                 file_url,
                 headers={"Referer": _referer_for(file_url)},
             )
@@ -756,10 +757,10 @@ class AnitubeinuaProvider(BaseProvider):
         ext_id, _, ep_part = content_id.rpartition(":")
         if not _EXTERNAL_ID_RE.fullmatch(ext_id):
             return None
-        m = _EPISODE_RE.fullmatch(ep_part)
-        if not m:
+        parsed = parse_episode_tail(ep_part)
+        if parsed is None:
             return None
-        season_idx, _ = int(m.group(1)), int(m.group(2))
+        season_idx, _ = parsed
         try:
             playlist = await self._load_playlist(ext_id, http)
         except ProviderError:

@@ -5,7 +5,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from . import config as _config
-from .providers.base import ProviderError
+from .providers.base import BaseProvider, ProviderError
 
 _client: httpx.AsyncClient | None = None
 
@@ -77,3 +77,29 @@ async def safe_get(
                 params=None,
             )
     return response
+
+
+async def provider_safe_get(
+    http: httpx.AsyncClient,
+    provider: BaseProvider,
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    params: dict[str, str] | None = None,
+) -> httpx.Response:
+    """``safe_get`` whose allowlist IS the provider's declaration (ADR-0005).
+
+    The single fetch path for adapters: every hop — the initial URL and
+    each redirect target — is checked against ``provider.allowed_hosts``,
+    so a provider that never declared its hosts cannot fetch anything
+    (the empty default fails closed), and an upstream-derived URL cannot
+    escape the declared hosts. Adapters no longer pass host sets by
+    hand; the declaration lives on the adapter class.
+    """
+    return await safe_get(
+        http,
+        url,
+        allowed_hosts=set(provider.allowed_hosts),
+        headers=headers,
+        params=params,
+    )

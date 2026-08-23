@@ -41,3 +41,15 @@ def _concrete_provider_ids() -> list[str]:
 def test_every_provider_module_is_registered() -> None:
     registered = {p.id for p in PROVIDERS.values()}
     assert registered == set(_concrete_provider_ids())
+
+
+def test_every_registered_provider_declares_a_nonempty_allowlist() -> None:
+    """ADR-0005 startup-fail-closed guarantee: every active provider
+    declares ``allowed_hosts``, so ``provider_safe_get`` can enforce the
+    SSRF contract centrally. An adapter that forgets the declaration
+    fails this test at suite time instead of fetching undeclared hosts
+    (or failing every fetch) in production. uakino rides the browser
+    session for its own site — it still declares the ashdi.vip hosts
+    its stream path fetches."""
+    empty = [p.id for p in PROVIDERS.values() if not p.allowed_hosts]
+    assert not empty, f"providers without an allowlist declaration: {empty}"

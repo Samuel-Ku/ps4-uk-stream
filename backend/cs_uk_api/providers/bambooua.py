@@ -29,7 +29,15 @@ from ..models import (
     StreamType,
     Translation,
 )
-from .base import MOVIE_SUFFIX, BaseProvider, MediaTypeStr, ProviderError
+from ..http_client import provider_safe_get
+from ..wire_identity import (
+    MOVIE_SUFFIX,
+    episode_wire_id,
+    is_movie_wire_id,
+    parse_episode_tail,
+    strip_movie_suffix,
+)
+from .base import BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://bambooua.com"
 
@@ -350,6 +358,13 @@ class BambooUAProvider(BaseProvider):
     #: Gated titles resolve to a sponsor promo clip; the catalog build
     #: drops those sources before they surface as cards.
     can_gate = True
+    #: The bambooua.com CMS plus its two HLS hosts (hls2/ongoing3) that
+    #: stream URLs point at — declared even though the backend only
+    #: returns them to the client, so any future fetch fails safe
+    #: rather than silent (ADR-0005).
+    allowed_hosts = frozenset(
+        {"bambooua.com", "hls2.bambooua.com", "ongoing3.bambooua.com"}
+    )
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         # The upstream POSTs to the bare mainUrl with the DLE search
@@ -385,7 +400,7 @@ class BambooUAProvider(BaseProvider):
     ) -> tuple[list[SearchResult], bool]:
         url = _section_url(section, page)
         try:
-            resp = await http.get(url)
+            resp = await provider_safe_get(http, self, url)
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
@@ -414,7 +429,7 @@ class BambooUAProvider(BaseProvider):
             raise ProviderError("not_found", "bad external_id")
         url = f"{BASE_URL}/{external_id}.html"
         try:
-            resp = await http.get(url)
+            resp = await provider_safe_get(http, self, url)
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
@@ -494,7 +509,7 @@ class BambooUAProvider(BaseProvider):
             episodes = [
                 Episode(
                     number=e_idx,
-                    id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
+                    id=episode_wire_id(provider_id, external_id, s_idx, e_idx),
                     title=ep.title,
                 )
                 for e_idx, ep in enumerate(group.folder, start=1)
@@ -510,8 +525,8 @@ class BambooUAProvider(BaseProvider):
         # `content_id` arrives as either "<external_id>__movie__"
         # (movie shortcut) or "<external_id>:s<N>e<M>" (series episode).
         # `/api/stream` strips the `<provider>:` prefix before calling us.
-        if MOVIE_SUFFIX in content_id:
-            ext_id = content_id.split(MOVIE_SUFFIX, 1)[0]
+        if is_movie_wire_id(content_id):
+            ext_id = strip_movie_suffix(content_id)
             ep_suffix = ""
         elif ":" in content_id:
             ext_id, _, ep_suffix = content_id.rpartition(":")
@@ -521,7 +536,7 @@ class BambooUAProvider(BaseProvider):
             raise ProviderError("not_found", "bad external_id")
         url = f"{BASE_URL}/{ext_id}.html"
         try:
-            resp = await http.get(url)
+            resp = await provider_safe_get(http, self, url)
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
@@ -562,10 +577,10 @@ class BambooUAProvider(BaseProvider):
                 if groups[0].file:
                     return groups[0].file
             return None
-        m = re.fullmatch(r"s(\d+)e(\d+)", ep_suffix)
-        if not m:
+        parsed = parse_episode_tail(ep_suffix)
+        if parsed is None:
             return None
-        s_idx, e_idx = int(m.group(1)), int(m.group(2))
+        s_idx, e_idx = parsed
         if not (1 <= s_idx <= len(groups)):
             return None
         folder = groups[s_idx - 1].folder

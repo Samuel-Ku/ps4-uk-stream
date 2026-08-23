@@ -9,7 +9,7 @@ from urllib.parse import quote, urlencode, urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup
 
-from ..http_client import safe_get
+from ..http_client import provider_safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -23,13 +23,9 @@ from ..models import (
     Translation,
 )
 from ..uakino_browser import _UA, BASE_URL, UakinoSessionProtocol, get_session
+from ..wire_identity import MOVIE_SUFFIX
 from .base import BaseProvider, MediaTypeStr, ProviderError
 
-# ashdi.vip serves the playlist page; m3u8 manifests and segment URLs
-# stay on the same host. The host allowlist refuses SSRF pivots at the
-# Shared-IP boundary — uakino.best is reachable only through the
-# headless browser session, never via httpx.
-_STREAM_ALLOWED_HOSTS: frozenset[str] = frozenset({"ashdi.vip"})
 
 # Sections exposed by Uakino's new-theme navigation. The /animeukr URL is
 # the anime sub-site (Ukrainian-dubbed anime). Section ids are stable;
@@ -45,8 +41,11 @@ UAKINO_SECTIONS: tuple[Section, ...] = (
 # The section segment comes straight from the listing link so content()
 # can rebuild the genre-less content URL without a genre->section map.
 # We gate both content() and stream() against the charset so a
-# caller-supplied value cannot inject "../" into the URL path.
-_CONTENT_ID_RE = re.compile(r"^([a-z0-9_-]+):(\d+)-([a-z0-9][a-z0-9-]*)(:__movie__)?$")
+# caller-supplied value cannot inject "../" into the URL path. The
+# movie sentinel is composed from the wire-identity constant (#346).
+_CONTENT_ID_RE = re.compile(
+    rf"^([a-z0-9_-]+):(\d+)-([a-z0-9][a-z0-9-]*)({MOVIE_SUFFIX})?$"
+)
 # Legacy cache entries looked like "film-dune-2021"; keep accepting the
 # kind-prefixed form by mapping film->filmy, serial->seriesss.
 _LEGACY_ID_RE = re.compile(r"^(film|serial)-(\d+)-([a-z0-9][a-z0-9-]*)$")
@@ -271,6 +270,12 @@ class UakinoProvider(BaseProvider):
     name = "Uakino"
     types = ("movie", "series", "anime", "cartoon")
     sections = UAKINO_SECTIONS
+    #: The ONLY host plain httpx may touch: ashdi.vip serves the stream
+    #: page and its m3u8 manifests (ADR-0005). uakino.best itself rides
+    #: the headless browser session — it stays OFF this list so no code
+    #: path can start fetching it without the browser's Cloudflare
+    #: handling.
+    allowed_hosts = frozenset({"ashdi.vip"})
 
     def __init__(self, session: UakinoSessionProtocol | None = None) -> None:
         self._session = session
@@ -530,10 +535,10 @@ class UakinoProvider(BaseProvider):
                     )
                 stream_page_url = direct_url
         try:
-            resp = await safe_get(
+            resp = await provider_safe_get(
                 http,
+                self,
                 stream_page_url,
-                allowed_hosts=set(_STREAM_ALLOWED_HOSTS),
                 headers={
                     "User-Agent": _DESKTOP_UA,
                     "Referer": f"{BASE_URL}/",
@@ -542,7 +547,7 @@ class UakinoProvider(BaseProvider):
             )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
-        if resp.url.host not in _STREAM_ALLOWED_HOSTS:
+        if resp.url.host not in self.allowed_hosts:
             raise ProviderError("not_found", "unexpected upstream host")
         if resp.status_code != 200:
             raise ProviderError("not_found", f"stream page status {resp.status_code}")
@@ -556,7 +561,7 @@ class UakinoProvider(BaseProvider):
         # The m3u8 URL is content we hand to the LAN client. Reject
         # anything outside the ashdi.vip host so a hostile stream page
         # can't redirect the PS4 into an internal address.
-        if urlparse(m3u8_url).netloc not in _STREAM_ALLOWED_HOSTS:
+        if urlparse(m3u8_url).netloc not in self.allowed_hosts:
             raise ProviderError("not_found", "m3u8 host not in allowlist")
         # The stream CDN (ashdi.vip) is served over plain HTTP and needs
         # the Referer to authorize the manifest/segment fetches — but a

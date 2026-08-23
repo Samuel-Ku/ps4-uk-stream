@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup, Tag
 
 from ..country import extract_country
 from ..extractors import RegexExtractor
-from ..http_client import safe_get
+from ..http_client import provider_safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -24,13 +24,19 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import MOVIE_SUFFIX, BaseProvider, MediaTypeStr, ProviderError
+from ..wire_identity import (
+    MOVIE_SUFFIX,
+    episode_wire_id,
+    is_movie_wire_id,
+    parse_episode_tail,
+    strip_movie_suffix,
+)
+from .base import BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://cikava-ideya.top"
 # Hosts the upstream may legally redirect to: the CMS and the ashdi
 # player CDN. A hostile CMS response must not be able to pivot the
 # player hop to an attacker-controlled host.
-_ALLOWED_HOSTS: frozenset[str] = frozenset({"cikava-ideya.top", "ashdi.vip"})
 # ashdi.vip hosts the HLS manifest for each episode. The upstream
 # Kotlin source sets the Referer to "https://tortuga.wtf/" so that the
 # CDN serves the manifest.
@@ -236,7 +242,9 @@ def _load_player1(soup: BeautifulSoup) -> str | dict[str, Any]:
     return player1
 
 
-async def _probe_ashdi_gate(player_url: str, http: httpx.AsyncClient) -> None:
+async def _probe_ashdi_gate(
+    provider: CikavaIdeyaProvider, player_url: str, http: httpx.AsyncClient
+) -> None:
     """Best-effort content()-time dead-VOD probe (#185).
 
     Fetch the representative ashdi.vip player page and raise
@@ -252,10 +260,10 @@ async def _probe_ashdi_gate(player_url: str, http: httpx.AsyncClient) -> None:
     KNOWN-gated items), so ``stream()`` keeps the marker check as the
     play-time backstop."""
     try:
-        ashdi_resp = await safe_get(
+        ashdi_resp = await provider_safe_get(
             http,
+            provider,
             player_url,
-            allowed_hosts=set(_ALLOWED_HOSTS),
             headers={"Referer": ASHDI_REFERER},
         )
     except (httpx.HTTPError, ProviderError):
@@ -269,6 +277,8 @@ class CikavaIdeyaProvider(BaseProvider):
     name = "Цікава Ідея"
     types = ("movie", "series")
     sections = CIKAVA_SECTIONS
+    #: Site + the ashdi.vip player pages it embeds (ADR-0005).
+    allowed_hosts = frozenset({"cikava-ideya.top", "ashdi.vip"})
     #: Gated verdicts (removed / trailer-only / no-player titles, dead
     #: ashdi embeds) must flow through `filter_gated_items` so the
     #: ADR-0002 catalog sweep drops those cards from home during
@@ -368,7 +378,7 @@ class CikavaIdeyaProvider(BaseProvider):
             else self._select_player_url(player1, "s1e1")
         )
         if player_url is not None:
-            await _probe_ashdi_gate(player_url, http)
+            await _probe_ashdi_gate(self, player_url, http)
         seasons = self._build_seasons(player1, external_id, self.id)
         kind = _classify_from_tags(tags_text)
         mb_form: MediaForm = kind if kind == "movie" or kind == "series" else "series"
@@ -407,7 +417,7 @@ class CikavaIdeyaProvider(BaseProvider):
             episodes = [
                 Episode(
                     number=e_idx,
-                    id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
+                    id=episode_wire_id(provider_id, external_id, s_idx, e_idx),
                     title=k.strip(),
                 )
                 for e_idx, k in enumerate(ep_keys, start=1)
@@ -423,8 +433,8 @@ class CikavaIdeyaProvider(BaseProvider):
         # (movie, explicit suffix from the content listing), or
         # "<external_id>:s<N>e<M>" (series episode). `/api/stream`
         # strips the `<provider>:` prefix before calling us.
-        if MOVIE_SUFFIX in content_id:
-            ext_id = content_id.split(MOVIE_SUFFIX, 1)[0]
+        if is_movie_wire_id(content_id):
+            ext_id = strip_movie_suffix(content_id)
             ep_suffix = ""
         elif ":" in content_id:
             ext_id, _, ep_suffix = content_id.rpartition(":")
@@ -449,10 +459,10 @@ class CikavaIdeyaProvider(BaseProvider):
         # The URL came from upstream HTML, so it goes through the
         # redirect allowlist (#126).
         try:
-            ashdi_resp = await safe_get(
+            ashdi_resp = await provider_safe_get(
                 http,
+                self,
                 player_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"Referer": ASHDI_REFERER},
             )
         except httpx.HTTPError as e:
@@ -487,10 +497,10 @@ class CikavaIdeyaProvider(BaseProvider):
             return player1 if not ep_suffix else None
         if not ep_suffix:
             return None
-        m = re.fullmatch(r"s(\d+)e(\d+)", ep_suffix)
-        if not m:
+        parsed = parse_episode_tail(ep_suffix)
+        if parsed is None:
             return None
-        s_idx, e_idx = int(m.group(1)), int(m.group(2))
+        s_idx, e_idx = parsed
         # Same real-season ordering `_build_seasons` numbers, so a
         # `:s<N>e<M>` id produced by content() resolves here to the same
         # episode a trailer-only key can never shadow.

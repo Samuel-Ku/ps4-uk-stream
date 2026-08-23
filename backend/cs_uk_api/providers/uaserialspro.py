@@ -41,7 +41,7 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from ..country import extract_country
-from ..http_client import safe_get
+from ..http_client import provider_safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -55,13 +55,19 @@ from ..models import (
 )
 from ._crypto_uaserialspro import decrypt_player_data
 from ._tortuga import decode as _tortuga_decode
-from .base import MOVIE_SUFFIX, BaseProvider, MediaTypeStr, ProviderError, parse_actor_list
+from ..wire_identity import (
+    MOVIE_SUFFIX,
+    episode_wire_id,
+    is_movie_wire_id,
+    parse_episode_tail,
+    strip_movie_suffix,
+)
+from .base import BaseProvider, MediaTypeStr, ProviderError, parse_actor_list
 
 BASE_URL = "https://uaserials.com"
 # Hosts the upstream may legally redirect to: the DLE CMS and the
 # tortuga player. A hostile CMS response must not be able to pivot
 # either hop to an attacker-controlled host.
-_ALLOWED_HOSTS: frozenset[str] = frozenset({"uaserials.com", "tortuga.tw"})
 # tortuga.tw serves the HLS manifest with this Referer (mirrors the
 # upstream Kotlin source).
 TORTUGA_REFERER = "https://tortuga.tw/"
@@ -82,9 +88,6 @@ UASERIALSPRO_SECTIONS: tuple[Section, ...] = (
 # Whitelisted slug shape: `<numeric>-<kebab>`. Used at the provider
 # boundary so callers cannot smuggle path traversal through the API.
 _EXTERNAL_ID_RE = re.compile(r"\d+-[a-z0-9-]+")
-
-# Episode-id suffix grammar: `s<N>e<M>` (1-based).
-_EP_SUFFIX_RE = re.compile(r"s(\d+)e(\d+)$")
 
 # Upstream Kotlin regex for the `file: '...'` value on the Tortuga
 # player page. Matches single- or double-quoted strings.
@@ -295,6 +298,8 @@ class UASerialsProProvider(BaseProvider):
     name = "UASerialsPro"
     types = ("movie", "series", "anime")
     sections = UASERIALSPRO_SECTIONS
+    #: Site + the Tortuga player gateway it embeds (ADR-0005).
+    allowed_hosts = frozenset({"uaserials.com", "tortuga.tw"})
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         # The site uses `/search/<query>/` for search. We quote the
@@ -409,10 +414,10 @@ class UASerialsProProvider(BaseProvider):
         # The player URL came from decrypted upstream HTML, so it goes
         # through the redirect allowlist (#126).
         try:
-            player_resp = await safe_get(
+            player_resp = await provider_safe_get(
                 http,
+                self,
                 player_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"User-Agent": USER_AGENT, "Referer": BASE_URL + "/"},
             )
         except httpx.HTTPError as e:
@@ -489,7 +494,7 @@ class UASerialsProProvider(BaseProvider):
                     episodes.append(
                         Episode(
                             number=e_idx,
-                            id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
+                            id=episode_wire_id(provider_id, external_id, s_idx, e_idx),
                             title=str(ep.get("title", "")).strip(),
                             translations=[Translation(id=label, label=label)] if label else None,
                         )
@@ -519,8 +524,8 @@ class UASerialsProProvider(BaseProvider):
         # (movie — explicit suffix from the content listing), or
         # "<external_id>:s<N>e<M>" (series episode), or just the bare
         # "<external_id>" (movie — straight from a search result).
-        if MOVIE_SUFFIX in content_id:
-            ext_id = content_id.split(MOVIE_SUFFIX, 1)[0]
+        if is_movie_wire_id(content_id):
+            ext_id = strip_movie_suffix(content_id)
             ep_suffix = ""
         elif ":" in content_id:
             ext_id, _, ep_suffix = content_id.rpartition(":")
@@ -546,10 +551,10 @@ class UASerialsProProvider(BaseProvider):
         # The player URL came from decrypted upstream HTML, so it goes
         # through the redirect allowlist (#126).
         try:
-            player_resp = await safe_get(
+            player_resp = await provider_safe_get(
                 http,
+                self,
                 player_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"User-Agent": USER_AGENT, "Referer": BASE_URL + "/"},
             )
         except httpx.HTTPError as e:
@@ -589,10 +594,10 @@ class UASerialsProProvider(BaseProvider):
         The dub picker's translation id (spec #276, ticket #332) selects
         the episode entry whose ``{label}`` prefix matches; an unmatched
         translation falls back to the default track."""
-        m = _EP_SUFFIX_RE.fullmatch(ep_suffix)
-        if not m:
+        parsed = parse_episode_tail(ep_suffix)
+        if parsed is None:
             return None
-        s_idx, e_idx = int(m.group(1)), int(m.group(2))
+        s_idx, e_idx = parsed
         try:
             seasons_raw = cast(list[dict[str, Any]], json.loads(decoded))
         except json.JSONDecodeError:

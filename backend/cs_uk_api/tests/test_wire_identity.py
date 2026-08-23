@@ -1,10 +1,11 @@
-"""Wire identity module (spec #309, step 1) — id grammar + projection.
+"""Wire identity module (spec #309, step 1; #340 consolidation) — id grammar + projection.
 
-Pins the single home of the three wire id grammars:
+Pins the single home of the wire id grammars:
 
   - the group-key prefix (``g2:``) and its recognizer ``is_group_key``;
   - the episode-tail grammar (``:s1e1`` / ``:e5`` / ``:eN:<blob>``);
   - the movie-suffix sentinel (``:__movie__``);
+  - the ``provider:external`` composite split;
 
 and the single projection function for merged groups (canonical fields +
 member keys) that the home rows, the search groups and the group-key
@@ -14,22 +15,34 @@ Invariant: these are the SAME values the old per-module copies produced
 — the migration must be wire-invisible (US11). ``merge.group_key``
 builds every key from ``wire_identity.group_key``, so a version bump
 edits one file (US4).
+
+Import direction (spec #340): ``wire_identity`` is a leaf — it imports
+nothing but models + stdlib, never ``merge``; the guard tests below
+enforce it.
 """
 from __future__ import annotations
 
+import ast
+import os
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
+import cs_uk_api.wire_identity
 from cs_uk_api.merge import item_group_key, merge_results
 from cs_uk_api.models import SearchResult
 from cs_uk_api.providers.base import model_b_axes
 from cs_uk_api.wire_identity import (
     GROUP_KEY_PREFIX,
     MOVIE_SUFFIX,
+    episode_wire_id,
     group_key,
     is_group_key,
     is_movie_wire_id,
+    parse_episode_tail,
     project_group,
     provider_union,
     split_episode_tail,
@@ -58,6 +71,69 @@ def _make_item(
 # ---------------------------------------------------------------------------
 # Group-key prefix
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Import-direction guard (spec #340): wire_identity is a leaf
+# ---------------------------------------------------------------------------
+
+
+def _wire_identity_source() -> str:
+    import cs_uk_api.wire_identity
+
+    return Path(cs_uk_api.wire_identity.__file__).read_text(encoding="utf-8")
+
+
+@pytest.mark.unit
+def test_wire_identity_has_no_merge_import_anywhere() -> None:
+    """AST guard: ``wire_identity`` must not import ``merge`` — at module
+    level, inside a function body (the old lazy cycle-break), or under
+    ``TYPE_CHECKING``. The dependency edge is one-way: merge →
+    wire_identity, never the reverse (spec #340)."""
+    tree = ast.parse(_wire_identity_source())
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "merge" or alias.name.startswith("merge."):
+                    offenders.append(f"line {node.lineno}: import {alias.name}")
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if (
+                node.level > 0
+                and module.split(".")[0] == "merge"
+                or module in ("cs_uk_api.merge", "merge")
+                or module.startswith("cs_uk_api.merge.")
+            ):
+                names = ", ".join(a.name for a in node.names)
+                offenders.append(f"line {node.lineno}: from {module} import {names}")
+    assert not offenders, f"wire_identity imports merge: {offenders}"
+
+
+@pytest.mark.unit
+def test_importing_wire_identity_does_not_pull_merge_transitively() -> None:
+    """Runtime guard: a fresh interpreter that imports ONLY
+    ``cs_uk_api.wire_identity`` must not end up with
+    ``cs_uk_api.merge`` in ``sys.modules`` — the grammar module stays a
+    models+stdlib leaf (spec #340)."""
+    backend_root = str(Path(cs_uk_api.wire_identity.__file__).resolve().parents[2])
+    program = (
+        "import sys; "
+        "import cs_uk_api.wire_identity; "
+        "sys.exit(1 if 'cs_uk_api.merge' in sys.modules else 0)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", program],
+        capture_output=True,
+        text=True,
+        cwd=backend_root,
+        env={**os.environ, "PYTHONPATH": backend_root},
+        timeout=60,
+    )
+    assert result.returncode == 0, (
+        "importing cs_uk_api.wire_identity pulled in cs_uk_api.merge:\n"
+        f"{result.stdout}{result.stderr}"
+    )
 
 
 @pytest.mark.unit
@@ -117,6 +193,39 @@ def test_split_episode_tail_rejects_non_episodes() -> None:
     assert split_episode_tail("g2:" + "0" * 16) is None
     assert split_episode_tail("eneyida:films/9366-duna:__movie__") is None
     assert split_episode_tail("p1:serial-1") is None
+
+
+# ---------------------------------------------------------------------------
+# sNeM tail parse + build primitives (#346)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_parse_episode_tail_accepts_bare_and_colon_forms() -> None:
+    """The two forms adapters hold — the bare rpartition suffix and the
+    colon-included ``split_episode_tail`` tail — parse identically."""
+    assert parse_episode_tail("s2e10") == (2, 10)
+    assert parse_episode_tail(":s2e10") == (2, 10)
+    assert parse_episode_tail("s1e1") == (1, 1)
+
+
+@pytest.mark.unit
+def test_parse_episode_tail_rejects_malformed() -> None:
+    assert parse_episode_tail("") is None
+    assert parse_episode_tail(":") is None
+    assert parse_episode_tail("e5") is None
+    assert parse_episode_tail("s2e10x") is None
+    assert parse_episode_tail("__movie__") is None
+
+
+@pytest.mark.unit
+def test_episode_wire_id_builds_the_pinned_shape() -> None:
+    """The builder emits exactly the shape the adapters hand-formatted:
+    round-trips through the episode-tail grammar."""
+    wid = episode_wire_id("ufdub", "dorama-408-ona", 3, 12)
+    assert wid == "ufdub:dorama-408-ona:s3e12"
+    assert split_episode_tail(wid) == ("ufdub:dorama-408-ona", ":s3e12")
+    assert is_movie_wire_id(episode_wire_id("p", "x", 1, 1)) is False
 
 
 # ---------------------------------------------------------------------------

@@ -25,7 +25,7 @@ from pydantic import BaseModel, ValidationError
 
 from ..country import extract_country
 from ..extractors import RegexExtractor
-from ..http_client import safe_get
+from ..http_client import provider_safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -37,6 +37,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
+from ..wire_identity import episode_wire_id, parse_episode_tail
 from .base import BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://doramy.world"
@@ -46,7 +47,6 @@ ASHDI_REFERER = "https://ashdi.vip/"
 # Hosts the upstream may legally redirect to: the WordPress CMS and
 # the ashdi player CDN. A hostile CMS response must not be able to
 # pivot the player hop to an attacker-controlled host.
-_ALLOWED_HOSTS: frozenset[str] = frozenset({"doramy.world", "ashdi.vip"})
 
 # Sections exposed by DoramyWorld's main navigation. Per the upstream
 # `mainPage = mainPageOf(...)` declaration in DoramyWorldProvider.kt.
@@ -81,11 +81,6 @@ _PAGE_RE = re.compile(r"/page/(\d+)/?|\bpaged=(\d+)")
 # is a kebab-case slug. Used to validate external_id at the provider
 # boundary so callers cannot inject path traversal.
 _EXTERNAL_ID_RE = re.compile(r"(film|dorama|show)/[a-z0-9][a-z0-9-]*")
-
-# Episode-id suffix grammar: `s<N>e<M>` (1-based). Matched directly
-# against the bare suffix (without the leading ':').
-_EP_SUFFIX_RE = re.compile(r"s(\d+)e(\d+)$")
-
 
 # --- JSON DTOs mirroring the upstream data-player payload --------------------
 
@@ -264,6 +259,8 @@ class DoramyWorldProvider(BaseProvider):
     name = "DoramyWorld"
     types = ("movie", "series", "dorama")
     sections = DORAMYWORLD_SECTIONS
+    #: Site + the ashdi.vip player pages it embeds (ADR-0005).
+    allowed_hosts = frozenset({"doramy.world", "ashdi.vip"})
     #: Issue #188: a content page without a player (no ``data-player``
     #: at all) is an unplayable dead card — content() raises ``gated``
     #: and the catalog sweep (``filter_gated_items``) drops it from
@@ -294,7 +291,7 @@ class DoramyWorldProvider(BaseProvider):
     ) -> tuple[list[SearchResult], bool]:
         url = _section_url(section, page)
         try:
-            resp = await safe_get(http, url, allowed_hosts=set(_ALLOWED_HOSTS))
+            resp = await provider_safe_get(http, self, url)
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
         if resp.status_code != 200:
@@ -400,7 +397,7 @@ class DoramyWorldProvider(BaseProvider):
             episodes = [
                 Episode(
                     number=e_idx,
-                    id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
+                    id=episode_wire_id(provider_id, external_id, s_idx, e_idx),
                     title=f"Серія {e_idx}",
                 )
                 for e_idx, _ in enumerate(season.episodes, start=1)
@@ -422,7 +419,7 @@ class DoramyWorldProvider(BaseProvider):
         ext_id, _, ep_suffix = content_id.rpartition(":")
         if not _EXTERNAL_ID_RE.fullmatch(ext_id):
             raise ProviderError("not_found", f"bad external_id: {ext_id!r}")
-        if not _EP_SUFFIX_RE.fullmatch(ep_suffix):
+        if parse_episode_tail(ep_suffix) is None:
             raise ProviderError("not_found", f"bad episode suffix: {ep_suffix!r}")
         url = f"{BASE_URL}/{ext_id}/"
         try:
@@ -442,10 +439,10 @@ class DoramyWorldProvider(BaseProvider):
         # from upstream HTML, so it goes through the redirect
         # allowlist (#126).
         try:
-            ashdi_resp = await safe_get(
+            ashdi_resp = await provider_safe_get(
                 http,
+                self,
                 ashdi_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"Referer": ASHDI_REFERER},
             )
         except httpx.HTTPError as e:
@@ -478,10 +475,10 @@ class DoramyWorldProvider(BaseProvider):
         ``first available episode`` fallback -- that would mask a missing
         suffix in the caller.
         """
-        m = _EP_SUFFIX_RE.fullmatch(ep_suffix)
-        if not m:
+        parsed = parse_episode_tail(ep_suffix)
+        if parsed is None:
             return None
-        s_idx, e_idx = int(m.group(1)), int(m.group(2))
+        s_idx, e_idx = parsed
         if not translations:
             return None
         selected = translations[0]

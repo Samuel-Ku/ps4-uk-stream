@@ -18,7 +18,7 @@ from bs4.element import Tag
 
 from ..country import extract_country
 from ..extractors import ExtractResult, RegexExtractor
-from ..http_client import safe_get
+from ..http_client import provider_safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -31,6 +31,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
+from ..wire_identity import episode_wire_id, parse_episode_tail, split_wire_id
 from .base import BaseProvider, MediaTypeStr, ProviderError
 
 
@@ -87,12 +88,6 @@ def _parse_itemprop_meta(soup: BeautifulSoup) -> tuple[int | None, list[str], li
 # against the captured URL keeps test fixtures in sync with
 # production behavior.
 BASE_URL = "https://uafix.net"
-# Hosts the upstream may legally redirect to: the content page on
-# uafix.net and the PlayerJS iframes on zetvideo.net / ashdi.vip. A
-# hostile CMS response must not be able to pivot either hop elsewhere.
-_ALLOWED_HOSTS: frozenset[str] = frozenset(
-    {"uafix.net", "zetvideo.net", "ashdi.vip"}
-)
 
 # External-id boundary: `<section>-<slug>` (e.g. `serials-djuna-proroctvo`)
 # where both halves are lowercase ASCII with hyphens. Anything else —
@@ -203,11 +198,10 @@ def _episode_content_url(external_id: str, ep_suffix: str) -> str:
     (e.g. `s1e1` -> `season-01-episode-01`).
     """
     section, _, slug = external_id.partition("-")
-    m = re.fullmatch(r"s(\d+)e(\d+)", ep_suffix)
-    if not m:
+    parsed = parse_episode_tail(ep_suffix)
+    if parsed is None:
         raise ProviderError("parse_failed", f"bad episode suffix: {ep_suffix!r}")
-    season_num = int(m.group(1))
-    episode_num = int(m.group(2))
+    season_num, episode_num = parsed
     return (
         f"{BASE_URL}/{section}/{slug}/"
         f"season-{season_num:02d}-episode-{episode_num:02d}/"
@@ -358,11 +352,10 @@ def _serial_media_url(html: str, ep_suffix: str) -> str | None:
     raw = _file_value(html)
     if raw is None:
         return None
-    m = re.fullmatch(r"s(\d+)e(\d+)", ep_suffix)
-    if not m:
+    parsed = parse_episode_tail(ep_suffix)
+    if parsed is None:
         return None
-    season = int(m.group(1))
-    episode = int(m.group(2))
+    season, episode = parsed
     try:
         data = json.loads(raw)
         value = data[0]["folder"][season - 1]["folder"][episode - 1]["file"]
@@ -434,7 +427,7 @@ def _parse_seasons(
         episodes_by_season.setdefault(s, []).append(
             Episode(
                 number=len(episodes_by_season[s]) + 1,
-                id=f"{provider_id}:{external_id}:s{s}e{e}",
+                id=episode_wire_id(provider_id, external_id, s, e),
                 title=title,
             )
         )
@@ -463,6 +456,10 @@ class UAFlixProvider(BaseProvider):
     name = "UAFlix"
     types = ("movie", "series", "anime", "dorama", "cartoon")
     sections = UAFLIX_SECTIONS
+    #: Content page on uafix.net plus the PlayerJS iframes on
+    #: zetvideo.net / ashdi.vip — a hostile CMS response must not
+    #: pivot either hop elsewhere (ADR-0005).
+    allowed_hosts = frozenset({"uafix.net", "zetvideo.net", "ashdi.vip"})
     #: Issue #189: trailer-only content pages (a YouTube embed with no
     #: playable player) raise ``gated`` at content() time so the
     #: catalog sweep (ADR-0002) drops the dead card from home/search
@@ -624,10 +621,10 @@ class UAFlixProvider(BaseProvider):
             return None
         player_url = urljoin(_content_url(external_id), player_url)
         try:
-            resp = await safe_get(
+            resp = await provider_safe_get(
                 http,
+                self,
                 player_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"Referer": f"{BASE_URL}/"},
             )
         except httpx.HTTPError:
@@ -650,7 +647,7 @@ class UAFlixProvider(BaseProvider):
             episodes = [
                 Episode(
                     number=e_idx,
-                    id=f"{self.id}:{external_id}:s{s_idx}e{e_idx}",
+                    id=episode_wire_id(self.id, external_id, s_idx, e_idx),
                     title=(
                         str(ep.get("title") or "").strip() or f"Серія {e_idx}"
                     ),
@@ -676,10 +673,10 @@ class UAFlixProvider(BaseProvider):
             else _content_url(ext_id)
         )
         try:
-            resp = await safe_get(
+            resp = await provider_safe_get(
                 http,
+                self,
                 content_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"Referer": f"{BASE_URL}/"},
             )
         except httpx.HTTPError as e:
@@ -692,10 +689,10 @@ class UAFlixProvider(BaseProvider):
             # still embeds the serial player we index by `s<N>e<M>`.
             content_url = _content_url(ext_id)
             try:
-                resp = await safe_get(
+                resp = await provider_safe_get(
                     http,
+                    self,
                     content_url,
-                    allowed_hosts=set(_ALLOWED_HOSTS),
                     headers={"Referer": f"{BASE_URL}/"},
                 )
             except httpx.HTTPError as e:
@@ -714,10 +711,10 @@ class UAFlixProvider(BaseProvider):
         # scheme-less URL, so resolve it against the content page first.
         player_url = urljoin(content_url, player_url)
         try:
-            player_resp = await safe_get(
+            player_resp = await provider_safe_get(
                 http,
+                self,
                 player_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"Referer": f"{BASE_URL}/"},
             )
         except httpx.HTTPError as e:
@@ -751,10 +748,8 @@ class UAFlixProvider(BaseProvider):
         episode). The colon after the leading `<section>-` is the
         boundary marker so hyphens in the slug never confuse us.
         """
-        if ":" in content_id:
-            ext_id, _, suffix = content_id.partition(":")
-            return ext_id, suffix
-        return content_id, ""
+        ext_id, tail = split_wire_id(content_id)
+        return ext_id, tail.removeprefix(":")
 
 
 __all__ = ["UAFlixProvider"]

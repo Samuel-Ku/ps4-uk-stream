@@ -9,7 +9,7 @@ import httpx
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 
-from ..http_client import safe_get
+from ..http_client import provider_safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -22,13 +22,10 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import MOVIE_SUFFIX, BaseProvider, MediaTypeStr, ProviderError
+from ..wire_identity import is_movie_wire_id, parse_episode_tail, strip_movie_suffix
+from .base import BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://ufdub.com"
-# Hosts the upstream may legally redirect to. The content page lives on
-# ufdub.com and the player on video.ufdub.com; a hostile CMS response
-# must not be able to pivot either hop to an attacker-controlled host.
-_ALLOWED_HOSTS: frozenset[str] = frozenset({"ufdub.com", "video.ufdub.com"})
 
 UFDUB_SECTIONS: tuple[Section, ...] = (
     Section(id="filmy", title="Фільми", form="movie"),
@@ -226,6 +223,9 @@ class UFDubProvider(BaseProvider):
     name = "UFDub"
     types = ("movie", "series", "anime", "dorama")
     sections = UFDUB_SECTIONS
+    #: The content page lives on ufdub.com, the player on video.ufdub.com;
+    #: a hostile CMS response must not pivot either hop elsewhere (ADR-0005).
+    allowed_hosts = frozenset({"ufdub.com", "video.ufdub.com"})
     #: ``content()`` gates cards whose player page has no playable
     #: media (issue #164: upstream emits an empty ``var a = []`` for
     #: dead titles) so the ADR-0002 catalog sweep drops them instead
@@ -388,10 +388,10 @@ class UFDubProvider(BaseProvider):
         if player_url is None:
             return []
         try:
-            resp = await safe_get(
+            resp = await provider_safe_get(
                 http,
+                self,
                 player_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"Referer": f"{BASE_URL}/"},
             )
         except httpx.HTTPError as e:
@@ -409,8 +409,8 @@ class UFDubProvider(BaseProvider):
         # array. Follow both hops (HTML + regex only, spec ground rule #4).
         # `content_id` is either the bare external id (`film-48-...` for
         # movies) or `<external>:s1e<N>` for a series episode.
-        if MOVIE_SUFFIX in content_id:
-            ext_id = content_id.split(MOVIE_SUFFIX, 1)[0]
+        if is_movie_wire_id(content_id):
+            ext_id = strip_movie_suffix(content_id)
             ep_suffix = ""
         elif ":" in content_id:
             ext_id, _, ep_suffix = content_id.rpartition(":")
@@ -425,10 +425,10 @@ class UFDubProvider(BaseProvider):
         kind, slug = split
         content_url = f"{BASE_URL}/{kind}/{ext_id[len(kind) + 1:]}.html"
         try:
-            resp = await safe_get(
+            resp = await provider_safe_get(
                 http,
+                self,
                 content_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"Referer": f"{BASE_URL}/"},
             )
         except httpx.HTTPError as e:
@@ -442,10 +442,10 @@ class UFDubProvider(BaseProvider):
                 "parse_failed", "no player iframe found on content page"
             )
         try:
-            player_resp = await safe_get(
+            player_resp = await provider_safe_get(
                 http,
+                self,
                 player_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
                 headers={"Referer": f"{BASE_URL}/"},
             )
         except httpx.HTTPError as e:
@@ -458,12 +458,12 @@ class UFDubProvider(BaseProvider):
                 "parse_failed", "no media URL found in player page"
             )
         if ep_suffix:
-            m = re.fullmatch(r"s(\d+)e(\d+)", ep_suffix)
-            if not m:
+            parsed = parse_episode_tail(ep_suffix)
+            if parsed is None:
                 raise ProviderError(
                     "not_found", f"bad episode suffix: {ep_suffix!r}"
                 )
-            season, episode = int(m.group(1)), int(m.group(2))
+            season, episode = parsed
             if season != 1 or episode < 1 or episode > len(episodes):
                 raise ProviderError(
                     "not_found", f"episode out of range: {ep_suffix!r}"

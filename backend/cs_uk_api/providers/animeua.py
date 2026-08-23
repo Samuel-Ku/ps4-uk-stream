@@ -22,6 +22,8 @@ from ..models import (
     Translation,
     TranslationLevel,
 )
+from ..http_client import provider_safe_get
+from ..wire_identity import episode_wire_id, parse_episode_tail
 from .base import BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://animeua.club"
@@ -160,10 +162,10 @@ def _group_episodes(dubs: list[dict[str, Any]]) -> _DubsMap:
 
 
 def _episode_files(grouped: _DubsMap, ep_suffix: str) -> list[tuple[str, str]] | None:
-    match = re.fullmatch(r"s(\d+)e(\d+)", ep_suffix)
-    if not match:
+    parsed = parse_episode_tail(ep_suffix)
+    if parsed is None:
         return None
-    s_idx, e_idx = int(match.group(1)), int(match.group(2))
+    s_idx, e_idx = parsed
     if not (1 <= s_idx <= len(grouped)):
         return None
     episodes = list(grouped.values())[s_idx - 1]
@@ -192,7 +194,7 @@ def _build_seasons(grouped: _DubsMap, external_id: str, provider_id: str) -> lis
             episodes=[
                 Episode(
                     number=e_idx,
-                    id=f"{provider_id}:{external_id}:s{s_idx}e{e_idx}",
+                    id=episode_wire_id(provider_id, external_id, s_idx, e_idx),
                     title=episode_title,
                     translations=[Translation(id=name, label=name) for name, _ in files],
                 )
@@ -218,6 +220,9 @@ class AnimeUAProvider(BaseProvider):
     sections = ANIMEUA_SECTIONS
     # v3 (issue #70): "Нове аніме" contributes to «Новинки».
     newest_section = "page"
+    #: The animeua.club CMS plus the ashdi.vip player pages its
+    #: iframe srcs point at (ADR-0005).
+    allowed_hosts = frozenset({"animeua.club", "ashdi.vip"})
 
     @staticmethod
     def _player_url(soup: BeautifulSoup) -> str | None:
@@ -245,7 +250,9 @@ class AnimeUAProvider(BaseProvider):
 
     async def _get(self, url: str, http: httpx.AsyncClient) -> httpx.Response:
         try:
-            response = await http.get(url, headers={"Referer": f"{BASE_URL}/"})
+            response = await provider_safe_get(
+                http, self, url, headers={"Referer": f"{BASE_URL}/"}
+            )
         except httpx.HTTPError as error:
             raise ProviderError("unreachable", str(error)) from error
         if response.status_code != 200:

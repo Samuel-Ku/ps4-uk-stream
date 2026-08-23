@@ -7,7 +7,7 @@ import httpx
 import pytest
 import respx
 
-from cs_uk_api.providers.uaflix import _ALLOWED_HOSTS, UAFlixProvider
+from cs_uk_api.providers.uaflix import UAFlixProvider
 
 FIX = pathlib.Path(__file__).parent / "fixtures" / "uaflix"
 
@@ -298,8 +298,9 @@ async def test_uaflix_stream_series_resolves_episode_m3u8():
 def test_uaflix_allowlist_includes_ashdi():
     """Issue #183: ashdi.vip serial players must be fetchable through the
     shared SSRF-safe guarded client — a series whose episode embeds an
-    ashdi serial page must not 502 with `disallowed host`."""
-    assert "ashdi.vip" in _ALLOWED_HOSTS
+    ashdi serial page must not 502 with `disallowed host`. The
+    declaration now lives on the provider class (ADR-0005)."""
+    assert "ashdi.vip" in UAFlixProvider.allowed_hosts
 
 
 @pytest.mark.asyncio

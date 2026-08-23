@@ -9,7 +9,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from ..country import extract_country
-from ..http_client import safe_get
+from ..http_client import provider_safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -22,13 +22,18 @@ from ..models import (
     Translation,
     TranslationLevel,
 )
-from .base import MOVIE_SUFFIX, BaseProvider, MediaTypeStr, ProviderError, parse_actor_list
+from ..wire_identity import (
+    episode_wire_id,
+    is_movie_wire_id,
+    parse_episode_tail,
+    strip_movie_suffix,
+)
+from .base import BaseProvider, MediaTypeStr, ProviderError, parse_actor_list
 
 BASE_URL = "https://kinotron.tv"
 # Hosts the upstream may legally redirect to: the DLE CMS and the ashdi
 # player. A hostile CMS response must not be able to pivot either hop
 # to an attacker-controlled host.
-_ALLOWED_HOSTS: frozenset[str] = frozenset({"kinotron.tv", "ashdi.vip"})
 SECTIONS = (
     Section(id="films", title="Фільми", form="movie"),
     Section(id="serials", title="Серіали", form="series"),
@@ -92,6 +97,8 @@ class KinoTronProvider(BaseProvider):
     name = "KinoTron"
     types = ("movie", "series", "cartoon", "anime")
     sections = SECTIONS
+    #: Site + the ashdi.vip player pages it embeds (ADR-0005).
+    allowed_hosts = frozenset({"kinotron.tv", "ashdi.vip"})
     #: ``content()`` gates trailer-only (youtube-only) pages (#163) so
     #: the catalog sweep drops dead cards from home/search.
     can_gate = True
@@ -179,7 +186,7 @@ class KinoTronProvider(BaseProvider):
         # player) which follows allowed same-host redirects. Pages > 1
         # still return 200 directly and are unaffected.
         try:
-            response = await safe_get(http, url, allowed_hosts=set(_ALLOWED_HOSTS))
+            response = await provider_safe_get(http, self, url)
         except httpx.HTTPError as error:
             raise ProviderError("unreachable", str(error)) from error
         if response.status_code != 200:
@@ -236,7 +243,7 @@ class KinoTronProvider(BaseProvider):
                     episodes=[
                         Episode(
                             number=episode_number,
-                            id=f"{self.id}:{external_id}:s{season_number}e{episode_number}",
+                            id=episode_wire_id(self.id, external_id, season_number, episode_number),
                             title=episode_title,
                             translations=[Translation(id=dub, label=dub) for dub in dubs],
                         )
@@ -276,12 +283,12 @@ class KinoTronProvider(BaseProvider):
         # prefix already stripped: "<external_id>" (movie),
         # "<external_id>:__movie__" (movie from the content listing), or
         # "<external_id>:s<N>e<M>" (series episode).
-        if MOVIE_SUFFIX in content_id:
-            external_id = content_id.split(MOVIE_SUFFIX, 1)[0]
+        if is_movie_wire_id(content_id):
+            external_id = strip_movie_suffix(content_id)
             episode_match = None
         elif ":" in content_id:
             external_id, _, ep_suffix = content_id.rpartition(":")
-            episode_match = re.fullmatch(r"s(\d+)e(\d+)", ep_suffix)
+            episode_match = parse_episode_tail(ep_suffix)
         else:
             external_id = content_id
             episode_match = None
@@ -297,7 +304,7 @@ class KinoTronProvider(BaseProvider):
             raise ProviderError("parse_failed", "no stream URL found")
         selected = files[0]
         if episode_match:
-            season_number, episode_number = map(int, episode_match.groups())
+            season_number, episode_number = episode_match
             season_names = list(dict.fromkeys(str(item.get("season", "")).strip() for item in files))
             if season_number < 1 or season_number > len(season_names):
                 raise ProviderError("not_found", "season not found")

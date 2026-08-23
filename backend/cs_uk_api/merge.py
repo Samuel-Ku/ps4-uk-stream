@@ -13,17 +13,30 @@ simple "gN:" bump, never a data migration. The identity axis is the Model
 B ``form`` (movie|series) — the legacy ``type`` axis is gone (contract
 #135); style tags do NOT participate in identity (the same film tagged
 "anime" by one provider and plain by another is the same title).
+
+Since #340 this module owns ONLY the matching/projection logic (title-
+alias union-find, the year-soft rule, the audit log); every id-grammar
+primitive — the ``g2:`` prefix, title normalization, per-item key
+derivation — lives in ``wire_identity`` and is re-exported here for the
+established import paths. The edge is strictly one-way: merge →
+wire_identity.
 """
 from __future__ import annotations
 
 import logging
-import re
-import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from .models import SearchResult
-from .wire_identity import group_key
+from .wire_identity import (
+    effective_year as effective_year,
+    extract_year as extract_year,
+    group_key as group_key,
+    group_key_from as group_key_from,
+    item_group_key as item_group_key,
+    normalize_title as normalize_title,
+    title_aliases as title_aliases,
+)
 
 log = logging.getLogger("cs_uk_api.merge")
 
@@ -33,92 +46,6 @@ log = logging.getLogger("cs_uk_api.merge")
 #: film and a plain film with the same name+year merge). The ``gN:``
 #: prefix itself lives in ``wire_identity`` (spec #309) — a version
 #: bump edits one file.
-
-#: DLE-style sites sprinkle codec/quality labels into titles.
-_QUALITY_TAGS = re.compile(
-    r"\b(?:480p|576p|720p|1080p|2160p|4320p|4k|8k|uhd|fhd|hdr(?:10)?|"
-    r"web[- ]?dl|web[- ]?rip|bd[- ]?rip|dvd[- ]?rip|dvdscr|hdtv|"
-    r"cam(?:rip)?|ts|x26[45]|h26[45]|hevc|avc|aac|ac3|dts|mp3|"
-    r"укр|ukr|ua|дубляж|субтитри)\b",
-    re.IGNORECASE,
-)
-
-#: A bracketed year anywhere: "(2021)", "[2009]".
-_BRACKET_YEAR = re.compile(r"[\(\[]\s*((?:19|20)\d{2})\s*[\)\]]")
-#: A bare trailing year token: "Дюна 2021".
-_TRAILING_YEAR = re.compile(r"\s((?:19|20)\d{2})\s*$")
-
-#: Trailing content-type words tailing a title: "Дюна (фільм)", "Смолфут мультфільм".
-_TAIL_TYPES = ("фільм", "серіал", "мультфільм", "мультсеріал", "аніме", "дорама", "кино", "сериал", "мультик")
-_BRACKET_TAIL_TYPE = re.compile(r"[\(\[](?:фільм|серіал|мультфільм|мультсеріал|аніме|дорама)[\)\]]", re.IGNORECASE)
-
-#: Apostrophe variants are DELETED, not normalized to one char: that unifies
-#: all of «п'ять», «п’ять», «пять» in one stroke.
-_APOSTROPHES = str.maketrans({"’": "", "‘": "", "`": "", "´": "", "ʼ": "", "'": "", '"': ""})
-
-#: " / " separates alternative titles on DLE sites ("Тато / Daddy").
-_ALIAS_SPLIT = re.compile(r"\s+/\s+")
-
-
-def extract_year(raw: str) -> int | None:
-    """Extract a 4-digit release year: bracketed anywhere, else bare-trailing."""
-    m = _BRACKET_YEAR.search(raw)
-    if m is not None:
-        return int(m.group(1))
-    m = _TRAILING_YEAR.search(raw)
-    return int(m.group(1)) if m is not None else None
-
-
-def _normalize_one(piece: str) -> str:
-    s = piece.translate(_APOSTROPHES).lower()
-    s = _BRACKET_YEAR.sub(" ", s)
-    s = _TRAILING_YEAR.sub("", s)
-    s = _QUALITY_TAGS.sub(" ", s)
-    s = _BRACKET_TAIL_TYPE.sub(" ", s)
-    # Punctuation and symbols become spaces (.,:;!?()[]{}«»"„“–—-/ etc.).
-    s = "".join(" " if unicodedata.category(ch)[0] in "PS" else ch for ch in s)
-    tokens = s.split()
-    while tokens and tokens[-1] in _TAIL_TYPES:
-        tokens.pop()
-    return " ".join(tokens)
-
-
-def title_aliases(raw: str) -> tuple[str, ...]:
-    """Normalized alternative titles, first-normalized-first, deduped."""
-    seen: list[str] = []
-    for piece in _ALIAS_SPLIT.split(raw.strip()):
-        norm = _normalize_one(piece)
-        if norm and norm not in seen:
-            seen.append(norm)
-    return tuple(seen)
-
-
-def normalize_title(raw: str) -> str:
-    """Canonical normalized form of a title (its primary alias)."""
-    aliases = title_aliases(raw)
-    return aliases[0] if aliases else ""
-
-
-def effective_year(title: str, year: int | None) -> int | None:
-    """A title's year: the explicit field, else one parsed from the raw title."""
-    return year if year is not None else extract_year(title)
-
-
-def group_key_from(title: str, form: str, year: int | None, item_id: str) -> str:
-    """Stateless group identity for one raw title (issue #69, v3 spec §4.3).
-
-    A pure function of the item's own listing data — its most canonical
-    alias, its ``form`` (movie/series), its RAW year field — so the same
-    title always yields
-    the same key no matter which other providers appear in the same call.
-    The raw year is composed through ``effective_year`` (explicit year,
-    else title-parsed) internally, exactly as the merge core composes it
-    for matching, so a caller passing the raw field always agrees with
-    ``merge_results``.
-    """
-    aliases = title_aliases(title)
-    key_alias = min(aliases) if aliases else f"id:{item_id}"
-    return group_key(key_alias, form, effective_year(title, year))
 
 
 @dataclass(frozen=True)
@@ -131,18 +58,6 @@ class MergeGroup:
 
 def _effective_year(it: SearchResult) -> int | None:
     return effective_year(it.title, it.year)
-
-
-def item_group_key(it: SearchResult) -> str:
-    """Stateless per-item group identity: ``group_key_from`` over the item.
-
-    Public seam for callers that hold one item (e.g. ``/api/content``) and
-    need the same key the merge core would produce for it. The item's raw
-    year field is passed through — ``group_key_from`` applies the effective
-    year itself. The identity axis is ``form`` (contract #135) — ``type``
-    no longer exists on items.
-    """
-    return group_key_from(it.title, it.form, it.year, it.id)
 
 
 def _years_match(a: int | None, b: int | None) -> bool:

@@ -55,6 +55,8 @@ from ..models import (
     StreamResponse,
     Translation,
 )
+from ..wire_identity import MOVIE_SUFFIX
+from ..http_client import provider_safe_get
 from .base import BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://animeon.club"
@@ -228,6 +230,10 @@ class AnimeONProvider(BaseProvider):
     # v3 (issue #70): the ``page`` section is animeon's "Нове аніме"
     # listing — contributes to the «Новинки» row.
     newest_section = "page"
+    #: The animeon.club CMS/API plus the two player surfaces its
+    #: upstream-derived URLs point at — moonanime.art iframes and the
+    #: ashdi.vip player/serial pages (ADR-0005).
+    allowed_hosts = frozenset({"animeon.club", "moonanime.art", "ashdi.vip"})
     #: ``content()`` gates titles whose upstream translations are
     #: withheld (``{"translations": []}`` → ``gated``, ADR-0002). The
     #: catalog sweep must run for animeon so those dead cards are
@@ -246,7 +252,9 @@ class AnimeONProvider(BaseProvider):
         with the right code: ``unreachable`` on connection errors,
         ``upstream_unreachable`` on 5xx, and ``not_found`` on 4xx."""
         try:
-            response = await http.get(url, headers=headers or _DEFAULT_HEADERS)
+            response = await provider_safe_get(
+                http, self, url, headers=headers or _DEFAULT_HEADERS
+            )
         except httpx.HTTPError as error:
             raise ProviderError("unreachable", str(error)) from error
         if response.status_code >= 500:
@@ -270,7 +278,7 @@ class AnimeONProvider(BaseProvider):
         """GET ``url`` and return the body as text. Same error codes as
         ``_get_json`` except we don't try to JSON-decode the body."""
         try:
-            response = await http.get(url, headers=headers)
+            response = await provider_safe_get(http, self, url, headers=headers)
         except httpx.HTTPError as error:
             raise ProviderError("unreachable", str(error)) from error
         if response.status_code >= 500:
@@ -875,7 +883,7 @@ class AnimeONProvider(BaseProvider):
         # encoded `e<N>:<blob>` suffix.
         if ":" in content_id:
             parts = content_id.split(":", 2)
-            if len(parts) == 2 and parts[1] == "__movie__":
+            if len(parts) == 2 and parts[1] == MOVIE_SUFFIX[1:]:
                 if not _EXTERNAL_ID_RE.fullmatch(parts[0]):
                     raise ProviderError("not_found", "bad content_id")
                 return await self._movie_stream(int(parts[0]), translation, http)

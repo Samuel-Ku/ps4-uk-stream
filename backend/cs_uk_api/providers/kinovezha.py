@@ -24,7 +24,7 @@ from bs4 import BeautifulSoup
 from bs4.element import Tag
 
 from ..country import extract_country
-from ..http_client import safe_get
+from ..http_client import provider_safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -37,13 +37,18 @@ from ..models import (
     Translation,
 )
 from ._tortuga import decode as _tor_decrypt
-from .base import MOVIE_SUFFIX, BaseProvider, MediaTypeStr, ProviderError
+from ..wire_identity import (
+    MOVIE_SUFFIX,
+    is_movie_wire_id,
+    parse_episode_tail,
+    strip_movie_suffix,
+)
+from .base import BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://kinovezha.tv"
 # Hosts the upstream may legally redirect to: the DLE CMS and the
 # tortuga player. A hostile CMS response must not be able to pivot
 # either hop to an attacker-controlled host.
-_ALLOWED_HOSTS: frozenset[str] = frozenset({"kinovezha.tv", "tortuga.tw"})
 
 # Sections exposed by KinoVezha's main navigation. Per the upstream
 # Kotlin source's `mainPage = mainPageOf(...)`:
@@ -250,6 +255,8 @@ class KinoVezhaProvider(BaseProvider):
     name = "КіноВежа"
     types = ("movie", "series")
     sections = KINOVEZHA_SECTIONS
+    #: Site + the Tortuga player gateway it embeds (ADR-0005).
+    allowed_hosts = frozenset({"kinovezha.tv", "tortuga.tw"})
 
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         # DLE-style POST search. The site is a DLE CMS so the same
@@ -274,10 +281,10 @@ class KinoVezhaProvider(BaseProvider):
         # (same host allowlist as stream()) which follows allowed same-host
         # redirects. Pages > 1 still return 200 directly and are unaffected.
         try:
-            resp = await safe_get(
+            resp = await provider_safe_get(
                 http,
+                self,
                 url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
             )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
@@ -392,15 +399,18 @@ class KinoVezhaProvider(BaseProvider):
             return None
         return str(iframe["src"])
 
-    @staticmethod
     async def _load_series_seasons(
-        player_url: str, external_id: str, http: httpx.AsyncClient, provider_id: str
+        self,
+        player_url: str,
+        external_id: str,
+        http: httpx.AsyncClient,
+        provider_id: str,
     ) -> tuple[list[Season] | None, list[Translation]]:
         try:
-            resp = await safe_get(
+            resp = await provider_safe_get(
                 http,
+                self,
                 player_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
             )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
@@ -454,8 +464,8 @@ class KinoVezhaProvider(BaseProvider):
         # the content URL — calling `http.get(content_id)` raises
         # `ValueError: unknown url type` (caught by code-reviewer on
         # UFDub).
-        if MOVIE_SUFFIX in content_id:
-            ext_id = content_id.split(MOVIE_SUFFIX, 1)[0]
+        if is_movie_wire_id(content_id):
+            ext_id = strip_movie_suffix(content_id)
             ep_suffix = ""
         elif ":" in content_id:
             ext_id, _, ep_suffix = content_id.rpartition(":")
@@ -478,10 +488,10 @@ class KinoVezhaProvider(BaseProvider):
         # The player URL came from upstream HTML, so it goes through
         # the redirect allowlist (#126).
         try:
-            player_resp = await safe_get(
+            player_resp = await provider_safe_get(
                 http,
+                self,
                 player_url,
-                allowed_hosts=set(_ALLOWED_HOSTS),
             )
         except httpx.HTTPError as e:
             raise ProviderError("unreachable", str(e)) from e
@@ -517,11 +527,10 @@ class KinoVezhaProvider(BaseProvider):
             return decoded if not ep_suffix else None
         if not ep_suffix:
             return None
-        m = re.fullmatch(r"s(\d+)e(\d+)", ep_suffix)
-        if not m:
+        parsed = parse_episode_tail(ep_suffix)
+        if parsed is None:
             return None
-        s_idx = int(m.group(1))
-        e_idx = int(m.group(2))
+        s_idx, e_idx = parsed
         try:
             data = _parse_player_json(decoded)
         except json.JSONDecodeError:
