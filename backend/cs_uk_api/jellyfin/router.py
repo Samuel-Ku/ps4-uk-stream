@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import io
 import logging
 import os
 import re
@@ -81,6 +80,7 @@ from ..providers import PROVIDERS
 from ..providers.base import ProviderError
 from ..recommend import similarity
 from ..wire_identity import is_group_key
+from . import images
 from .auth import require_token
 from .hls_proxy import _STREAM_MEMO as _STREAM_MEMO  # re-export: suite clears the memo via router
 from .hls_proxy import proxy_download, proxy_stream, segment_target, serve_segment
@@ -1764,42 +1764,16 @@ async def item_primary_image(
     return await _serve_item_image(item_id, format=format, maxWidth=maxWidth)
 
 
-#: Transcode memo: ``(poster_url, max_width) → WebP bytes``. The client
-#: retries a bad poster dozens of times per second (observed 533), so
-#: the conversion must cost one Pillow pass per poster, not per request.
-_WEBP_MEMO: dict[tuple[str, int | None], bytes] = {}
-_WEBP_MEMO_MAX = 256
-
-
-def _as_webp(poster_url: str, body: bytes, max_width: int | None) -> bytes:
-    """``body`` as WebP bytes (Pillow), resized to ``max_width`` when
-    larger; the original back on any decode error (a transcode failure
-    must not turn a served poster into a 404)."""
-    key = (poster_url, max_width)
-    hit = _WEBP_MEMO.get(key)
-    if hit is not None:
-        return hit
-    try:
-        from PIL import Image, ImageOps
-
-        logo: Image.Image = Image.open(io.BytesIO(body))
-        if max_width and logo.width > max_width:
-            logo = ImageOps.contain(logo, (max_width, max_width))
-        out = io.BytesIO()
-        logo.convert("RGB").save(out, format="WEBP", quality=82)
-        hit = out.getvalue()
-    except Exception:  # noqa: BLE001
-        hit = body
-    if len(_WEBP_MEMO) >= _WEBP_MEMO_MAX:
-        _WEBP_MEMO.clear()
-    _WEBP_MEMO[key] = hit
-    return hit
-
-
 async def _serve_item_image(
     item_id: str, *, format: str | None = None, maxWidth: int | None = None
 ) -> Response:
-    """The poster for ``item_id`` as an inline image response, or 404."""
+    """The poster for ``item_id`` as an inline image response, or 404.
+
+    Resolution (poster URL lookup + the shared poster-cache fetch) stays
+    here; the WebP verdict/transcode delegates to the image module
+    (ticket #343). ``fetch_poster_bytes`` resolves through THIS module at
+    call time — the suite stubs it here.
+    """
     poster_url = _poster_for(item_id)
     if poster_url is None and is_group_key(item_id):
         # Item not in the home snapshot (surfaced via Latest/search);
@@ -1812,43 +1786,10 @@ async def _serve_item_image(
     if fetched is None:
         raise HTTPException(status_code=404, detail="poster_unavailable")
     body, ctype = fetched
-    wants_webp = format is not None and format.lower().lstrip("/") in ("webp", "webp,kwebp")
-    if wants_webp and not ctype.startswith("image/webp"):
-        body = _as_webp(poster_url, body, maxWidth)
+    if images.wants_webp(format) and not ctype.startswith("image/webp"):
+        body = images.as_webp(poster_url, body, maxWidth)
         ctype = "image/webp"
     return Response(content=body, media_type=ctype)
-
-
-#: Placeholder avatar bytes per format — the facade has no user concept,
-#: but Switchfin's server list ALWAYS requests each saved user's avatar
-#: (``apiUserImage``) and its HTTP layer logs any 4xx as a console error
-#: ("http status 404"). A transparent placeholder answers 200 while still
-#: rendering as "no avatar": the client's own default glyph shows through
-#: the transparency.
-_AVATAR_MEMO: dict[str, bytes] = {}
-
-
-def _placeholder_avatar(format: str | None) -> tuple[bytes, str]:
-    """A transparent placeholder image in the requested format.
-
-    Switchfin's PS4 build requests ``format=Webp`` and decodes the body
-    as WebP whenever the URL contains ``Webp`` (``Image::doRequest``), so
-    the placeholder must be real WebP bytes — a PNG answer to a WebP URL
-    silently fails to decode and renders nothing.
-    """
-    wants_webp = format is not None and format.lower().lstrip("/") in ("webp", "webp,kwebp")
-    key = "webp" if wants_webp else "png"
-    hit = _AVATAR_MEMO.get(key)
-    if hit is not None:
-        return hit, "image/webp" if wants_webp else "image/png"
-    from PIL import Image
-
-    img = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
-    out = io.BytesIO()
-    img.save(out, format="WEBP" if wants_webp else "PNG")
-    hit = out.getvalue()
-    _AVATAR_MEMO[key] = hit
-    return hit, "image/webp" if wants_webp else "image/png"
 
 
 @router.get(
@@ -1862,7 +1803,7 @@ async def user_primary_image(user_id: str, format: str | None = None) -> Respons
     on the console when it's missing. Public like every other image
     endpoint (token-less image loading, see ``item_primary_image``).
     """
-    body, ctype = _placeholder_avatar(format)
+    body, ctype = images.placeholder_avatar(format)
     return Response(content=body, media_type=ctype)
 
 
