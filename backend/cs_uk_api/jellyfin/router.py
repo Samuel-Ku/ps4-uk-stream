@@ -80,8 +80,9 @@ from ..providers import PROVIDERS
 from ..providers.base import ProviderError
 from ..recommend import similarity
 from ..wire_identity import is_group_key
-from . import images
+from . import dto, images
 from .auth import require_token
+from .dto import JF_TYPE_BY_ROW, safe_filename
 from .hls_proxy import _STREAM_MEMO as _STREAM_MEMO  # re-export: suite clears the memo via router
 from .hls_proxy import proxy_download, proxy_stream, segment_target, serve_segment
 from .models import (
@@ -95,7 +96,6 @@ from .models import (
     ItemCounts,
     MediaSourceInfo,
     MediaStreamInfo,
-    PersonDto,
     PlaybackInfoResponse,
     SearchHint,
     SearchHintResult,
@@ -316,25 +316,14 @@ _COLLECTION_TYPE_BY_ROW = {
     "llm_idea_2": "tvshows",
 }
 
-#: Home-row kind → Jellyfin item Type. Only Movie/Series are expressible
-#: on the wire (AC: "correct Type (Movie/Series)"); style-tagged rows are
-#: episodic content and become Series. Row kinds come from the Model B
-#: section axes (contract #135) — the legacy ``type`` axis is gone.
-_JF_TYPE_BY_ROW = {
-    "movie": "Movie",
-    "series": "Series",
-    "anime": "Series",
-    "cartoon": "Series",
-    "dorama": "Series",
-}
-
-#: Reverse of ``_JF_TYPE_BY_ROW``: Jellyfin item Type → the home-row
+#: Reverse of ``dto.JF_TYPE_BY_ROW`` (the kind → Type table now lives
+#: with the DTO mapping, ticket #344): Jellyfin item Type → the home-row
 #: kinds that map to it. Multiple rows collapse onto one wire Type
 #: (series/anime/cartoon/dorama are all "Series"), so this is a
 #: set-valued index — used to translate ``includeItemTypes`` back to
 #: the row kinds the home snapshot is keyed by (ticket #213).
 _HOME_KINDS_BY_JF_TYPE: dict[str, set[str]] = {}
-for _kind, _jf_type in _JF_TYPE_BY_ROW.items():
+for _kind, _jf_type in JF_TYPE_BY_ROW.items():
     _HOME_KINDS_BY_JF_TYPE.setdefault(_jf_type, set()).add(_kind)
 
 
@@ -365,83 +354,60 @@ def _parse_genre_ids(genre_ids: str | None) -> set[str] | None:
     return {g for g in (x.strip() for x in genre_ids.split(",")) if g}
 
 
-def _poster_tag(poster_url: str) -> str:
-    """Opaque ``ImageTags.Primary`` value (D9).
-
-    Deterministic in the poster URL, so a client-side image cache
-    busts exactly when the upstream art changes and not otherwise.
-    """
-    return hashlib.sha256(poster_url.encode()).hexdigest()[:16]
-
-
 def _user_data(item_id: str | None) -> UserDataResult | None:
     """The UserDataResult for an item id (spec #257).
 
-    IsFavorite/Played come from the persisted user-state store;
-    PlaybackPositionTicks from the playback store; PlayedPercentage
-    derives from the position/runtime when known, else 100 when played
-    and 0 otherwise. None when there is no id to look up (a view row,
-    a season without a concrete item).
+    Resolution wrapper (ticket #344): IsFavorite/Played come from the
+    persisted user-state store and PlaybackPositionTicks from the
+    playback store — read HERE; the wire shaping delegates to
+    ``dto.user_data``.
     """
     if item_id is None:
         return None
-    result = UserDataResult(IsFavorite=is_favorite(item_id), Played=is_played(item_id))
     pos = playback_positions().get(item_id)
-    if pos is not None:
-        position = pos.position_ticks
-        runtime = pos.runtime_ticks
-        result.PlaybackPositionTicks = position
-        if runtime and runtime > 0:
-            result.PlayedPercentage = round(min(100.0, position / runtime * 100), 2)
-        elif result.Played:
-            result.PlayedPercentage = 100.0
-    elif result.Played:
-        result.PlayedPercentage = 100.0
-    result.PlayCount = 1 if result.Played else 0
-    return result
+    return dto.user_data(
+        item_id,
+        favorite=is_favorite(item_id),
+        played=is_played(item_id),
+        position_ticks=pos.position_ticks if pos else None,
+        runtime_ticks=pos.runtime_ticks if pos else None,
+    )
 
 
 def _row_dto(row: HomeRow, server_id: str) -> BaseItemDto:
     """One virtual library (D5): a ``CollectionFolder`` whose ``Id`` the
     client echoes back as ``parentId`` on ``/Items``."""
-    return BaseItemDto(
-        Name=row.title,
-        ServerId=server_id,
-        Id=_view_id_for(row.type),
-        Type="CollectionFolder",
-        CollectionType=_COLLECTION_TYPE_BY_ROW.get(row.type),
+    return dto.row_dto(
+        row.title,
+        server_id,
+        view_id=_view_id_for(row.type),
+        collection_type=_COLLECTION_TYPE_BY_ROW.get(row.type),
     )
 
 
 def _item_dto(row: HomeRow, item: HomeItem, server_id: str) -> BaseItemDto:
     """One library card: Movie/Series item carrying the ``g2:`` id.
 
-    ``ImageTags.Primary`` is set only when the card carries a poster
-    (D9). ``year`` is surfaced as ``ProductionYear`` (Jellyfin's field);
-    ``ParentId`` is the view the card came from.
+    Resolution wrapper (ticket #344): the card's Type is re-verified
+    against the item's RESOLVED content when one is cached; the shaping
+    itself (D9 poster tag, ParentId view, UserData) delegates to
+    ``dto.item_dto``.
 
-    Ticket #216: the card's Type is re-verified against the item's
-    RESOLVED content when one is cached — the section/URL heuristic is a
-    cheap guess, the content page is the truth, and the grid must not
-    promise a Type the detail page will contradict. ``peek_group_content``
-    is a cache-only read (never fetches), so the re-verification is free;
-    an unresolved card keeps the snapshot's own form.
+    Ticket #216: the section/URL heuristic is a cheap guess, the content
+    page is the truth, and the grid must not promise a Type the detail
+    page will contradict. ``peek_group_content`` is a cache-only read
+    (never fetches), so the re-verification is free; an unresolved card
+    keeps the snapshot's own form.
     """
     resolved = peek_group_content(item.group_key)
     form = resolved.form if resolved is not None else item.form
-    dto = BaseItemDto(
-        Name=item.title,
-        ServerId=server_id,
-        Id=item.group_key,
-        Type=_JF_TYPE_BY_ROW.get(form, "Series"),
-        ProductionYear=item.year,
-        ParentId=_view_id_for(row.type),
-        # Spec #257: hearts/played checkmarks/progress render from UserData.
-        UserData=_user_data(item.group_key),
+    return dto.item_dto(
+        item,
+        server_id,
+        jf_type=JF_TYPE_BY_ROW.get(form, "Series"),
+        parent_view_id=_view_id_for(row.type),
+        user_data_value=_user_data(item.group_key),
     )
-    if item.poster is not None:
-        dto.ImageTags = {"Primary": _poster_tag(item.poster)}
-    return dto
 
 
 def _home_items() -> list[tuple[HomeRow, HomeItem]]:
@@ -538,12 +504,7 @@ def _snapshot_counts() -> ItemCounts:
             content = peek_group_content(group_key)
             if content is not None and content.seasons:
                 episodes += sum(len(s.episodes) for s in content.seasons)
-    return ItemCounts(
-        MovieCount=movies,
-        SeriesCount=series,
-        EpisodeCount=episodes,
-        ItemCount=movies + series,
-    )
+    return dto.item_counts(movies=movies, series=series, episodes=episodes)
 
 
 def _is_series_key(group_key: str) -> bool:
@@ -628,34 +589,24 @@ def _card_for_group(group_key: str) -> HomeItem | None:
 def _card_dto(group_key: str, card: HomeItem, server_id: str) -> BaseItemDto:
     """Degraded detail built purely from the home snapshot card (#224).
 
-    The card-data counterpart of ``_content_dto``: a known card whose
-    live ``content()`` resolution failed transiently (run8: animeon
-    ``unreachable``/502 for the popular first card) still answers the
-    detail with the card's own data — title, type, year, genres,
-    poster tag, parent view — instead of a hard 404 that blanks the
-    whole page mid-run. Same lookups ``_content_dto`` falls back to
-    (#219 genres, #220 year, D9 poster). Deliberate 404s (cold cache,
-    gated, blocked, unknown ids, season suffixes) never reach here —
-    see ``is_hard_unavailable``.
+    Resolution wrapper (ticket #344): the parent view and the canonical
+    poster URL are scanned from the cached home here; the shaping
+    delegates to ``dto.card_detail_dto``. The card-data counterpart of
+    ``_content_dto``: a known card whose live ``content()`` resolution
+    failed transiently (run8: animeon ``unreachable``/502 for the
+    popular first card) still answers the detail with the card's own
+    data — title, type, year, genres, poster tag, parent view — instead
+    of a hard 404 that blanks the whole page mid-run. Deliberate 404s
+    (cold cache, gated, blocked, unknown ids, season suffixes) never
+    reach here — see ``is_hard_unavailable``.
     """
-    dto = BaseItemDto(
-        Name=card.title,
-        ServerId=server_id,
-        Id=group_key,
-        Type="Movie" if card.form == "movie" else "Series",
-        ProductionYear=card.year,
-        Genres=list(card.genres),
+    return dto.card_detail_dto(
+        group_key,
+        card,
+        server_id,
+        parent_view_id=_view_id_for_item(group_key),
+        poster_url=_poster_for(group_key),
     )
-    parent = _view_id_for_item(group_key)
-    if parent is not None:
-        dto.ParentId = parent
-    poster = _poster_for(group_key)
-    if poster is not None:
-        dto.ImageTags = {"Primary": _poster_tag(poster)}
-    # Spec #280: the download manager names the saved file from
-    # ``MediaSources[].Name`` — a stable title-based name on the detail.
-    _attach_download_source(dto, card.title)
-    return dto
 
 
 def _poster_for(item_id: str) -> str | None:
@@ -697,109 +648,45 @@ def _view_id_for_item(item_id: str) -> str | None:
 def _content_dto(group_key: str, content: ContentResponse, server_id: str) -> BaseItemDto:
     """Movie/Series detail built from a resolved ContentResponse.
 
-    ``ImageTags.Primary`` iff the poster route would serve the item a
-    poster (D9). The image tag is derived from the SAME home-card poster
-    ``/Items/{id}/Images/Primary`` resolves — not ``content.poster`` —
-    so the tag and the route always agree (a card with no art means no
-    tag AND a 404 image, never a dangling tag). Translations stay
-    server-side — the wire carries no translation surface. The item id
-    is the stateless ``g2:`` group key, so the client's bookmarks and
-    the native route agree.
+    Resolution wrapper (ticket #344): the card fallbacks (year #220,
+    genres #219), the owning view id and the canonical poster URL are
+    scanned here; the shaping delegates to ``dto.content_detail_dto``.
+
+    The poster URL follows the D9 coherence rule: the SAME home-card
+    poster ``/Items/{id}/Images/Primary`` resolves wins; only a card
+    without art falls back to ``content.poster`` — so the tag and the
+    route always agree (a card with no art means no tag AND a 404
+    image, never a dangling tag). Translations stay server-side — the
+    wire carries no translation surface. The item id is the stateless
+    ``g2:`` group key, so the client's bookmarks and the native route
+    agree.
     """
-    dto = BaseItemDto(
-        Name=content.title,
-        ServerId=server_id,
-        Id=group_key,
-        Type="Movie" if content.form == "movie" else "Series",
-        # Ticket #220: the content page carries the year when the
-        # provider exposes one (ufdub's ``Рік:`` block); otherwise fall
-        # back to the snapshot card's year so the badge renders where
-        # either source has the data.
-        ProductionYear=content.year if content.year is not None else _year_for_group(group_key),
-        Overview=content.description,
-        # Ticket #213: the detail page renders a genre row when present
-        # (Switchfin ``media_movie``/``media_series`` show labelGenres
-        # iff non-empty). Ticket #219: the content page often does NOT
-        # repeat the card's genres (ufdub lists them on the card only) —
-        # fall back to the snapshot card's genres so the row renders
-        # where the data exists.
-        Genres=list(content.genres or _genres_for_group(group_key)),
-    )
-    # Ticket #221: the People rail renders from BaseItemDto.People —
-    # populated when the resolved provider's content page exposed cast
-    # (kinotron/uaserialspro actor lists, klontv JSON-LD). Empty people
-    # stays an empty list; Switchfin hides the rail then.
-    dto.People = [PersonDto(Id=p.id, Name=p.name, Role=p.role) for p in content.people]
-    # Ticket #222: the rating badge renders from CommunityRating — set
-    # when the provider exposed a real score (klontv's JSON-LD
-    # aggregateRating); None stays omitted so the badge hides instead
-    # of showing 0.
-    dto.CommunityRating = content.rating
-    parent = _view_id_for_item(group_key)
-    if parent is not None:
-        dto.ParentId = parent
-    poster = _poster_for(group_key)
-    if poster is None:
-        poster = content.poster
-    if poster is not None:
-        dto.ImageTags = {"Primary": _poster_tag(poster)}
-    # Spec #257: the detail screen's heart reads UserData.
-    dto.UserData = _user_data(group_key)
-    # Spec #280: the download manager names the saved file from
-    # ``MediaSources[].Name`` — a stable title-based name on the detail.
-    _attach_download_source(dto, content.title)
-    return dto
-
-
-def _attach_download_source(dto: BaseItemDto, title: str) -> None:
-    """Give a detail DTO the download-source entry (spec #280).
-
-    The client's download manager reads ``MediaSources[].Name`` for the
-    saved file's path; without it the Download button has no name to
-    write. The source is deliberately minimal — just the stable
-    title-based file name (the actual container is learned at download
-    time from the provider's stream, so ``Container`` is omitted here
-    rather than guessed).
-    """
-    item_id = dto.Id or ""
-    dto.MediaSources = [
-        MediaSourceInfo(
-            Id=item_id,
-            Container="",
-            Path=f"/Items/{item_id}/Download",
-            PlaySessionId="",
-            Name=f"{_safe_filename(title)}.mp4",
-        )
-    ]
-
-
-def _season_dto(group_key: str, season: Season, server_id: str, series_name: str) -> BaseItemDto:
-    """One Season under a series (D2 ids ``<group_key>:S<n>``, D3).
-
-    Carries the indexing fields Jellyfin clients breadcrumb on —
-    ``IndexNumber`` = season number. Seasons get no ``ImageTags`` (D9).
-    """
-    return BaseItemDto(
-        Name=f"Сезон {season.number}",
-        ServerId=server_id,
-        Id=f"{group_key}:S{season.number}",
-        Type="Season",
-        ParentId=group_key,
-        SeriesId=group_key,
-        SeriesName=series_name,
-        IndexNumber=season.number,
+    poster_url = _poster_for(group_key)
+    if poster_url is None:
+        poster_url = content.poster
+    return dto.content_detail_dto(
+        group_key,
+        content,
+        server_id,
+        fallback_year=_year_for_group(group_key),
+        fallback_genres=_genres_for_group(group_key),
+        parent_view_id=_view_id_for_item(group_key),
+        poster_url=poster_url,
+        user_data_value=_user_data(group_key),
     )
 
 
 def _episode_wire_id(provider_id: str, episode_id: str) -> str:
     """The existing provider-scoped episode id, unchanged (D2).
 
-    Providers are not uniform about whether ``episode.id`` already
-    carries its ``{provider}:`` prefix (``uakino``/``kinotron`` embed
-    it; most others emit a bare ``{external}:sXeY``). Reproduce exactly
-    the id a native client hands ``/api/stream`` — parent provider
-    prefix only when the episode id does not already start with it — so
-    the PlaybackInfo/stream tickets can consume it unchanged.
+    Id grammar stays in the router (ticket #344): wire-identity
+    consolidation is another wave's job. Providers are not uniform about
+    whether ``episode.id`` already carries its ``{provider}:`` prefix
+    (``uakino``/``kinotron`` embed it; most others emit a bare
+    ``{external}:sXeY``). Reproduce exactly the id a native client hands
+    ``/api/stream`` — parent provider prefix only when the episode id
+    does not already start with it — so the PlaybackInfo/stream tickets
+    can consume it unchanged.
     """
     if episode_id.startswith(f"{provider_id}:"):
         return episode_id
@@ -814,31 +701,19 @@ def _episode_dto(
     server_id: str,
     series_name: str,
 ) -> BaseItemDto:
-    """One Episode satellite (D2: id keeps the provider-scoped episode
-    suffix the PlaybackInfo/stream tickets consume; D3: ParentId = the
-    owning season id).
-
-    ``IndexNumber`` = number inside the season, ``ParentIndexNumber`` =
-    the season number. No ``ImageTags`` (D9).
-    """
-    return BaseItemDto(
-        Name=episode.title,
-        ServerId=server_id,
-        Id=_episode_wire_id(provider_id, episode.id),
-        Type="Episode",
-        ParentId=f"{group_key}:S{season.number}",
-        SeriesId=group_key,
-        SeriesName=series_name,
-        IndexNumber=episode.number,
-        ParentIndexNumber=season.number,
-        # Ticket #223: the app asks for these fields explicitly
-        # (``fields=...Overview``) — emit them when the provider's
-        # episode data carries them (animeon's ``aired``); otherwise
-        # omitted by ``response_model_exclude_none``.
-        Overview=episode.description or None,
-        PremiereDate=episode.premiere_date,
-        # Spec #257: the played checkmark on episode rows reads UserData.
-        UserData=_user_data(_episode_wire_id(provider_id, episode.id)),
+    """One Episode satellite (D2/D3): resolution wrapper — the
+    provider-scoped wire id (id grammar stays in the router, ticket
+    #344) and its UserData are resolved here; the shaping delegates to
+    ``dto.episode_dto``."""
+    wire_id = _episode_wire_id(provider_id, episode.id)
+    return dto.episode_dto(
+        group_key,
+        season,
+        episode,
+        server_id,
+        series_name,
+        wire_id=wire_id,
+        user_data_value=_user_data(wire_id),
     )
 
 
@@ -856,39 +731,15 @@ async def _user_views() -> BaseItemDtoQueryResult:
 
 
 def _search_group_dto(group: SearchGroup, server_id: str) -> BaseItemDto:
-    """One search-result card (ticket #106): the merged group in the same
-    listing shape as ``_item_dto`` (D5/D9) — ``g2:`` id, Movie/Series
-    Type from the group's canonical type, ``ImageTags.Primary`` present
-    *iff* the card has a poster.
-
-    No ``ParentId``: a searched card is not tied to a home row — search
-    covers the whole catalog, not a view.
-    """
-    dto = BaseItemDto(
-        Name=group.title,
-        ServerId=server_id,
-        Id=group.group_key,
-        Type=_JF_TYPE_BY_ROW.get(group.form, "Series"),
-        ProductionYear=group.year,
-    )
-    if group.poster is not None:
-        dto.ImageTags = {"Primary": _poster_tag(group.poster)}
-    return dto
+    """One search-result card (ticket #106): pure pass-through to
+    ``dto.search_card_dto`` (ticket #344)."""
+    return dto.search_card_dto(group, server_id)
 
 
 def _search_hint(group: SearchGroup) -> SearchHint:
-    """One search-box hint (ticket #106): the same merged card in the
-    ``SearchHint`` shape ``/Search/Hints`` serves."""
-    hint = SearchHint(
-        ItemId=group.group_key,
-        Id=group.group_key,
-        Name=group.title,
-        Type=_JF_TYPE_BY_ROW.get(group.form, "Series"),
-        ProductionYear=group.year,
-    )
-    if group.poster is not None:
-        hint.ImageTags = {"Primary": _poster_tag(group.poster)}
-    return hint
+    """One search-box hint (ticket #106): pure pass-through to
+    ``dto.search_hint`` (ticket #344)."""
+    return dto.search_hint(group)
 
 
 async def _jf_search_groups(search_term: str) -> list[SearchGroup]:
@@ -1570,15 +1421,7 @@ async def genres(
                 continue
             for genre in item.genres:
                 counts[genre] = counts.get(genre, 0) + 1
-    dtos = [
-        BaseItemDto(
-            Name=genre,
-            ServerId=server_id,
-            Id=genre,
-            ChildCount=count,
-        )
-        for genre, count in sorted(counts.items())
-    ]
+    dtos = [dto.genre_shelf_entry(genre, server_id, count) for genre, count in sorted(counts.items())]
     return BaseItemDtoQueryResult(Items=dtos, TotalRecordCount=len(dtos))
 
 
@@ -1655,7 +1498,7 @@ async def _hierarchy(parent_id: str | None) -> BaseItemDtoQueryResult:
     provider_id = next(iter(content.id.split(":")), "")
     if season_number is None:
         # Series → its seasons; a movie resolves with seasons=None above.
-        dtos = [_season_dto(group_key, s, server_id, content.title) for s in content.seasons]
+        dtos = [dto.season_dto(group_key, s, server_id, content.title) for s in content.seasons]
     else:
         season = next((s for s in content.seasons if s.number == season_number), None)
         if season is None:
@@ -1731,7 +1574,7 @@ async def item_detail(item_id: str) -> BaseItemDto:
         season = next((s for s in content.seasons if s.number == season_number), None)
         if season is None:
             raise HTTPException(status_code=404, detail="item_unavailable")
-        return _season_dto(group_key, season, _server_id(), content.title)
+        return dto.season_dto(group_key, season, _server_id(), content.title)
     return _content_dto(group_key, content, _server_id())
 
 
@@ -2449,20 +2292,16 @@ def _title_for(item_id: str) -> str | None:
     return None
 
 
-def _safe_filename(title: str) -> str:
-    """A filename-safe rendering of a title (spec #280)."""
-    cleaned = re.sub(r'[\\/:*?"<>|\r\n\t ]+', "_", title).strip("_")
-    return cleaned or "item"
-
-
 def _download_filename(item_id: str, stream_type: str) -> str:
     """Content-Disposition filename for ``/Items/{id}/Download``.
 
     ``<safe-title>.<container>`` where the container is the provider's
     actual stream type (mp4/m3u8…) so the saved file is usable offline.
+    The filename-safe rendering lives in ``dto.safe_filename`` (shared
+    with the download-source attach, ticket #344).
     """
     title = _title_for(item_id) or item_id.rsplit(":", 1)[-1]
-    return f"{_safe_filename(title)}.{stream_type}"
+    return f"{safe_filename(title)}.{stream_type}"
 
 
 async def _resolve_download(
