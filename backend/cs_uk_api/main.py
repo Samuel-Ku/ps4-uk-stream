@@ -17,14 +17,9 @@ from . import catalog_warm as catalog_warm_mod
 from . import config as _config
 from . import watchdog as watchdog_mod
 from .cache import TtlCache
-from ._catalog_state import _GATE_CHECK_TIMEOUT_S
-from ._catalog_state import await_uakino_ready as _await_uakino_ready
-from ._catalog_state import blocklist_cache as _catalog_blocklist_cache
-from ._catalog_state import content_cache as _catalog_content_cache
-from ._catalog_state import filter_gated_items as _filter_gated_items
-from ._catalog_state import home_cache as _catalog_home_cache
-from ._catalog_state import search_cache as _catalog_search_cache
-from ._catalog_state import sources_cache as _catalog_sources_cache
+from .catalog import GATE_CHECK_TIMEOUT_S as _GATE_CHECK_TIMEOUT_S
+from .catalog import await_uakino_ready as _await_uakino_ready
+from .catalog import filter_gated_items as _filter_gated_items
 from .config import SETTINGS
 from .filters import parse_form_filter as _parse_form_filter
 from .filters import parse_style_filter as _parse_style_filter
@@ -80,16 +75,6 @@ if not os.path.exists(DEFAULT_CHROMIUM):
 #: main owns outright; every other catalog cache lives in
 #: ``_catalog_state`` behind the ``catalog`` interface (spec #309 T4).
 _browse_cache = TtlCache(default_ttl_s=SETTINGS.cache_search_s)
-
-#: Back-compat aliases (tests import these): the shared merged-search /
-#: content / home / blocklist caches live in ``_catalog_state`` (ticket
-#: #101/#106), shared by the native ``/api/*`` routes and the Jellyfin
-#: facade. Clearing them clears the shared state.
-_search_cache = _catalog_search_cache
-_content_cache = _catalog_content_cache
-_blocklist_cache = _catalog_blocklist_cache
-_home_cache = _catalog_home_cache
-_home_sources_cache = _catalog_sources_cache
 
 #: Bounded drain for the background warm/heartbeat task in lifespan
 #: shutdown so a mid-warm Chromium launch cannot hang the teardown.

@@ -27,10 +27,12 @@ Cache-key construction is deliberately absent here — it stays inside
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
+
+import httpx
 
 from . import _catalog_state
 from .models import (
@@ -274,6 +276,44 @@ async def search(
     )
     _catalog_state.register_search_groups(resp.groups)
     return resp
+
+
+# ---------------------------------------------------------------------------
+# Listing hygiene + uakino lifecycle (shared by the native routes)
+# ---------------------------------------------------------------------------
+
+
+#: Time budget for one subscription-gate sweep (the browse route wraps
+#: ``filter_gated_items`` in ``asyncio.wait_for`` with this timeout; a
+#: sweep timeout degrades to "keep the cards" — stream()/content() still
+#: refuse gated items). Public name for the constant the implementation
+#: keeps private (#345).
+GATE_CHECK_TIMEOUT_S: float = _catalog_state._GATE_CHECK_TIMEOUT_S
+
+
+async def filter_gated_items(
+    items: Sequence[SearchResult], http: httpx.AsyncClient
+) -> list[SearchResult]:
+    """Subscription-gate sweep over one listing (can_gate providers).
+
+    Drops cards whose only stream is the sponsor promo clip; verdicts
+    are cached (gated/content stores) so a card is resolved once. Only
+    KNOWN-gated cards are dropped — a transient upstream error keeps
+    the card. The same sweep the shared home/search builds run; the
+    browse route is just its only explicit caller.
+    """
+    return await _catalog_state.filter_gated_items(items, http)
+
+
+async def await_uakino_ready() -> None:
+    """Gate an explicit uakino route on the browser session being ready.
+
+    A deterministic startup marker raises 502 — the session is dead for
+    the process lifetime, so waiting is pointless. A session still
+    warming raises 503 ``warming`` after the bounded wait so the client
+    can back off and retry (issue #193/#196).
+    """
+    await _catalog_state.await_uakino_ready()
 
 
 # ---------------------------------------------------------------------------

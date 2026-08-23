@@ -22,46 +22,16 @@ from pathlib import Path
 import cs_uk_api
 
 #: The ONLY production module allowed to import the private package.
+#: (Ticket #345 eliminated main.py's last direct imports; the interim
+#: exemption list from #339 is gone.)
 _ALLOWED_IMPORTERS = {"catalog.py"}
-
-#: Named, commented exemption list for ``main.py`` (INTERIM — every
-#: entry is eliminated by ticket #345, which migrates main.py's feature
-#: paths onto the ``catalog`` seam and shrinks this set to empty).
-#: Today main.py still reaches through for:
-#:   - ``filter_gated_items`` — the browse gate sweep,
-#:   - ``_GATE_CHECK_TIMEOUT_S`` — the browse gate-sweep budget,
-#:   - ``await_uakino_ready`` — the content/stream readiness gates,
-#:   - the five cache objects feeding main's dead back-compat aliases
-#:     (search/content/blocklist/home/home-sources) slated for deletion
-#:     in #345.
-_MAIN_INTERIM_EXEMPT_SYMBOLS = frozenset(
-    {
-        "_GATE_CHECK_TIMEOUT_S",
-        "await_uakino_ready",
-        "blocklist_cache",
-        "content_cache",
-        "filter_gated_items",
-        "home_cache",
-        "search_cache",
-        "sources_cache",
-    }
-)
 
 #: Any import statement mentioning the implementation package by either
 #: name (word-boundary anchored, so ``catalog_state_x`` never matches).
 _CATALOG_STATE_TOKEN = re.compile(r"\b_?catalog_state\b")
 _IMPORT_LINE = re.compile(r"^(?:from|import)\s")
-_FROM_SPLIT = re.compile(r"^from\s+(\S+)\s+import\s+(.+)$")
 #: Dynamic-import trick: the fully-qualified name inside a string.
 _QUALIFIED_STRING = re.compile("[\"']cs_uk_api\\.(?:_)?catalog_state")
-
-
-def _module_is_private(module_path: str) -> bool:
-    """True when a ``from <module> import ...`` targets the package."""
-    name = module_path.lstrip(".")
-    if name == "cs_uk_api" or name.startswith("cs_uk_api."):
-        name = name[len("cs_uk_api") :].lstrip(".")
-    return name.split(".")[0] in {"catalog_state", "_catalog_state"}
 
 
 def _violations_in(rel_path: str, text: str) -> list[str]:
@@ -76,16 +46,6 @@ def _violations_in(rel_path: str, text: str) -> list[str]:
             continue
         if not _CATALOG_STATE_TOKEN.search(line):
             continue
-        if rel_path == "main.py" and is_import:
-            from_m = _FROM_SPLIT.match(line)
-            if from_m is not None and _module_is_private(from_m.group(1)):
-                symbols = {
-                    part.split(" as ")[0].strip()
-                    for part in from_m.group(2).split(",")
-                }
-                # The named interim exemption (#345 removes every entry).
-                if symbols <= _MAIN_INTERIM_EXEMPT_SYMBOLS:
-                    continue
         found.append(f"{rel_path}:{lineno}: {line}")
     return found
 
