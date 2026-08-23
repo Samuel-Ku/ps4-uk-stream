@@ -53,8 +53,6 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from ._crypto_uaserialspro import decrypt_player_data
-from ._tortuga import decode as _tortuga_decode
 from ..wire_identity import (
     MOVIE_SUFFIX,
     episode_wire_id,
@@ -62,6 +60,8 @@ from ..wire_identity import (
     parse_episode_tail,
     strip_movie_suffix,
 )
+from ._crypto_uaserialspro import decrypt_player_data
+from ._tortuga import decode as _tortuga_decode
 from .base import BaseProvider, MediaTypeStr, ProviderError, parse_actor_list
 
 BASE_URL = "https://uaserials.com"

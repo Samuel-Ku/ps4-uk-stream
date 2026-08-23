@@ -26,7 +26,9 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from .providers.base import BaseProvider, ProviderError
-from .wire_identity import split_wire_id as split_wire_id  # canonical home: wire_identity (#340)
+from .wire_identity import (
+    split_wire_id as split_wire_id,  # noqa: PLC0414 (canonical home: wire_identity, #340)
+)
 
 #: Probe verdict vocabulary — the one vocabulary every probe (drift,
 #: episode-rail sweep, triage) reports in. ``gated`` (a policy outcome)

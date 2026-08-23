@@ -45,6 +45,7 @@ from urllib.parse import quote_plus
 
 import httpx
 
+from ..http_client import provider_safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -56,7 +57,6 @@ from ..models import (
     Translation,
 )
 from ..wire_identity import MOVIE_SUFFIX
-from ..http_client import provider_safe_get
 from .base import BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://animeon.club"

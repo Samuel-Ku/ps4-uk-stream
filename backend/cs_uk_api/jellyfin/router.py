@@ -83,7 +83,9 @@ from ..wire_identity import is_group_key
 from . import dto, images
 from .auth import require_token
 from .dto import JF_TYPE_BY_ROW, safe_filename
-from .hls_proxy import _STREAM_MEMO as _STREAM_MEMO  # re-export: suite clears the memo via router
+from .hls_proxy import (
+    _STREAM_MEMO as _STREAM_MEMO,  # noqa: PLC0414 (re-export: suite clears the memo via router)
+)
 from .hls_proxy import proxy_download, proxy_stream, segment_target, serve_segment
 from .models import (
     ActivityLogEntryQueryResult,

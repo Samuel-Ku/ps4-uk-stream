@@ -17,6 +17,7 @@ from bs4 import BeautifulSoup, Tag
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..country import extract_country
+from ..http_client import provider_safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -29,7 +30,6 @@ from ..models import (
     StreamType,
     Translation,
 )
-from ..http_client import provider_safe_get
 from ..wire_identity import (
     MOVIE_SUFFIX,
     episode_wire_id,

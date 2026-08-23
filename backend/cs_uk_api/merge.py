@@ -29,13 +29,25 @@ from dataclasses import dataclass, field
 
 from .models import SearchResult
 from .wire_identity import (
-    effective_year as effective_year,
-    extract_year as extract_year,
-    group_key as group_key,
-    group_key_from as group_key_from,
-    item_group_key as item_group_key,
-    normalize_title as normalize_title,
-    title_aliases as title_aliases,
+    effective_year as effective_year,  # noqa: PLC0414
+)
+from .wire_identity import (
+    extract_year as extract_year,  # noqa: PLC0414
+)
+from .wire_identity import (
+    group_key as group_key,  # noqa: PLC0414
+)
+from .wire_identity import (
+    group_key_from as group_key_from,  # noqa: PLC0414
+)
+from .wire_identity import (
+    item_group_key as item_group_key,  # noqa: PLC0414
+)
+from .wire_identity import (
+    normalize_title as normalize_title,  # noqa: PLC0414
+)
+from .wire_identity import (
+    title_aliases as title_aliases,  # noqa: PLC0414
 )
 
 log = logging.getLogger("cs_uk_api.merge")

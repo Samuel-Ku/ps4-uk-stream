@@ -39,8 +39,8 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from ._tortuga import decode as _tor_decrypt
 from ..wire_identity import episode_wire_id, parse_episode_tail
+from ._tortuga import decode as _tor_decrypt
 from .base import BaseProvider, ProviderError
 
 BASE_URL = "https://serialno.tv"

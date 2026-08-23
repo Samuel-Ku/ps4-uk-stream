@@ -16,7 +16,7 @@ from ..models import (
     Section,
     StreamResponse,
 )
-from ..wire_identity import MOVIE_SUFFIX as MOVIE_SUFFIX  # re-export (spec #340)
+from ..wire_identity import MOVIE_SUFFIX as MOVIE_SUFFIX  # noqa: PLC0414 (re-export, spec #340)
 
 MediaTypeStr = Literal["movie", "series", "anime", "cartoon", "dorama"]
 

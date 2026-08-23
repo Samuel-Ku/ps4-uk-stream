@@ -32,6 +32,7 @@ from urllib.parse import quote
 
 import httpx
 
+from ..http_client import provider_safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -42,7 +43,6 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from ..http_client import provider_safe_get
 from ..wire_identity import split_wire_id
 from .base import BaseProvider, ProviderError
 

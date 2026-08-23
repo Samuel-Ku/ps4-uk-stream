@@ -36,13 +36,13 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from ._tortuga import decode as _tor_decrypt
 from ..wire_identity import (
     MOVIE_SUFFIX,
     is_movie_wire_id,
     parse_episode_tail,
     strip_movie_suffix,
 )
+from ._tortuga import decode as _tor_decrypt
 from .base import BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://kinovezha.tv"

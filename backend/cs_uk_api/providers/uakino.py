@@ -26,7 +26,6 @@ from ..uakino_browser import _UA, BASE_URL, UakinoSessionProtocol, get_session
 from ..wire_identity import MOVIE_SUFFIX
 from .base import BaseProvider, MediaTypeStr, ProviderError
 
-
 # Sections exposed by Uakino's new-theme navigation. The /animeukr URL is
 # the anime sub-site (Ukrainian-dubbed anime). Section ids are stable;
 # titles are user-facing and may change.

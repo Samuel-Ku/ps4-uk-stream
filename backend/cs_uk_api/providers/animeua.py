@@ -12,6 +12,7 @@ from urllib.parse import urljoin
 import httpx
 from bs4 import BeautifulSoup
 
+from ..http_client import provider_safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -22,7 +23,6 @@ from ..models import (
     Translation,
     TranslationLevel,
 )
-from ..http_client import provider_safe_get
 from ..wire_identity import episode_wire_id, parse_episode_tail
 from .base import BaseProvider, MediaTypeStr, ProviderError
 
