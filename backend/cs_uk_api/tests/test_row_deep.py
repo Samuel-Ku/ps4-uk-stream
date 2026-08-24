@@ -24,7 +24,7 @@ from cs_uk_api._catalog_state import home_cache, sources_cache
 from cs_uk_api.config import SETTINGS
 from cs_uk_api.models import SearchResult, Section
 from cs_uk_api.providers import PROVIDERS
-from cs_uk_api.providers.base import BaseProvider, model_b_axes
+from cs_uk_api.providers.base import BaseProvider
 
 jf_router = importlib.import_module("cs_uk_api.jellyfin.router")
 
@@ -41,7 +41,7 @@ def _item(
     n: str = "1",
     poster: str | None = None,
 ) -> SearchResult:
-    mb_form, mb_styles = model_b_axes(cast(Any, media_type))
+    mb_form, mb_styles  = {"movie": ("movie", frozenset()), "series": ("series", frozenset()), "anime": ("series", frozenset({"anime"})), "cartoon": ("series", frozenset({"cartoon"})), "dorama": ("series", frozenset({"dorama"}))}[media_type]
     return SearchResult(
         id=f"{pid}:{n}",
         provider=pid,

@@ -54,38 +54,6 @@ def parse_actor_list(
     return []
 
 
-#: Style-tagged MediaType values map 1:1 to a MediaStyle.
-_STYLE_BY_TYPE: dict[str, MediaStyle] = {
-    "anime": "anime",
-    "cartoon": "cartoon",
-    "dorama": "dorama",
-}
-
-
-def model_b_axes(
-    media_type: MediaTypeStr,
-    *,
-    form: MediaForm | None = None,
-) -> tuple[MediaForm, frozenset[MediaStyle]]:
-    """Map a legacy ``MediaType`` to Model B axes (ADR-0001, expand
-    step #129).
-
-    ``movie``/``series`` map directly with an empty style set (ordinary
-    live-action). Style-tagged types (``anime``/``cartoon``/``dorama``)
-    always carry their style; their ``form`` defaults to ``"series"``
-    unless the caller knows the item is a film and passes ``form``
-    explicitly (e.g. an anime movie in a ``films`` section).
-
-    Retained as a compatibility helper: provider adapters now type their
-    ``types`` directly (spec #309 T10), but the tests construct
-    ``SearchResult`` fixtures through this mapping.
-    """
-    if media_type == "movie" or media_type == "series":
-        return media_type, frozenset()
-    style = _STYLE_BY_TYPE[media_type]
-    return (form or "series"), frozenset({style})
-
-
 class ProviderError(Exception):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(f"{code}: {message}")

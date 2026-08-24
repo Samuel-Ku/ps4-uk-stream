@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterator
-from typing import Any, cast
+from typing import cast
 
 import pytest
 
@@ -27,7 +27,7 @@ from cs_uk_api._catalog_state.snapshot import (
 )
 from cs_uk_api.models import HomeItem, SearchResult
 from cs_uk_api.providers import PROVIDERS
-from cs_uk_api.providers.base import BaseProvider, model_b_axes
+from cs_uk_api.providers.base import BaseProvider
 
 
 def _item(
@@ -38,7 +38,7 @@ def _item(
     year: int | None = None,
     n: str = "1",
 ) -> SearchResult:
-    mb_form, mb_styles = model_b_axes(cast(Any, media_type))
+    mb_form, mb_styles  = {"movie": ("movie", frozenset()), "series": ("series", frozenset()), "anime": ("series", frozenset({"anime"})), "cartoon": ("series", frozenset({"cartoon"})), "dorama": ("series", frozenset({"dorama"}))}[media_type]
     return SearchResult(
         id=f"{pid}:{n}",
         provider=pid,

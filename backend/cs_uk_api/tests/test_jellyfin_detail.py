@@ -62,7 +62,7 @@ from cs_uk_api.models import (
     Translation,
 )
 from cs_uk_api.providers import PROVIDERS
-from cs_uk_api.providers.base import BaseProvider, ProviderError, model_b_axes
+from cs_uk_api.providers.base import BaseProvider, ProviderError
 from cs_uk_api.recommend import profile_from_content
 from cs_uk_api.resume_store import ResumeStore
 
@@ -173,7 +173,7 @@ def _card(
     *,
     poster: str | None = None,
 ) -> SearchResult:
-    mb_form, mb_styles = model_b_axes(cast(Any, media_type))
+    mb_form, mb_styles  = {"movie": ("movie", frozenset()), "series": ("series", frozenset()), "anime": ("series", frozenset({"anime"})), "cartoon": ("series", frozenset({"cartoon"})), "dorama": ("series", frozenset({"dorama"}))}[media_type]
     return SearchResult(
         id=f"{pid}:{id_}",
         provider=pid,

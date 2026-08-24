@@ -378,7 +378,7 @@ class SerialnoProvider(BaseProvider):
             return None, []
         # Dub-wrapped shape: the top-level entries are dubbing tracks
         # (studio titles) whose ``folder`` holds the seasons (ticket #332).
-        # Mirrors ``_season_list``'s shape detection: children carrying a
+        # Mirrors shape detection: children carrying a
         # nested ``folder`` key = dubs; flat seasons carry episodes.
         first_entry = data[0] if data else {}
         first_folder = first_entry.get("folder") or [] if isinstance(first_entry, dict) else []

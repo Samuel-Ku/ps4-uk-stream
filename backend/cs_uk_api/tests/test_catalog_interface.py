@@ -9,7 +9,6 @@ dict shapes on the seam — the tests assert the TYPED shapes.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import Any, cast
 
 import pytest
 
@@ -18,7 +17,7 @@ from cs_uk_api import _catalog_state as catalog_state, health
 from cs_uk_api.merge import item_group_key
 from cs_uk_api.models import ContentResponse, Episode, SearchResult, Season, Translation
 from cs_uk_api.providers import PROVIDERS
-from cs_uk_api.providers.base import BaseProvider, model_b_axes
+from cs_uk_api.providers.base import BaseProvider
 
 
 def _item(
@@ -29,7 +28,7 @@ def _item(
     year: int | None = None,
     n: str = "1",
 ) -> SearchResult:
-    mb_form, mb_styles = model_b_axes(cast(Any, media_type))
+    mb_form, mb_styles  = {"movie": ("movie", frozenset()), "series": ("series", frozenset()), "anime": ("series", frozenset({"anime"})), "cartoon": ("series", frozenset({"cartoon"})), "dorama": ("series", frozenset({"dorama"}))}[media_type]
     return SearchResult(
         id=f"{pid}:{n}",
         provider=pid,
