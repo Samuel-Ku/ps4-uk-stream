@@ -18,7 +18,6 @@ import pytest
 
 from cs_uk_api import _catalog_state as catalog_state
 from cs_uk_api._catalog_state.snapshot import (
-    _EXTENDABLE_ROWS,
     _build_sources_map,
     _cache_home,
     extend_row_pool,
@@ -134,9 +133,14 @@ def test_cache_home_clears_deep_row_pools_on_rebuild() -> None:
 
 
 def test_extend_row_pool_bounded_for_personalized_rows() -> None:
-    """Non-extendable row kinds (personalized / rails) answer None —
-    the caller serves the snapshot slice unchanged (spec #305)."""
-    assert "recommended" not in _EXTENDABLE_ROWS
+    """Non-extendable row kinds (personalized / rails / unknown) answer
+    None — the caller serves the snapshot slice unchanged (spec #305,
+    #362 C). The gate reads the row-kind table: a non-table kind is
+    bounded via its absent entry (never a KeyError)."""
+    from cs_uk_api.row_kinds import ROW_KINDS
+
+    # «Рекомендовано для тебе» is recipe-inserted, not a table kind.
+    assert "recommended" not in ROW_KINDS
     pool = asyncio.run(
         extend_row_pool(
             "recommended",
@@ -144,6 +148,16 @@ def test_extend_row_pool_bounded_for_personalized_rows() -> None:
         )
     )
     assert pool is None
+
+
+def test_extend_row_pool_bounded_for_non_extendable_table_kinds() -> None:
+    """Table kinds pinned extendable=False stay bounded too (spec #362):
+    the LLM idea slots and the personalized rows never page."""
+    for kind in ("llm_idea_1", "llm_idea_2", "new_episodes", "recently_watched"):
+        pool = asyncio.run(
+            extend_row_pool(kind, [cast(HomeItem, {"group_key": "g2:x"})])
+        )
+        assert pool is None
 
 
 def test_extend_row_pool_requires_snapshot_items() -> None:
