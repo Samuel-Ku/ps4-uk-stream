@@ -279,16 +279,16 @@ def test_home_recent_row_tuples_match_the_table() -> None:
 
 def test_warm_insert_scan_kinds_are_table_kinds() -> None:
     """The recommendation insert-scan tuple in ``_catalog_state/warm.py``
-    names only table kinds. The retired ``"newest"`` zombie is tolerated
-    until batch D sweeps it (spec #362)."""
+    names only table kinds — the retired «Новинки» zombie is gone from
+    the scan (spec #362 D)."""
     text = (
         Path(cs_uk_api.__file__).parent / "_catalog_state" / "warm.py"
     ).read_text(encoding="utf-8")
     m = re.search(r"row\.type in \(([^)]*)\)", text)
     assert m is not None, "insert-scan tuple not found in warm.py"
     scan = set(re.findall(r'"([^"]+)"', m.group(1)))
-    assert scan - {"newest"} <= set(ROW_KINDS)
-    assert scan & set(ROW_KINDS) == {"recent_movie", "recent_series", "popular"}
+    assert scan <= set(ROW_KINDS)
+    assert scan == {"recent_movie", "recent_series", "popular"}
 
 
 # ---------------------------------------------------------------------------

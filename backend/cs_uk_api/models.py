@@ -327,9 +327,12 @@ class ErrorResponse(BaseModel):
 # field level, only at the row level (via ``providers``).
 #
 # ``HomeRow`` aggregates ``HomeItem`` rows under a human label. The
-# ``type`` field doubles as a routing key for the row's contents:
-#   - ``"newest"`` — «Новинки», aggregated across providers that opt into
-#     ``newest_section``.
+# ``type`` field doubles as a routing key for the row's contents; every
+# valid value is an entry of the declarative table in
+# ``cs_uk_api.row_kinds`` (the single source of kind facts — titles,
+# filters, wire mappings). Highlights:
+#   - ``"recent_movie"``/``"recent_series"`` — «Нещодавно додані»,
+#     the providers' newest listings split by form (spec #263).
 #   - ``"popular"`` — «Популярні зараз», only when animeon's ``popular``
 #     browse returned data (issue #70 AC).
 #   - a media-kind literal (``"movie"``, ``"series"``, ``"anime"``,
