@@ -458,15 +458,15 @@ class AnitubeinuaProvider(BaseProvider):
         *,
         headers: dict[str, str] | None = None,
     ) -> httpx.Response:
-        """Shared GET helper. `headers` is concatenated with the
-        default `Referer` so callers can override per-request."""
         merged = {"Referer": BASE_URL + "/"}
         if headers:
             merged.update(headers)
         try:
-            response = await http.get(url, headers=merged)
+            response = await provider_safe_get(http, self, url, headers=merged)
         except httpx.HTTPError as error:
             raise ProviderError("unreachable", str(error)) from error
+        if response.status_code >= 500:
+            raise ProviderError("upstream_unreachable", f"status {response.status_code}")
         if response.status_code != 200:
             raise ProviderError("not_found", f"status {response.status_code}")
         return response
@@ -480,10 +480,10 @@ class AnitubeinuaProvider(BaseProvider):
             )
         except httpx.HTTPError as error:
             raise ProviderError("unreachable", str(error)) from error
+        if response.status_code >= 500:
+            raise ProviderError("upstream_unreachable", f"status {response.status_code}")
         if response.status_code != 200:
-            raise ProviderError(
-                "upstream_unreachable", f"status {response.status_code}"
-            )
+            raise ProviderError("not_found", f"status {response.status_code}")
         return response
 
     async def _load_playlist(
