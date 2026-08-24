@@ -39,7 +39,7 @@ from cs_uk_api._catalog_state import (
 from cs_uk_api.config import SETTINGS
 from cs_uk_api.models import ContentResponse, SearchResult
 from cs_uk_api.providers import PROVIDERS
-from cs_uk_api.providers.base import BaseProvider, ProviderError, model_b_axes
+from cs_uk_api.providers.base import BaseProvider, ProviderError
 
 TOKEN = SETTINGS.jellyfin_token
 USER = "fdc808859fc45eb8ac5aa6faddc12c72"
@@ -83,7 +83,7 @@ def _card(
     media_type: str,
     genres: list[str],
 ) -> SearchResult:
-    mb_form, mb_styles = model_b_axes(cast(Any, media_type))
+    mb_form, mb_styles  = {"movie": ("movie", frozenset()), "series": ("series", frozenset()), "anime": ("series", frozenset({"anime"})), "cartoon": ("series", frozenset({"cartoon"})), "dorama": ("series", frozenset({"dorama"}))}[media_type]
     return SearchResult(
         id=f"{pid}:{id_}",
         provider=pid,

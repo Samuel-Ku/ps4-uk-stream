@@ -32,7 +32,7 @@ from ..models import (
     Translation,
 )
 from ..wire_identity import episode_wire_id, parse_episode_tail, split_wire_id
-from .base import BaseProvider, MediaTypeStr, ProviderError
+from .base import dle_has_next, BaseProvider, MediaTypeStr, ProviderError
 
 
 def _itemprop_values(soup: BeautifulSoup, name: str) -> list[str]:
@@ -131,10 +131,6 @@ _PATH_TYPE: tuple[tuple[str, MediaTypeStr], ...] = (
 )
 
 
-def _page_number(href: str) -> int:
-    """Pull the `/page/N/` integer out of a DLE pagination link."""
-    m = re.search(r"/page/(\d+)/?", href)
-    return int(m.group(1)) if m else 0
 
 
 def _external_id_from_url(href: str) -> str:
@@ -514,10 +510,7 @@ class UAFlixProvider(BaseProvider):
         # has_next: DLE pagination is `<div class="navigation">` with
         # `<a href=".../page/N/">` siblings. Any link to a higher page
         # than `page` means there is a next page.
-        has_next = any(
-            _page_number(str(a.get("href") or "")) > page
-            for a in soup.select("div.navigation a[href*='/page/']")
-        )
+        has_next = dle_has_next(resp.text, page)
         return results, has_next
 
     async def content(
@@ -736,7 +729,7 @@ class UAFlixProvider(BaseProvider):
         return StreamResponse(
             url=extracted.url,
             type=extracted.type,
-            headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/1.0"},
+            headers=self.stream_headers(f"{BASE_URL}/"),
         )
 
     @staticmethod

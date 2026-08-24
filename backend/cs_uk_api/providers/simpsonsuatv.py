@@ -45,7 +45,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError
+from .base import dle_has_next, BaseProvider, ProviderError
 
 BASE_URL = "https://simpsonsua.tv"
 BASE_URL_HOST = urlparse(BASE_URL).hostname
@@ -180,10 +180,6 @@ _TITLE_MAP: dict[str, str] = {
 }
 
 
-def _page_number(href: str) -> int:
-    """Pull the `/page/N/` integer out of a DLE pagination link."""
-    m = re.search(r"/page/(\d+)/?", href)
-    return int(m.group(1)) if m else 0
 
 
 def _slug_from_href(href: str) -> str | None:
@@ -452,13 +448,7 @@ class SimpsonsUATvProvider(BaseProvider):
         # page than `page` means there is a next page. The wrapper
         # class on this site is `navigation-block` (not the usual
         # `navigation`) so we match both.
-        has_next = any(
-            _page_number(str(a.get("href") or "")) > page
-            for a in soup.select(
-                "div.navigation a[href*='/page/'], "
-                "div.navigation-block a[href*='/page/']"
-            )
-        )
+        has_next = dle_has_next(response.text, page)
         return results, has_next
 
     async def _open_content_page(
@@ -694,7 +684,7 @@ class SimpsonsUATvProvider(BaseProvider):
         return StreamResponse(
             url=m3u8,
             type="m3u8",
-            headers={"Referer": ASHDI_REFERER, "User-Agent": "cs-uk-api/1.0"},
+            headers=self.stream_headers(ASHDI_REFERER),
         )
 
 

@@ -36,6 +36,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
+from ..extractors.playlist import walk_playlist
 from ..wire_identity import (
     MOVIE_SUFFIX,
     episode_wire_id,
@@ -43,7 +44,7 @@ from ..wire_identity import (
     parse_episode_tail,
     strip_movie_suffix,
 )
-from .base import BaseProvider, MediaTypeStr, ProviderError
+from .base import dle_has_next, BaseProvider, MediaTypeStr, ProviderError
 
 
 def _jsonld_doc(soup: BeautifulSoup) -> dict[str, Any] | None:
@@ -170,10 +171,6 @@ _PATH_TYPE: tuple[tuple[tuple[str, ...], MediaTypeStr], ...] = (
     (("series", "serialy"), "series"),
 )
 
-def _page_number(href: str) -> int:
-    """Pull the `/page/N/` integer out of a DLE pagination link."""
-    m = re.search(r"/page/(\d+)/?", href)
-    return int(m.group(1)) if m else 0
 
 
 def _external_id_from_url(href: str) -> str | None:
@@ -358,10 +355,7 @@ class KlonTVProvider(BaseProvider):
         # div>`. The current page is a `<span class='...disabled'>`;
         # any sibling `<a class='...' href=".../page/N/">` to a higher
         # page number means there is a next page.
-        has_next = any(
-            _page_number(str(a.get("href") or "")) > page
-            for a in soup.select("div.navigation div.pages a[href*='/page/']")
-        )
+        has_next = dle_has_next(resp.text, page)
         return results, has_next
 
     async def content(
@@ -631,51 +625,22 @@ class KlonTVProvider(BaseProvider):
         return StreamResponse(
             url=media_url,
             type="m3u8",
-            headers={"Referer": ASHDI_REFERER, "User-Agent": "cs-uk-api/1.0"},
+            headers=self.stream_headers(ASHDI_REFERER),
         )
 
     @staticmethod
     def _select_episode_url(
         raw: str, ep_suffix: str, translation: str | None = None
     ) -> str | None:
-        """Resolve a series episode URL from the PlayerJS playlist JSON.
-
-        The dub picker's translation id (spec #276) selects the dub
-        whose `title` matches (ticket #332); an unmatched or absent
-        translation falls back to the first dub — the upstream default.
-
-        Returns None when the suffix is malformed or out of range, so
-        the caller surfaces an explicit `parse_failed` — there is no
-        silent "first available episode" fallback (that would mask a
-        missing suffix in the caller, a known regression pattern).
-        """
         parsed = parse_episode_tail(ep_suffix)
         if parsed is None:
             return None
         s_idx, e_idx = parsed
         try:
-            dubs = cast(list[dict[str, Any]], json.loads(raw))
+            payload = json.loads(raw)
         except json.JSONDecodeError:
             return None
-        if not dubs:
-            return None
-        selected = dubs[0]
-        if translation:
-            for dub in dubs:
-                if (
-                    isinstance(dub, dict)
-                    and str(dub.get("title", "")).strip() == translation
-                ):
-                    selected = dub
-                    break
-        seasons = selected.get("folder") or []
-        if not (1 <= s_idx <= len(seasons)):
-            return None
-        episodes_raw = seasons[s_idx - 1].get("folder") or []
-        if not (1 <= e_idx <= len(episodes_raw)):
-            return None
-        file_url = episodes_raw[e_idx - 1].get("file")
-        return str(file_url) if file_url else None
+        return walk_playlist(payload, s_idx, e_idx, translation)
 
 
 __all__ = ["KlonTVProvider"]

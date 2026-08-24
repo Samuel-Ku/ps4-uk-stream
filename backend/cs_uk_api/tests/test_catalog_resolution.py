@@ -32,11 +32,11 @@ from cs_uk_api.models import (
     Translation,
 )
 from cs_uk_api.providers import PROVIDERS
-from cs_uk_api.providers.base import BaseProvider, ProviderError, model_b_axes
+from cs_uk_api.providers.base import BaseProvider, ProviderError
 
 
 def _item(pid: str, external: str, title: str) -> SearchResult:
-    mb_form, _mb_styles = model_b_axes(cast(Any, "movie"))
+    mb_form, _mb_styles = ("movie", frozenset())
     return SearchResult(
         id=f"{pid}:{external}",
         provider=pid,

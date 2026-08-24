@@ -37,7 +37,7 @@ from ..wire_identity import (
     parse_episode_tail,
     strip_movie_suffix,
 )
-from .base import BaseProvider, MediaTypeStr, ProviderError
+from .base import dle_has_next, BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://bambooua.com"
 
@@ -182,9 +182,6 @@ def _type_from_url(href: str) -> MediaTypeStr:
     return "series"
 
 
-def _page_number(href: str) -> int:
-    m = re.search(r"/page/(\d+)/?", href)
-    return int(m.group(1)) if m else 0
 
 
 def _section_url(section: str, page: int) -> str:
@@ -416,10 +413,7 @@ class BambooUAProvider(BaseProvider):
         # BambooUA's pagination is `<div class="navigation">` with
         # `<a href=".../page/N/">` siblings. Any link to a higher page
         # than `page` means there is a next page.
-        has_next = any(
-            _page_number(str(a.get("href") or "")) > page
-            for a in soup.select("div.navigation a[href*='/page/']")
-        )
+        has_next = dle_has_next(resp.text, page)
         return results, has_next
 
     async def content(
@@ -555,7 +549,7 @@ class BambooUAProvider(BaseProvider):
         return StreamResponse(
             url=urljoin(BASE_URL, media_url),
             type=stream_type,
-            headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/1.0"},
+            headers=self.stream_headers(f"{BASE_URL}/"),
         )
 
     @staticmethod

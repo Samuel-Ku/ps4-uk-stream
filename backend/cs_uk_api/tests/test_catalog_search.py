@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterator
-from typing import Any, cast
 
 import pytest
 
@@ -20,11 +19,11 @@ from cs_uk_api import _catalog_state as catalog_state
 from cs_uk_api._catalog_state.search import merged_search
 from cs_uk_api.models import SearchResult
 from cs_uk_api.providers import PROVIDERS
-from cs_uk_api.providers.base import BaseProvider, model_b_axes
+from cs_uk_api.providers.base import BaseProvider
 
 
 def _item(pid: str, external: str, title: str) -> SearchResult:
-    mb_form, _mb_styles = model_b_axes(cast(Any, "movie"))
+    mb_form, _mb_styles = ("movie", frozenset())
     return SearchResult(
         id=f"{pid}:{external}",
         provider=pid,

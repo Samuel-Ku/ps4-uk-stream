@@ -56,7 +56,7 @@ from ..models import (
     Translation,
 )
 from ..wire_identity import episode_wire_id, parse_episode_tail
-from .base import BaseProvider, ProviderError
+from .base import dle_has_next, BaseProvider, ProviderError
 
 BASE_URL = "https://anitube.in.ua"
 # Hosts the upstream may legally redirect to: the DLE CMS. A hostile
@@ -97,10 +97,6 @@ class _EpisodeRow:
     title: str
 
 
-def _page_number(href: str) -> int:
-    """Pull the `/page/N/` integer out of a DLE pagination link."""
-    m = re.search(r"/page/(\d+)/?", href)
-    return int(m.group(1)) if m else 0
 
 
 def _external_id_from_url(href: str) -> str | None:
@@ -462,15 +458,15 @@ class AnitubeinuaProvider(BaseProvider):
         *,
         headers: dict[str, str] | None = None,
     ) -> httpx.Response:
-        """Shared GET helper. `headers` is concatenated with the
-        default `Referer` so callers can override per-request."""
         merged = {"Referer": BASE_URL + "/"}
         if headers:
             merged.update(headers)
         try:
-            response = await http.get(url, headers=merged)
+            response = await provider_safe_get(http, self, url, headers=merged)
         except httpx.HTTPError as error:
             raise ProviderError("unreachable", str(error)) from error
+        if response.status_code >= 500:
+            raise ProviderError("upstream_unreachable", f"status {response.status_code}")
         if response.status_code != 200:
             raise ProviderError("not_found", f"status {response.status_code}")
         return response
@@ -484,10 +480,10 @@ class AnitubeinuaProvider(BaseProvider):
             )
         except httpx.HTTPError as error:
             raise ProviderError("unreachable", str(error)) from error
+        if response.status_code >= 500:
+            raise ProviderError("upstream_unreachable", f"status {response.status_code}")
         if response.status_code != 200:
-            raise ProviderError(
-                "upstream_unreachable", f"status {response.status_code}"
-            )
+            raise ProviderError("not_found", f"status {response.status_code}")
         return response
 
     async def _load_playlist(
@@ -582,10 +578,7 @@ class AnitubeinuaProvider(BaseProvider):
         # class="lcol navi_pages">` with `<a href=".../page/N/">`
         # siblings. Any link to a higher page number than `page` means
         # there is a next page.
-        has_next = any(
-            _page_number(str(a.get("href") or "")) > page
-            for a in soup.select("div.navigation a[href*='/page/']")
-        )
+        has_next = dle_has_next(response.text, page)
         return results, has_next
 
     async def content(
@@ -686,7 +679,7 @@ class AnitubeinuaProvider(BaseProvider):
         return StreamResponse(
             url=m3u8.group(1),
             type="m3u8",
-            headers={"Referer": _referer_for(file_url), "User-Agent": "cs-uk-api/1.0"},
+            headers=self.stream_headers(_referer_for(file_url)),
         )
 
     @staticmethod

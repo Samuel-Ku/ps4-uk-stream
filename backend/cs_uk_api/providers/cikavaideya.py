@@ -31,7 +31,7 @@ from ..wire_identity import (
     parse_episode_tail,
     strip_movie_suffix,
 )
-from .base import BaseProvider, MediaTypeStr, ProviderError
+from .base import dle_has_next, BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://cikava-ideya.top"
 # Hosts the upstream may legally redirect to: the CMS and the ashdi
@@ -89,10 +89,6 @@ _ASHDI_NOT_FOUND = "Файл не знайдено"
 
 
 
-def _page_number(href: str) -> int:
-    """Pull the `/page/N/` integer out of a DLE pagination link."""
-    m = re.search(r"/page/(\d+)/?", href)
-    return int(m.group(1)) if m else 0
 
 
 def _numeric_sort_key(label: str) -> int:
@@ -326,10 +322,7 @@ class CikavaIdeyaProvider(BaseProvider):
         # has_next: DLE pagination is `<div class="navigation">` with
         # `<a href="/section/page/N/">` siblings. Any link to a higher
         # page than `page` means there is a next page.
-        has_next = any(
-            _page_number(str(a.get("href") or "")) > page
-            for a in soup.select("div.navigation a[href*='/page/']")
-        )
+        has_next = dle_has_next(resp.text, page)
         return results, has_next
 
     async def content(
@@ -481,7 +474,7 @@ class CikavaIdeyaProvider(BaseProvider):
         return StreamResponse(
             url=extracted.url,
             type=extracted.type,
-            headers={"Referer": ASHDI_REFERER, "User-Agent": "cs-uk-api/1.0"},
+            headers=self.stream_headers(ASHDI_REFERER),
         )
 
     @staticmethod

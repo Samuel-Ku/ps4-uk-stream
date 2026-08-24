@@ -24,7 +24,7 @@ from ..models import (
     TranslationLevel,
 )
 from ..wire_identity import episode_wire_id, parse_episode_tail
-from .base import BaseProvider, MediaTypeStr, ProviderError
+from .base import dle_has_next, BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://animeua.club"
 # The ashdi.vip CDN serves the HLS manifest only with this Referer; the
@@ -62,9 +62,6 @@ def _external_id(href: str) -> str:
     return match.group(1)
 
 
-def _page_number(href: str) -> int:
-    match = re.search(r"/page/(\d+)/?", href)
-    return int(match.group(1)) if match else 0
 
 
 def _section_url(section: str, page: int) -> str:
@@ -286,11 +283,7 @@ class AnimeUAProvider(BaseProvider):
             min(axes.styles) if axes.styles else (axes.form or "series")
         )
         results = _parse_cards(response.text, self.id, section_type)
-        soup = BeautifulSoup(response.text, "lxml")
-        has_next = any(
-            _page_number(str(a.get("href", ""))) > page
-            for a in soup.select("div#pagination a[href*='/page/']")
-        )
+        has_next = dle_has_next(response.text, page)
         return results, has_next
 
     async def content(self, external_id: str, http: httpx.AsyncClient) -> ContentResponse:
@@ -374,7 +367,7 @@ class AnimeUAProvider(BaseProvider):
         return StreamResponse(
             url=url,
             type="m3u8",
-            headers={"Referer": ASHDI_REFERER, "User-Agent": "cs-uk-api/1.0"},
+            headers=self.stream_headers(ASHDI_REFERER),
         )
 
     async def episode_translations(

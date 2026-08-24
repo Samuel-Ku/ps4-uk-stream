@@ -38,7 +38,7 @@ from ..models import (
     Translation,
 )
 from ..wire_identity import episode_wire_id, parse_episode_tail
-from .base import BaseProvider, MediaTypeStr, ProviderError
+from .base import dle_has_next, BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://doramy.world"
 # ashdi.vip hosts the HLS manifest for each episode; the upstream Kotlin
@@ -170,12 +170,6 @@ def _type_from_url(href: str) -> MediaTypeStr:
     return "series"
 
 
-def _page_number(href: str) -> int:
-    """Pull the page index out of either `/page/N/` or `?paged=N`."""
-    m = _PAGE_RE.search(href)
-    if not m:
-        return 0
-    return int(next(g for g in m.groups() if g is not None))
 
 
 def _section_url(section: str, page: int) -> str:
@@ -305,10 +299,7 @@ class DoramyWorldProvider(BaseProvider):
         # WordPress pagination: `<div class="pagination">` with
         # `<a class="page-numbers" href=".../page/N/">` siblings. Any
         # link to a page higher than `page` means there is a next page.
-        has_next = any(
-            _page_number(str(a.get("href") or "")) > page
-            for a in soup.select("div.pagination a.page-numbers")
-        )
+        has_next = dle_has_next(resp.text, page)
         return results, has_next
 
     async def content(
@@ -455,7 +446,7 @@ class DoramyWorldProvider(BaseProvider):
         return StreamResponse(
             url=extracted.url,
             type=extracted.type,
-            headers={"Referer": ASHDI_REFERER, "User-Agent": "cs-uk-api/1.0"},
+            headers=self.stream_headers(ASHDI_REFERER),
         )
 
     @staticmethod

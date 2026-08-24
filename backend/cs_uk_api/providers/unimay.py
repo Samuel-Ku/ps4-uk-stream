@@ -312,7 +312,7 @@ class UnimayProvider(BaseProvider):
         return StreamResponse(
             url=str(url),
             type="m3u8",
-            headers={"Referer": f"{MAIN_URL}/", "User-Agent": "cs-uk-api/1.0"},
+            headers=self.stream_headers(f"{MAIN_URL}/"),
         )
 
 

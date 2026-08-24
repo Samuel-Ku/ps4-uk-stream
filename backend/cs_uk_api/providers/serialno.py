@@ -41,7 +41,7 @@ from ..models import (
 )
 from ..wire_identity import episode_wire_id, parse_episode_tail
 from ._tortuga import decode as _tor_decrypt
-from .base import BaseProvider, ProviderError
+from .base import dle_has_next, BaseProvider, ProviderError
 
 BASE_URL = "https://serialno.tv"
 
@@ -95,7 +95,7 @@ def _dub_prefix(file_value: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
-def _season_list(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _normalize_seasons(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Normalize the decoded player payload to a season list.
 
     Two shapes appear in the wild:
@@ -138,9 +138,6 @@ _PAGINATION_LINK = re.compile(r"/page/(\d+)/?")
 _FILE_RE = re.compile(r"""file\s*:\s*["']([^"']+)["']""")
 
 
-def _page_number(href: str) -> int:
-    m = _PAGINATION_LINK.search(href)
-    return int(m.group(1)) if m else 0
 
 
 def _external_id_from_url(href: str) -> str | None:
@@ -271,10 +268,7 @@ class SerialnoProvider(BaseProvider):
         # sibling anchors to `/page/N/`. The current page is a
         # `<span>`; any sibling `<a>` to a higher page number means
         # there is a next page.
-        has_next = any(
-            _page_number(str(a.get("href") or "")) > page
-            for a in soup.select("div.navigation a[href*='/page/']")
-        )
+        has_next = dle_has_next(resp.text, page)
         return results, has_next
 
     async def content(
@@ -378,12 +372,12 @@ class SerialnoProvider(BaseProvider):
         seasons: list[Season] = []
         if not data:
             return None, []
-        season_list = _season_list(data)
+        season_list = _normalize_seasons(data)
         if not season_list:
             return None, []
         # Dub-wrapped shape: the top-level entries are dubbing tracks
         # (studio titles) whose ``folder`` holds the seasons (ticket #332).
-        # Mirrors ``_season_list``'s shape detection: children carrying a
+        # Mirrors shape detection: children carrying a
         # nested ``folder`` key = dubs; flat seasons carry episodes.
         first_entry = data[0] if data else {}
         first_folder = first_entry.get("folder") or [] if isinstance(first_entry, dict) else []
@@ -484,7 +478,7 @@ class SerialnoProvider(BaseProvider):
         return StreamResponse(
             url=stream_url,
             type="m3u8",
-            headers={"Referer": BASE_URL + "/", "User-Agent": "cs-uk-api/1.0"},
+            headers=self.stream_headers(BASE_URL + "/"),
         )
 
     @staticmethod
@@ -534,7 +528,7 @@ class SerialnoProvider(BaseProvider):
                     if isinstance(ep, dict):
                         return SerialnoProvider._clean_file_value(str(ep.get("file", ""))) or None
             # Fall through to the default track when no dub matched.
-        season_list = _season_list(data)
+        season_list = _normalize_seasons(data)
         if not season_list:
             return None
         if s_idx < 1 or s_idx > len(season_list):

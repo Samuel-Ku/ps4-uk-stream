@@ -2,14 +2,12 @@
 from __future__ import annotations
 
 from .base import BaseExtractor, ExtractResult
-from .iframe import IframeExtractor
-from .playerjson import PlayerJsonExtractor
+from .playlist import walk_playlist
 from .regex import RegexExtractor
 
 __all__ = [
     "BaseExtractor",
     "ExtractResult",
-    "IframeExtractor",
-    "PlayerJsonExtractor",
     "RegexExtractor",
+    "walk_playlist",
 ]

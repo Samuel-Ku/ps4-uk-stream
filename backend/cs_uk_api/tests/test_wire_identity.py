@@ -27,14 +27,12 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, cast
 
 import pytest
 
 import cs_uk_api.wire_identity
 from cs_uk_api.merge import item_group_key, merge_results
 from cs_uk_api.models import SearchResult
-from cs_uk_api.providers.base import model_b_axes
 from cs_uk_api.wire_identity import (
     GROUP_KEY_PREFIX,
     MOVIE_SUFFIX,
@@ -56,7 +54,7 @@ def _make_item(
     year: int | None = None,
     n: str = "1",
 ) -> SearchResult:
-    mb_form, mb_styles = model_b_axes(cast(Any, "movie"))
+    mb_form, mb_styles = ("movie", frozenset())
     return SearchResult(
         id=f"{pid}:{n}",
         provider=pid,
@@ -304,12 +302,7 @@ def test_provider_union_first_seen_wins() -> None:
 import pytest
 
 from cs_uk_api.wire_identity import (
-    MOVIE_SUFFIX,
-    episode_wire_id,
-    is_movie_wire_id,
-    parse_episode_tail,
     split_wire_id,
-    strip_movie_suffix,
 )
 
 _REPRESENTATIVE_EPISODE_IDS = [
