@@ -194,9 +194,13 @@ async def test_run_writes_report_file(tmp_path) -> None:
     )
     import json
 
+    # The report is parseable JSON written atomically — no half-written
+    # file or temp leftover can survive a run.
     raw = json.loads(report_path.read_text(encoding="utf-8"))
     assert "p2" in raw["providers"]
     assert "run_at" in raw
+    leftovers = [f.name for f in tmp_path.iterdir() if ".tmp" in f.name]
+    assert leftovers == []
 
 
 # ------------------------------------------------------------ issue flow

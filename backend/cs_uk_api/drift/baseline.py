@@ -1,4 +1,5 @@
-"""Self-calibrating baseline + drift verdicts (spec #285, ticket #287).
+"""Self-calibrating baseline + drift verdicts (spec #285, ticket #287;
+persistence via the shared VersionedFileStore per spec #363).
 
 Each healthy listing pass updates the provider's stored signature —
 the card-count band, the form/style distribution, and the required
@@ -10,22 +11,24 @@ few items and non-empty titles.
 
 Consecutive-failure counters persist in a small state file so the
 issue-filing rule (two consecutive failures, ticket #288) survives
-process restarts. The verdict logic is pure — a probe result and a
-signature in, a verdict out — so it is directly unit-testable.
+process restarts. Since spec #363 the file carries the shared
+``{"version": 1, "data": ...}`` envelope written atomically by
+``versioned_store`` — a corrupt, mismatched, or legacy bare-payload
+file degrades to a fresh store (a first run calibrates instead of
+tripping), and ``save()`` never raises. The verdict logic is pure — a
+probe result and a signature in, a verdict out — so it is directly
+unit-testable.
 """
 
 from __future__ import annotations
 
-import json
-import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..versioned_store import VersionedFileStore
 from .probe import ListingProbeResult
-
-log = logging.getLogger(__name__)
 
 #: Hard floor: a listing with fewer cards than this is drift, whatever
 #: the calibrated band says ("at least a few items", spec #285).
@@ -121,35 +124,55 @@ class BaselineStore:
 
     The store is deliberately file-backed: the nightly systemd run is a
     fresh process, so the consecutive-failure counter and the calibrated
-    signatures must survive between runs. Corrupt/missing file → fresh
-    store (a first run calibrates instead of tripping).
+    signatures must survive between runs. Since spec #363 it is a thin
+    adapter over the shared ``VersionedFileStore``: the file carries the
+    ``{"version": 1, "data": ...}`` envelope, writes are atomic and
+    never raise, and ANY bad content — corrupt JSON, wrong version,
+    legacy bare-payload map, shape-invalid entries — degrades to a
+    fresh store (a first run calibrates instead of tripping;
+    cold-start-safe by design).
     """
 
     def __init__(self, path: str | os.PathLike[str] | None = None) -> None:
         self.path = Path(path) if path else None
         self._states: dict[str, ProviderState] = {}
-        if self.path is not None and self.path.exists():
-            try:
-                raw = json.loads(self.path.read_text(encoding="utf-8"))
-                self._states = {
-                    str(k): ProviderState.from_dict(v) for k, v in raw.items()
-                }
-            except (OSError, ValueError, KeyError, TypeError):
-                log.warning("drift baseline %s unreadable; starting fresh", self.path)
+        self._file: VersionedFileStore | None = None
+        if self.path is not None:
+            self._file = VersionedFileStore(
+                path=str(self.path),
+                supported_versions=(1,),
+                encode=_encode_states,
+                decode=_decode_states,
+            )
+            restored = self._file.load()
+            if isinstance(restored, dict):
+                self._states = restored
 
     def get(self, provider_id: str) -> ProviderState:
         return self._states.setdefault(provider_id, ProviderState())
 
     def save(self) -> None:
-        if self.path is None:
-            return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            pid: state.to_dict() for pid, state in sorted(self._states.items())
-        }
-        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        tmp.replace(self.path)
+        if self._file is not None:
+            self._file.save(self._states)
+
+
+def _encode_states(states: object) -> object:
+    """Provider states -> the JSON-serializable ``data`` value."""
+    if not isinstance(states, dict):
+        raise TypeError("baseline states map expected")
+    return {
+        pid: state.to_dict()
+        for pid, state in sorted(states.items())
+        if isinstance(pid, str) and isinstance(state, ProviderState)
+    }
+
+
+def _decode_states(data: object) -> dict[str, ProviderState]:
+    """The ``data`` value -> provider states; raises on any shape
+    mismatch (the module ladder degrades to a fresh store)."""
+    if not isinstance(data, dict):
+        raise TypeError("baseline payload must be a provider map")
+    return {str(k): ProviderState.from_dict(v) for k, v in data.items()}
 
 
 def _distribution(cards: list[Any], attr: str) -> dict[str, float]:

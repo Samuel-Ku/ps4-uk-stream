@@ -1,14 +1,21 @@
-"""Drift baseline + verdict tests (spec #285, ticket #287).
+"""Drift baseline + verdict tests (spec #285, ticket #287; spec #363).
 
 The verdict logic is pure: probe results + a signature in, a verdict
 out. Cases pinned: first-run calibration never trips; a healthy pass
 updates the signature (band widens for growth); zero items, missing
 fields, count below the calibrated low, and a significant form/style
 leaving the band all trip; the state file persists consecutive-failure
-counters across store instances.
+counters across store instances in the shared ``{"version": 1,
+"data": ...}`` envelope (spec #363), and a legacy bare-payload file or
+any corrupt content degrades to a fresh recalibration — never a crash.
 """
 
 from __future__ import annotations
+
+import json
+import logging
+
+import pytest
 
 from cs_uk_api.drift.baseline import (
     BaselineStore,
@@ -207,9 +214,57 @@ def test_state_persists_signature(tmp_path) -> None:
     assert sig.count_high == 9
 
 
+def test_state_file_carries_versioned_envelope(tmp_path) -> None:
+    """spec #363: the baseline file is the shared VersionedFileStore
+    envelope — a schema change can never be silently mis-read as old
+    state again."""
+    path = tmp_path / "state.json"
+    store = BaselineStore(path)
+    state = store.get("p1")
+    state.consecutive_failures = 1
+    store.save()
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert doc["version"] == 1
+    assert doc["data"]["p1"]["consecutive_failures"] == 1
+    # No temp leftovers (atomic write).
+    assert [f.name for f in tmp_path.iterdir() if ".tmp" in f.name] == []
+
+
 def test_corrupt_state_file_starts_fresh(tmp_path) -> None:
     path = tmp_path / "state.json"
     path.write_text("{not json", encoding="utf-8")
     store = BaselineStore(path)
     assert store.get("p1").consecutive_failures == 0
     assert store.get("p1").signature is None
+
+
+def test_legacy_bare_payload_degrades_to_fresh_recalibration(
+    tmp_path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """spec #363: the pre-envelope file was the bare {provider: state}
+    map — no version token. It must degrade to a fresh store (warning
+    logged, first healthy pass recalibrates) instead of being silently
+    mis-read across a schema change."""
+    path = tmp_path / "state.json"
+    legacy = {
+        "p1": {
+            "consecutive_failures": 5,
+            "signature": {"count_low": 3, "count_high": 30, "fields_ok": True},
+        }
+    }
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="cs_uk_api.drift.baseline"):
+        store = BaselineStore(path)
+    assert store.get("p1").consecutive_failures == 0
+    assert store.get("p1").signature is None
+    assert caplog.text.strip() != ""  # the degradation is visible
+
+
+def test_save_never_raises_on_unwritable_location(tmp_path) -> None:
+    """spec #363: save() must not raise — the nightly run logs and moves
+    on even when the state directory cannot be written."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x", encoding="utf-8")
+    store = BaselineStore(blocker / "child" / "state.json")
+    store.get("p1").consecutive_failures = 1
+    store.save()  # must not raise
