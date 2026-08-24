@@ -674,6 +674,44 @@ async def test_accessors_search_only_group_uses_source_fallback(monkeypatch: pyt
     assert catalog_api.genres_for_group(gk) == ["Комедії"]
 
 
+def test_native_content_bug_fix_search_only_group_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bug fix (spec #364): a search-registered group absent from the home
+    snapshot resolves via the shared map on the native route — same 200
+    GroupContentResponse shape that home groups use; unknown keys still 404."""
+    from fastapi.testclient import TestClient
+
+    from cs_uk_api.main import app
+    from cs_uk_api.models import SearchGroup
+
+    # Seeded search group with no home build (bug repro: facade 200, native 404 before fix)
+    sr = _poster_item("p1", "Смолфут", year=2018, genres=["Комедії"], poster="https://cdn/s.jpg")
+    gk = item_group_key(sr)
+    group = SearchGroup(
+        group_key=gk,
+        title="Смолфут",
+        year=2018,
+        poster="https://cdn/s.jpg",
+        form="movie",
+        styles=frozenset(),
+        genres=["Комедії"],
+        sources=[sr],
+        member_keys=[gk],
+    )
+    from cs_uk_api._catalog_state import register_search_groups
+
+    register_search_groups([group])
+    client = TestClient(app)
+    r = client.get(f"/api/content/{gk}")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["providers"] == ["p1"]
+    assert body["item"]["group_key"] == gk
+    # Truly unknown still 404s
+    r2 = client.get("/api/content/g2:0000000000000000")
+    assert r2.status_code == 404
+    assert r2.json()["detail"]["error"] == "not_found"
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_index_repopulated_on_persisted_cold_start(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
