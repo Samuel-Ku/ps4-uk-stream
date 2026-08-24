@@ -53,7 +53,6 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from ..extractors.playlist import walk_playlist
 from ..wire_identity import (
     MOVIE_SUFFIX,
     episode_wire_id,
@@ -583,15 +582,47 @@ class UASerialsProProvider(BaseProvider):
     def _select_episode_url(
         decoded: str, ep_suffix: str, translation: str | None = None
     ) -> str | None:
+        """Resolve a series episode m3u8 URL from the decoded playlist.
+
+        The dub picker's translation id (spec #276, ticket #332) selects
+        the episode entry whose ``{label}`` prefix matches; an unmatched
+        translation falls back to the default track."""
         parsed = parse_episode_tail(ep_suffix)
         if parsed is None:
             return None
         s_idx, e_idx = parsed
         try:
-            payload = json.loads(decoded)
+            seasons_raw = cast(list[dict[str, Any]], json.loads(decoded))
         except json.JSONDecodeError:
             return None
-        return walk_playlist(payload, s_idx, e_idx, translation)
+        if not (1 <= s_idx <= len(seasons_raw)):
+            return None
+        episodes_raw = seasons_raw[s_idx - 1].get("folder") or []
+        if not (1 <= e_idx <= len(episodes_raw)):
+            return None
+        if translation:
+            candidates = [
+                ep for ep in episodes_raw
+                if _file_prefix_label(str(ep.get("file", ""))) == translation
+            ]
+            if candidates:
+                ep = candidates[e_idx - 1] if e_idx <= len(candidates) else candidates[0]
+            else:
+                ep = episodes_raw[e_idx - 1]
+        else:
+            ep = episodes_raw[e_idx - 1]
+        file_str = str(ep.get("file", ""))
+        if not file_str:
+            return None
+        # The series `file:` shape is `{label}<url>(subtitle:...)`.
+        # Strip the `{label}` prefix and any trailing `(subtitle:...)`.
+        url = file_str
+        if "}" in url:
+            url = url.split("}", 1)[1]
+        sub_match = re.search(r"\(subtitle:.*?\)\s*$", url)
+        if sub_match:
+            url = url[: sub_match.start()]
+        return url.strip() or None
 
 
 __all__ = ["UASerialsProProvider"]

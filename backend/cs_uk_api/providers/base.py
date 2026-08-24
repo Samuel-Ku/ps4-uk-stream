@@ -10,8 +10,6 @@ import httpx
 
 from ..models import (
     ContentResponse,
-    MediaForm,
-    MediaStyle,
     Person,
     SearchResult,
     Section,

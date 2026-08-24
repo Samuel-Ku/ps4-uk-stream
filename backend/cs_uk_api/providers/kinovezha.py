@@ -36,7 +36,6 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from ..extractors.playlist import walk_playlist
 from ..wire_identity import (
     MOVIE_SUFFIX,
     episode_wire_id,
@@ -504,6 +503,17 @@ class KinoVezhaProvider(BaseProvider):
     def _select_stream_url(
         decoded: str, ep_suffix: str, translation: str | None = None
     ) -> str | None:
+        """Resolve the m3u8 URL for either a movie (single URL) or a
+        series episode (JSON list of seasons + episodes).
+
+        The dub picker's translation id (spec #276) selects the episode
+        entry whose ``{label}`` prefix matches (ticket #332); an
+        unmatched or absent translation falls back to the first entry.
+
+        Returns ``None`` for out-of-range suffixes so the caller surfaces
+        ``parse_failed`` rather than silently returning the first
+        available episode (code-reviewer caught that fallback in
+        KinoTron)."""
         if decoded.startswith("http"):
             return decoded if not ep_suffix else None
         if not ep_suffix:
@@ -513,10 +523,40 @@ class KinoVezhaProvider(BaseProvider):
             return None
         s_idx, e_idx = parsed
         try:
-            payload = _parse_player_json(decoded)
+            data = _parse_player_json(decoded)
         except json.JSONDecodeError:
             return None
-        return walk_playlist(payload, s_idx, e_idx, translation)
+        if s_idx < 1 or s_idx > len(data):
+            return None
+        season = data[s_idx - 1]
+        episodes_raw = season.get("folder") or []
+        if not isinstance(episodes_raw, list) or e_idx < 1 or e_idx > len(episodes_raw):
+            return None
+        if translation:
+            # Flat shape: prefer the episode whose ``{DUB_LABEL}``
+            # prefix matches the picked translation.
+            candidates = [
+                ep for ep in episodes_raw
+                if isinstance(ep, dict) and _dub_prefix(str(ep.get("file", ""))) == translation
+            ]
+            if candidates:
+                ep = candidates[e_idx - 1] if e_idx <= len(candidates) else candidates[0]
+            else:
+                ep = episodes_raw[e_idx - 1]
+        else:
+            ep = episodes_raw[e_idx - 1]
+        if not isinstance(ep, dict):
+            return None
+        file_value = str(ep.get("file", ""))
+        # The series file value may carry an optional `{DUB_LABEL}`
+        # prefix (e.g. `{OZZ}https://...`) and a trailing
+        # `(subtitle:URL)` marker (empty when no subtitle is bundled).
+        # Strip both so we hand the client a bare m3u8 URL.
+        if file_value.startswith("{"):
+            file_value = file_value.split("}", 1)[1]
+        if "(subtitle:" in file_value:
+            file_value = file_value.split("(subtitle:", 1)[0]
+        return file_value or None
 
 
 __all__ = ["KinoVezhaProvider"]
