@@ -36,6 +36,11 @@ import httpx
 
 from . import _catalog_state
 from ._catalog_state import PlaybackEpisodePairing
+from ._catalog_state._stores import (
+    all_home_cards_in_index_order as _all_home_cards_in_index_order,
+)
+from ._catalog_state._stores import get_group_entry as _get_group_entry
+from ._catalog_state._stores import group_index_entries as _group_index_entries
 from .models import (
     ContentResponse,
     HomeItem,
@@ -228,6 +233,91 @@ async def provider_content(provider_id: str, external_id: str) -> ProviderConten
         provider_id, external_id
     )
     return ProviderContent(verdict=ContentVerdict(verdict), content=content)
+
+
+# ---------------------------------------------------------------------------
+# One group-resolution seam (spec #364)
+# ---------------------------------------------------------------------------
+# Driver is locality/single-truth, not performance (LAN single household).
+# Five typed accessors behind the existing typed seam, delegating to
+# _catalog_state; no dict shapes cross. Index lives in _stores beside
+# sources_cache; built at _cache_home, rebuilt on rebuild, repopulated
+# on persisted cold start, merged in register_search_groups — single
+# mutation site so map and index cannot diverge.
+
+
+def card_for_group(group_key: str) -> HomeItem | None:
+    """The snapshot card for a g2: group, or None (spec #364).
+
+    Home snapshot wins; source cards are not duplicated here — they stay
+    reachable through resolve_group for the #233 fallback.
+    """
+    entry = _get_group_entry(group_key)
+    if entry is not None and entry.home_item is not None:
+        return entry.home_item
+    return None
+
+
+def poster_url_for_group(group_key: str) -> str | None:
+    """The canonical poster URL for a g2: group, or None (spec #364)."""
+    card = card_for_group(group_key)
+    if card is not None:
+        return card.poster
+    return None
+
+
+def view_row_type_for_group(group_key: str) -> str | None:
+    """The owning home row kind of a g2: group, or None (spec #364)."""
+    entry = _get_group_entry(group_key)
+    if entry is not None:
+        return entry.row_type
+    return None
+
+
+def year_for_group(group_key: str) -> int | None:
+    """The card's year for a g2: group, or None (spec #364, #233).
+
+    Home-snapshot card wins, then any card the resolution map holds.
+    """
+    card = card_for_group(group_key)
+    if card is not None and card.year is not None:
+        return card.year
+    per_provider = _catalog_state.resolve_group(group_key)
+    if per_provider is not None:
+        for sr in per_provider.values():
+            if sr.year is not None:
+                return sr.year
+    return None
+
+
+def genres_for_group(group_key: str) -> list[str]:
+    """The card's genres for a g2: group, or [] (spec #364, #233).
+
+    Home-snapshot card wins, then any card the resolution map holds.
+    """
+    card = card_for_group(group_key)
+    if card is not None and card.genres:
+        return list(card.genres)
+    per_provider = _catalog_state.resolve_group(group_key)
+    if per_provider is not None:
+        for sr in per_provider.values():
+            if sr.genres:
+                return list(sr.genres)
+    return []
+
+
+def group_entries() -> Mapping[str, object]:
+    """Read-only view of the group index (insertion order = row then item).
+
+    Exposes the index for iteration sites (person filmography, similar,
+    row-match) so they stay ordered without scanning snapshot rows.
+    """
+    return _group_index_entries()
+
+
+def home_items_in_index_order() -> list[HomeItem]:
+    """Every distinct HomeItem in index insertion order (row then item)."""
+    return _all_home_cards_in_index_order()
 
 
 # ---------------------------------------------------------------------------

@@ -33,6 +33,8 @@ from ._stores import (
     _HOME_KEY,
     _SOURCES_KEY,
     _snapshot_store,
+    GroupIndexEntry,
+    _set_group_index,
     deep_page_cache,
     home_cache,
     playback_entries,
@@ -127,10 +129,13 @@ async def load_home() -> HomeResponse:
     if persisted is not None:
         # Instant cold start: serve the stale snapshot immediately, heal
         # it in the background. Sources restored so group resolution for
-        # the persisted rows works without any provider call.
+        # the persisted rows works without any provider call. The index
+        # beside sources_cache is repopulated from the persisted rows so
+        # the seam answers instantly too (spec #364).
         home_cache.set(_HOME_KEY, persisted)
         if sources is not None:
             sources_cache.set(_SOURCES_KEY, sources)
+        _populate_group_index(persisted)
         asyncio.create_task(_build_home())
         return persisted
     return await _build_home()
@@ -331,8 +336,25 @@ def _cache_home(
     row_deep_cache.clear()
     sources = _build_sources_map(newest, popular, type_lists)
     sources_cache.set(_SOURCES_KEY, sources)
+    # Index beside sources_cache: built at _cache_home alongside the
+    # sources map; repopulated on persisted cold start; merged
+    # incrementally in register_search_groups — single mutation site
+    # so map and index cannot diverge.
+    _populate_group_index(resp)
     _snapshot_store().save(resp, sources)
     return resp
+
+
+def _populate_group_index(home: HomeResponse) -> None:
+    """(Re)build the group index from a HomeResponse's rows."""
+    entries: dict[str, GroupIndexEntry] = {}
+    for row in home.rows:
+        for it in row.items:
+            keys = it.member_keys or [it.group_key]
+            for k in keys:
+                if k not in entries:
+                    entries[k] = GroupIndexEntry(home_item=it, row_type=row.type)
+    _set_group_index(entries)
 
 
 def get_home() -> HomeResponse | None:
