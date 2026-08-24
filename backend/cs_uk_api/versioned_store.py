@@ -19,13 +19,15 @@ log line. A store never crashes on a bad file.
 ``save`` is atomic (mkstemp in the same directory + ``os.replace``) and
 never raises: the worst case is a log line and the previous file intact.
 
-``DebouncedSave`` is the optional coalescing wrapper for adapters with
-high-frequency writes (e.g. resume reports): ``request()`` records the
-latest payload and writes at most once per idle window.
+``DebouncedSave`` is the optional thread-based coalescing wrapper for
+adapters with high-frequency writes; ``AsyncDebouncedSave`` (spec #363)
+is its event-loop-native sibling — ``loop.call_later`` instead of a
+worker thread, so shutdown stays synchronous inside uvicorn's loop.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -42,20 +44,10 @@ Encode = Callable[[object], object]
 Decode = Callable[[object], object]
 
 
-def atomic_write_text(path: str, text: str) -> None:
-    """Atomic text write (mkstemp + replace in the same directory); never raises.
-
-    The shared write primitive every persisted artifact uses — the
-    ``VersionedFileStore`` envelope AND plain files (e.g. the episode-rail
-    sweep's Markdown report, spec #323 Store T3 #326). Readers see the
-    old file or the new one, never a half-written file; the worst case is
-    a log line and the previous file intact.
-    """
-    try:
-        blob = text.encode("utf-8")
-    except Exception as e:  # noqa: BLE001 — never raise on a bad payload
-        log.warning("atomic write encode failed: %s: %s", path, e)
-        return
+def _atomic_write(path: str, blob: bytes) -> None:
+    """Shared atomic-write body: mkdir parents, mkstemp + fsync +
+    ``os.replace`` in the same directory, unlink the tmp on failure;
+    never raises."""
     try:
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -79,6 +71,43 @@ def atomic_write_text(path: str, text: str) -> None:
             os.unlink(tmp)
         except OSError:
             pass
+
+
+def atomic_write_text(path: str, text: str) -> None:
+    """Atomic text write (mkstemp + replace in the same directory); never raises.
+
+    The shared write primitive every persisted artifact uses — the
+    ``VersionedFileStore`` envelope AND plain files (e.g. the episode-rail
+    sweep's Markdown report, spec #323 Store T3 #326). Readers see the
+    old file or the new one, never a half-written file; the worst case is
+    a log line and the previous file intact.
+    """
+    try:
+        blob = text.encode("utf-8")
+    except Exception as e:  # noqa: BLE001 — never raise on a bad payload
+        log.warning("atomic write encode failed: %s: %s", path, e)
+        return
+    _atomic_write(path, blob)
+
+
+def atomic_write_bytes(path: str, data: bytes) -> None:
+    """Atomic binary write — mirror of ``atomic_write_text`` minus the
+    utf-8 encode; never raises.
+
+    For opaque payloads that must stay OUTSIDE any version envelope
+    (ADR-0003's confirmed exception: poster image bytes under a
+    content-addressed name). Same guarantees as the text primitive:
+    readers never see a torn file; the worst case is a log line and the
+    previous file intact. ``mkstemp`` yields process-unique ``O_EXCL``
+    temps in the target directory, so concurrent ``--workers`` writes
+    cannot interleave regardless of naming.
+    """
+    try:
+        blob = bytes(data)
+    except Exception as e:  # noqa: BLE001 — never raise on a bad payload
+        log.warning("atomic write encode failed: %s: %s", path, e)
+        return
+    _atomic_write(path, blob)
 
 
 class VersionedFileStore:
@@ -226,3 +255,74 @@ class DebouncedSave:
         thread = self._thread
         if thread is not None:
             thread.join()
+
+
+class AsyncDebouncedSave:
+    """Event-loop-native coalescing wrapper (spec #363).
+
+    Mirrors ``DebouncedSave``'s request/flush/close semantics without the
+    worker thread: ``request(payload)`` records the latest payload and
+    arms a ``loop.call_later`` timer, so the write happens on the loop
+    after ``delay_s`` without a new request — latest request wins. A
+    sync caller (no running loop) falls back to writing immediately
+    rather than dropping the state. ``flush()`` cancels the timer and
+    writes any pending payload now; ``close()`` == flush — there is
+    nothing to join, which is exactly why uvicorn's shutdown can call it
+    synchronously where the thread-based wrapper would stall. After
+    close, requests degrade to immediate best-effort writes. Never
+    raises (the underlying save never raises).
+    """
+
+    def __init__(self, store: VersionedFileStore, delay_s: float) -> None:
+        self._store = store
+        self._delay = delay_s
+        self._pending: object | None = None
+        self._has_pending = False
+        self._timer: asyncio.TimerHandle | None = None
+        self._closed = False
+
+    def _write_pending(self) -> None:
+        """Consume the pending payload (the timer callback / flush body)."""
+        self._timer = None
+        if not self._has_pending:
+            return  # flushed/consumed meanwhile
+        payload = self._pending
+        self._has_pending = False
+        self._pending = None
+        if payload is None:
+            return
+        self._store.save(payload)
+
+    def request(self, payload: object) -> None:
+        """Record the latest payload; (re)schedule the debounced write.
+
+        With a running event loop the write is deferred to
+        ``loop.call_later``; without one (a direct sync caller) it
+        happens immediately.
+        """
+        if self._closed:
+            # After close: fall back to an immediate best-effort write.
+            self._store.save(payload)
+            return
+        self._pending = payload
+        self._has_pending = True
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._write_pending()
+            return
+        if self._timer is not None:
+            self._timer.cancel()
+        self._timer = loop.call_later(self._delay, self._write_pending)
+
+    def flush(self) -> None:
+        """Cancel the pending timer and write the payload now (latest wins)."""
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+        self._write_pending()
+
+    def close(self) -> None:
+        """Flush pending state; nothing to join (no worker thread)."""
+        self.flush()
+        self._closed = True
