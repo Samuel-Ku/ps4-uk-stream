@@ -13,6 +13,7 @@ import httpx
 
 from . import config as _config
 from .cache import TtlCache
+from .versioned_store import atomic_write_bytes
 
 log = logging.getLogger("cs_uk_api.poster")
 
@@ -68,28 +69,22 @@ def _disk_get(directory: str, u: str, ttl_s: int) -> tuple[bytes, str] | None:
 
 
 def _disk_put(directory: str, u: str, body: bytes, ctype: str) -> None:
-    """Best-effort atomic write (tmp + rename); never raises.
+    """Best-effort atomic disk write through the shared primitive; never
+    raises.
 
-    Naming convention: ``<final>.tmp.<pid>`` — the disk cache is
-    cross-process by design (ADR-0003), so a worker-unique pid keeps
-    concurrent ``--workers`` processes from interleaving writes into the
-    same tmp file and tearing the rename. Single-process caches may use
-    the plain ``<final>.tmp`` form.
+    Opaque image bytes stay OUTSIDE any version envelope (ADR-0003's
+    confirmed exception): the final name is content-addressed
+    (``sha256(url)[:32]`` + type extension) and ``atomic_write_bytes``
+    owns the temp+rename body — ``mkstemp`` yields process-unique
+    ``O_EXCL`` temps in the target directory, so concurrent
+    ``--workers`` writes cannot interleave, and a failed write unlinks
+    its own tmp instead of leaking a stale file.
     """
     ext = _EXT_FOR_TYPE.get(ctype, ".jpg")
     final = os.path.join(directory, _disk_basename(u) + ext)
-    tmp = final + ".tmp." + str(os.getpid())
-    try:
-        os.makedirs(directory, exist_ok=True)
-        with open(tmp, "wb") as f:
-            f.write(body)
-        os.replace(tmp, final)
-    except OSError:
-        log.warning("poster disk write failed: %s", final)
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+    # Never raises; a failure is logged by the primitive and serving
+    # falls back to upstream (the disk layer is best-effort).
+    atomic_write_bytes(final, body)
 
 
 def _host_allowed(host: str) -> bool:
