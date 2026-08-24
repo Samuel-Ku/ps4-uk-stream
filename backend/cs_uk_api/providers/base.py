@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import abc
+import json
 import re
 from typing import Any, Literal
 from urllib.parse import unquote
@@ -92,6 +93,42 @@ class ProviderError(Exception):
         self.message = message
 
 
+def dle_page_number(href: str) -> int:
+    """Pull the ``/page/N/`` integer out of a DLE pagination link."""
+    m = re.search(r"/page/(\d+)/?", href)
+    return int(m.group(1)) if m else 0
+
+
+def dle_has_next(html: str, page: int) -> bool:
+    """Scan a DLE ``navigation`` block for a link beyond ``page``."""
+    from bs4 import BeautifulSoup  # local import to avoid cycle
+
+    soup = BeautifulSoup(html, "lxml")
+    for a in soup.select(".navigation a[href*='/page/'], div.navigation a[href*='/page/'], div.pages a[href*='/page/']"):
+        href = str(a.get("href") or "")
+        if dle_page_number(href) > page:
+            return True
+    # fallback: any pagination anchor beyond page (WordPress etc. also uses /page/)
+    for a in soup.select("a[href*='/page/']"):
+        href = str(a.get("href") or "")
+        if dle_page_number(href) > page:
+            return True
+    return False
+
+
+def cards_from(html: str, selector: str, parse_card: Any) -> list[Any]:
+    """Loop ``selector`` + ``parse_card`` with None-skip template."""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "lxml")
+    out: list[Any] = []
+    for card in soup.select(selector):
+        parsed = parse_card(card)
+        if parsed is not None:
+            out.append(parsed)
+    return out
+
+
 class BaseProvider(abc.ABC):
     id: str
     name: str
@@ -146,6 +183,45 @@ class BaseProvider(abc.ABC):
         declare `sections` must override this.
         """
         raise NotImplementedError(f"{self.id} does not support browse")
+
+    @staticmethod
+    def stream_headers(referer: str) -> dict[str, str]:
+        return {"Referer": referer, "User-Agent": "cs-uk-api/1.0"}
+
+    async def get_json(
+        self, url: str, http: httpx.AsyncClient, *, headers: dict[str, str] | None = None
+    ) -> Any:
+        """GET ``url`` and parse JSON body with canonical error codes."""
+        from ..http_client import provider_safe_get
+
+        try:
+            response = await provider_safe_get(http, self, url, headers=headers)
+        except httpx.HTTPError as error:
+            raise ProviderError("unreachable", str(error)) from error
+        if response.status_code >= 500:
+            raise ProviderError("upstream_unreachable", f"status {response.status_code}")
+        if response.status_code != 200:
+            raise ProviderError("not_found", f"status {response.status_code}")
+        try:
+            return response.json()
+        except json.JSONDecodeError as error:
+            raise ProviderError("parse_failed", str(error)) from error
+
+    async def get_html(
+        self, url: str, http: httpx.AsyncClient, *, headers: dict[str, str] | None = None
+    ) -> str:
+        """GET ``url`` and return text body with canonical error codes."""
+        from ..http_client import provider_safe_get
+
+        try:
+            response = await provider_safe_get(http, self, url, headers=headers)
+        except httpx.HTTPError as error:
+            raise ProviderError("unreachable", str(error)) from error
+        if response.status_code >= 500:
+            raise ProviderError("upstream_unreachable", f"status {response.status_code}")
+        if response.status_code != 200:
+            raise ProviderError("not_found", f"status {response.status_code}")
+        return response.text
 
     async def episode_translations(
         self, content_id: str, http: httpx.AsyncClient

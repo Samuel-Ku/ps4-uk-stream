@@ -45,7 +45,6 @@ from urllib.parse import quote_plus
 
 import httpx
 
-from ..http_client import provider_safe_get
 from ..models import (
     ContentResponse,
     Episode,
@@ -241,59 +240,11 @@ class AnimeONProvider(BaseProvider):
     #: (#160, same pattern as eneyida #158).
     can_gate = True
 
-    async def _get_json(
-        self,
-        url: str,
-        http: httpx.AsyncClient,
-        *,
-        headers: dict[str, str] | None = None,
-    ) -> Any:
-        """GET ``url`` and parse the JSON body. Raises ``ProviderError``
-        with the right code: ``unreachable`` on connection errors,
-        ``upstream_unreachable`` on 5xx, and ``not_found`` on 4xx."""
-        try:
-            response = await provider_safe_get(
-                http, self, url, headers=headers or _DEFAULT_HEADERS
-            )
-        except httpx.HTTPError as error:
-            raise ProviderError("unreachable", str(error)) from error
-        if response.status_code >= 500:
-            raise ProviderError(
-                "upstream_unreachable", f"status {response.status_code}"
-            )
-        if response.status_code != 200:
-            raise ProviderError("not_found", f"status {response.status_code}")
-        try:
-            return response.json()
-        except json.JSONDecodeError as error:
-            raise ProviderError("parse_failed", str(error)) from error
-
-    async def _get_text(
-        self,
-        url: str,
-        http: httpx.AsyncClient,
-        *,
-        headers: dict[str, str],
-    ) -> str:
-        """GET ``url`` and return the body as text. Same error codes as
-        ``_get_json`` except we don't try to JSON-decode the body."""
-        try:
-            response = await provider_safe_get(http, self, url, headers=headers)
-        except httpx.HTTPError as error:
-            raise ProviderError("unreachable", str(error)) from error
-        if response.status_code >= 500:
-            raise ProviderError(
-                "upstream_unreachable", f"status {response.status_code}"
-            )
-        if response.status_code != 200:
-            raise ProviderError("not_found", f"status {response.status_code}")
-        return response.text
-
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         # quote_plus escapes every URL-unsafe char (including &, ?, #,
         # space) so the upstream never sees an injected query parameter.
         encoded = quote_plus(query, safe="")
-        data = await self._get_json(f"{BASE_URL}/api/anime?search={encoded}", http)
+        data = await self.get_json(f"{BASE_URL}/api/anime?search={encoded}", http, headers=_DEFAULT_HEADERS)
         results = (data or {}).get("results", []) if isinstance(data, dict) else []
         out: list[SearchResult] = []
         for item in results:
@@ -320,20 +271,20 @@ class AnimeONProvider(BaseProvider):
         self, section: str, page: int, http: httpx.AsyncClient
     ) -> tuple[list[SearchResult], bool]:
         if section == "seasons":
-            data = await self._get_json(f"{BASE_URL}/api/anime/seasons", http)
+            data = await self.get_json(f"{BASE_URL}/api/anime/seasons", http, headers=_DEFAULT_HEADERS)
             results = data if isinstance(data, list) else []
             return self._build_local_results(results), False
         if section == "popular":
-            data = await self._get_json(
+            data = await self.get_json(
                 f"{BASE_URL}/api/stats/anime/{_today_string()}?withView=false",
                 http,
+                headers=_DEFAULT_HEADERS,
             )
             results = data if isinstance(data, list) else []
             return self._build_local_results(results), False
         if section == "page":
-            data = await self._get_json(
-                f"{BASE_URL}/api/anime?pageSize=24&pageIndex={page}", http
-            )
+            data = await self.get_json(
+                f"{BASE_URL}/api/anime?pageSize=24&pageIndex={page}", http, headers=_DEFAULT_HEADERS)
             items = (data or {}).get("results", []) if isinstance(data, dict) else []
             total = (
                 int((data or {}).get("totalCount", 0)) if isinstance(data, dict) else 0
@@ -518,7 +469,7 @@ class AnimeONProvider(BaseProvider):
         """Resolve the bare-id redirect to a slug, fetch the canonical
         content JSON, and parse the year integer. The upstream
         Kotlin's `resolveAnimeApiUrl` does the same redirect dance."""
-        first = await self._get_json(f"{BASE_URL}/api/anime/{anime_id}", http)
+        first = await self.get_json(f"{BASE_URL}/api/anime/{anime_id}", http, headers=_DEFAULT_HEADERS)
         if isinstance(first, dict) and first.get("moved") is True:
             slug = str(first.get("slug") or first.get("redirectTo") or "")
             if not _SLUG_RE.fullmatch(slug):
@@ -526,7 +477,7 @@ class AnimeONProvider(BaseProvider):
         else:
             slug = external_id
 
-        info = await self._get_json(f"{BASE_URL}/api/anime/{slug}", http)
+        info = await self.get_json(f"{BASE_URL}/api/anime/{slug}", http, headers=_DEFAULT_HEADERS)
         if not isinstance(info, dict):
             raise ProviderError("parse_failed", "content body not object")
 
@@ -554,8 +505,10 @@ class AnimeONProvider(BaseProvider):
         card that is otherwise playable.
         """
         try:
-            raw = await self._get_json(
-                f"{BASE_URL}/api/anime/{slug}/episodes-info", http
+            raw = await self.get_json(
+                f"{BASE_URL}/api/anime/{slug}/episodes-info",
+                http,
+                headers=_DEFAULT_HEADERS,
             )
         except Exception:  # noqa: BLE001
             # Best-effort by contract: a missing endpoint (some titles
@@ -588,9 +541,11 @@ class AnimeONProvider(BaseProvider):
     ) -> dict[str, Any]:
         """The raw ``/api/player/<id>/translations`` document, or ``{}``
         when the upstream answers in an unexpected shape."""
-        doc = await self._get_json(
-            f"{BASE_URL}/api/player/{anime_id}/translations", http
-        )
+        doc = await self.get_json(
+            f"{BASE_URL}/api/player/{anime_id}/translations",
+                http,
+                headers=_DEFAULT_HEADERS,
+            )
         return doc if isinstance(doc, dict) else {}
 
     async def _collect_episode_map(
@@ -717,7 +672,7 @@ class AnimeONProvider(BaseProvider):
         specials for this show). 5xx propagates so the caller surfaces
         ``upstream_unreachable``."""
         try:
-            return cast(dict[str, Any], await self._get_json(f"{base}&skip=-1", http))
+            return cast(dict[str, Any], await self.get_json(f"{base}&skip=-1", http, headers=_DEFAULT_HEADERS))
         except ProviderError as e:
             if e.code in {"unreachable", "upstream_unreachable"}:
                 raise
@@ -768,7 +723,7 @@ class AnimeONProvider(BaseProvider):
         async def fetch_page(skip: int) -> list[dict[str, Any]]:
             async with sem:
                 try:
-                    doc = await self._get_json(f"{base}&skip={skip}", http)
+                    doc = await self.get_json(f"{base}&skip={skip}", http, headers=_DEFAULT_HEADERS)
                 except ProviderError as e:
                     if e.code in {"unreachable", "upstream_unreachable"}:
                         raise
@@ -986,8 +941,10 @@ class AnimeONProvider(BaseProvider):
         direct source" and is skipped; 5xx propagates as
         `upstream_unreachable`."""
         try:
-            direct = await self._get_json(
-                f"{BASE_URL}/api/player/{player.get('id')}/{translation_id}", http
+            direct = await self.get_json(
+                f"{BASE_URL}/api/player/{player.get('id')}/{translation_id}",
+                http,
+                headers=_DEFAULT_HEADERS,
             )
         except ProviderError as e:
             if e.code in {"unreachable", "upstream_unreachable"}:
@@ -1088,8 +1045,10 @@ class AnimeONProvider(BaseProvider):
                 player_id = player.get("id")
                 if trans_id is None or player_id is None:
                     continue
-                direct = await self._get_json(
-                    f"{BASE_URL}/api/player/{player_id}/{trans_id}", http
+                direct = await self.get_json(
+                    f"{BASE_URL}/api/player/{player_id}/{trans_id}",
+                http,
+                headers=_DEFAULT_HEADERS,
                 )
                 if isinstance(direct, dict):
                     value = direct.get("videoUrl")
@@ -1097,7 +1056,7 @@ class AnimeONProvider(BaseProvider):
                         direct_url = value
         if direct_url is None:
             return None
-        page = await self._get_text(
+        page = await self.get_html(
             direct_url,
             http,
             headers={"Referer": f"{BASE_URL}/", **_DEFAULT_HEADERS},
@@ -1150,7 +1109,7 @@ class AnimeONProvider(BaseProvider):
             fetch_url = clean
         else:
             fetch_url = f"{clean}?player=animeon.club"
-        page = await self._get_text(
+        page = await self.get_html(
             fetch_url,
             http,
             headers={"Referer": f"{BASE_URL}/", **_DEFAULT_HEADERS},
@@ -1178,7 +1137,7 @@ class AnimeONProvider(BaseProvider):
             fetch_url = f"{clean}{separator}player=animeon.club"
         else:
             fetch_url = clean
-        page = await self._get_text(
+        page = await self.get_html(
             fetch_url,
             http,
             headers={
