@@ -32,9 +32,9 @@ from ..wire_identity import project_group, provider_union
 from ._stores import (
     _HOME_KEY,
     _SOURCES_KEY,
-    _snapshot_store,
     GroupIndexEntry,
     _set_group_index,
+    _snapshot_store,
     deep_page_cache,
     home_cache,
     playback_entries,
