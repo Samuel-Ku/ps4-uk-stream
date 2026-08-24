@@ -504,10 +504,7 @@ class KinoVezhaProvider(BaseProvider):
         stream_url = self._select_stream_url(decoded, ep_suffix, translation)
         if stream_url is None:
             raise ProviderError("parse_failed", f"no stream url for {ep_suffix!r}")
-        return StreamResponse(url=stream_url, type="m3u8", headers={
-            "Referer": BASE_URL + "/",
-            "User-Agent": "cs-uk-api/1.0",
-        })
+        return StreamResponse(url=stream_url, type="m3u8", headers=self.stream_headers(BASE_URL + "/"))
 
     @staticmethod
     def _select_stream_url(

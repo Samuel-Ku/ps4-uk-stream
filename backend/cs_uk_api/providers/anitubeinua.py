@@ -686,7 +686,7 @@ class AnitubeinuaProvider(BaseProvider):
         return StreamResponse(
             url=m3u8.group(1),
             type="m3u8",
-            headers={"Referer": _referer_for(file_url), "User-Agent": "cs-uk-api/1.0"},
+            headers=self.stream_headers(_referer_for(file_url)),
         )
 
     @staticmethod

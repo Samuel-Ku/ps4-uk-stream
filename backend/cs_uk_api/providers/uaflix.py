@@ -736,7 +736,7 @@ class UAFlixProvider(BaseProvider):
         return StreamResponse(
             url=extracted.url,
             type=extracted.type,
-            headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/1.0"},
+            headers=self.stream_headers(f"{BASE_URL}/"),
         )
 
     @staticmethod

@@ -374,7 +374,7 @@ class AnimeUAProvider(BaseProvider):
         return StreamResponse(
             url=url,
             type="m3u8",
-            headers={"Referer": ASHDI_REFERER, "User-Agent": "cs-uk-api/1.0"},
+            headers=self.stream_headers(ASHDI_REFERER),
         )
 
     async def episode_translations(

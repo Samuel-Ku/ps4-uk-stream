@@ -694,7 +694,7 @@ class SimpsonsUATvProvider(BaseProvider):
         return StreamResponse(
             url=m3u8,
             type="m3u8",
-            headers={"Referer": ASHDI_REFERER, "User-Agent": "cs-uk-api/1.0"},
+            headers=self.stream_headers(ASHDI_REFERER),
         )
 
 

@@ -631,7 +631,7 @@ class KlonTVProvider(BaseProvider):
         return StreamResponse(
             url=media_url,
             type="m3u8",
-            headers={"Referer": ASHDI_REFERER, "User-Agent": "cs-uk-api/1.0"},
+            headers=self.stream_headers(ASHDI_REFERER),
         )
 
     @staticmethod

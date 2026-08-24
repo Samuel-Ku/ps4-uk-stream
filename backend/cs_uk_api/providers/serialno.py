@@ -484,7 +484,7 @@ class SerialnoProvider(BaseProvider):
         return StreamResponse(
             url=stream_url,
             type="m3u8",
-            headers={"Referer": BASE_URL + "/", "User-Agent": "cs-uk-api/1.0"},
+            headers=self.stream_headers(BASE_URL + "/"),
         )
 
     @staticmethod

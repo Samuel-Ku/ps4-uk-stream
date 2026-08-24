@@ -378,10 +378,7 @@ class CoaninetProvider(BaseProvider):
         return StreamResponse(
             url=video_url,
             type="m3u8",
-            headers={
-                "Referer": f"{SITE_URL}/",
-                "User-Agent": "cs-uk-api/1.0",
-            },
+            headers=self.stream_headers(f"{SITE_URL}/"),
         )
 
 

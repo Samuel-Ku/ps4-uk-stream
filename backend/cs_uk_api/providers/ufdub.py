@@ -489,7 +489,7 @@ class UFDubProvider(BaseProvider):
         return StreamResponse(
             url=media_url,
             type="mp4",
-            headers={"Referer": f"{BASE_URL}/", "User-Agent": "cs-uk-api/1.0"},
+            headers=self.stream_headers(f"{BASE_URL}/"),
             allowed_domains=frozenset({"dropboxusercontent.com"}),
         )
 

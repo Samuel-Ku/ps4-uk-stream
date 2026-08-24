@@ -314,7 +314,7 @@ class KinoTronProvider(BaseProvider):
                 raise ProviderError("not_found", "episode not found")
             matches = [item for item in season_files if str(item.get("title", "")).strip() == episode_titles[episode_number - 1]]
             selected = next((item for item in matches if str(item.get("dub", "")).strip() == translation), matches[0])
-        return StreamResponse(url=str(selected["file"]), type="m3u8", headers={"Referer": player_url, "User-Agent": "cs-uk-api/1.0"})
+        return StreamResponse(url=str(selected["file"]), type="m3u8", headers=self.stream_headers(player_url))
 
 
 __all__ = ["KinoTronProvider"]
