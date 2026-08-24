@@ -36,6 +36,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
+from ..extractors.playlist import walk_playlist
 from ..wire_identity import (
     MOVIE_SUFFIX,
     episode_wire_id,
@@ -631,44 +632,15 @@ class KlonTVProvider(BaseProvider):
     def _select_episode_url(
         raw: str, ep_suffix: str, translation: str | None = None
     ) -> str | None:
-        """Resolve a series episode URL from the PlayerJS playlist JSON.
-
-        The dub picker's translation id (spec #276) selects the dub
-        whose `title` matches (ticket #332); an unmatched or absent
-        translation falls back to the first dub — the upstream default.
-
-        Returns None when the suffix is malformed or out of range, so
-        the caller surfaces an explicit `parse_failed` — there is no
-        silent "first available episode" fallback (that would mask a
-        missing suffix in the caller, a known regression pattern).
-        """
         parsed = parse_episode_tail(ep_suffix)
         if parsed is None:
             return None
         s_idx, e_idx = parsed
         try:
-            dubs = cast(list[dict[str, Any]], json.loads(raw))
+            payload = json.loads(raw)
         except json.JSONDecodeError:
             return None
-        if not dubs:
-            return None
-        selected = dubs[0]
-        if translation:
-            for dub in dubs:
-                if (
-                    isinstance(dub, dict)
-                    and str(dub.get("title", "")).strip() == translation
-                ):
-                    selected = dub
-                    break
-        seasons = selected.get("folder") or []
-        if not (1 <= s_idx <= len(seasons)):
-            return None
-        episodes_raw = seasons[s_idx - 1].get("folder") or []
-        if not (1 <= e_idx <= len(episodes_raw)):
-            return None
-        file_url = episodes_raw[e_idx - 1].get("file")
-        return str(file_url) if file_url else None
+        return walk_playlist(payload, s_idx, e_idx, translation)
 
 
 __all__ = ["KlonTVProvider"]
