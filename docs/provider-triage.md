@@ -29,7 +29,7 @@ once they pass the live gate (search → content → stream → plays in mpv).
 | uaflix | [UAFlixProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/UAFlixProvider) | `UAFlixProvider.kt` (14.9 KB) | HTML, has mainPage | iframe → regex | mild | **ready** |
 | animeua | [AnimeUAProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/AnimeUAProvider) | `AnimeUAProvider.kt` (8.2 KB), `Tracker.kt` | HTML | iframe → JSON `file:` (dubs or m3u8) | mild | **ready** |
 | kinovezha | [KinoVezhaProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/KinoVezhaProvider) | `KinoVezhaProvider.kt` (10.3 KB) | HTML | iframe → regex (torDecrypt) | mild | **ready** |
-| banderakino | [BanderakinoProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/BanderakinoProvider) | `BanderakinoProvider.kt` (386 lines — **removed from codeberg master in commit `3f4641d`**; recovered from history for issue #241) | HTML | inline `player = new Playerjs({...})` JSON on the episode page → m3u8 (Referer `banderakino.online`); fallback `getM3url` regex | mild | **portable — NOT landed (upstream still offline — re-probed 2026-08-16: Cloudflare edge answers `http://` with 301 but the https origin times out (522-class), `banderakino.pp.ua` still NXDOMAIN, no replacement domain found; live fixtures are a spec ground rule, so #241 waits for the site to return)** |
+| banderakino | [BanderakinoProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/BanderakinoProvider) | `BanderakinoProvider.kt` (386 lines — **removed from codeberg master in commit `3f4641d`**; recovered from history for issue #241) | HTML | inline `player = new Playerjs({...})` JSON on the episode page → m3u8 (Referer `banderakino.online`); fallback `getM3url` regex | mild | **portable — NOT landed (upstream dead — re-probed again 2026-08-24: `banderakino.online` zone still resolves to Cloudflare edges `104.21.52.164`/`172.67.201.84` but the https origin times out on `/`, `/serialy`, `www.` (curl 000 at 15s); plain `http://` 301s to https then dies — same 522-class outage as 2026-08-16; `.com`/`.net`/`.org`/`.ua`/`.pp.ua` all NXDOMAIN; web search finds no replacement domain; control fetches to ufdub.com fine same minute → network healthy. Recommendation recorded on #241: wontfix unless the site returns)** |
 | bambooua | [BambooUAProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/BambooUAProvider) | `BambooUAProvider.kt` (8.9 KB), `JSONModel.kt` | HTML + JSON | inline `const playlist` JSON on the content page | mild | **ready** (no_episodes fix per #139: a content page with an empty/missing `const playlist` — dead/removed listing or subscription-gated title («Для підписників» served without a manifest) — raises `gated` (ADR-0002) from content()/stream(), so `can_gate`'s `filter_gated_items` drops the zero-season card during `load_home`; id-collapse fix per #139: `/zhanr/` cards keep the full multi-segment path in the external_id (`zhanr/drama/N-slug`) so content()/stream() rebuild the verbatim 200 URL — the collapsed `drama/N-slug` form 301-redirects into a health-down `not_found`) |
 | coaninet | [CoaninetProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/CoaninetProvider) | `CoaninetProvider.kt` (12.3 KB) | JSON API | pre-resolved HLS master | none | **ready** |
 | klontv | [KlonTVProvider](https://codeberg.org/CakesTwix/cloudstream-extensions-uk/src/branch/master/KlonTVProvider) | `KlonTVProvider.kt` (10.0 KB), `Tracker.kt` | HTML | iframe → regex | mild | **ready** |
@@ -152,6 +152,50 @@ Details:
 - No adapter changes: the adapters' parsing is unaffected (healthy
   signatures `count 18/18/4` restored identically on recovery); the
   outage was pure upstream unavailability.
+
+## Drift incident: ufdub failing sweeps (2026-08-24, issue #357)
+
+The nightly drift monitor (spec #285) failed `ufdub` two sweeps
+consecutively and filed #357. Root cause was NOT upstream content
+change and NOT the deep probe (ufdub was not even in that night's deep
+rotation; manual deep probes of movie AND series cards pass:
+content → stream → HEAD 200). The verdict was the listing signature's
+style band: `style 'dorama' left the band (0.25 → 0.00)`.
+
+Root cause in the ADAPTER: ufdub category pages append a rotating
+`div.section` widget («recently updated» cross-listed
+serials/anime/doramas) after the real `div.floaters.grid-thumb`
+category grid — every one of the six category pages carries it (12
+grid cards + 4 widget cards, verified live on all six on 2026-08-24).
+`browse()` selected `.short-text` globally and over-captured the
+widget, despite its own comment claiming the upstream Kotlin's
+«remove `.section` blocks» behavior. Consequences:
+
+- The drift baseline calibrated ON the polluted listing (16 cards,
+  styles `{anime: 0.75, dorama: 0.25}` at calibration time).
+- The widget tail rotates as episodes land (dorama → anime observed
+  between calibration and 2026-08-24), so any style occupying it can
+  leave the ≥20% significance band → permanent verdict flapping.
+
+Fix (#357): `browse()` now skips cards under a `div.section`,
+implementing the documented Kotlin-parity exclusion. Search is
+untouched (search-page results genuinely live inside such a block);
+pagination lives inside the grid container, so `has_next` is
+unaffected. Post-fix listing = the true grid (12 films on `/film/`,
+forms all-movie, styles empty — stable across rotations); fixture
+`film_listing.html` re-captured live 2026-08-24 with the widget
+present as regression evidence.
+
+Deploy companion (operator step, runtime state only): the persisted
+baseline still carries the stale `[16,16]` count band, so the first
+post-fix sweep trips `count 12 below calibrated low 16` until the
+signature recalibrates — the baseline only refreshes on healthy
+passes (chicken-and-egg for permanent composition changes). ufdub's
+entry was dropped from this host's `~/.cache/cs-uk-api/drift-state.json`;
+the next sweep calibrates fresh ([12,12], `style_frac {}`) and the
+healthy pass comments + closes #357 per the monitor's recovery flow.
+Verified end-to-end against live upstream with an isolated temp state:
+first run `ok=True, reason="baseline (first calibration)"`.
 
 ## Per-provider "owner" field (suggested order)
 

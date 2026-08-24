@@ -271,11 +271,20 @@ class UFDubProvider(BaseProvider):
             raise ProviderError("not_found", f"status {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         # The upstream Kotlin removes `.section` (ad/featured blocks) before
-        # mapping `.short` cards. Each card is `<div class="short clearfix">`
-        # containing a `<div class="short-text">` with the title link. We
-        # select only the inner wrapper to avoid double-counting.
+        # mapping `.short` cards — and ufdub's category pages really do
+        # append a rotating `div.section` widget («recently updated»
+        # cross-listed serials/anime/doramas) after the real
+        # `div.floaters.grid-thumb` category grid. Issue #357: browse()
+        # over-captured that widget, so its rotating tail poisoned the
+        # drift monitor's calibrated style distribution (dorama share
+        # flapped as episodes landed → two failing sweeps). Skip any
+        # card under a `div.section`; search pages keep their own
+        # layout (their results live inside such a block), so this
+        # applies to browse listings only.
         results: list[SearchResult] = []
         for card in soup.select(".short-text"):
+            if card.find_parent("div", class_="section") is not None:
+                continue
             parsed = _parse_card(card, self.id)
             if parsed is not None:
                 results.append(parsed)

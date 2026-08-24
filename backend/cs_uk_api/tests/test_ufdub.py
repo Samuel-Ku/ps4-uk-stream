@@ -64,7 +64,9 @@ async def test_ufdub_browse_anime_section_parses_results():
             results, has_next = await UFDubProvider().browse("anime", 1, http)
     # Regression: `.short-text, .short` selector returned each card
     # twice (32 results for 16 cards). Use only the inner `.short-text`.
-    assert len(results) == 16
+    # Issue #357: the 4 widget cards inside `div.section` are excluded
+    # too — the real anime grid is 12 cards.
+    assert len(results) == 12
     assert all("anime" in r.styles for r in results)
     assert all(r.id.startswith("ufdub:anime-") for r in results)
     # Regression: DLE pagination is `<span class="navigation">`, not
@@ -96,11 +98,39 @@ async def test_ufdub_browse_film_page1_has_next_true():
         router.get("https://ufdub.com/film/").respond(200, text=listing_html)
         async with httpx.AsyncClient() as http:
             results, has_next = await UFDubProvider().browse("filmy", 1, http)
-    assert len(results) == 16
-    # The film section shows related content (3 anime, 12 film, 1
-    # serial) — UFDub is not strictly partitioned. The page
-    # classification is the URL's path, not the section's declared
-    # type.
+    # Issue #357: the page's real category grid is 12 films — the four
+    # extra `.short` cards the page used to surface (16) belong to a
+    # separate `div.section` widget, excluded by browse().
+    assert len(results) == 12
+    assert has_next is True
+
+
+@pytest.mark.asyncio
+async def test_ufdub_browse_excludes_section_widget_cards():
+    """Issue #357 regression: ufdub category pages append a rotating
+    ``div.section`` widget («recently updated» cross-listed
+    serials/anime/doramas) after the real ``div.floaters.grid-thumb``
+    category grid. The upstream Kotlin removes ad/featured ``.section``
+    blocks before mapping ``.short`` cards; the Python port never did,
+    so browse() over-captured the widget and its rotating tail poisoned
+    the drift monitor's calibrated style distribution (dorama share
+    flapped as episodes landed → two failing sweeps → issue #357).
+
+    The film fixture was re-captured live on 2026-08-24: grid = 12
+    films, widget = 4 cross-listed anime. browse("filmy") must return
+    only the grid."""
+    listing_html = _fixture("film_listing.html")
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://ufdub.com/film/").respond(200, text=listing_html)
+        async with httpx.AsyncClient() as http:
+            results, has_next = await UFDubProvider().browse("filmy", 1, http)
+    assert len(results) == 12
+    for r in results:
+        assert r.url.startswith("https://ufdub.com/film/"), r.url
+        assert r.form == "movie"
+        assert r.styles == frozenset()
+    # Pagination lives inside the grid container (not the widget), so
+    # has_next detection is unaffected by the exclusion.
     assert has_next is True
 
 
