@@ -1,4 +1,4 @@
-"""Disk-backed resume store (ticket #248, spec #247).
+"""Disk-backed resume store (ticket #248, spec #247; spec #363).
 
 Tests the record/read pair and the persistence semantics the spec names
 as the seam: positions survive a restart (a fresh store over the same
@@ -10,6 +10,11 @@ flush persists debounced heartbeats.
 Per spec #247's testing decisions these are wire/behaviour tests through
 the store's record/read pair — file internals, locking and write timing
 are never asserted.
+
+Spec #363 moves the file onto the shared ``VersionedFileStore`` envelope
+(``{"version": 1, "data": {items, queries, finished}}``); the legacy
+bare ``{"v": n}`` shape degrades to a fresh empty resume with a warning
+(the ADR-0003 remedy — pinned explicitly below).
 """
 
 from __future__ import annotations
@@ -62,8 +67,6 @@ def test_store_ignores_version_mismatch(tmp_path, caplog) -> None:
         store = _fresh(str(path))
     assert store.positions() == {}
     assert "version" in caplog.text.lower()
-
-
 def test_store_corrupt_file_yields_empty(tmp_path, caplog) -> None:
     """An unparseable file yields an empty resume and the API keeps
     serving (acceptance criterion 3)."""
@@ -95,17 +98,18 @@ def test_store_zero_position_not_recorded(tmp_path) -> None:
 
 def test_store_atomic_write_round_trips(tmp_path) -> None:
     """The flushed file is valid versioned JSON and no temp file is left
-    behind (atomic temp+rename, acceptance criterion 5)."""
+    behind (atomic temp+rename, acceptance criterion 5). Spec #363: the
+    file carries the shared outer envelope."""
     path = tmp_path / "playback.json"
     store = _fresh(str(path))
     store.record("g2:abc", 100, runtime_ticks=200)
     store.flush()
     assert os.path.exists(str(path))
     assert [p for p in os.listdir(tmp_path) if p.endswith(".tmp")] == []
-    data = json.loads(path.read_text(encoding="utf-8"))
-    assert data["v"] == 2
-    assert data["items"]["g2:abc"]["position_ticks"] == 100
-    assert data["items"]["g2:abc"]["runtime_ticks"] == 200
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert doc["version"] == 1
+    assert doc["data"]["items"]["g2:abc"]["position_ticks"] == 100
+    assert doc["data"]["items"]["g2:abc"]["runtime_ticks"] == 200
 
 
 def test_store_flush_persists_debounced_record(tmp_path) -> None:
@@ -197,19 +201,52 @@ def test_store_recent_most_recent_first_capped(tmp_path) -> None:
     assert list(store.recent(10).keys()) == ["c", "b", "a"]
 
 
-# ------------------------------------------------------------ v2 queries (#252)
+# ------------------------------------------------ legacy "v" files (#363)
 
 
-def test_store_v1_file_loads_items_without_queries(tmp_path) -> None:
-    """#252: a v1 file (no queries section) still loads its positions;
-    the queries list is empty — never a crash on upgrade."""
+def test_legacy_v_file_degrades_to_fresh_empty(tmp_path, caplog) -> None:
+    """Spec #363 / ADR-0003 remedy: the pre-envelope ``{"v": n}``
+    playback.json is NOT backward-read — it degrades to a fresh empty
+    resume with a logged warning; startup never crashes. The one-time
+    shelf loss re-accumulates from continued viewing."""
     path = tmp_path / "playback.json"
-    path.write_text(
-        json.dumps({"v": 1, "items": {"g2:abc": {"position_ticks": 100}}}), encoding="utf-8"
-    )
-    store = _fresh(str(path))
-    assert store.positions() == {"g2:abc": 100}
+    legacy_v2 = {
+        "v": 2,
+        "items": {"g2:old": {"position_ticks": 123, "updated_at": 1.0}},
+        "queries": ["старе"],
+        "finished": {"g2:done": 99.0},
+    }
+    path.write_text(json.dumps(legacy_v2), encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="cs_uk_api.resume"):
+        store = _fresh(str(path))
+    assert store.positions() == {}
     assert store.recent_queries() == []
+    assert store.history() == []
+    assert "resume" in caplog.text.lower()
+    # The next write replaces the legacy file with the new envelope.
+    store.record("g2:new", 100)
+    store.flush()
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert doc["version"] == 1
+    assert doc["data"]["items"]["g2:new"]["position_ticks"] == 100
+
+
+async def test_store_progress_heartbeat_is_debounced(tmp_path) -> None:
+    """Inside a running loop a Progress heartbeat defers the write past
+    the idle window (event-loop-native debounce), yet still lands on
+    disk without an explicit flush."""
+    path = str(tmp_path / "playback.json")
+    store = ResumeStore(path, debounce_s=0.05)
+    try:
+        store.record("g2:abc", 100)
+        assert not os.path.exists(path)  # window not elapsed
+        await asyncio.sleep(0.25)
+        assert _fresh(path).positions() == {"g2:abc": 100}
+    finally:
+        store.flush()
+
+
+# ------------------------------------------------------------ queries (#252)
 
 
 def test_store_queries_round_trip(tmp_path) -> None:
@@ -249,16 +286,16 @@ def test_store_blank_query_ignored(tmp_path) -> None:
 
 def test_store_queries_flush_with_state(tmp_path) -> None:
     """#252: items and queries share one atomic file — a flush persists
-    both."""
+    both (spec #363: inside the shared outer envelope)."""
     path = str(tmp_path / "playback.json")
     store = _fresh(path)
     store.record("g2:abc", 100)
     store.record_query("Дюна")
     store.flush()
-    data = json.loads((tmp_path / "playback.json").read_text(encoding="utf-8"))
-    assert data["v"] == 2
-    assert data["items"]["g2:abc"]["position_ticks"] == 100
-    assert data["queries"] == ["Дюна"]
+    doc = json.loads((tmp_path / "playback.json").read_text(encoding="utf-8"))
+    assert doc["version"] == 1
+    assert doc["data"]["items"]["g2:abc"]["position_ticks"] == 100
+    assert doc["data"]["queries"] == ["Дюна"]
 
 
 # ------------------------------------------------------------ T3 (#250)

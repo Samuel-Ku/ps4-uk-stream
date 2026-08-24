@@ -1,19 +1,31 @@
-"""Disk-backed playback resume store (ticket #248, spec #247).
+"""Disk-backed playback resume store (ticket #248, spec #247; spec #363).
 
 The facade's playback positions (recorded from the client's
 ``/Sessions/Playing|Progress|Stopped`` reports) survive a backend
 restart: they live in a single versioned JSON file next to the poster
-disk cache. Writes are atomic (temp file + rename in the same
-directory), a Stopped report flushes immediately, Progress heartbeats
-are debounced, and the app lifespan flushes pending state on shutdown.
+disk cache. Since spec #363 the store is a thin adapter over the
+shared ``versioned_store`` module: ``VersionedFileStore`` owns the
+corrupt-safe load ladder and the atomic write, and
+``AsyncDebouncedSave`` owns the Progress-heartbeat debounce —
+event-loop-native (``loop.call_later``, latest wins), with a sync-
+caller fallback that writes immediately when no loop is running. A
+Stopped report bypasses the debounce and writes synchronously before
+the request returns; the app lifespan flushes pending state on
+shutdown.
 
-A corrupt or version-mismatched file degrades to an empty resume — a
-warning is logged and the API keeps serving; startup never crashes on
-state. This is the FIRST persisted domain object, deliberately breaking
-ADR-0003's "nothing with a domain schema survives process lifetime"
-invariant — the ADR's own prescribed remedy (mandatory version token,
-mismatched file ignored) is applied here, and the ADR file carries the
-note (spec #247).
+Wire envelope (spec #363): the file carries the shared outer envelope
+
+    {"version": 1, "data": {"items": {...}, "queries": [...],
+                            "finished": {...}}}
+
+with the payload shape unchanged inside ``data``. The legacy
+pre-envelope shape (a bare top-level ``v`` token, specs #247–#272) is
+NOT backward-read: a legacy, corrupt, or mismatched file degrades to a
+fresh EMPTY resume with a logged warning — exactly ADR-0003's
+prescribed remedy ("a mismatched or unparseable file is ignored"). That
+trades a one-time loss of a <=50-entry shelf that naturally
+re-accumulates from continued viewing for a decode path that stays
+simple forever; the next write replaces the legacy file.
 
 Single-process assumption (ADR-0003): one uvicorn worker owns the file;
 writes are a full-snapshot temp+rename so a torn file is impossible
@@ -22,26 +34,14 @@ even across a power cut.
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
-import os
-import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
 
+from .versioned_store import AsyncDebouncedSave, VersionedFileStore
+
 log = logging.getLogger("cs_uk_api.resume")
-
-#: Format version of the resume state file (spec #247). Bump whenever the
-#: on-disk shape changes; a file with a different version is ignored.
-#: v2 (spec #252) adds the ``queries`` section; v1 files are still
-#: readable (positions load, queries start empty) so an upgrade never
-#: wipes the shelf.
-RESUME_VERSION = 2
-
-#: Versions ``_load`` accepts. Anything else is ignored (warn + empty).
-_SUPPORTED_VERSIONS = (1, 2)
 
 #: Search queries persisted beside the playback state (spec #252):
 #: newest first, deduped, bounded at 50 — the «Рекомендовано для тебе»
@@ -62,8 +62,67 @@ FINISHED_FRACTION = 0.95
 MAX_ITEMS = 50
 
 
+def _clean_entry(raw: object) -> dict[str, int | float] | None:
+    """One persisted position entry, or None on any shape mismatch."""
+    if not isinstance(raw, dict):
+        return None
+    pos = raw.get("position_ticks")
+    if not isinstance(pos, int) or pos <= 0:
+        return None
+    kept: dict[str, int | float] = {"position_ticks": pos}
+    for field in ("runtime_ticks", "updated_at"):
+        value = raw.get(field)
+        if isinstance(value, (int, float)):
+            kept[field] = value
+    return kept
+
+
+def _decode_resume(data: object) -> dict[str, object]:
+    """The ``data`` value -> the state sections; raises on any shape
+    mismatch (the module ladder degrades to empty, never crashes)."""
+    if not isinstance(data, dict):
+        raise TypeError("resume payload must be an object")
+    items_raw = data.get("items")
+    if not isinstance(items_raw, dict):
+        raise ValueError("'items' must be a map")
+    items: dict[str, dict[str, int | float]] = {}
+    for key, raw in items_raw.items():
+        entry = _clean_entry(raw)
+        if entry is not None and isinstance(key, str):
+            items[key] = entry
+    queries_raw = data.get("queries", [])
+    queries: list[str] = (
+        [q for q in queries_raw if isinstance(q, str)][:MAX_QUERIES]
+        if isinstance(queries_raw, list)
+        else []
+    )
+    finished_raw = data.get("finished", {})
+    finished: dict[str, float] = (
+        {
+            k: float(v)
+            for k, v in finished_raw.items()
+            if isinstance(k, str) and isinstance(v, (int, float))
+        }
+        if isinstance(finished_raw, dict)
+        else {}
+    )
+    return {"items": items, "queries": queries, "finished": finished}
+
+
+def _encode_resume(payload: object) -> object:
+    """ResumeStore -> the JSON-serializable ``data`` value."""
+    if not isinstance(payload, ResumeStore):
+        raise TypeError("ResumeStore payload expected")
+    return {
+        "items": payload._items,
+        "queries": payload._queries,
+        "finished": payload._finished,
+    }
+
+
 class ResumeStore:
-    """Playback positions as an in-memory dict mirrored to a JSON file.
+    """Playback positions as an in-memory dict mirrored to a JSON file
+    through the shared ``VersionedFileStore`` + ``AsyncDebouncedSave``.
 
     ``record()`` updates the in-memory state and schedules a write:
     immediately (synchronously) when the caller asks for a flush — the
@@ -89,103 +148,70 @@ class ResumeStore:
         # that crossed the >=95% threshold. They leave the shelves but
         # stay browsable in «Нещодавно переглянуто».
         self._finished: dict[str, float] = {}
-        self._timer: asyncio.TimerHandle | None = None
-        self._load()
+        self._persist: VersionedFileStore | None = None
+        self._saver: AsyncDebouncedSave | None = None
+        if path is not None:
+            existed = Path(path).exists()
+            self._persist = VersionedFileStore(
+                path=path,
+                supported_versions=(1,),
+                encode=_encode_resume,
+                decode=_decode_resume,
+            )
+            restored = self._persist.load()
+            if isinstance(restored, dict):
+                self._items = restored["items"]
+                self._queries = restored["queries"]
+                self._finished = restored["finished"]
+            elif existed:
+                # Missing file is a clean start; anything else (corrupt
+                # JSON, unknown version, legacy pre-envelope shape, bad
+                # payload) degrades to fresh — visible in the log,
+                # never a crash.
+                log.warning(
+                    "resume state ignored (corrupt, unknown version, or legacy "
+                    "pre-envelope shape) at %s — starting empty",
+                    path,
+                )
+            self._saver = AsyncDebouncedSave(self._persist, delay_s=debounce_s)
 
     # -- persistence ----------------------------------------------------
 
-    def _load(self) -> None:
-        """Read the state file at construction (process start).
-
-        Missing file → clean start. Unparseable JSON, a wrong version
-        token, or a bad shape → warning + empty resume; never a crash.
-        """
-        if self._path is None:
-            return
-        try:
-            raw = Path(self._path).read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return
-        except OSError:
-            log.warning("resume state unreadable, starting empty: %s", self._path, exc_info=True)
-            return
-        try:
-            payload = json.loads(raw)
-            if not isinstance(payload, dict) or payload.get("v") not in _SUPPORTED_VERSIONS:
-                log.warning(
-                    "resume state ignored: version mismatch or bad shape at %s (expected v%d)",
-                    self._path,
-                    RESUME_VERSION,
-                )
-                return
-            items = payload.get("items")
-            if not isinstance(items, dict):
-                log.warning("resume state ignored: 'items' not a map at %s", self._path)
-                return
-            cleaned: dict[str, dict[str, int | float]] = {}
-            for key, entry in items.items():
-                if not isinstance(key, str) or not isinstance(entry, dict):
-                    continue
-                pos = entry.get("position_ticks")
-                if not isinstance(pos, int) or pos <= 0:
-                    continue
-                kept: dict[str, int | float] = {"position_ticks": pos}
-                for field in ("runtime_ticks", "updated_at"):
-                    value = entry.get(field)
-                    if isinstance(value, (int, float)):
-                        kept[field] = value
-                cleaned[key] = kept
-            self._items = cleaned
-            # v2 queries section — v1 files simply have none (spec #252:
-            # degrade to "no queries", never crash).
-            queries = payload.get("queries", [])
-            if isinstance(queries, list):
-                self._queries = [q for q in queries if isinstance(q, str)][:MAX_QUERIES]
-            # v2 finished-history section (spec #272) — same additive
-            # rule: a v1/v2 file without it just has no finished items.
-            finished = payload.get("finished")
-            if isinstance(finished, dict):
-                self._finished = {
-                    k: float(v)
-                    for k, v in finished.items()
-                    if isinstance(k, str) and isinstance(v, (int, float))
-                }
-        except Exception:  # a bad file must never crash startup
-            log.warning("resume state unreadable, starting empty: %s", self._path, exc_info=True)
+    def _snapshot(self) -> object:
+        """The debounce payload: the store itself. Encoding reads the
+        live state at write time, so the latest mutation always wins."""
+        return self
 
     def _write_now(self) -> None:
-        """Full-snapshot atomic write (temp file + rename, same dir).
+        """Full-snapshot atomic write through the shared store.
 
-        Best-effort: a write failure is logged, never raised — state
-        stays correct in memory and the next write retries.
+        Best-effort: a write failure is logged by the module, never
+        raised — state stays correct in memory and the next write
+        retries.
         """
-        if self._path is None:
+        if self._persist is not None:
+            self._persist.save(self)
+
+    def _schedule_write(self, *, immediate: bool) -> None:
+        if self._saver is None:
+            return  # memory-only mode
+        if immediate:
+            # Inline, in the caller's context: a Stopped report must be
+            # on disk before the request returns, deterministically.
+            self._write_now()
             return
-        try:
-            path = Path(self._path)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".playback-", suffix=".tmp")
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    json.dump(
-                        {
-                            "v": RESUME_VERSION,
-                            "items": self._items,
-                            "queries": self._queries,
-                            "finished": self._finished,
-                        },
-                        fh,
-                        ensure_ascii=False,
-                    )
-                os.replace(tmp, path)
-            except Exception:
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
-                raise
-        except Exception:  # never take the API down over a write
-            log.warning("resume state write failed: %s", self._path, exc_info=True)
+        # Deferred via loop.call_later when a loop is running; a sync
+        # caller falls back to an immediate write inside request().
+        self._saver.request(self._snapshot())
+
+    def flush(self) -> None:
+        """Cancel any pending debounce and write the state now.
+
+        The lifespan shutdown path (acceptance criterion: pending state
+        is flushed on shutdown). Safe to call from a sync context.
+        """
+        if self._saver is not None:
+            self._saver.flush()
 
     # -- mutate / read ---------------------------------------------------
 
@@ -229,37 +255,6 @@ class ResumeStore:
         self._items[item_id] = entry
         self._cap()
         self._schedule_write(immediate=flush)
-
-    def _schedule_write(self, *, immediate: bool) -> None:
-        if self._path is None:
-            return  # memory-only mode
-        if self._timer is not None:
-            self._timer.cancel()
-            self._timer = None
-        if immediate:
-            # Inline, in the caller's context: a Stopped report must be on
-            # disk before the request returns, deterministically.
-            self._write_now()
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            # No running loop (e.g. direct sync callers in tests): nothing
-            # to defer to — write synchronously rather than drop the state.
-            self._write_now()
-            return
-        self._timer = loop.call_later(self._debounce_s, self._write_now)
-
-    def flush(self) -> None:
-        """Cancel any pending debounce and write the state now.
-
-        The lifespan shutdown path (acceptance criterion: pending state
-        is flushed on shutdown). Safe to call from a sync context.
-        """
-        if self._timer is not None:
-            self._timer.cancel()
-            self._timer = None
-        self._write_now()
 
     def entries(self) -> dict[str, dict[str, int | float]]:
         """item_id -> entry map ({position_ticks, runtime_ticks?, updated_at})."""
@@ -359,9 +354,10 @@ class ResumeStore:
     def clear(self) -> None:
         """Drop all recorded positions + queries + finished history (test
         isolation, #214)."""
-        if self._timer is not None:
-            self._timer.cancel()
-            self._timer = None
         self._items.clear()
         self._queries.clear()
         self._finished.clear()
+        if self._saver is not None:
+            # Replace any pending snapshot with the cleared one so a
+            # later debounced write cannot resurrect pre-clear state.
+            self._saver.request(self._snapshot())
