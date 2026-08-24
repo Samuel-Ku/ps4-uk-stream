@@ -39,9 +39,11 @@ from pydantic import BaseModel
 
 from .. import row_kinds
 from ..catalog import (
+    card_for_group,
     episode_group_key,
     extend_row_pool,
     first_source,
+    genres_for_group,
     group_sources,
     is_favorite,
     is_hard_unavailable,
@@ -51,6 +53,7 @@ from ..catalog import (
     playback_episode_pair,
     playback_positions,
     playback_translations,
+    poster_url_for_group,
     profiles,
     recent_playback,
     record_dub_choice,
@@ -62,6 +65,8 @@ from ..catalog import (
     set_favorite,
     set_played,
     snapshot,
+    view_row_type_for_group,
+    year_for_group,
 )
 from ..config import SETTINGS
 from ..health import TRACKER
@@ -393,40 +398,21 @@ def _group_cards(group_key: str) -> list[SearchResult]:
 
 
 def _genres_for_group(group_key: str) -> list[str]:
-    """The card's genres for a ``g2:`` item, or [] (ticket #219).
+    """The card's genres for a ``g2:`` item, or [] (ticket #219, #364).
 
-    The card parser (#213) harvests genre labels that the content page
-    often does not repeat — ufdub's ``div.short-c`` lists them while the
-    detail page carries only a description. The detail DTO falls back to
-    this so the genre row renders where the data exists. First non-empty
-    card wins: the home snapshot's card, then any card the group's
-    resolution map holds (ticket #233).
+    Delegates to the indexed seam — home-snapshot card wins, then any
+    card the resolution map holds (#233).
     """
-    for _row, it in _home_items():
-        if it.group_key == group_key and it.genres:
-            return list(it.genres)
-    for card in _group_cards(group_key):
-        if card.genres:
-            return list(card.genres)
-    return []
+    return genres_for_group(group_key)
 
 
 def _year_for_group(group_key: str) -> int | None:
-    """The card's year for a ``g2:`` item, or None (ticket #220).
+    """The card's year for a ``g2:`` item, or None (ticket #220, #364).
 
-    Mirrors ``_genres_for_group``: a provider whose content page lacks
-    the year meta block still gets the badge when the card carried a
-    year. The content page wins when it has one — the card is the cheap
-    guess. First year-ful card wins: the home snapshot's card, then any
-    card the group's resolution map holds (ticket #233).
+    Delegates to the indexed seam — home-snapshot card wins, then any
+    card the resolution map holds (#233).
     """
-    for _row, it in _home_items():
-        if it.group_key == group_key and it.year is not None:
-            return it.year
-    for card in _group_cards(group_key):
-        if card.year is not None:
-            return card.year
-    return None
+    return year_for_group(group_key)
 
 
 def _snapshot_counts() -> ItemCounts:
@@ -527,19 +513,11 @@ def _storage_report() -> SystemStorageDto:
 
 
 def _card_for_group(group_key: str) -> HomeItem | None:
-    """The snapshot card for a ``g2:`` item, or None (ticket #224).
+    """The snapshot card for a ``g2:`` item, or None (ticket #224, #364).
 
-    The degraded-detail lookup: when a card IS in the cached home but
-    its live resolution failed transiently (upstream blip), the card
-    itself still carries enough truth (title, year, genres, poster,
-    view) to answer the detail. None when the item is not in the
-    current home snapshot — a cold cache has no card, so the D2 404
-    stands.
+    Delegates to the indexed seam.
     """
-    for _row, it in _home_items():
-        if it.group_key == group_key:
-            return it
-    return None
+    return card_for_group(group_key)
 
 
 def _card_dto(group_key: str, card: HomeItem, server_id: str) -> BaseItemDto:
@@ -566,39 +544,19 @@ def _card_dto(group_key: str, card: HomeItem, server_id: str) -> BaseItemDto:
 
 
 def _poster_for(item_id: str) -> str | None:
-    """The canonical poster URL for a ``g2:`` item id, or None.
+    """The canonical poster URL for a ``g2:`` item id, or None (spec #364).
 
-    Resolution walks the cached home snapshot — the same lookup the
-    native ``/api/content/{group_key}`` route uses — and takes the
-    card's first-seen poster. A cold cache yields None → 404 ("item
-    unavailable"), which Jellyfin clients tolerate per D2. Deliberately
-    does NOT trigger a home build: an image request must not fan out to
-    every provider.
+    Delegates to the indexed seam.
     """
-    home = snapshot()
-    if home is None:
-        return None
-    for row in home.rows:
-        for it in row.items:
-            if it.group_key == item_id:
-                return it.poster
-    return None
+    return poster_url_for_group(item_id)
 
 
 def _view_id_for_item(item_id: str) -> str | None:
-    """The view id that surfaced a ``g2:`` item, from the cached home.
-
-    Wraps the same home walk `_poster_for` uses so a detail page can
-    tell the client which library the item belongs to (D5). None when
-    the item is not in the current home snapshot.
-    """
-    home = snapshot()
-    if home is None:
+    """The view id that surfaced a ``g2:`` item, from the index (spec #364)."""
+    row_type = view_row_type_for_group(item_id)
+    if row_type is None:
         return None
-    for row in home.rows:
-        if any(it.group_key == item_id for it in row.items):
-            return _view_id_for(row.type)
-    return None
+    return _view_id_for(row_type)
 
 
 def _content_dto(group_key: str, content: ContentResponse, server_id: str) -> BaseItemDto:
