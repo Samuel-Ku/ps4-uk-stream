@@ -38,7 +38,6 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
 from ..catalog import (
-    dub_for,
     episode_group_key,
     extend_row_pool,
     first_source,
@@ -46,14 +45,17 @@ from ..catalog import (
     is_favorite,
     is_hard_unavailable,
     is_played,
+    ordered_translation_candidates,
     peek_group_content,
+    playback_episode_pair,
     playback_positions,
+    playback_translations,
     profiles,
     recent_playback,
+    record_dub_choice,
     record_position,
     refresh_profile,
     refresh_snapshot,
-    remember_dub,
     resolve_item,
     search,
     set_favorite,
@@ -1115,28 +1117,39 @@ async def _resolve_playback_episode(
 ) -> tuple[BaseItemDto | None, BaseItemDto | None]:
     """Map a played episode id to (its DTO, the next episode's DTO).
 
-    Episode wire ids look like ``ufdub:dorama-408-...:s1e1`` — the
-    ``provider:external`` prefix identifies the merged group (reverse
-    group lookup, #214), whose season hierarchy gives the episode list.
+    The DOMAIN walk — group reverse lookup, season/episode location,
+    next sibling — lives behind the catalog seam
+    (``playback_episode_pair``, #347); this wrapper is only the wire
+    assembly, shaping the pairing's domain models through the same
+    ``_episode_dto`` builder the season rail uses.
     Returns ``(None, None)`` for a non-episode id or an unresolvable
     group (cold cache / gated item).
     """
-    # The ``provider:external`` prefix before the episode tail
-    # (``:s1e1`` / ``:e5`` / ``:eN:<blob>``) identifies the merged group
-    # (shared helper, spec #252).
-    group_key = episode_group_key(item_id)
-    if group_key is None:
+    pairing = await playback_episode_pair(item_id)
+    if pairing is None:
         return None, None
-    seasons = (await _hierarchy(group_key)).Items
-    for season in seasons:
-        if season.Id is None:
-            continue
-        episodes = (await _hierarchy(season.Id)).Items
-        for idx, episode in enumerate(episodes):
-            if episode.Id == item_id:
-                nxt = episodes[idx + 1] if idx + 1 < len(episodes) else None
-                return episode, nxt
-    return None, None
+    server_id = _server_id()
+    episode_dto = _episode_dto(
+        pairing.group_key,
+        pairing.season,
+        pairing.episode,
+        pairing.provider_id,
+        server_id,
+        pairing.series_title,
+    )
+    next_dto = (
+        _episode_dto(
+            pairing.group_key,
+            pairing.season,
+            pairing.next_episode,
+            pairing.provider_id,
+            server_id,
+            pairing.series_title,
+        )
+        if pairing.next_episode is not None
+        else None
+    )
+    return episode_dto, next_dto
 
 
 async def _record_playback_from(request: Request, *, flush: bool) -> None:
@@ -1767,34 +1780,6 @@ def _container_from_type(stream_type: str) -> str:
     return stream_type
 
 
-async def _record_dub_choice(item_id: str, translation_id: str) -> None:
-    """Record the viewer's dub pick as per-series memory (spec #276).
-
-    The series group key is resolved from the played item (episode wire
-    ids via the NextUp-style reverse lookup; movies are skipped — v3
-    decision). The label is what PlaybackInfo reorders by, so the id is
-    translated through the content page's translations before storing.
-    A best-effort record: resolution failures just skip the memory.
-    """
-    if is_group_key(item_id):
-        return
-    # The translation list must be the same the picker rendered (the
-    # episode's own dubs, falling back to the content's) so the label
-    # matches what PlaybackInfo reorders by — content-level translations
-    # would miss episode-scoped dubs.
-    translations, _ = await _translations_for(item_id)
-    label = _translation_label_for(translations, translation_id)
-    if label is None:
-        return
-    group_key = episode_group_key(item_id)
-    if group_key is not None:
-        remember_dub(group_key, label)
-
-
-#: Multi-source cap (spec #276): at most 8 translations surface as
-#: picker sources — providers with many dubs don't bloat the response.
-_MAX_TRANSLATION_SOURCES = 8
-
 def _translation_source_id(item_id: str, translation_id: str) -> str:
     """MediaSource.Id for one translation (spec #276).
 
@@ -1818,111 +1803,33 @@ def _decode_translation_source(source_id: str) -> tuple[str, str] | None:
     return item_id, translation_id
 
 
-def _translation_label_for(
-    translations: list[Translation], translation_id: str | None
-) -> str | None:
-    """The label for a translation id, or None (spec #276: the picker
-    renders labels; the memory stores labels)."""
-    if translation_id is None:
-        return None
-    for t in translations:
-        if t.id == translation_id:
-            return t.label
-    return None
-
-
-def _multi_source_sources(
-    item_id: str,
-    translations: list[Translation],
-    remembered: str | None,
-    picked_index: int | None,
+def _multi_source_media_sources(
+    item_id: str, candidates: list[Translation]
 ) -> list[MediaSourceInfo]:
-    """One MediaSource per translation (spec #276).
+    """One MediaSource per ordered candidate translation (spec #276).
 
-    Ordering rules: the source matching the request's ``AudioStreamIndex``
-    goes first (the switch path — the client plays ``MediaSources[0]``);
-    with the default index the REMEMBERED dub goes first so a replay
-    defaults to it. Index is dynamic per response: first = 1, the rest
-    2..N (the client's default selected index is 1). Dedup by label,
-    first player per label; capped at ``_MAX_TRANSLATION_SOURCES``.
+    Pure wire assembly (#347): the ORDER was chosen behind the seam
+    (``ordered_translation_candidates`` — dedupe by label, cap 8,
+    picked/remembered re-rank); this builder only stamps the facade
+    shapes: the ``<item_id>::<translation_id>`` source id, an audio
+    MediaStream with ``Index`` = the response position (1-based, the
+    client's default selected index is 1) and ``DisplayTitle`` = the
+    dub label so the picker renders names.
     """
-    deduped: list[Translation] = []
-    seen_labels: set[str] = set()
-    for t in translations:
-        if t.label in seen_labels:
-            continue
-        seen_labels.add(t.label)
-        deduped.append(t)
-        if len(deduped) >= _MAX_TRANSLATION_SOURCES:
-            break
-
-    def _rank(t: Translation, idx: int) -> tuple[int, int]:
-        # (order group, stable tiebreak): picked/remembered first.
-        if picked_index is not None and idx == picked_index:
-            return (0, idx)
-        if picked_index is None and remembered is not None and t.label == remembered:
-            return (0, idx)
-        return (1, idx)
-
-    ordered = sorted(
-        enumerate(deduped, start=1), key=lambda pair: _rank(pair[1], pair[0])
-    )
-    sources: list[MediaSourceInfo] = []
-    for new_index, (orig_index, t) in enumerate(ordered, start=1):
-        sources.append(
-            MediaSourceInfo(
-                Id=_translation_source_id(item_id, t.id),
-                Container="m3u8",
-                MediaStreams=[
-                    MediaStreamInfo(Type="Video"),
-                    MediaStreamInfo(Type="Audio", Index=new_index, DisplayTitle=t.label),
-                ],
-                Path=f"/Videos/{item_id}/stream",
-                PlaySessionId="",
-                DisplayTitle=t.label,
-            )
+    return [
+        MediaSourceInfo(
+            Id=_translation_source_id(item_id, t.id),
+            Container="m3u8",
+            MediaStreams=[
+                MediaStreamInfo(Type="Video"),
+                MediaStreamInfo(Type="Audio", Index=index, DisplayTitle=t.label),
+            ],
+            Path=f"/Videos/{item_id}/stream",
+            PlaySessionId="",
+            DisplayTitle=t.label,
         )
-    return sources
-
-
-async def _translations_for(
-    item_id: str,
-) -> tuple[list[Translation], str | None]:
-    """(translations, remembered dub label) for a playable item (spec
-    #276). The translation list comes from the episode blob (no network)
-    or the content page (already fetched); the remembered label comes
-    from the user-state dub memory keyed by the SERIES group key.
-    Movies are never remembered (v3 decision) — their group key is the
-    memory key only for episodes.
-    """
-    remembered: str | None = None
-    if is_group_key(item_id):
-        # Movie: content translations; no dub memory.
-        content = (await resolve_item(item_id)).content
-        if content is None:
-            return [], None
-        return list(content.translations), None
-
-    # Episode wire id: resolve the merged group → the content page → the
-    # episode's own translations (fall back to the content's).
-    group_key = episode_group_key(item_id)
-    if group_key is None:
-        return [], None
-    content = (await resolve_item(group_key)).content
-    if content is None:
-        return [], None
-    provider_id = next(iter(content.id.split(":")), "")
-    episode_tail = item_id[len(provider_id) + 1 :] if item_id.startswith(f"{provider_id}:") else item_id
-    translations = list(content.translations)
-    if content.seasons:
-        for season in content.seasons:
-            for ep in season.episodes:
-                if ep.id == episode_tail or ep.id == item_id:
-                    if ep.translations:
-                        translations = list(ep.translations)
-                    break
-    remembered = dub_for(group_key)
-    return translations, remembered
+        for index, t in enumerate(candidates, start=1)
+    ]
 
 
 @router.get(
@@ -1978,7 +1885,7 @@ async def playback_info(
             if isinstance(raw, int):
                 picked_index = raw
 
-    translations, remembered = await _translations_for(item_id)
+    translations, remembered = await playback_translations(item_id)
     if len(translations) <= 1:
         # Single-translation path (D6, unchanged): one thin source.
         stream = await _resolve_stream(item_id)
@@ -1993,9 +1900,13 @@ async def playback_info(
         )
         return PlaybackInfoResponse(MediaSources=[source], PlaySessionId=play_session_id)
 
-    sources = _multi_source_sources(
-        item_id, translations, remembered, picked_index
+    # The ORDER (dedupe by label, cap 8, picked-index / remembered-dub
+    # re-rank) is a seam decision (#347); the sources below are its
+    # wire shapes.
+    candidates = ordered_translation_candidates(
+        translations, remembered=remembered, picked_index=picked_index
     )
+    sources = _multi_source_media_sources(item_id, candidates)
     play_session_id = str(uuid.uuid4())
     for src in sources:
         src.PlaySessionId = play_session_id
@@ -2121,7 +2032,7 @@ async def video_stream(
     if stream is None:
         raise HTTPException(status_code=404, detail="item_unavailable")
     if translation_id is not None:
-        await _record_dub_choice(item_id, translation_id)
+        await record_dub_choice(item_id, translation_id)
     if not stream.headers:
         return RedirectResponse(stream.url, status_code=302)
     response = await proxy_stream(
