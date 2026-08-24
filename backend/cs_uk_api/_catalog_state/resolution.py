@@ -673,7 +673,7 @@ async def playback_translations(item_id: str) -> tuple[list[Translation], str | 
     # episode matching stays byte-identical (#347).
     provider_id, _ = split_wire_id(content.id)
     prefix = f"{provider_id}:"
-    episode_tail = item_id[len(prefix) :] if item_id.startswith(prefix) else item_id
+    episode_tail = item_id.removeprefix(prefix)
     translations = list(content.translations)
     if content.seasons:
         for season in content.seasons:
