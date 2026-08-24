@@ -18,9 +18,11 @@ internal modules import the store objects they need from here directly.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 from .. import config as _config
 from ..cache import TtlCache
+from ..models import HomeItem
 from ..recommend import ItemProfile
 from ..resume_store import ResumeStore
 from ..snapshot_store import SnapshotStore
@@ -75,6 +77,72 @@ sources_cache: TtlCache = TtlCache(default_ttl_s=_config.SETTINGS.cache_home_s)
 
 _HOME_KEY = "home:v1"
 _SOURCES_KEY = "home:sources:v1"
+
+
+# ----------------------------------------------------------------- index (#364)
+#
+# Locality, not performance (LAN, single household): the home snapshot's
+# rows were scanned O(rows×items) at ~10 call sites differing only in
+# return value. The index answers them from one truth source beside
+# sources_cache, so map and index cannot diverge — single mutation site
+# (register_search_groups + _cache_home). No TTL of its own; lives and
+# dies with the home/sources lifecycle (rebuild = clear+rebuild).
+
+
+@dataclass(frozen=True)
+class GroupIndexEntry:
+    """One indexed g2: group: the home row's item + its row kind."""
+
+    home_item: HomeItem | None
+    row_type: str | None
+
+
+_group_index: dict[str, GroupIndexEntry] = {}
+
+
+def get_group_entry(group_key: str) -> GroupIndexEntry | None:
+    """Indexed entry for a g2: group, or None."""
+    return _group_index.get(group_key)
+
+
+def _set_group_index(entries: dict[str, GroupIndexEntry]) -> None:
+    """Replace the index wholesale (rebuild / cold start)."""
+    _group_index.clear()
+    _group_index.update(entries)
+
+
+def _clear_group_index() -> None:
+    """Drop the index (test isolation)."""
+    _group_index.clear()
+
+
+def _merge_search_keys(keys: list[str]) -> None:
+    """Ensure search-registered keys exist in the index (home_item None).
+
+    Called from the single mutation site that already mutates the
+    resolution map, so index and map cannot diverge.
+    """
+    for k in keys:
+        if k not in _group_index:
+            _group_index[k] = GroupIndexEntry(home_item=None, row_type=None)
+
+
+def group_index_entries() -> Mapping[str, GroupIndexEntry]:
+    """Read-only view of the index (iteration sites preserve row order)."""
+    return _group_index
+
+
+def all_home_cards_in_index_order() -> list[HomeItem]:
+    """Every distinct HomeItem in index insertion order (row then item)."""
+    seen: set[str] = set()
+    out: list[HomeItem] = []
+    for ent in _group_index.values():
+        it = ent.home_item
+        if it is None or it.group_key in seen:
+            continue
+        seen.add(it.group_key)
+        out.append(it)
+    return out
 
 
 # ---------------------------------------------------------- profiles (#252)

@@ -67,6 +67,7 @@ def isolate() -> Iterator[None]:
         catalog_state.deep_page_cache,
     ):
         cache.clear()
+    catalog_state._clear_group_index()
     saved_profiles = dict(catalog_state.get_profiles())
     catalog_api.install_profiles({})
     catalog_state.clear_playback()
@@ -78,6 +79,7 @@ def isolate() -> Iterator[None]:
         PROVIDERS.clear()
         PROVIDERS.update(saved)
         catalog_api.install_profiles(saved_profiles)
+        catalog_state._clear_group_index()
         health.TRACKER.reset()
 
 
@@ -594,3 +596,150 @@ async def test_refresh_profile_degrades_without_llm_knobs() -> None:
     """Without LLM configuration the refresh returns False and never
     raises — the previous (absent) profile stays active."""
     assert await catalog_api.refresh_profile() is False
+
+
+# ---------------------------------------------------------------------------
+# One group-resolution seam (spec #364) — indexed accessors
+# ---------------------------------------------------------------------------
+
+
+def _poster_item(pid: str, title: str, year: int | None, genres: list[str], poster: str | None) -> SearchResult:
+    return SearchResult(
+        id=f"{pid}:1",
+        provider=pid,
+        form="movie",
+        styles=frozenset(),
+        title=title,
+        year=year,
+        poster=poster,
+        genres=list(genres),
+        url=f"https://{pid}.example/1",
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_card_for_group_home_wins_and_poster_year_genres_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """card/poster/year/genres/view_row_type answer from the index; year/genres
+    fall back to any resolution-map card (#233) when the home card lacks them."""
+    # Home carries a year-less genre-rich card
+    item = _poster_item("p1", "Дюна", year=None, genres=["Драми"], poster="https://cdn/1.jpg")
+    stub = _HomeStub("p1", newest=[item])
+    _register(stub, monkeypatch)
+    await catalog_api.refresh_snapshot()
+    gk = item_group_key(item)
+    # Direct index answers
+    card = catalog_api.card_for_group(gk)
+    assert card is not None and card.title == "Дюна"
+    assert catalog_api.poster_url_for_group(gk) == "https://cdn/1.jpg"
+    assert catalog_api.view_row_type_for_group(gk) == "recent_movie"
+    assert catalog_api.genres_for_group(gk) == ["Драми"]
+    assert catalog_api.year_for_group(gk) is None
+    # Add a source-card fallback for year via search registration (different
+    # provider — same-provider registration leaves the map untouched per spec).
+    fb = SearchResult(
+        id="p2:1", provider="p2", form="movie", styles=frozenset(),
+        title="Дюна", year=2021, poster="https://cdn/1.jpg",
+        genres=["Драми"], url="https://p2.example/1",
+    )
+    from cs_uk_api.models import SearchGroup
+    from cs_uk_api._catalog_state import register_search_groups
+    group = SearchGroup(
+        group_key=gk, title="Дюна", year=2021, poster="https://cdn/1.jpg",
+        form="movie", styles=frozenset(), genres=["Драми"], sources=[fb], member_keys=[gk],
+    )
+    register_search_groups([group])
+    assert catalog_api.year_for_group(gk) == 2021
+    assert catalog_api.genres_for_group(gk) == ["Драми"]  # still home wins
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_accessors_search_only_group_uses_source_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A search-registered group absent from home has no card/poster/view
+    but year/genres fall back to its source cards (spec #364)."""
+    sr = _poster_item("p1", "Смолфут", year=2018, genres=["Комедії"], poster="https://cdn/s.jpg")
+    from cs_uk_api.models import SearchGroup
+    from cs_uk_api._catalog_state import register_search_groups
+    gk = item_group_key(sr)
+    group = SearchGroup(
+        group_key=gk, title="Смолфут", year=2018, poster="https://cdn/s.jpg",
+        form="movie", styles=frozenset(), genres=["Комедії"], sources=[sr], member_keys=[gk],
+    )
+    register_search_groups([group])
+    assert catalog_api.card_for_group(gk) is None
+    assert catalog_api.poster_url_for_group(gk) is None
+    assert catalog_api.view_row_type_for_group(gk) is None
+    assert catalog_api.year_for_group(gk) == 2018
+    assert catalog_api.genres_for_group(gk) == ["Комедії"]
+
+
+def test_native_content_bug_fix_search_only_group_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bug fix (spec #364): a search-registered group absent from the home
+    snapshot resolves via the shared map on the native route — same 200
+    GroupContentResponse shape that home groups use; unknown keys still 404."""
+    from fastapi.testclient import TestClient
+
+    from cs_uk_api.main import app
+    from cs_uk_api.models import SearchGroup
+
+    # Seeded search group with no home build (bug repro: facade 200, native 404 before fix)
+    sr = _poster_item("p1", "Смолфут", year=2018, genres=["Комедії"], poster="https://cdn/s.jpg")
+    gk = item_group_key(sr)
+    group = SearchGroup(
+        group_key=gk,
+        title="Смолфут",
+        year=2018,
+        poster="https://cdn/s.jpg",
+        form="movie",
+        styles=frozenset(),
+        genres=["Комедії"],
+        sources=[sr],
+        member_keys=[gk],
+    )
+    from cs_uk_api._catalog_state import register_search_groups
+
+    register_search_groups([group])
+    client = TestClient(app)
+    r = client.get(f"/api/content/{gk}")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["providers"] == ["p1"]
+    assert body["item"]["group_key"] == gk
+    # Truly unknown still 404s
+    r2 = client.get("/api/content/g2:0000000000000000")
+    assert r2.status_code == 404
+    assert r2.json()["detail"]["error"] == "not_found"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_index_repopulated_on_persisted_cold_start(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """Persisted snapshot repopulates the index so accessors answer instantly (cold start)."""
+    from cs_uk_api._catalog_state import _snapshot_store, install_snapshot_store
+    from cs_uk_api._catalog_state.snapshot import load_home
+    from cs_uk_api.snapshot_store import SnapshotStore
+    item = _poster_item("p1", "Дюна", year=2021, genres=["Драми"], poster="https://cdn/1.jpg")
+    stub = _HomeStub("p1", newest=[item])
+    _register(stub, monkeypatch)
+    store_path = str(tmp_path / "snapshot.json")
+    tmp_store = SnapshotStore(store_path)
+    prev = _snapshot_store()
+    install_snapshot_store(tmp_store)
+    try:
+        await catalog_api.refresh_snapshot()
+        gk = item_group_key(item)
+        assert catalog_api.card_for_group(gk) is not None
+        # Simulate process restart: clear in-memory caches+index, then cold start via persisted file
+        catalog_state.home_cache.clear()
+        catalog_state.sources_cache.clear()
+        catalog_state._clear_group_index()
+        loaded = await load_home()
+        assert loaded is not None
+        assert catalog_api.card_for_group(gk) is not None
+        assert catalog_api.view_row_type_for_group(gk) == "recent_movie"
+    finally:
+        install_snapshot_store(prev)
+        catalog_state.home_cache.clear()
+        catalog_state.sources_cache.clear()
+        catalog_state._clear_group_index()

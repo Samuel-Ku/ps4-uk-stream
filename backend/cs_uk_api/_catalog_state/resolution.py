@@ -47,6 +47,7 @@ from ..uakino_browser import get_session
 from ..wire_identity import is_group_key, provider_union, split_episode_tail, split_wire_id
 from ._stores import (
     _SOURCES_KEY,
+    _merge_search_keys,
     blocklist_cache,
     content_cache,
     dub_for,
@@ -536,6 +537,11 @@ def register_search_groups(groups: Sequence[SearchGroup]) -> None:
         dict[str, dict[str, SearchResult]], sources_cache.get(_SOURCES_KEY) or {}
     )
     changed = False
+    # All keys the search wants to register — merged into the index
+    # alongside the map at the single mutation site.
+    all_search_keys: list[str] = []
+    for g in groups:
+        all_search_keys.extend(g.member_keys or [g.group_key])
     for g in groups:
         union = provider_union(g.sources)
         keys = g.member_keys or [g.group_key]
@@ -555,6 +561,11 @@ def register_search_groups(groups: Sequence[SearchGroup]) -> None:
         # Re-set refreshes the TTL on the whole map (ADR-0003): a search
         # extends the snapshot's life, never shortens it.
         sources_cache.set(_SOURCES_KEY, existing)
+        # Merge incrementally into the index beside sources_cache; entries
+        # carry no TTL of their own and die exactly with the home/sources
+        # lifecycle (rebuild = clear+rebuild). Only new keys create a
+        # placeholder (home_item None); existing home entries stay intact.
+        _merge_search_keys(all_search_keys)
 
 
 # ---------------------------------------------------------------------------

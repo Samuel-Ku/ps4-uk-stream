@@ -563,24 +563,36 @@ async def _content_by_id(content_id: str) -> ContentResponse:
 
 
 async def _content_by_group_key(group_key: str) -> GroupContentResponse:
-    """Look up a merged item by its stateless group key (issue #70).
+    """Look up a merged item by its stateless group key (issue #70, #364).
 
-    Resolves against the cached HomeResponse — the home cache IS the
-    source of truth for group_key → providers mapping. This pins the
-    staleness behaviour: a key absent from the cached home is 404 for
-    up to 30 minutes after the home was last populated, then expires
-    and the next /api/home refresh repopulates the mapping. The spec
-    accepts this in exchange for the documented 30-min home cache.
+    Spec #364 bug fix: resolves via the shared resolution map (the index
+    beside sources_cache), not a snapshot scan — a search-found title
+    absent from the 30-min home snapshot now resolves instead of 404ing
+    for up to 30 min while the facade already shows it. Wire shape
+    unchanged (GroupContentResponse{item, providers}); only the lookup
+    source moves.
     """
-    home = catalog.snapshot()
-    if home is not None:
-        for row in home.rows:
-            for it in row.items:
-                if it.group_key == group_key:
-                    return GroupContentResponse(
-                        item=it,
-                        providers=list(it.providers),
-                    )
+    card = catalog.card_for_group(group_key)
+    if card is not None:
+        return GroupContentResponse(item=card, providers=list(card.providers))
+    sources = catalog.group_sources(group_key)
+    if sources:
+        first = sources[0]
+        providers = [s.provider for s in sources]
+        from .models import HomeItem
+
+        item = HomeItem(
+            group_key=group_key,
+            title=first.title,
+            year=first.year,
+            poster=first.poster,
+            form=first.form,
+            styles=first.styles,
+            genres=list(first.genres),
+            providers=providers,
+            member_keys=[group_key],
+        )
+        return GroupContentResponse(item=item, providers=providers)
     raise HTTPException(
         404,
         detail=ErrorResponse(error="not_found", message=group_key).model_dump(),
