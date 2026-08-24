@@ -25,7 +25,6 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -34,6 +33,7 @@ import cs_uk_api.providers._registry  # noqa: F401  (bootstraps the provider reg
 
 from ..http_client import close_client, get_client
 from ..providers import PROVIDERS
+from ..versioned_store import atomic_write_text
 from .baseline import BaselineStore, ProviderState, update_signature, verdict_for
 from .issues import ISSUE_TITLE, GhIssueGateway, IssueGateway
 from .probe import (
@@ -198,10 +198,8 @@ async def run_once(
 
         store.save()
         if report_path is not None:
-            path = Path(report_path)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                json.dumps(report.to_dict(), indent=2, sort_keys=True), encoding="utf-8"
+            atomic_write_text(
+                str(report_path), json.dumps(report.to_dict(), indent=2, sort_keys=True)
             )
         return report
     finally:
