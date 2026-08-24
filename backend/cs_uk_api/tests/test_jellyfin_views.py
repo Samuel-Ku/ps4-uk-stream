@@ -22,6 +22,7 @@ its display name, open it, then ask for a card's image.
 from __future__ import annotations
 
 import importlib
+import uuid
 from collections.abc import Iterator
 from typing import Any, cast
 
@@ -380,6 +381,28 @@ def test_items_listing_unknown_parent_is_empty(client: TestClient) -> None:
     r = client.get(
         "/Items",
         params={"parentId": "00000000000000000000000000000000"},
+        headers={"X-Emby-Token": TOKEN},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
+
+
+def test_retired_newest_view_id_answers_empty_envelope(client: TestClient) -> None:
+    """Spec #362: «Новинки» left the row-kind table, so clients still
+    holding the retired view id (uuid5 ``cs-uk-api-view:newest`` — the
+    real device capture recorded it, capture.jsonl line 4) get the
+    tolerant empty envelope until they re-list views — identical bytes
+    to an unknown parent."""
+    from cs_uk_api.row_kinds import ROW_KINDS
+
+    stale_id = uuid.uuid5(uuid.NAMESPACE_URL, "cs-uk-api-view:newest").hex
+    assert stale_id == "ac357d43a6e459568e061ae4368543d5"
+    assert "newest" not in ROW_KINDS  # retired: no table entry resolves it
+    PROVIDERS["animeon"] = _seed()
+    _auth(client)
+    r = client.get(
+        "/Items",
+        params={"parentId": stale_id},
         headers={"X-Emby-Token": TOKEN},
     )
     assert r.status_code == 200
