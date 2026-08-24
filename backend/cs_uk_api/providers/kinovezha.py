@@ -44,7 +44,7 @@ from ..wire_identity import (
     strip_movie_suffix,
 )
 from ._tortuga import decode as _tor_decrypt
-from .base import BaseProvider, MediaTypeStr, ProviderError
+from .base import dle_has_next, BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://kinovezha.tv"
 # Hosts the upstream may legally redirect to: the DLE CMS and the
@@ -146,9 +146,6 @@ def _classify_from_url(href: str) -> MediaTypeStr:
     return "movie"
 
 
-def _page_number(href: str) -> int:
-    m = _PAGINATION_LINK.search(href)
-    return int(m.group(1)) if m else 0
 
 
 def _section_url(section: str, page: int) -> str:
@@ -295,11 +292,7 @@ class KinoVezhaProvider(BaseProvider):
         # Pagination: `<div class="pagination" id="pagination">` with
         # sibling anchors to `/section/page/N/`. Any link to a higher
         # page than `page` means there is a next page.
-        soup = BeautifulSoup(resp.text, "lxml")
-        has_next = any(
-            _page_number(str(a.get("href") or "")) > page
-            for a in soup.select("div#pagination a[href*='/page/']")
-        )
+        has_next = dle_has_next(resp.text, page)
         # Section kind overrides per-card URL classification — the path
         # itself doesn't always carry a kind prefix on browse listings.
         # Contract #135: the override lands on ``form`` (the section is

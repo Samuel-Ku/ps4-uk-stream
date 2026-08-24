@@ -56,7 +56,7 @@ from ..models import (
     Translation,
 )
 from ..wire_identity import episode_wire_id, parse_episode_tail
-from .base import BaseProvider, ProviderError
+from .base import dle_has_next, BaseProvider, ProviderError
 
 BASE_URL = "https://anitube.in.ua"
 # Hosts the upstream may legally redirect to: the DLE CMS. A hostile
@@ -97,10 +97,6 @@ class _EpisodeRow:
     title: str
 
 
-def _page_number(href: str) -> int:
-    """Pull the `/page/N/` integer out of a DLE pagination link."""
-    m = re.search(r"/page/(\d+)/?", href)
-    return int(m.group(1)) if m else 0
 
 
 def _external_id_from_url(href: str) -> str | None:
@@ -582,10 +578,7 @@ class AnitubeinuaProvider(BaseProvider):
         # class="lcol navi_pages">` with `<a href=".../page/N/">`
         # siblings. Any link to a higher page number than `page` means
         # there is a next page.
-        has_next = any(
-            _page_number(str(a.get("href") or "")) > page
-            for a in soup.select("div.navigation a[href*='/page/']")
-        )
+        has_next = dle_has_next(response.text, page)
         return results, has_next
 
     async def content(

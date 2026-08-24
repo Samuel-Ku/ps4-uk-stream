@@ -28,7 +28,7 @@ from ..wire_identity import (
     parse_episode_tail,
     strip_movie_suffix,
 )
-from .base import BaseProvider, MediaTypeStr, ProviderError, parse_actor_list
+from .base import dle_has_next, BaseProvider, MediaTypeStr, ProviderError, parse_actor_list
 
 BASE_URL = "https://kinotron.tv"
 # Hosts the upstream may legally redirect to: the DLE CMS and the ashdi
@@ -54,9 +54,6 @@ def _external_id(href: str) -> str:
     return match.group(1)
 
 
-def _page_number(href: str) -> int:
-    match = re.search(r"/page/(\d+)/?", href)
-    return int(match.group(1)) if match else 0
 
 
 def _parse_cards(html: str, provider: str, media_type: MediaTypeStr) -> list[SearchResult]:
@@ -191,7 +188,6 @@ class KinoTronProvider(BaseProvider):
             raise ProviderError("unreachable", str(error)) from error
         if response.status_code != 200:
             raise ProviderError("not_found", f"status {response.status_code}")
-        soup = BeautifulSoup(response.text, "lxml")
         # Contract #135: sections carry Model B axes, not the legacy
         # ``type`` — the card classifier needs the legacy type string,
         # derived from the axes (style wins, else form).
@@ -200,7 +196,7 @@ class KinoTronProvider(BaseProvider):
             min(axes.styles) if axes.styles else (axes.form or "series")
         )
         results = _parse_cards(response.text, self.id, section_type)
-        has_next = any(_page_number(str(a.get("href", ""))) > page for a in soup.select(".navigation a[href*='/page/']"))
+        has_next = dle_has_next(response.text, page)
         return results, has_next
 
     async def content(self, external_id: str, http: httpx.AsyncClient) -> ContentResponse:

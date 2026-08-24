@@ -94,22 +94,27 @@ class ProviderError(Exception):
 
 
 def dle_page_number(href: str) -> int:
-    """Pull the ``/page/N/`` integer out of a DLE pagination link."""
+    """Pull the page integer out of a pagination link (``/page/N/`` or ``?paged=N``)."""
     m = re.search(r"/page/(\d+)/?", href)
-    return int(m.group(1)) if m else 0
+    if m:
+        return int(m.group(1))
+    m = re.search(r"[?&]paged=(\d+)", href)
+    if m:
+        return int(m.group(1))
+    return 0
 
 
 def dle_has_next(html: str, page: int) -> bool:
-    """Scan a DLE ``navigation`` block for a link beyond ``page``."""
+    """Scan pagination blocks for a link beyond ``page``."""
     from bs4 import BeautifulSoup  # local import to avoid cycle
 
     soup = BeautifulSoup(html, "lxml")
-    for a in soup.select(".navigation a[href*='/page/'], div.navigation a[href*='/page/'], div.pages a[href*='/page/']"):
+    for a in soup.select(".navigation a[href*='/page/'], div.navigation a[href*='/page/'], div.pages a[href*='/page/'], div.pagination a.page-numbers"):
         href = str(a.get("href") or "")
         if dle_page_number(href) > page:
             return True
-    # fallback: any pagination anchor beyond page (WordPress etc. also uses /page/)
-    for a in soup.select("a[href*='/page/']"):
+    # fallback: any pagination anchor beyond page (WordPress /page/ or ?paged=)
+    for a in soup.select("a[href*='/page/'], a[href*='paged=']"):
         href = str(a.get("href") or "")
         if dle_page_number(href) > page:
             return True

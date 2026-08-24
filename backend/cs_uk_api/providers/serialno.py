@@ -41,7 +41,7 @@ from ..models import (
 )
 from ..wire_identity import episode_wire_id, parse_episode_tail
 from ._tortuga import decode as _tor_decrypt
-from .base import BaseProvider, ProviderError
+from .base import dle_has_next, BaseProvider, ProviderError
 
 BASE_URL = "https://serialno.tv"
 
@@ -138,9 +138,6 @@ _PAGINATION_LINK = re.compile(r"/page/(\d+)/?")
 _FILE_RE = re.compile(r"""file\s*:\s*["']([^"']+)["']""")
 
 
-def _page_number(href: str) -> int:
-    m = _PAGINATION_LINK.search(href)
-    return int(m.group(1)) if m else 0
 
 
 def _external_id_from_url(href: str) -> str | None:
@@ -271,10 +268,7 @@ class SerialnoProvider(BaseProvider):
         # sibling anchors to `/page/N/`. The current page is a
         # `<span>`; any sibling `<a>` to a higher page number means
         # there is a next page.
-        has_next = any(
-            _page_number(str(a.get("href") or "")) > page
-            for a in soup.select("div.navigation a[href*='/page/']")
-        )
+        has_next = dle_has_next(resp.text, page)
         return results, has_next
 
     async def content(

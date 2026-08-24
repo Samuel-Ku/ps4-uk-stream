@@ -29,7 +29,7 @@ from ..wire_identity import (
     parse_episode_tail,
     split_wire_id,
 )
-from .base import BaseProvider, MediaTypeStr, ProviderError
+from .base import dle_has_next, BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://eneyida.tv"
 ENEYIDA_SECTIONS = (
@@ -54,9 +54,6 @@ def _content_unavailable(html: str) -> bool:
     return _CONTENT_UNAVAILABLE in html
 
 
-def _page_number(href: str) -> int:
-    m = re.search(r"/page/(\d+)/?", href)
-    return int(m.group(1)) if m else 0
 
 
 def _external_id_from_url(href: str) -> str | None:
@@ -267,9 +264,8 @@ class EneyidaProvider(BaseProvider):
             for c in soup.select("article.short")
             if (x := _parse_card(c, self.id, kind=kind))
         ]
-        return results, any(
-            _page_number(str(a.get("href"))) > page for a in soup.select(".navigation a[href]")
-        )
+        has_next = dle_has_next(r.text, page)
+        return results, has_next
 
     async def content(self, external_id: str, http: httpx.AsyncClient) -> ContentResponse:
         kind, _, slug = external_id.partition("/")

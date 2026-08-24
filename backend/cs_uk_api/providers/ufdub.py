@@ -23,7 +23,7 @@ from ..models import (
     Translation,
 )
 from ..wire_identity import is_movie_wire_id, parse_episode_tail, strip_movie_suffix
-from .base import BaseProvider, MediaTypeStr, ProviderError
+from .base import dle_has_next, BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://ufdub.com"
 
@@ -54,10 +54,6 @@ _PATH_TYPE: tuple[tuple[str, MediaTypeStr], ...] = (
 )
 
 
-def _page_number(href: str) -> int:
-    """Pull the `/page/N/` integer out of a DLE pagination link."""
-    m = re.search(r"/page/(\d+)/?", href)
-    return int(m.group(1)) if m else 0
 
 
 def _external_id_from_url(href: str) -> str:
@@ -291,10 +287,7 @@ class UFDubProvider(BaseProvider):
         # has_next: DLE pagination is `<span class="navigation">` with
         # `<a href="/section/page/N/">` siblings. Any link to a higher page
         # than `page` means there is a next page.
-        has_next = any(
-            _page_number(str(a.get("href") or "")) > page
-            for a in soup.select("span.navigation a[href*='/page/']")
-        )
+        has_next = dle_has_next(resp.text, page)
         return results, has_next
 
     async def content(

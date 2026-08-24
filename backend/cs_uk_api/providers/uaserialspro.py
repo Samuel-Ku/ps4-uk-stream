@@ -62,7 +62,7 @@ from ..wire_identity import (
 )
 from ._crypto_uaserialspro import decrypt_player_data
 from ._tortuga import decode as _tortuga_decode
-from .base import BaseProvider, MediaTypeStr, ProviderError, parse_actor_list
+from .base import dle_has_next, BaseProvider, MediaTypeStr, ProviderError, parse_actor_list
 
 BASE_URL = "https://uaserials.com"
 # Hosts the upstream may legally redirect to: the DLE CMS and the
@@ -129,10 +129,6 @@ def _payload_dub_labels(player_html: str) -> list[str]:
     return labels
 
 
-def _page_number(href: str) -> int:
-    """Pull the `/page/N/` integer out of a DLE pagination link."""
-    m = re.search(r"/page/(\d+)/?", href)
-    return int(m.group(1)) if m else 0
 
 
 def _classify_from_genres(genre_text: str) -> MediaTypeStr:
@@ -339,10 +335,7 @@ class UASerialsProProvider(BaseProvider):
         # Pagination: `<div class="navigation">` with
         # `<a href="/section/page/N/">` siblings. Any link to a higher
         # page than `page` means there is a next page.
-        has_next = any(
-            _page_number(str(a.get("href") or "")) > page
-            for a in soup.select("div.navigation a[href*='/page/']")
-        )
+        has_next = dle_has_next(resp.text, page)
         return results, has_next
 
     async def content(

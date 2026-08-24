@@ -43,7 +43,7 @@ from ..wire_identity import (
     parse_episode_tail,
     strip_movie_suffix,
 )
-from .base import BaseProvider, MediaTypeStr, ProviderError
+from .base import dle_has_next, BaseProvider, MediaTypeStr, ProviderError
 
 
 def _jsonld_doc(soup: BeautifulSoup) -> dict[str, Any] | None:
@@ -170,10 +170,6 @@ _PATH_TYPE: tuple[tuple[tuple[str, ...], MediaTypeStr], ...] = (
     (("series", "serialy"), "series"),
 )
 
-def _page_number(href: str) -> int:
-    """Pull the `/page/N/` integer out of a DLE pagination link."""
-    m = re.search(r"/page/(\d+)/?", href)
-    return int(m.group(1)) if m else 0
 
 
 def _external_id_from_url(href: str) -> str | None:
@@ -358,10 +354,7 @@ class KlonTVProvider(BaseProvider):
         # div>`. The current page is a `<span class='...disabled'>`;
         # any sibling `<a class='...' href=".../page/N/">` to a higher
         # page number means there is a next page.
-        has_next = any(
-            _page_number(str(a.get("href") or "")) > page
-            for a in soup.select("div.navigation div.pages a[href*='/page/']")
-        )
+        has_next = dle_has_next(resp.text, page)
         return results, has_next
 
     async def content(
