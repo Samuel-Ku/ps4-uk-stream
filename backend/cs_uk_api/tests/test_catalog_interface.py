@@ -635,11 +635,12 @@ async def test_card_for_group_home_wins_and_poster_year_genres_fallback(monkeypa
     assert catalog_api.view_row_type_for_group(gk) == "recent_movie"
     assert catalog_api.genres_for_group(gk) == ["Драми"]
     assert catalog_api.year_for_group(gk) is None
-    # Add a source-card fallback for year via search registration
+    # Add a source-card fallback for year via search registration (different
+    # provider — same-provider registration leaves the map untouched per spec).
     fb = SearchResult(
-        id="p1:1", provider="p1", form="movie", styles=frozenset(),
+        id="p2:1", provider="p2", form="movie", styles=frozenset(),
         title="Дюна", year=2021, poster="https://cdn/1.jpg",
-        genres=["Драми"], url="https://p1.example/1",
+        genres=["Драми"], url="https://p2.example/1",
     )
     from cs_uk_api.models import SearchGroup
     from cs_uk_api._catalog_state import register_search_groups

@@ -23,6 +23,7 @@ import os
 import re
 import sys
 import uuid
+from typing import Any, cast
 from urllib.parse import quote, unquote
 
 from fastapi import (
@@ -44,7 +45,9 @@ from ..catalog import (
     extend_row_pool,
     first_source,
     genres_for_group,
+    group_entries,
     group_sources,
+    home_items_in_index_order,
     is_favorite,
     is_hard_unavailable,
     is_played,
@@ -378,10 +381,18 @@ def _home_items() -> list[tuple[HomeRow, HomeItem]]:
     out to every provider belongs to the detail/list routes, not to
     cheap snapshot lookups (poster, similar shelf).
     """
-    home = snapshot()
-    if home is None:
-        return []
-    return [(row, it) for row in home.rows for it in row.items]
+    # Spec #364: index-backed, same order (row then item) as the
+    # snapshot helper it replaces; callers needing the row use
+    # group_entries() directly.
+    items = home_items_in_index_order()
+    # Reconstruct pairs via the index's row_type for callers that still
+    # expect (row, item); row title is not used by the remaining callers.
+    pairs: list[tuple[HomeRow, HomeItem]] = []
+    for it in items:
+        rt = view_row_type_for_group(it.group_key)
+        row = HomeRow(type=rt or "", title="", items=[it])
+        pairs.append((row, it))
+    return pairs
 
 
 def _group_cards(group_key: str) -> list[SearchResult]:
@@ -1001,8 +1012,9 @@ def _person_filmography(
     server_id = _server_id()
     dtos = []
     seen: set[str] = set()
-    for row, it in _home_items():
-        if it.group_key in seen:
+    for entry in group_entries().values():
+        it = cast(Any, entry).home_item
+        if it is None or it.group_key in seen:
             continue
         profile = profile_store.get(it.group_key)
         if profile is None:
@@ -1012,6 +1024,7 @@ def _person_filmography(
         if forms is not None and it.form not in forms:
             continue
         seen.add(it.group_key)
+        row = HomeRow(type=cast(Any, entry).row_type or "", title="", items=[it])
         dtos.append(_item_dto(row, it, server_id))
     total = len(dtos)
     end = None if limit is None else start_index + limit
@@ -1856,8 +1869,9 @@ async def item_similar(
     if item_profile is not None:
         scored: list[tuple[float, HomeRow, HomeItem]] = []
         scored_seen: set[str] = set()
-        for row, it in _home_items():
-            if it.group_key == item_id or it.group_key in scored_seen:
+        for entry in group_entries().values():
+            it = cast(Any, entry).home_item
+            if it is None or item_id == it.group_key or it.group_key in scored_seen:
                 continue
             cand = profiles().get(it.group_key)
             if cand is None:
@@ -1866,6 +1880,7 @@ async def item_similar(
             if score <= 0:
                 continue
             scored_seen.add(it.group_key)
+            row = HomeRow(type=cast(Any, entry).row_type or "", title="", items=[it])
             scored.append((score, row, it))
         if scored:
             scored.sort(key=lambda t: t[0], reverse=True)
@@ -1878,12 +1893,14 @@ async def item_similar(
         return BaseItemDtoQueryResult()
     dtos = []
     seen: set[str] = set()
-    for row, it in _home_items():
-        if it.group_key == item_id or it.group_key in seen:
+    for entry in group_entries().values():
+        it = cast(Any, entry).home_item
+        if it is None or item_id == it.group_key or it.group_key in seen:
             continue
         if not (set(it.genres) & wanted):
             continue
         seen.add(it.group_key)
+        row = HomeRow(type=cast(Any, entry).row_type or "", title="", items=[it])
         dtos.append(_item_dto(row, it, server_id))
         if len(dtos) >= limit:
             break
