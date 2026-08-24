@@ -35,6 +35,7 @@ from typing import Any
 import httpx
 
 from . import _catalog_state
+from ._catalog_state import PlaybackEpisodePairing
 from .models import (
     ContentResponse,
     HomeItem,
@@ -43,6 +44,7 @@ from .models import (
     MediaStyle,
     SearchResponse,
     SearchResult,
+    Translation,
 )
 from .recommend import ItemProfile
 
@@ -406,6 +408,54 @@ def dub_for(series_group_key: str) -> str | None:
 def dub_memory() -> dict[str, str]:
     """The whole dub memory (group key -> label), for tests (spec #276)."""
     return _catalog_state.dub_memory()
+
+
+# ---------------------------------------------------------------------------
+# Viewer-state derivations (#347): playback translations / dub choice /
+# played-episode pairing — the domain half of the facade's viewer-state
+# routes, folded off ``jellyfin/router.py``.
+# ---------------------------------------------------------------------------
+
+
+async def playback_translations(item_id: str) -> tuple[list[Translation], str | None]:
+    """(candidate translations, remembered dub label) for a playable item
+    (spec #276).
+
+    The candidates come from the episode blob or the content page (never
+    a second fetch); the remembered label is the series' dub memory.
+    Movies are never remembered (v3 decision) — their label slot is
+    always None.
+    """
+    return await _catalog_state.playback_translations(item_id)
+
+
+def ordered_translation_candidates(
+    translations: Sequence[Translation],
+    *,
+    remembered: str | None = None,
+    picked_index: int | None = None,
+) -> list[Translation]:
+    """The picker's candidate order for one PlaybackInfo response
+    (spec #276): dedupe by label (first provider wins), cap 8, then the
+    echoed ``picked_index`` (1-based) — else the ``remembered`` dub —
+    ranks first; otherwise default-first order stands."""
+    return _catalog_state.ordered_translation_candidates(
+        translations, remembered=remembered, picked_index=picked_index
+    )
+
+
+async def record_dub_choice(item_id: str, translation_id: str) -> None:
+    """Record the viewer's dub pick as per-series memory (spec #276),
+    best-effort: the id becomes its picker label, movies never remember,
+    unresolvable items skip the memory."""
+    await _catalog_state.record_dub_choice(item_id, translation_id)
+
+
+async def playback_episode_pair(item_id: str) -> PlaybackEpisodePairing | None:
+    """Locate a played episode wire id in its series (#347): the episode,
+    its season, the series context and the next sibling — or None for a
+    non-episode / unresolvable id."""
+    return await _catalog_state.playback_episode_pair(item_id)
 
 
 # ---------------------------------------------------------------------------
