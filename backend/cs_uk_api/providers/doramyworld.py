@@ -38,7 +38,7 @@ from ..models import (
     Translation,
 )
 from ..wire_identity import episode_wire_id, parse_episode_tail
-from .base import dle_has_next, BaseProvider, MediaTypeStr, ProviderError
+from .base import BaseProvider, MediaTypeStr, ProviderError, dle_has_next
 
 BASE_URL = "https://doramy.world"
 # ashdi.vip hosts the HLS manifest for each episode; the upstream Kotlin

@@ -32,7 +32,7 @@ from ..models import (
     Translation,
 )
 from ..wire_identity import episode_wire_id, parse_episode_tail, split_wire_id
-from .base import dle_has_next, BaseProvider, MediaTypeStr, ProviderError
+from .base import BaseProvider, MediaTypeStr, ProviderError, dle_has_next
 
 
 def _itemprop_values(soup: BeautifulSoup, name: str) -> list[str]:

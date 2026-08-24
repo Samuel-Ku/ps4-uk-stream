@@ -44,7 +44,7 @@ from ..wire_identity import (
     strip_movie_suffix,
 )
 from ._tortuga import decode as _tor_decrypt
-from .base import dle_has_next, BaseProvider, MediaTypeStr, ProviderError
+from .base import BaseProvider, MediaTypeStr, ProviderError, dle_has_next
 
 BASE_URL = "https://kinovezha.tv"
 # Hosts the upstream may legally redirect to: the DLE CMS and the

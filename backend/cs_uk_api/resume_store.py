@@ -84,7 +84,7 @@ def _decode_resume(data: object) -> dict[str, object]:
         raise TypeError("resume payload must be an object")
     items_raw = data.get("items")
     if not isinstance(items_raw, dict):
-        raise ValueError("'items' must be a map")
+        raise TypeError("'items' must be a map")
     items: dict[str, dict[str, int | float]] = {}
     for key, raw in items_raw.items():
         entry = _clean_entry(raw)

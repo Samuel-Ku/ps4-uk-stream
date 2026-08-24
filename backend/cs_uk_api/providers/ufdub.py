@@ -23,7 +23,7 @@ from ..models import (
     Translation,
 )
 from ..wire_identity import is_movie_wire_id, parse_episode_tail, strip_movie_suffix
-from .base import dle_has_next, BaseProvider, MediaTypeStr, ProviderError
+from .base import BaseProvider, MediaTypeStr, ProviderError, dle_has_next
 
 BASE_URL = "https://ufdub.com"
 

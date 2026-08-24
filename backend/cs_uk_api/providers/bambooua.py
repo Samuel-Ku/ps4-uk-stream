@@ -37,7 +37,7 @@ from ..wire_identity import (
     parse_episode_tail,
     strip_movie_suffix,
 )
-from .base import dle_has_next, BaseProvider, MediaTypeStr, ProviderError
+from .base import BaseProvider, MediaTypeStr, ProviderError, dle_has_next
 
 BASE_URL = "https://bambooua.com"
 

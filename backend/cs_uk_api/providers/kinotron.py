@@ -28,7 +28,7 @@ from ..wire_identity import (
     parse_episode_tail,
     strip_movie_suffix,
 )
-from .base import dle_has_next, BaseProvider, MediaTypeStr, ProviderError, parse_actor_list
+from .base import BaseProvider, MediaTypeStr, ProviderError, dle_has_next, parse_actor_list
 
 BASE_URL = "https://kinotron.tv"
 # Hosts the upstream may legally redirect to: the DLE CMS and the ashdi

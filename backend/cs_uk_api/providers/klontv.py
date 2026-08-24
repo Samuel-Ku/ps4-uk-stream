@@ -23,6 +23,7 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from ..country import extract_country
+from ..extractors.playlist import walk_playlist
 from ..http_client import provider_safe_get
 from ..models import (
     ContentResponse,
@@ -36,7 +37,6 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from ..extractors.playlist import walk_playlist
 from ..wire_identity import (
     MOVIE_SUFFIX,
     episode_wire_id,
@@ -44,7 +44,7 @@ from ..wire_identity import (
     parse_episode_tail,
     strip_movie_suffix,
 )
-from .base import dle_has_next, BaseProvider, MediaTypeStr, ProviderError
+from .base import BaseProvider, MediaTypeStr, ProviderError, dle_has_next
 
 
 def _jsonld_doc(soup: BeautifulSoup) -> dict[str, Any] | None:

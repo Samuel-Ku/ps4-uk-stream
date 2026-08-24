@@ -56,7 +56,7 @@ from ..models import (
     Translation,
 )
 from ..wire_identity import episode_wire_id, parse_episode_tail
-from .base import dle_has_next, BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, dle_has_next
 
 BASE_URL = "https://anitube.in.ua"
 # Hosts the upstream may legally redirect to: the DLE CMS. A hostile

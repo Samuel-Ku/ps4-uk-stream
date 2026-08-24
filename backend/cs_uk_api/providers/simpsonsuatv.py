@@ -45,7 +45,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import dle_has_next, BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, dle_has_next
 
 BASE_URL = "https://simpsonsua.tv"
 BASE_URL_HOST = urlparse(BASE_URL).hostname

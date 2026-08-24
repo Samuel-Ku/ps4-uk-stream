@@ -24,7 +24,7 @@ from ..models import (
     TranslationLevel,
 )
 from ..wire_identity import episode_wire_id, parse_episode_tail
-from .base import dle_has_next, BaseProvider, MediaTypeStr, ProviderError
+from .base import BaseProvider, MediaTypeStr, ProviderError, dle_has_next
 
 BASE_URL = "https://animeua.club"
 # The ashdi.vip CDN serves the HLS manifest only with this Referer; the

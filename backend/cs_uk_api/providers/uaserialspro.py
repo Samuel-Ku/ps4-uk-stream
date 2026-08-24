@@ -62,7 +62,7 @@ from ..wire_identity import (
 )
 from ._crypto_uaserialspro import decrypt_player_data
 from ._tortuga import decode as _tortuga_decode
-from .base import dle_has_next, BaseProvider, MediaTypeStr, ProviderError, parse_actor_list
+from .base import BaseProvider, MediaTypeStr, ProviderError, dle_has_next, parse_actor_list
 
 BASE_URL = "https://uaserials.com"
 # Hosts the upstream may legally redirect to: the DLE CMS and the

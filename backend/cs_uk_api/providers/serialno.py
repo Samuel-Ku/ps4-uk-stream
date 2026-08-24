@@ -41,7 +41,7 @@ from ..models import (
 )
 from ..wire_identity import episode_wire_id, parse_episode_tail
 from ._tortuga import decode as _tor_decrypt
-from .base import dle_has_next, BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, dle_has_next
 
 BASE_URL = "https://serialno.tv"
 
