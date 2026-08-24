@@ -153,6 +153,50 @@ Details:
   signatures `count 18/18/4` restored identically on recovery); the
   outage was pure upstream unavailability.
 
+## Drift incident: ufdub failing sweeps (2026-08-24, issue #357)
+
+The nightly drift monitor (spec #285) failed `ufdub` two sweeps
+consecutively and filed #357. Root cause was NOT upstream content
+change and NOT the deep probe (ufdub was not even in that night's deep
+rotation; manual deep probes of movie AND series cards pass:
+content → stream → HEAD 200). The verdict was the listing signature's
+style band: `style 'dorama' left the band (0.25 → 0.00)`.
+
+Root cause in the ADAPTER: ufdub category pages append a rotating
+`div.section` widget («recently updated» cross-listed
+serials/anime/doramas) after the real `div.floaters.grid-thumb`
+category grid — every one of the six category pages carries it (12
+grid cards + 4 widget cards, verified live on all six on 2026-08-24).
+`browse()` selected `.short-text` globally and over-captured the
+widget, despite its own comment claiming the upstream Kotlin's
+«remove `.section` blocks» behavior. Consequences:
+
+- The drift baseline calibrated ON the polluted listing (16 cards,
+  styles `{anime: 0.75, dorama: 0.25}` at calibration time).
+- The widget tail rotates as episodes land (dorama → anime observed
+  between calibration and 2026-08-24), so any style occupying it can
+  leave the ≥20% significance band → permanent verdict flapping.
+
+Fix (#357): `browse()` now skips cards under a `div.section`,
+implementing the documented Kotlin-parity exclusion. Search is
+untouched (search-page results genuinely live inside such a block);
+pagination lives inside the grid container, so `has_next` is
+unaffected. Post-fix listing = the true grid (12 films on `/film/`,
+forms all-movie, styles empty — stable across rotations); fixture
+`film_listing.html` re-captured live 2026-08-24 with the widget
+present as regression evidence.
+
+Deploy companion (operator step, runtime state only): the persisted
+baseline still carries the stale `[16,16]` count band, so the first
+post-fix sweep trips `count 12 below calibrated low 16` until the
+signature recalibrates — the baseline only refreshes on healthy
+passes (chicken-and-egg for permanent composition changes). ufdub's
+entry was dropped from this host's `~/.cache/cs-uk-api/drift-state.json`;
+the next sweep calibrates fresh ([12,12], `style_frac {}`) and the
+healthy pass comments + closes #357 per the monitor's recovery flow.
+Verified end-to-end against live upstream with an isolated temp state:
+first run `ok=True, reason="baseline (first calibration)"`.
+
 ## Per-provider "owner" field (suggested order)
 
 Group 1 (simple, HTML-based, `<15 KB`):
