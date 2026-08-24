@@ -37,6 +37,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
+from .. import row_kinds
 from ..catalog import (
     episode_group_key,
     extend_row_pool,
@@ -84,7 +85,7 @@ from ..recommend import similarity
 from ..wire_identity import is_group_key
 from . import dto, images
 from .auth import require_token
-from .dto import JF_TYPE_BY_ROW, safe_filename
+from .dto import safe_filename
 from .hls_proxy import (
     _STREAM_MEMO as _STREAM_MEMO,  # noqa: PLC0414 (re-export: suite clears the memo via router)
 )
@@ -196,40 +197,22 @@ def _server_id() -> str:
     return hashlib.sha256(f"{SETTINGS.host}:{SETTINGS.port}".encode()).hexdigest()[:16]
 
 
-#: The home-row routing keys that can exist in a snapshot (v3 spec §3.1).
-#: A view's ``Id`` is a deterministic uuid5 of one of these keys, so the
-#: mapping is reversible (``_view_type_by_id``) and stable across
-#: restarts — a client's cached library list keeps working. The
-#: form-split ``recent_*`` rows and the ``genre:<slug>`` rails (spec
-#: #263) are NOT pinned here — they resolve through the same uuid5
-#: formula (``_view_id_for``) and the snapshot-scan reverse lookup.
-_VIEW_TYPES = (
-    "newest",
-    "popular",
-    # spec #252: the personalized rows are just more home-row kinds —
-    # each becomes its own view, zero client changes.
-    "recommended",
-    "similar",
-    "movie",
-    "series",
-    "anime",
-    "cartoon",
-    "dorama",
-)
-
-_VIEW_ID_BY_TYPE = {
-    t: uuid.uuid5(uuid.NAMESPACE_URL, f"cs-uk-api-view:{t}").hex for t in _VIEW_TYPES
-}
-_VIEW_TYPE_BY_ID = {vid: t for t, vid in _VIEW_ID_BY_TYPE.items()}
+#: A view's ``Id`` is a deterministic uuid5 of the row kind (D5), so
+#: the mapping is reversible and stable across restarts — a client's
+#: cached library list keeps working. Table kinds resolve through
+#: ``row_kinds.VIEW_TYPE_BY_ID``; non-table kinds (the ``genre:<slug>``
+#: rails, the recipe-inserted personalized rows) resolve through the
+#: same uuid5 formula (``_view_id_for``) and the snapshot-scan reverse
+#: lookup.
 
 
 def _view_id_for(row_type: str) -> str:
     """Deterministic view id for ANY home-row kind (spec #263).
 
-    The legacy ``_VIEW_TYPES`` mapping is exactly the uuid5 of
-    ``cs-uk-api-view:{type}``; the form-split ``recent_movie``/
-    ``recent_series`` rows and the ``genre:<slug>`` rails are NEW kinds
-    (spec #263) that must resolve the same way. The uuid5 formula is
+    Every table kind's view id is exactly ``RowKind.view_id`` — the
+    uuid5 of ``cs-uk-api-view:{kind}``; the ``genre:<slug>`` rails and
+    the recipe-inserted personalized rows are NON-table kinds (spec
+    #362 D1) that must resolve the same way. The uuid5 formula is
     deterministic and stable, so a client's cached library list keeps
     working across the retirement of «Новинки» — and the reverse
     ``_view_type_by_id`` recovers the row kind from any of these ids.
@@ -240,13 +223,13 @@ def _view_id_for(row_type: str) -> str:
 def _view_type_by_id(parent_id: str, home: HomeResponse | None = None) -> str | None:
     """Reverse of ``_view_id_for``: a view id → its home-row kind.
 
-    The legacy kinds are pinned in ``_VIEW_TYPE_BY_ID``; the snapshot
-    rows (``recent_*``, ``genre:*``) resolve against a home snapshot —
-    the caller's freshly-``load_home()``-ed one, else the cached
-    snapshot. None for an unknown id or a cold cache (the caller then
-    falls through to the tolerant empty answer).
+    Table kinds are pinned in ``row_kinds.VIEW_TYPE_BY_ID``; the
+    snapshot-only rows (``genre:*``, recipe-inserted) resolve against a
+    home snapshot — the caller's freshly-``load_home()``-ed one, else
+    the cached snapshot. None for an unknown id or a cold cache (the
+    caller then falls through to the tolerant empty answer).
     """
-    t = _VIEW_TYPE_BY_ID.get(parent_id)
+    t = row_kinds.VIEW_TYPE_BY_ID.get(parent_id)
     if t is not None:
         return t
     if home is None:
@@ -270,14 +253,15 @@ async def _resolve_view_row_type(
 ) -> tuple[str | None, HomeResponse | None]:
     """(row kind, loaded home) for a view id, without a hierarchy build.
 
-    The legacy kinds resolve from the pinned mapping; the snapshot-only
-    kinds (``recent_*``, ``genre:*``, spec #263) recover the row type
-    from the cached home. When the cached home is mid-invalidation (the
-    background profile-warm clears it), a 32-hex view id is re-resolved
-    against a freshly ``load_home()``-ed snapshot so a view the client
-    JUST listed never races into an empty grid. Non-view parents (a
-    ``g2:`` group key, an episode id) return ``(None, None)`` — the
-    caller's hierarchy path runs untouched, no home build.
+    Table kinds resolve from ``row_kinds.VIEW_TYPE_BY_ID``; the
+    snapshot-only kinds (``genre:*``, recipe-inserted personalized rows)
+    recover the row type from the cached home. When the cached home is
+    mid-invalidation (the background profile-warm clears it), a 32-hex
+    view id is re-resolved against a freshly ``load_home()``-ed snapshot
+    so a view the client JUST listed never races into an empty grid.
+    Non-view parents (a ``g2:`` group key, an episode id) return
+    ``(None, None)`` — the caller's hierarchy path runs untouched, no
+    home build.
     """
     row_type = _view_type_by_id(parent_id)
     if row_type is not None:
@@ -289,61 +273,20 @@ async def _resolve_view_row_type(
     return row_type, home
 
 
-#: Jellyfin ``CollectionType`` per home-row routing key (D5). The movie
-#: row maps to the standard ``movies``; every other row is episodic-ish
-#: and maps to ``tvshows``. No client we target branches deeper than
-#: movie-vs-tvshows here.
-_COLLECTION_TYPE_BY_ROW = {
-    "movie": "movies",
-    "series": "tvshows",
-    "anime": "tvshows",
-    "cartoon": "tvshows",
-    "dorama": "tvshows",
-    "newest": "tvshows",
-    "popular": "tvshows",
-    "recommended": "tvshows",
-    "similar": "tvshows",
-    # spec #263: the form-split rows and the genre rails follow the same
-    # rule — a movie-form recent row is a movie library, everything
-    # else (series-form recent, mixed genre rails) is episodic-ish.
-    "recent_movie": "movies",
-    "recent_series": "tvshows",
-    # spec #267: «Нові серії» is a series-form recent row.
-    "new_episodes": "tvshows",
-    # spec #272: «Нещодавно переглянуто» is mixed-form history — the
-    # episodic-ish default is fine (the client renders it as a shelf).
-    "recently_watched": "tvshows",
-    # spec #290: the LLM-proposed idea rows use fixed slots so their
-    # view ids stay stable across profile refreshes; mixed-form
-    # shelves take the episodic-ish default like the other rows.
-    "llm_idea_1": "tvshows",
-    "llm_idea_2": "tvshows",
-}
-
-#: Reverse of ``dto.JF_TYPE_BY_ROW`` (the kind → Type table now lives
-#: with the DTO mapping, ticket #344): Jellyfin item Type → the home-row
-#: kinds that map to it. Multiple rows collapse onto one wire Type
-#: (series/anime/cartoon/dorama are all "Series"), so this is a
-#: set-valued index — used to translate ``includeItemTypes`` back to
-#: the row kinds the home snapshot is keyed by (ticket #213).
-_HOME_KINDS_BY_JF_TYPE: dict[str, set[str]] = {}
-for _kind, _jf_type in JF_TYPE_BY_ROW.items():
-    _HOME_KINDS_BY_JF_TYPE.setdefault(_jf_type, set()).add(_kind)
-
-
 def _parse_include_types(include_item_types: str | None) -> set[str] | None:
     """Parse ``includeItemTypes=Movie,Series`` into the home-row kinds.
 
-    None when the param is absent (no type filter); empty set when the
-    param is present but names nothing we express (→ filter everything
-    out, mirroring the client's expectation that an unexpressible type
-    yields an empty shelf).
+    Reads ``row_kinds.KINDS_BY_JF_TYPE`` — the reverse index derived
+    from the whole table (spec #362 B). None when the param is absent
+    (no type filter); empty set when the param is present but names
+    nothing we express (→ filter everything out, mirroring the client's
+    expectation that an unexpressible type yields an empty shelf).
     """
     if include_item_types is None:
         return None
     kinds: set[str] = set()
     for t in include_item_types.split(","):
-        kinds.update(_HOME_KINDS_BY_JF_TYPE.get(t.strip(), set()))
+        kinds.update(row_kinds.KINDS_BY_JF_TYPE.get(t.strip(), frozenset()))
     return kinds
 
 
@@ -380,12 +323,19 @@ def _user_data(item_id: str | None) -> UserDataResult | None:
 
 def _row_dto(row: HomeRow, server_id: str) -> BaseItemDto:
     """One virtual library (D5): a ``CollectionFolder`` whose ``Id`` the
-    client echoes back as ``parentId`` on ``/Items``."""
+    client echoes back as ``parentId`` on ``/Items``.
+
+    The CollectionType derives from the row-kind table (spec #362 B):
+    a table kind carries its entry's mapping; rows outside the table
+    (the recipe-inserted personalized rows, the ``genre:<slug>`` rails)
+    stay CollectionType-less.
+    """
+    entry = row_kinds.ROW_KINDS.get(row.type)
     return dto.row_dto(
         row.title,
         server_id,
         view_id=_view_id_for(row.type),
-        collection_type=_COLLECTION_TYPE_BY_ROW.get(row.type),
+        collection_type=entry.collection_type if entry is not None else None,
     )
 
 
@@ -408,7 +358,9 @@ def _item_dto(row: HomeRow, item: HomeItem, server_id: str) -> BaseItemDto:
     return dto.item_dto(
         item,
         server_id,
-        jf_type=JF_TYPE_BY_ROW.get(form, "Series"),
+        # The form is a required movie|series axis, both table kinds —
+        # the Type derives from the row-kind table (spec #362 B).
+        jf_type=row_kinds.ROW_KINDS[form].jf_type,
         parent_view_id=_view_id_for(row.type),
         user_data_value=_user_data(item.group_key),
     )

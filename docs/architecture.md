@@ -209,43 +209,74 @@ after its logic was consolidated here.
 ## 8. Row registry — `cs_uk_api/row_kinds`
 
 One declarative table is the single source of row-kind facts (spec
-#323, Row T1 #329): every home-row routing key maps to its title, form
-filter, sources selector, wire mappings and extendability flag. The
-home builder, the facade view maps and the deep-rows extension read
-THIS table instead of their private vocabularies; adding a row kind
-touches the table only.
+#323, Row T1 #329; completed by #362): every home-row routing key maps
+to its title, form filter, sources selector, wire mappings and
+extendability flag. The home builder, every facade wire mapping
+(``jellyfin/router.py`` + ``jellyfin/dto.py``) and the deep-rows gate
+(``_catalog_state/snapshot.py``) read THIS table instead of their
+private vocabularies; adding a row kind touches the table only.
 
 - **The table** — `ROW_KINDS: dict[str, RowKind]`, insertion order IS
-  the home order («Новинки» → «Популярні зараз» → movie → series →
-  anime → cartoon → dorama, v3 spec §3.1). `RowKind` is a frozen
-  dataclass: `kind`, `title`, `filter` (`form`/`any` — the item
-  admission policy), `form` (the Model B axis a form row admits),
-  `sources` (`newest`/`popular`/`type` — the sources selector),
-  `jf_type` + `collection_type` (the wire mappings), `extendable`
-  (deep-rows #305).
+  the canonical home-emission order (spec #362 D1): the form-split
+  «Нещодавно додані» rows (recent_movie, recent_series) → «Нові серії»
+  → «Нещодавно переглянуто» → «Популярні зараз» → movie → series →
+  anime → cartoon → dorama → the LLM idea slots (llm_idea_1,
+  llm_idea_2). `build_home_rows` emits each kind's segment at its table
+  position, omitting empty/unsignalled rows (the recent rows, «Нові
+  серії» and «Нещодавно переглянуто» are conditional — omission, not
+  reordering). The retired «Новинки» (`newest`, retired 2026-08-14 per
+  spec #263) has NO table entry; a cached client holding its view id
+  gets the tolerant empty envelope until it re-lists views. The
+  personalized «Рекомендовано для тебе» / «Схоже на X» rows join by the
+  same recipe in a follow-up, and the `genre:<slug>` rails stay outside
+  the table by design (parameterized kinds are not enumerable).
+  `RowKind` is a frozen dataclass: `kind`, `title`, `filter`
+  (`form`/`any` — the item admission policy), `form` (the Model B axis
+  a form row admits), `sources`
+  (`newest`/`popular`/`type`/`history`/`idea` — the sources selector),
+  `jf_type` + `collection_type` (the wire mappings), `extendable`.
 - **Derived facts flow from the table** — `view_id` (deterministic
   uuid5 of `cs-uk-api-view:{kind}`), `VIEW_TYPE_BY_ID` (the reversible
-  parentId index), `KINDS_BY_JF_TYPE` (the `includeItemTypes` reverse
-  index) and `TYPE_KINDS` (the five type rows the home builder iterates)
-  are all derived — a new kind gets its wire identity automatically.
-- **Retired private vocabularies** — `home._TYPE_ORDER` (kind → title)
-  and `home._item_matches_row` (kind → form filter) became table reads
-  (`build_home_rows` titles and `item_matches_row`); the facade's
-  `_VIEW_ID_BY_TYPE` / `_COLLECTION_TYPE_BY_ROW` / `_JF_TYPE_BY_ROW`
-  and the `_HOME_KINDS_BY_JF_TYPE` loop are gone — the item-DTO Type
-  lookups now read the table by the item's `form` (both forms are
-  table kinds).
-- **Consistency test** — `tests/test_row_kinds.py` pins the AC: every
-  home kind has an entry; every entry maps on the wire (unique
-  reversible view id, valid CollectionType/JF Type, reverse index
-  covers everything exactly once); the form-filter invariant; the
-  sources/extendability split; and parity with the pre-registry wire
-  values (movie is the only Movie/movies row).
+  parentId index the facade's reverse lookup reads),
+  `KINDS_BY_JF_TYPE` (the `includeItemTypes` reverse index
+  `_parse_include_types` reads) and `TYPE_KINDS` (the five type rows
+  the home builder iterates) are all derived — a new kind gets its wire
+  identity automatically.
+- **Retired private vocabularies** — all row-kind facts now derive from
+  the table (grep-verified absence): `home._RECENT_ROWS` /
+  `_NEW_EPISODES_ROW` / `_RECENTLY_WATCHED_ROW` remain only as builder
+  plumbing whose (kind, title) pairs the consistency suite pins against
+  the table; the facade's private view-type tuple + uuid5 index +
+  reverse map, its CollectionType dict and item-Type dicts
+  (router `_VIEW_TYPES` / `_VIEW_ID_BY_TYPE` / `_VIEW_TYPE_BY_ID` /
+  `_COLLECTION_TYPE_BY_ROW`, dto `JF_TYPE_BY_ROW`, and the
+  `_HOME_KINDS_BY_JF_TYPE` loop) were deleted — search cards/hints,
+  item DTOs, row views and the `includeItemTypes` translation all read
+  the table (#362 batch B); the snapshot module's `_EXTENDABLE_ROWS`
+  frozenset became a table-gated predicate (#362 batch C); the warm
+  insert-scan tuple dropped the retired «Новинки» zombie (#362 batch D).
+  A seam-guard source scan fails on any production definition of these
+  vocabularies outside `row_kinds.py`.
+- **Consistency test** — `tests/test_row_kinds.py` pins the AC: the
+  exact 12-kind set in canonical order; every entry maps on the wire
+  (unique reversible view id, reverse Type index covers everything
+  exactly once); the form-filter invariant (form-filtered kinds =
+  movie, series, recent_movie, recent_series, new_episodes); the five-
+  way sources split (`newest`: recent rows + «Нові серії», `popular`,
+  `history`, `idea`, `type`); the extendability split (type rows +
+  recent_movie/recent_series/popular page past the snapshot — popular
+  adopted the shipped deep-row behaviour; the rest stay
+  snapshot-bounded); and cross-module facts so divergence cannot recur:
+  `LLM_IDEA_ROW_TYPES ⊆ ROW_KINDS`, the home builder tuples' (kind,
+  title) pairs equal their table entries, and the warm insert-scan
+  tuple names only table kinds.
 
-**Honest status:** the deep-rows consumer (#305/#306/#307) is not in
-this tree — the `extendable` flag is declared and pinned by the
-consistency test (personalized rows snapshot-bounded, type rows
-extendable) and will be read when that wave lands.
+**Status:** deep-rows (#305/#306/#307) has landed — `extend_row_pool`
+lazily pages an extendable row's pool past the snapshot when the client
+scrolls (gated by the table's `extendable` flag via the facade Items
+route), so `extendable` is consumed in production, not merely pinned.
+Future flag changes are single-line edits to the table entry, consumed
+everywhere.
 
 ## Verification status (2026-08-15)
 

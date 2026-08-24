@@ -178,7 +178,11 @@ def _with_recommendation_rows(rows: list[HomeRow]) -> list[HomeRow]:
     if rec:
         insert_at = 0
         for i, row in enumerate(out):
-            if row.type in ("newest", "recent_movie", "recent_series", "popular"):
+            # The last popular-or-recent table kind the home build
+            # emitted; the personalized rows slot in right after it.
+            # (The retired «Новинки» kind is gone from the scan —
+            # spec #362 D.)
+            if row.type in ("recent_movie", "recent_series", "popular"):
                 insert_at = i + 1
         out[insert_at:insert_at] = rec
     genre = build_genre_rows(

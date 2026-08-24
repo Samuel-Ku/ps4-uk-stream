@@ -27,6 +27,7 @@ from ..http_client import get_client
 from ..merge import item_group_key, merge_results
 from ..models import HomeItem, HomeResponse, SearchResult
 from ..providers import PROVIDERS
+from ..row_kinds import ROW_KINDS
 from ..wire_identity import project_group, provider_union
 from ._stores import (
     _HOME_KEY,
@@ -343,29 +344,24 @@ def get_home() -> HomeResponse | None:
 # Deep rows (spec #305): lazy pagination of home rows
 # ---------------------------------------------------------------------------
 
-#: Row kinds whose pool extends past the snapshot when the client
-#: scrolls (spec #305): the five type rows, the two form-split
-#: «Нещодавно додані» rows, and «Популярні зараз». The personalized
-#: rows («Нові серії», «Нещодавно переглянуто», «Рекомендовано для
-#: тебе», «Схоже на X») and the genre rails stay snapshot-bounded by
-#: design (their pool IS the snapshot).
-_EXTENDABLE_ROWS = frozenset(
-    {
-        "movie",
-        "series",
-        "anime",
-        "cartoon",
-        "dorama",
-        "recent_movie",
-        "recent_series",
-        "popular",
-    }
-)
-
 #: Form filter for the form-split recent rows: a movie-form recent row
 #: must never pick up series cards from a provider's deeper newest
 #: pages (mirrors the page-1 build's per-form filter).
 _RECENT_ROW_FORM = {"recent_movie": "movie", "recent_series": "series"}
+
+
+def _row_is_extendable(row_type: str) -> bool:
+    """Does the row kind page beyond the snapshot? (spec #305, #362 C)
+
+    Reads the row-kind table's ``extendable`` flag: the type rows, the
+    form-split «Нещодавно додані» rows and «Популярні зараз» page; the
+    personalized rows («Нові серії», «Нещодавно переглянуто»), the LLM
+    idea slots and any non-table kind (the ``genre:<slug>`` rails, the
+    recipe-inserted personalized rows) are bounded — unknown kinds
+    answer False instead of raising.
+    """
+    entry = ROW_KINDS.get(row_type)
+    return entry is not None and entry.extendable
 
 
 def _row_sources(row_type: str) -> list[tuple[str, str]]:
@@ -417,7 +413,7 @@ async def extend_row_pool(
     The extended pool caches per row kind with the browse-cache TTL and
     is cleared when the home snapshot rebuilds.
     """
-    if row_type not in _EXTENDABLE_ROWS or not snapshot_items:
+    if not _row_is_extendable(row_type) or not snapshot_items:
         return None
     cached = row_deep_cache.get(_deep_key(row_type))
     if cached is not None:

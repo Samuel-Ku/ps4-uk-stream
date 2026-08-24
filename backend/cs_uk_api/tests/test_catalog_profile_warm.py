@@ -94,9 +94,9 @@ def test_install_profiles_round_trip() -> None:
     assert set(catalog_state.get_profiles()) == {"g2:a"}
 
 
-def test_with_recommendation_rows_inserts_after_newest_and_appends_rails() -> None:
+def test_with_recommendation_rows_inserts_after_popular_and_appends_rails() -> None:
     """With warm profiles + taste signal, the recommendation rows insert
-    after the newest row and the genre rails append at the end."""
+    after «Популярні зараз» and the genre rails append at the end."""
     catalog_state.install_profiles(
         {
             "g2:Дюна": profile_from_content(
@@ -126,7 +126,7 @@ def test_with_recommendation_rows_inserts_after_newest_and_appends_rails() -> No
     catalog_state.record_playback("g2:Війна", 1_000_000_000)
     catalog_state.record_search_query("фантастика")
 
-    rows = [_row("newest", "Дюна", "Війна"), _row("movie", "Дюна", "Війна")]
+    rows = [_row("popular", "Дюна", "Війна"), _row("movie", "Дюна", "Війна")]
     out = _with_recommendation_rows(rows)
     types = [r.type for r in out]
     # The personalized rows are inserted before the type rows.
@@ -140,9 +140,9 @@ def test_with_recommendation_rows_inserts_after_newest_and_appends_rails() -> No
 def test_with_recommendation_rows_cold_profiles_ship_plain_rows() -> None:
     """No profiles → no personalized rows, no rails — the plain rows pass
     through untouched (the pre-#252 shape)."""
-    rows = [_row("newest", "Дюна"), _row("movie", "Дюна")]
+    rows = [_row("popular", "Дюна"), _row("movie", "Дюна")]
     out = _with_recommendation_rows(rows)
-    assert [r.type for r in out] == ["newest", "movie"]
+    assert [r.type for r in out] == ["popular", "movie"]
 
 
 def test_warm_profiles_invalidates_home_when_new_profile_lands() -> None:

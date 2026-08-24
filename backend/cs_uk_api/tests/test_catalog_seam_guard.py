@@ -64,3 +64,37 @@ def test_only_the_seam_imports_the_private_catalog_package() -> None:
         " cs_uk_api.catalog seam (ticket #339); direct importers of the"
         " private package:\n  " + "\n  ".join(violators)
     )
+
+
+#: The row-kind vocabularies the table owns (spec #362 hardening item
+#: 4): no production module may DEFINE these names anymore — every one
+#: was a private shadow of a ``row_kinds`` fact, and two of them
+#: contradicted the table (popular's extendability, the retired
+#: «Новинки» row).
+_ROW_KIND_VOCABULARY = re.compile(
+    r"^\s*"
+    r"(_VIEW_TYPES|_COLLECTION_TYPE_BY_ROW|JF_TYPE_BY_ROW|_HOME_KINDS_BY_JF_TYPE|_EXTENDABLE_ROWS)"
+    r"\b\s*[:=]"
+)
+
+
+def test_row_kind_vocabularies_are_defined_only_in_the_table() -> None:
+    """Spec #362 hardening item 4: any production DEFINITION of a facade/
+    snapshot row-kind vocabulary outside ``row_kinds.py`` fails — the
+    table is the single source of these facts, so a re-introduced shadow
+    (the drift this wave removed) cannot come back silently."""
+    pkg_root = Path(cs_uk_api.__file__).resolve().parent
+    violators: list[str] = []
+    for path in sorted(pkg_root.rglob("*.py")):
+        rel = path.relative_to(pkg_root).as_posix()
+        if rel.split("/")[0] == "tests" or rel == "row_kinds.py":
+            continue
+        for lineno, raw in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            if _ROW_KIND_VOCABULARY.match(raw):
+                violators.append(f"{rel}:{lineno}: {raw.strip()}")
+    assert not violators, (
+        "Row-kind facts live only in cs_uk_api/row_kinds.py (spec #362);"
+        " private vocabulary definitions found:\n  " + "\n  ".join(violators)
+    )
