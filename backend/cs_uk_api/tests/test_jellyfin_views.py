@@ -1328,11 +1328,13 @@ def test_genre_view_id_survives_home_cache_invalidation(client: TestClient) -> N
 def test_llm_idea_kinds_registered_in_facade_view_vocabulary() -> None:
     """#293 AC5: the fixed idea-row slots join the facade view
     vocabulary — a deterministic 32-hex view id and a CollectionType
-    (episodic-ish default), stable across profile refreshes."""
+    (episodic-ish default), stable across profile refreshes. Both facts
+    derive from the row-kind table (spec #362 B)."""
     from cs_uk_api.recommend import LLM_IDEA_ROW_TYPES
+    from cs_uk_api.row_kinds import ROW_KINDS
 
     for kind in LLM_IDEA_ROW_TYPES:
-        assert jf_router._COLLECTION_TYPE_BY_ROW[kind] == "tvshows"
+        assert ROW_KINDS[kind].collection_type == "tvshows"
         vid = jf_router._view_id_for(kind)
         assert len(vid) == 32 and vid == jf_router._view_id_for(kind)
     assert jf_router._view_id_for("llm_idea_1") != jf_router._view_id_for("llm_idea_2")

@@ -1,20 +1,21 @@
 """Single declarative table of home-row kinds (spec #323, Row T1 #329).
 
 One ``RowKind`` entry per home-row routing key — the single source of
-row-kind facts. The home builder (``home.py``), the facade view maps
-(``jellyfin/router.py``) and the deep-rows extension (spec #305 — not
-yet in this tree) read THIS table instead of their private
-vocabularies: a kind's title and item filter, its sources selector,
-its wire mappings (Jellyfin Type / CollectionType / deterministic view
-id) and its extendability flag all live in one place. Adding a row kind
-touches the table only (AC #329) — ``ROW_KINDS`` insertion order IS the
-home order, and the derived maps (``VIEW_TYPE_BY_ID``,
-``KINDS_BY_JF_TYPE``, ``TYPE_KINDS``) flow from it.
+row-kind facts. The home builder (``home.py``), every facade wire
+mapping (``jellyfin/router.py`` + ``jellyfin/dto.py``) and the
+deep-rows extension (spec #305) read THIS table instead of their
+private vocabularies: a kind's title and item filter, its sources
+selector, its wire mappings (Jellyfin Type / CollectionType /
+deterministic view id) and its extendability flag all live in one
+place. Adding a row kind touches the table only (AC #329) —
+``ROW_KINDS`` insertion order IS the canonical home-emission order, and
+the derived maps (``VIEW_TYPE_BY_ID``, ``KINDS_BY_JF_TYPE``,
+``TYPE_KINDS``) flow from it.
 
-The retired private vocabularies: ``home._TYPE_ORDER`` (kind → title),
-``home._item_matches_row`` (kind → form filter),
-``router._VIEW_ID_BY_TYPE``/``_COLLECTION_TYPE_BY_ROW``/``_JF_TYPE_BY_ROW``
-and the ``_HOME_KINDS_BY_JF_TYPE`` reverse index.
+Retired private vocabularies (all replaced by table reads): the home
+builder's kind→title / kind→form-filter tuples, the facade's private
+view-id / CollectionType / item-Type dicts and reverse index, and the
+snapshot's extendable-rows frozenset.
 """
 
 from __future__ import annotations

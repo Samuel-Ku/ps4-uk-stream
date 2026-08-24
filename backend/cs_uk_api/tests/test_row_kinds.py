@@ -11,7 +11,6 @@ builder divergence from the table cannot recur (spec #362 hardening).
 
 from __future__ import annotations
 
-import importlib
 import re
 import uuid
 from pathlib import Path
@@ -147,24 +146,6 @@ def test_view_id_matches_the_deterministic_formula() -> None:
         assert rk.view_id == uuid.uuid5(
             uuid.NAMESPACE_URL, f"cs-uk-api-view:{kind}"
         ).hex
-
-
-def test_facade_collection_map_matches_the_table_over_table_kinds() -> None:
-    """Hardening #362 item 2 (migration bridge): the facade's private
-    CollectionType map agrees with the table over every table kind.
-    Deleted with the bridge when batch B derives the facade."""
-    jf_router = importlib.import_module("cs_uk_api.jellyfin.router")
-    over_table = {k: jf_router._COLLECTION_TYPE_BY_ROW[k] for k in ROW_KINDS}
-    assert over_table == {k: rk.collection_type for k, rk in ROW_KINDS.items()}
-
-
-def test_dto_jf_types_are_a_subset_of_the_table() -> None:
-    """Hardening #362 item 2 (migration bridge): every wire Type the dto
-    map emits is a Type some table entry carries. Deleted with the
-    bridge when batch B derives the dto."""
-    from cs_uk_api.jellyfin import dto
-
-    assert set(dto.JF_TYPE_BY_ROW.values()) <= {rk.jf_type for rk in ROW_KINDS.values()}
 
 
 def test_reverse_wire_map_covers_every_kind_exactly_once() -> None:

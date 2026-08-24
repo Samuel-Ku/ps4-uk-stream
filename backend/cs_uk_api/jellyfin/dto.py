@@ -29,6 +29,7 @@ from ..models import (
     SearchGroup,
     Season,
 )
+from ..row_kinds import ROW_KINDS
 from .models import (
     BaseItemDto,
     ItemCounts,
@@ -37,18 +38,6 @@ from .models import (
     SearchHint,
     UserDataResult,
 )
-
-#: Home-row kind → Jellyfin item Type. Only Movie/Series are expressible
-#: on the wire (AC: "correct Type (Movie/Series)"); style-tagged rows are
-#: episodic content and become Series. Row kinds come from the Model B
-#: section axes (contract #135) — the legacy ``type`` axis is gone.
-JF_TYPE_BY_ROW: dict[str, str] = {
-    "movie": "Movie",
-    "series": "Series",
-    "anime": "Series",
-    "cartoon": "Series",
-    "dorama": "Series",
-}
 
 
 def poster_tag(poster_url: str) -> str:
@@ -354,7 +343,10 @@ def search_card_dto(group: SearchGroup, server_id: str) -> BaseItemDto:
         Name=group.title,
         ServerId=server_id,
         Id=group.group_key,
-        Type=JF_TYPE_BY_ROW.get(group.form, "Series"),
+        # The group's form is a required movie|series axis (Model B),
+        # both of which are table kinds — the Type derives from the
+        # row-kind table (spec #362 B).
+        Type=ROW_KINDS[group.form].jf_type,
         ProductionYear=group.year,
     )
     if group.poster is not None:
@@ -369,7 +361,7 @@ def search_hint(group: SearchGroup) -> SearchHint:
         ItemId=group.group_key,
         Id=group.group_key,
         Name=group.title,
-        Type=JF_TYPE_BY_ROW.get(group.form, "Series"),
+        Type=ROW_KINDS[group.form].jf_type,
         ProductionYear=group.year,
     )
     if group.poster is not None:
@@ -394,7 +386,6 @@ def genre_shelf_entry(genre: str, server_id: str, child_count: int) -> BaseItemD
 
 
 __all__ = [
-    "JF_TYPE_BY_ROW",
     "attach_download_source",
     "card_detail_dto",
     "content_detail_dto",
