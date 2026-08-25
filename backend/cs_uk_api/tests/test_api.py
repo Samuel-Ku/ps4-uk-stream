@@ -26,6 +26,21 @@ def test_registry_registers_all_landed_adapters():
         assert expected in ids
 
 
+def test_providers_endpoint_yts_capabilities():
+    """Ticket #380: the English lane rides the generic Model B
+    capabilities rollup — forms exactly ['movie'] (movies-only pass),
+    styles ∅ (plain movies, nothing style-tagged), and the registry-last
+    position (order-is-priority, ADR-0004)."""
+    r = client.get("/api/providers")
+    assert r.status_code == 200
+    body = r.json()
+    yts = next(p for p in body if p["id"] == "yts")
+    assert yts["name"] == "YTS"
+    assert yts["forms"] == ["movie"]
+    assert yts["styles"] == []
+    assert body[-1]["id"] == "yts"
+
+
 def test_search_validates_empty_query():
     r = client.get("/api/search?q=")
     assert r.status_code == 422
