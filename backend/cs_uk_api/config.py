@@ -109,6 +109,15 @@ class Settings:
     # on a cold start. Default unset = in-memory only — round-1
     # behaviour, zero change unless an operator opts in.
     profile_file: str | None = None
+    #: Torrent lane (spec #374): the BitPlay engine base URL (e.g.
+    #: ``http://lan-host:3347``). Unset or empty ⇒ the whole torrent
+    #: lane is disabled (the call site surfaces that loudly, never
+    #: silently). The optional basic-auth pair mirrors BitPlay's own
+    #: BITPLAY_AUTH_USERNAME/BITPLAY_AUTH_PASSWORD env contract — both
+    #: must be set for auth to engage.
+    torrent_engine_url: str | None = None
+    torrent_engine_user: str | None = None
+    torrent_engine_password: str | None = None
 
 
 def _load_resume_path() -> str | None:
@@ -221,6 +230,11 @@ def load_settings() -> Settings:
         row_max_pages=int(os.environ.get("CS_UK_ROW_MAX_PAGES", "5")),
         # Round-2 (spec #323): opt-in versioned resume persistence.
         profile_file=os.environ.get("CS_UK_PROFILE_FILE") or None,
+        # Torrent lane (spec #374): engine base URL + optional basic
+        # auth. Empty string disables like absent (llm-knob convention).
+        torrent_engine_url=os.environ.get("CS_UK_TORRENT_ENGINE_URL") or None,
+        torrent_engine_user=os.environ.get("CS_UK_TORRENT_ENGINE_USER") or None,
+        torrent_engine_password=os.environ.get("CS_UK_TORRENT_ENGINE_PASSWORD") or None,
     )
 
 
