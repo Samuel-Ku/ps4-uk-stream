@@ -11,7 +11,14 @@ builder (unset url ⇒ None ⇒ lane disabled).
 
 from __future__ import annotations
 
+import json
+
+import httpx
+import pytest
+import respx
+
 from cs_uk_api.torrent_engine import (
+    BitPlayClient,
     EngineRejected,
     EngineStream,
     EngineUnavailable,
@@ -21,6 +28,24 @@ from cs_uk_api.torrent_engine import (
 )
 
 _MAGNET = "magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Sintel"
+
+_BASE = "http://bitplay.lan:3347"
+_ADD = f"{_BASE}/api/v1/torrent/add"
+_SESSION = "08ada5a7a6183aae1e09d831df6748d566095a10"
+_FILES = f"{_BASE}/api/v1/torrent/{_SESSION}"
+
+
+def _client(**kwargs: str) -> BitPlayClient:
+    return BitPlayClient(base_url=_BASE, **kwargs)
+
+
+def _mock_add(session_id: str | None = _SESSION, status: int = 200) -> respx.Route:
+    payload = {"sessionId": session_id} if session_id is not None else {"error": "??"}
+    return respx.post(_ADD).mock(return_value=httpx.Response(status, json=payload))
+
+
+def _mock_files(entries: list[dict[str, object]], status: int = 200) -> respx.Route:
+    return respx.get(_FILES).mock(return_value=httpx.Response(status, json=entries))
 
 
 # --------------------------------------------------------- exceptions
@@ -81,3 +106,123 @@ async def test_fake_ignores_file_hint_deterministically() -> None:
     hinted = await engine.ensure_session(_MAGNET, file_hint="Sintel.mp4")
     bare = await engine.ensure_session(_MAGNET)
     assert hinted == bare
+
+
+# --------------------------------------------------------- BitPlayClient
+
+
+async def test_bitplay_native_mp4_served_direct() -> None:
+    with respx.mock:
+        add = _mock_add()
+        _mock_files([{"index": 0, "name": "Movie.mp4", "size": 100}])
+        stream = await _client().ensure_session(_MAGNET)
+    assert stream == EngineStream(
+        url=f"{_FILES}/stream/0", container="mp4"
+    )
+    sent = json.loads(add.calls.last.request.read())
+    assert sent == {"magnet": _MAGNET}
+
+
+async def test_bitplay_mkv_remuxed_to_mp4() -> None:
+    """MKV is not served byte-native — the engine remuxes on the fly and
+    the player receives a progressive mp4 URL (spec user story 8)."""
+    with respx.mock:
+        _mock_add()
+        _mock_files([{"index": 0, "name": "Movie.mkv", "size": 100}])
+        stream = await _client().ensure_session(_MAGNET)
+    assert stream == EngineStream(url=f"{_FILES}/remux/0", container="mp4")
+
+
+async def test_bitplay_file_hint_selects_matching_file() -> None:
+    entries = [
+        {"index": 0, "name": "Sample/trailer.mp4"},
+        {"index": 1, "name": "Movie/Movie.mkv"},
+    ]
+    with respx.mock:
+        _mock_add()
+        _mock_files(entries)
+        hinted_mkv = await _client().ensure_session(_MAGNET, file_hint="MOVIE")
+        hinted_trailer = await _client().ensure_session(_MAGNET, file_hint="trailer")
+    assert hinted_mkv.url == f"{_FILES}/remux/1"
+    assert hinted_trailer == EngineStream(url=f"{_FILES}/stream/0", container="mp4")
+
+
+async def test_bitplay_auth_failure_is_engine_unavailable() -> None:
+    """Bad credentials are lane-level breakage (every item would fail),
+    not a rejection of this torrent."""
+    with respx.mock:
+        respx.post(_ADD).mock(return_value=httpx.Response(401, text="Unauthorized"))
+        with pytest.raises(EngineUnavailable):
+            await _client(username="u", password="bad").ensure_session(_MAGNET)
+
+
+async def test_bitplay_invalid_magnet_rejected() -> None:
+    with respx.mock:
+        respx.post(_ADD).mock(
+            return_value=httpx.Response(400, json={"error": "Invalid magnet link"})
+        )
+        with pytest.raises(EngineRejected):
+            await _client().ensure_session("not-a-magnet")
+
+
+async def test_bitplay_metadata_timeout_dead_torrent_rejected() -> None:
+    """BitPlay answers 504 when metadata never arrives (zero seeders) —
+    dead-on-arrival for THIS torrent (spec error-surface note)."""
+    with respx.mock:
+        respx.post(_ADD).mock(
+            return_value=httpx.Response(
+                504,
+                json={"error": "Timeout getting info - proxy might be blocking BitTorrent traffic"},
+            )
+        )
+        with pytest.raises(EngineRejected):
+            await _client().ensure_session(_MAGNET)
+
+
+async def test_bitplay_connection_error_is_unavailable() -> None:
+    with respx.mock:
+        respx.post(_ADD).mock(side_effect=httpx.ConnectError("refused"))
+        with pytest.raises(EngineUnavailable):
+            await _client().ensure_session(_MAGNET)
+
+
+async def test_bitplay_read_timeout_is_unavailable() -> None:
+    with respx.mock:
+        _mock_add()
+        respx.get(_FILES).mock(side_effect=httpx.ReadTimeout("slow"))
+        with pytest.raises(EngineUnavailable):
+            await _client().ensure_session(_MAGNET)
+
+
+async def test_bitplay_sends_basic_auth_when_pair_configured() -> None:
+    with respx.mock:
+        add = _mock_add()
+        _mock_files([{"index": 0, "name": "Movie.mp4"}])
+        await _client(username="admin", password="secret").ensure_session(_MAGNET)
+    request = add.calls.last.request
+    assert request.headers["Authorization"].startswith("Basic ")
+
+
+async def test_bitplay_no_auth_header_without_credentials() -> None:
+    with respx.mock:
+        add = _mock_add()
+        _mock_files([{"index": 0, "name": "Movie.mp4"}])
+        await _client().ensure_session(_MAGNET)
+    assert "authorization" not in add.calls.last.request.headers
+
+
+async def test_bitplay_malformed_add_response_is_unavailable() -> None:
+    with respx.mock:
+        respx.post(_ADD).mock(
+            return_value=httpx.Response(200, json={"unexpected": "shape"})
+        )
+        with pytest.raises(EngineUnavailable):
+            await _client().ensure_session(_MAGNET)
+
+
+async def test_bitplay_files_error_is_unavailable() -> None:
+    with respx.mock:
+        _mock_add()
+        _mock_files([], status=404)
+        with pytest.raises(EngineUnavailable):
+            await _client().ensure_session(_MAGNET)
