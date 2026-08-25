@@ -1,0 +1,67 @@
+{
+  "status": "ok",
+  "status_message": "Query successful! Everything worked as expected.",
+  "server_time": 1756130300,
+  "server_version": "2.36",
+  "data": {
+    "movie": {
+      "id": 48491,
+      "url": "https://yts.gg/movie/dune-2021",
+      "imdb_code": "tt1160419",
+      "title": "Dune",
+      "title_english": "Dune",
+      "title_long": "Dune (2021)",
+      "slug": "dune-2021",
+      "year": 2021,
+      "rating": 8.0,
+      "runtime": 155,
+      "genres": ["Adventure", "Drama", "Sci-Fi"],
+      "summary": "A noble family becomes embroiled in a war for control over the galaxy's most valuable asset.",
+      "description_full": "Paul Atreides, a brilliant and gifted young man born into a great destiny beyond his understanding, must travel to the most dangerous planet in the universe to ensure the future of his family and his people.",
+      "synopsis": "Paul Atreides travels to Arrakis.",
+      "yt_trailer_code": "n9xhJrPXop4",
+      "language": "en",
+      "mpa_rating": "PG-13",
+      "background_image_original": "https://yts.gg/assets/images/movies/dune-2021/background.jpg",
+      "small_cover_image": "https://yts.gg/assets/images/movies/dune-2021/small-cover.jpg",
+      "medium_cover_image": "https://yts.gg/assets/images/movies/dune-2021/medium-cover.jpg",
+      "large_cover_image": "https://yts.gg/assets/images/movies/dune-2021/large-cover.jpg",
+      "state": "ok",
+      "torrents": [
+        {
+          "url": "https://yts.gg/torrent/download/A1B2C3D4E5F60718293A4B5C6D7E8F9012345678",
+          "hash": "A1B2C3D4E5F60718293A4B5C6D7E8F9012345678",
+          "quality": "720p",
+          "type": "web",
+          "is_repack": "0",
+          "video_codec": "x264",
+          "audio_channels": "5.1",
+          "seeds": 42,
+          "peers": 11,
+          "size": "1.00 GB",
+          "size_bytes": 1073741824,
+          "date_uploaded": "2026-01-15 10:00:00",
+          "date_uploaded_unix": 1768471200
+        },
+        {
+          "url": "https://yts.gg/torrent/download/B2C3D4E5F60718293A4B5C6D7E8F90123456789A",
+          "hash": "B2C3D4E5F60718293A4B5C6D7E8F90123456789A",
+          "quality": "1080p",
+          "type": "bluray",
+          "is_repack": "0",
+          "video_codec": "x264",
+          "audio_channels": "5.1",
+          "seeds": 128,
+          "peers": 40,
+          "size": "2.50 GB",
+          "size_bytes": 2684354560,
+          "date_uploaded": "2026-01-15 10:00:00",
+          "date_uploaded_unix": 1768471200
+        }
+      ],
+      "date_added": "2026-01-16 08:10:00",
+      "download_count": 1200000,
+      "like_count": 45000
+    }
+  }
+}

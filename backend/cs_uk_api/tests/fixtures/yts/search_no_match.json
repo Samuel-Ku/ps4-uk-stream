@@ -1,0 +1,11 @@
+{
+  "status": "ok",
+  "status_message": "Query successful! Everything worked as expected.",
+  "server_time": 1756130400,
+  "server_version": "2.36",
+  "data": {
+    "movie_count": 0,
+    "limit": 50,
+    "page_number": 1
+  }
+}
