@@ -26,6 +26,8 @@ from typing import Protocol
 
 import httpx
 
+from . import config as _config
+
 log = logging.getLogger(__name__)
 
 
@@ -276,3 +278,25 @@ class BitPlayClient:
         raise EngineUnavailable(
             f"engine failed {what}: {resp.status_code} {detail}".strip()
         )
+
+
+# ------------------------------------------------------- construction
+
+
+def build_engine_from_settings() -> TorrentEngine | None:
+    """The one construction path (architecture.md §5: single settings
+    binding) — reads ``_config.SETTINGS`` at call time, never binds the
+    value at import.
+
+    Unset/empty ``torrent_engine_url`` ⇒ None: the lane is DISABLED,
+    and the future call site must surface that loudly (a deliberate
+    "not configured" verdict), never silently pretend to stream.
+    """
+    url = (_config.SETTINGS.torrent_engine_url or "").strip()
+    if not url:
+        return None
+    return BitPlayClient(
+        base_url=url,
+        username=_config.SETTINGS.torrent_engine_user,
+        password=_config.SETTINGS.torrent_engine_password,
+    )

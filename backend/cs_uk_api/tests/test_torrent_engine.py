@@ -12,13 +12,16 @@ builder (unset url ⇒ None ⇒ lane disabled).
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import httpx
 import pytest
 import respx
 
+from cs_uk_api import config as _config
 from cs_uk_api.torrent_engine import (
     BitPlayClient,
+    build_engine_from_settings,
     EngineRejected,
     EngineStream,
     EngineUnavailable,
@@ -226,3 +229,61 @@ async def test_bitplay_files_error_is_unavailable() -> None:
         _mock_files([], status=404)
         with pytest.raises(EngineUnavailable):
             await _client().ensure_session(_MAGNET)
+
+
+# ------------------------------------------------------------- builder
+
+
+def test_builder_none_when_url_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        _config, "SETTINGS", replace(_config.SETTINGS, torrent_engine_url=None)
+    )
+    assert build_engine_from_settings() is None
+
+
+def test_builder_none_when_url_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An explicit empty string disables the lane exactly like unset
+    (the llm-knob convention); the call site decides how to be loud."""
+    monkeypatch.setattr(
+        _config, "SETTINGS", replace(_config.SETTINGS, torrent_engine_url="")
+    )
+    assert build_engine_from_settings() is None
+
+
+def test_builder_builds_bitplay_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        _config,
+        "SETTINGS",
+        replace(_config.SETTINGS, torrent_engine_url="http://bitplay.lan:3347/"),
+    )
+    engine = build_engine_from_settings()
+    assert isinstance(engine, BitPlayClient)
+
+
+async def test_builder_wires_url_and_auth_pair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end through the one settings binding: base URL (trailing
+    slash tolerated) and basic-auth pair reach the adapter's requests."""
+    monkeypatch.setattr(
+        _config,
+        "SETTINGS",
+        replace(
+            _config.SETTINGS,
+            torrent_engine_url="http://bitplay.lan:3347/",
+            torrent_engine_user="admin",
+            torrent_engine_password="secret",
+        ),
+    )
+    engine = build_engine_from_settings()
+    assert engine is not None
+    with respx.mock:
+        add = respx.post(f"{_BASE}/api/v1/torrent/add").mock(
+            return_value=httpx.Response(200, json={"sessionId": _SESSION})
+        )
+        respx.get(_FILES).mock(
+            return_value=httpx.Response(200, json=[{"index": 0, "name": "M.mkv"}])
+        )
+        stream = await engine.ensure_session(_MAGNET)
+    assert stream.url == f"{_FILES}/remux/0"
+    assert add.calls.last.request.headers["Authorization"].startswith("Basic ")
