@@ -52,6 +52,7 @@ from .uakino import UakinoProvider
 from .uaserialspro import UASerialsProProvider
 from .ufdub import UFDubProvider
 from .unimay import UnimayProvider
+from .yts import YtsProvider
 
 
 def bootstrap() -> None:
@@ -77,6 +78,11 @@ def bootstrap() -> None:
     register(AnitubeinuaProvider())
     register(SimpsonsUATvProvider())
     register(AnimeONProvider())
+    # English catalog lane (spec #374, ticket #376): registered LAST per
+    # the order-is-priority convention — Ukrainian sources keep their
+    # search precedence. Movies-only this pass; health rides the shared
+    # sliding-window tracker (probe entry chain: newest_section "movies").
+    register(YtsProvider())
 
 
 bootstrap()

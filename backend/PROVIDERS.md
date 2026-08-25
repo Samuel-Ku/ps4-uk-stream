@@ -8,10 +8,10 @@ instead of being emulated.
 
 ## Registry
 
-All 19 adapters are registered and surfaced via `GET /api/providers`
+All 20 adapters are registered and surfaced via `GET /api/providers`
 (verified by `tests/test_registry.py` — every provider module must be
 registered). The table below details the first eight with
-streaming-shape notes; the remaining eleven follow. Full per-provider
+streaming-shape notes; the rest follow. Full per-provider
 status: [`docs/provider-triage.md`](../docs/provider-triage.md).
 
 | id          | site                          | sections                             | stream format |
@@ -35,6 +35,7 @@ status: [`docs/provider-triage.md`](../docs/provider-triage.md).
 | simpsonsuatv | simpsonsua.tv                 | updates, page                        | m3u8          |
 | animeon     | animeon.club                  | seasons, popular, page               | m3u8          |
 | uaserialspro | uaserials.com                 | films, series, fcartoon, cartoons, anime, exclusive | m3u8 |
+| yts         | yts.gg (API)                  | movies                               | torrent→mp4 (#377) |
 
 ## Streaming shape
 
