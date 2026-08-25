@@ -1,0 +1,97 @@
+{
+  "status": "ok",
+  "status_message": "Query successful! Everything worked as expected.",
+  "server_time": 1756130100,
+  "server_version": "2.36",
+  "data": {
+    "movie_count": 76801,
+    "limit": 50,
+    "page_number": 1,
+    "movies": [
+      {
+        "id": 78133,
+        "url": "https://yts.gg/movie/gekijo-ban-project-sekai-2025",
+        "imdb_code": "tt33050528",
+        "title": "Gekijô-ban Project SEKAI: Kowareta SEKAI to Utaenai MIKU",
+        "title_english": "Project SEKAI the Movie: Broken SEKAI and the Miku Who Couldn't Sing",
+        "title_long": "Gekijô-ban Project SEKAI (2025)",
+        "slug": "gekijo-ban-project-sekai-kowareta-sekai-to-utaenai-miku-2025",
+        "year": 2025,
+        "rating": 6.4,
+        "runtime": 110,
+        "genres": ["Animation", "Drama", "Sci-Fi"],
+        "summary": "Shibuya teen musician Ichika meets Hatsune Miku.",
+        "description_full": "Shibuya teen musician Ichika meets Hatsune Miku, who cannot sing for a world that has stopped listening.",
+        "synopsis": "Shibuya teen musician Ichika meets Hatsune Miku.",
+        "yt_trailer_code": "3bD1dfiRMu4",
+        "language": "ja",
+        "mpa_rating": "PG",
+        "background_image_original": "https://yts.gg/assets/images/movies/gekijo-ban-project-sekai-kowareta-sekai-to-utaenai-miku-2025/background.jpg",
+        "small_cover_image": "https://yts.gg/assets/images/movies/gekijo-ban-project-sekai-kowareta-sekai-to-utaenai-miku-2025/small-cover.jpg",
+        "medium_cover_image": "https://yts.gg/assets/images/movies/gekijo-ban-project-sekai-kowareta-sekai-to-utaenai-miku-2025/medium-cover.jpg",
+        "large_cover_image": "https://yts.gg/assets/images/movies/gekijo-ban-project-sekai-kowareta-sekai-to-utaenai-miku-2025/large-cover.jpg",
+        "state": "ok",
+        "torrents": [
+          {
+            "url": "https://yts.gg/torrent/download/D546E07722C3014C2D9244312E59EBA841A5DB19",
+            "hash": "D546E07722C3014C2D9244312E59EBA841A5DB19",
+            "quality": "720p",
+            "type": "bluray",
+            "is_repack": "0",
+            "video_codec": "x264",
+            "audio_channels": "2.0",
+            "seeds": 0,
+            "peers": 0,
+            "size": "969.22 MB",
+            "size_bytes": 1016300831,
+            "date_uploaded": "2026-08-25 16:25:53",
+            "date_uploaded_unix": 1779743153
+          }
+        ],
+        "date_added": "2026-08-25 16:25:53"
+      },
+      {
+        "id": 78100,
+        "url": "https://yts.gg/movie/example-recent-en-2026",
+        "imdb_code": "tt29334102",
+        "title": "Example Recent EN",
+        "title_english": "Example Recent EN",
+        "title_long": "Example Recent EN (2026)",
+        "slug": "example-recent-en-2026",
+        "year": 2026,
+        "rating": 7.1,
+        "runtime": 118,
+        "genres": ["Thriller"],
+        "summary": "A synthesized same-shape English listing entry.",
+        "description_full": "A synthesized same-shape English listing entry standing in for a fresh upload.",
+        "synopsis": "A synthesized entry.",
+        "yt_trailer_code": "",
+        "language": "en",
+        "mpa_rating": "R",
+        "background_image_original": "https://yts.gg/assets/images/movies/example-recent-en-2026/background.jpg",
+        "small_cover_image": "https://yts.gg/assets/images/movies/example-recent-en-2026/small-cover.jpg",
+        "medium_cover_image": "https://yts.gg/assets/images/movies/example-recent-en-2026/medium-cover.jpg",
+        "large_cover_image": "https://yts.gg/assets/images/movies/example-recent-en-2026/large-cover.jpg",
+        "state": "ok",
+        "torrents": [
+          {
+            "url": "https://yts.gg/torrent/download/E5F60718293A4B5C6D7E8F901234567890ABCDEF",
+            "hash": "E5F60718293A4B5C6D7E8F901234567890ABCDEF",
+            "quality": "1080p",
+            "type": "web",
+            "is_repack": "0",
+            "video_codec": "x265",
+            "audio_channels": "5.1",
+            "seeds": 12,
+            "peers": 3,
+            "size": "1.80 GB",
+            "size_bytes": 1932735283,
+            "date_uploaded": "2026-08-24 21:00:00",
+            "date_uploaded_unix": 1779672000
+          }
+        ],
+        "date_added": "2026-08-24 21:00:00"
+      }
+    ]
+  }
+}
