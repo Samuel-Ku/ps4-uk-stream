@@ -28,10 +28,13 @@ Seams under test:
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
+import respx
 from fastapi.testclient import TestClient
 
 from cs_uk_api._catalog_state import search_cache
@@ -39,6 +42,7 @@ from cs_uk_api.main import app
 from cs_uk_api.models import SearchResult, Section
 from cs_uk_api.providers import PROVIDERS
 from cs_uk_api.providers.base import BaseProvider
+from cs_uk_api.providers.yts import YtsProvider
 
 
 @pytest.fixture(autouse=True)
@@ -366,3 +370,63 @@ def test_browse_section_no_axes_passes_everything() -> None:
     r = TestClient(app).get("/api/browse?provider=p1&section=all")
     assert r.status_code == 200
     assert len(r.json()["results"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# English lane (YTS, spec #374, ticket #380): the filter axes treat
+# original-English items identically — plain movie form, ∅ styles
+# ---------------------------------------------------------------------------
+
+_YTS_FIX = Path(__file__).parent / "fixtures" / "yts"
+_YTS_LIST_URL = re.compile(r"https://yts\.gg/api/v2/list_movies\.json\?.*")
+
+
+def _register_yts() -> None:
+    """Isolated registry holding ONLY the real YtsProvider (fixture-
+    mocked upstream; no other provider can leak a network call)."""
+    PROVIDERS.clear()
+    PROVIDERS["yts"] = YtsProvider()
+
+
+def test_browse_section_filter_admits_english_movies_like_any_movie_section() -> None:
+    """Ticket #380 AC2 (browse leg): the YTS «movies» section declares
+    ``form=movie`` (+ styles None pass-any), so the Model B section
+    filter runs over its English cards exactly as over any provider's —
+    every plain movie passes unchanged."""
+    _register_yts()
+    with respx.mock(assert_all_called=False) as router:
+        router.get(url=_YTS_LIST_URL).respond(
+            200, text=(_YTS_FIX / "newest_page1.json").read_text(encoding="utf-8")
+        )
+        r = TestClient(app).get("/api/browse?provider=yts&section=movies&page=1")
+    assert r.status_code == 200
+    results = r.json()["results"]
+    assert [it["id"] for it in results] == ["yts:tt33050528", "yts:tt29334102"]
+    assert all(it["form"] == "movie" for it in results)
+    assert all(it["styles"] == [] for it in results)
+
+
+def test_search_form_axis_treats_english_items_identically() -> None:
+    """Ticket #380 AC2 (search leg): ``?form=movie`` keeps the English
+    hits and ``?form=series`` drops them — the same exact-or-None axis
+    every provider's results ride; no special-casing either way."""
+    _register_yts()
+    with respx.mock(assert_all_called=False) as router:
+        router.get(url=_YTS_LIST_URL).respond(
+            200, text=(_YTS_FIX / "search_dune.json").read_text(encoding="utf-8")
+        )
+        client = TestClient(app)
+        unfiltered = client.get("/api/search?q=dune")
+        as_movie = client.get("/api/search?q=dune&form=movie")
+        as_series = client.get("/api/search?q=dune&form=series")
+    assert unfiltered.status_code == as_movie.status_code == as_series.status_code == 200
+    unfiltered_ids = [g["group_key"] for g in unfiltered.json()["groups"]]
+    assert len(unfiltered_ids) == 2
+    assert [g["group_key"] for g in as_movie.json()["groups"]] == unfiltered_ids
+    assert all(
+        source["provider"] == "yts"
+        for group in as_movie.json()["groups"]
+        for source in group["sources"]
+    )
+    assert all(group["form"] == "movie" for group in as_movie.json()["groups"])
+    assert as_series.json()["groups"] == []
