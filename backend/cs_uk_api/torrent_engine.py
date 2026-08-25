@@ -128,7 +128,7 @@ class FakeTorrentEngine:
 # file index. A parallel effort probes the LIVE service; corrections are
 # meant to land as one-place edits to these constants.
 #
-#   POST /api/v1/torrent/add            {"magnet": "..."} → {"sessionId": hex}
+#   POST /api/v1/torrent/add            {"Magnet": "..."} → {"sessionId": hex}
 #   GET  /api/v1/torrent/{sid}          [{index, name, size}, ...]
 #   GET  /api/v1/torrent/{sid}/stream/{i}    native bytes (Range-capable)
 #   GET  /api/v1/torrent/{sid}/remux/{i}     progressive fMP4 (MKV→MP4)
@@ -148,8 +148,6 @@ ENGINE_CONNECT_TIMEOUT_S = 5.0
 #: ``add`` blocks while BitPlay fetches metadata (its own cap is 3 min);
 #: we bail earlier and let the route layer translate the failure.
 ADD_TIMEOUT_S = 120.0
-#: File listing is local metadata — short read budget.
-LIST_TIMEOUT_S = 10.0
 
 #: Containers BitPlay serves byte-native (extension → reported container).
 DIRECT_CONTAINER_BY_EXT: dict[str, str] = {
@@ -230,7 +228,7 @@ class BitPlayClient:
 
     async def _add_torrent(self, http: httpx.AsyncClient, identifier: str) -> str:
         try:
-            resp = await http.post(f"{self._base_url}{ADD_TORRENT_PATH}", json={"magnet": identifier})
+            resp = await http.post(f"{self._base_url}{ADD_TORRENT_PATH}", json={"Magnet": identifier})
         except httpx.HTTPError as e:
             raise EngineUnavailable(f"engine unreachable: {e}") from e
         self._ensure_ok(resp, "add")

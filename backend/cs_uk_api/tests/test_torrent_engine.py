@@ -123,7 +123,7 @@ async def test_bitplay_native_mp4_served_direct() -> None:
         url=f"{_FILES}/stream/0", container="mp4"
     )
     sent = json.loads(add.calls.last.request.read())
-    assert sent == {"magnet": _MAGNET}
+    assert sent == {"Magnet": _MAGNET}
 
 
 async def test_bitplay_mkv_remuxed_to_mp4() -> None:

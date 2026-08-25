@@ -38,6 +38,7 @@ def test_providers_endpoint_yts_capabilities():
     assert yts["name"] == "YTS"
     assert yts["forms"] == ["movie"]
     assert yts["styles"] == []
+    assert yts.get("status") in ("ok", "degraded", "down")  # live status rides the shared tracker
     assert body[-1]["id"] == "yts"
 
 
