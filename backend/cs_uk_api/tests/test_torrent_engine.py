@@ -119,8 +119,10 @@ async def test_bitplay_native_mp4_served_direct() -> None:
         add = _mock_add()
         _mock_files([{"index": 0, "name": "Movie.mp4", "size": 100}])
         stream = await _client().ensure_session(_MAGNET)
+    # Native byte-serving is Go http.ServeContent → full Range support
+    # (research #367 §1): seekable defaults True and stays True here.
     assert stream == EngineStream(
-        url=f"{_FILES}/stream/0", container="mp4"
+        url=f"{_FILES}/stream/0", container="mp4", seekable=True
     )
     sent = json.loads(add.calls.last.request.read())
     assert sent == {"Magnet": _MAGNET}
@@ -133,7 +135,24 @@ async def test_bitplay_mkv_remuxed_to_mp4() -> None:
         _mock_add()
         _mock_files([{"index": 0, "name": "Movie.mkv", "size": 100}])
         stream = await _client().ensure_session(_MAGNET)
-    assert stream == EngineStream(url=f"{_FILES}/remux/0", container="mp4")
+    # The remux endpoint is chunked fMP4 with `Accept-Ranges: none`
+    # (research #367 §1) — playable forward but NOT seekable; the flag
+    # records that verdict on the seam value itself.
+    assert stream == EngineStream(
+        url=f"{_FILES}/remux/0", container="mp4", seekable=False
+    )
+
+
+async def test_engine_stream_seekable_defaults_true() -> None:
+    """A plain EngineStream (fake-synthesized, native containers) is
+    seekable unless an adapter says otherwise."""
+    assert EngineStream(url="http://x/v", container="mp4").seekable is True
+
+
+async def test_fake_streams_are_seekable_by_default() -> None:
+    engine = FakeTorrentEngine()
+    stream = await engine.ensure_session(_MAGNET)
+    assert stream.seekable is True
 
 
 async def test_bitplay_file_hint_selects_matching_file() -> None:
