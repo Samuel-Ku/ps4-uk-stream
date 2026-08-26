@@ -25,7 +25,13 @@ import pytest
 import respx
 
 from cs_uk_api.providers.base import ProviderError
-from cs_uk_api.providers.yts import YtsProvider
+from cs_uk_api.providers.yts import (
+    TorrentCandidate,
+    YtsProvider,
+    _torrent_candidates,
+    build_magnet,
+    select_torrent,
+)
 
 FIX = pathlib.Path(__file__).parent / "fixtures" / "yts"
 
@@ -241,15 +247,22 @@ async def test_yts_content_bad_imdb_rejected_before_request():
 
 
 @pytest.mark.asyncio
-async def test_yts_stream_placeholder_raises_not_found():
-    """Torrent playback lands with the movie slice (#377); until then
-    stream() fails honestly instead of pretending."""
+async def test_yts_stream_unconfigured_engine_is_loud(monkeypatch):
+    """#377 replaced the placeholder: stream() now demands an engine.
+    With none injected and settings unconfigured, the verdict is a LOUD
+    typed ``unreachable`` — never silence, never a pretend stream."""
+    import cs_uk_api.config as config_mod
+    from dataclasses import replace as dc_replace
+
+    monkeypatch.setattr(
+        config_mod, "SETTINGS", dc_replace(config_mod.SETTINGS, torrent_engine_url=None)
+    )
     with respx.mock(assert_all_called=False):
         async with httpx.AsyncClient() as http:
             with pytest.raises(ProviderError) as exc:
                 await YtsProvider().stream("tt1160419:__movie__", None, http)
-    assert exc.value.code == "not_found"
-    assert "#377" in exc.value.message
+    assert exc.value.code == "unreachable"
+    assert "not configured" in exc.value.message
 
 
 @pytest.mark.asyncio
@@ -284,3 +297,102 @@ async def test_yts_torrents_also_threaded_from_listing_payload():
     assert p.torrent_hashes("tt15239678") == {
         "1080p": "C3D4E5F60718293A4B5C6D7E8F90123456789ABC",
     }
+
+
+# ---------------------------------------------------------------------------
+# Magnet→session selection policy (#377): pure, deterministic, single pick
+# ---------------------------------------------------------------------------
+
+
+def _cand(quality: str, info_hash: str, seeds: int) -> TorrentCandidate:
+    return TorrentCandidate(quality=quality, info_hash=info_hash, seeds=seeds)
+
+
+def test_select_torrent_quality_dominates_seed_count():
+    """The ordering key is (quality tier, seeds): 1080p wins even with a
+    seed deficit — the decided v1 preference is 1080p > 720p > others."""
+    picked = select_torrent(
+        [
+            _cand("720p", "H720", 5000),
+            _cand("1080p", "H1080", 3),
+        ]
+    )
+    assert picked == _cand("1080p", "H1080", 3)
+
+
+def test_select_torrent_720p_beats_unlisted_qualities():
+    picked = select_torrent(
+        [
+            _cand("480p", "H480", 900),
+            _cand("720p", "H720", 10),
+            _cand("3D", "H3D", 400),
+        ]
+    )
+    assert picked == _cand("720p", "H720", 10)
+
+
+def test_select_torrent_more_seeds_win_within_same_quality():
+    """Repack/encode variants share a quality: the best-seeded one is the
+    single server-side pick (spec #374 quality policy)."""
+    picked = select_torrent(
+        [
+            _cand("1080p", "H_REPACK", 7),
+            _cand("1080p", "H_HOT", 250),
+            _cand("1080p", "H_COLD", 42),
+        ]
+    )
+    assert picked == _cand("1080p", "H_HOT", 250)
+
+
+def test_select_torrent_first_entry_wins_on_full_tie():
+    picked = select_torrent(
+        [
+            _cand("1080p", "H_FIRST", 100),
+            _cand("1080p", "H_SECOND", 100),
+        ]
+    )
+    assert picked == _cand("1080p", "H_FIRST", 100)
+
+
+def test_select_torrent_unknown_qualities_form_one_tier_seeds_decide():
+    """Everything outside 1080p/720p shares the last tier — among them,
+    seeds decide (2160p is deliberately NOT preferred in v1)."""
+    picked = select_torrent(
+        [
+            _cand("480p", "H_LOW", 1000),
+            _cand("2160p", "H_UHD", 2000),
+        ]
+    )
+    assert picked == _cand("2160p", "H_UHD", 2000)
+
+
+def test_select_torrent_empty_input_picks_nothing():
+    assert select_torrent([]) is None
+
+
+def test_build_magnet_carries_infohash_and_fork_tracker_list():
+    magnet = build_magnet("B2C3D4E5F60718293A4B5C6D7E8F90123456789A")
+    assert magnet.startswith("magnet:?xt=urn:btih:B2C3D4E5F60718293A4B5C6D7E8F90123456789A")
+    # The fork's tracker convention rides along so the engine's peer
+    # discovery has public fallbacks beyond the DHT bootstrap.
+    assert "&tr=" in magnet
+    assert "udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce" in magnet
+
+
+def test_parse_candidates_reads_quality_hash_and_seeds():
+    movie = {
+        "torrents": [
+            {"quality": "1080p", "hash": "H_A", "seeds": 50},
+            {"quality": "1080p", "hash": "H_B", "seeds": 200},
+            {"quality": "720p", "hash": "H_C"},  # no seeds key → 0
+            {"quality": "720p", "hash": 123},  # non-string hash skipped
+            {"quality": "", "hash": "H_D"},  # empty quality skipped
+            "not-a-dict",
+        ]
+    }
+    cands = _torrent_candidates(movie)
+    assert cands == [
+        _cand("1080p", "H_A", 50),
+        _cand("1080p", "H_B", 200),
+        _cand("720p", "H_C", 0),
+    ]

@@ -19,18 +19,20 @@ original English); YTS ``language`` is display metadata only, items
 are mapped as listed.
 
 Torrent payloads: ``torrents[]`` arrives embedded in both list and
-details responses. The quality→info-hash map parsed off each item is
-threaded onto the provider instance (:meth:`YtsProvider.torrent_hashes`)
-so the playback slice (#377) can build magnets without a second
-upstream call — magnets re-derivable at stream-time from
+details responses. The parsed candidates are threaded onto the provider
+instance (LRU-bounded; :meth:`YtsProvider.torrent_hashes` is the
+compat quality→hash view) so playback (#377) can build magnets without
+a second upstream call — magnets re-derivable at stream-time from
 ``movie_details.json?imdb_id=…`` either way.
 """
 
 from __future__ import annotations
 
 import re
+from collections import OrderedDict
+from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -42,6 +44,12 @@ from ..models import (
     Section,
     StreamResponse,
     Translation,
+)
+from ..torrent_engine import (
+    EngineRejected,
+    EngineUnavailable,
+    TorrentEngine,
+    get_engine,
 )
 from ..wire_identity import MOVIE_SUFFIX
 from .base import BaseProvider, ProviderError
@@ -60,6 +68,88 @@ _SECTIONS = (Section(id="movies", title="Фільми", form="movie"),)
 _IMDB_RE = re.compile(r"tt\d{7,8}")
 
 _LIST_LIMIT = 50
+
+# ---------------------------------------------------------------------------
+# Magnet→session selection policy (#377) — PURE functions, no I/O.
+#
+# Spec #374 quality policy: the provider picks the best-seeded suitable
+# quality server-side; ONE magnet goes to the engine, there is no
+# fallback chain. Ordering key: (quality tier, seeds desc) — 1080p
+# preferred over 720p over everything else; within a tier more seeders
+# win; full ties keep upstream order (deterministic single pick).
+# ---------------------------------------------------------------------------
+
+#: Quality tiers in preference order; anything unlisted shares the last
+#: tier (2160p is deliberately NOT preferred in v1 — the player floor
+#: this lane targets is 1080p).
+_QUALITY_PREFERENCE: tuple[str, ...] = ("1080p", "720p")
+
+#: Tracker list convention of the fork, appended to every built magnet:
+#: YTS hashes alone carry no announce URLs, so the engine's peer
+#: discovery needs public tracker fallbacks alongside its DHT bootstrap
+#: (same convention as the fork's own magnets / research #367 probe).
+TRACKERS: tuple[str, ...] = (
+    "udp://tracker.opentrackr.org:1337/announce",
+    "udp://tracker.openbittorrent.com:6969/announce",
+    "udp://exodus.desync.com:6969/announce",
+)
+
+
+@dataclass(frozen=True)
+class TorrentCandidate:
+    """One usable ``torrents[]`` entry: quality + info-hash + swarm."""
+
+    quality: str
+    info_hash: str
+    seeds: int
+
+
+def _quality_rank(quality: str) -> int:
+    try:
+        return _QUALITY_PREFERENCE.index(quality)
+    except ValueError:
+        return len(_QUALITY_PREFERENCE)
+
+
+def select_torrent(candidates: list[TorrentCandidate]) -> TorrentCandidate | None:
+    """The single server-side pick under the decided policy.
+
+    ``min`` is stable, so equal (tier, seeds) keys keep upstream's first
+    listing — the deterministic tiebreak. ``None`` when nothing usable.
+    """
+    if not candidates:
+        return None
+    return min(candidates, key=lambda c: (_quality_rank(c.quality), -c.seeds))
+
+
+def build_magnet(info_hash: str) -> str:
+    """``magnet:?xt=urn:btih:<hash>&tr=…`` with the fork's trackers."""
+    tr = "&".join(f"tr={quote(t, safe='')}" for t in TRACKERS)
+    return f"magnet:?xt=urn:btih:{info_hash}&{tr}"
+
+
+def _torrent_candidates(movie: dict[str, Any]) -> list[TorrentCandidate]:
+    """Every usable torrents[] entry of a payload, upstream order kept."""
+    torrents = movie.get("torrents")
+    if not isinstance(torrents, list):
+        return []
+    out: list[TorrentCandidate] = []
+    for entry in torrents:
+        if not isinstance(entry, dict):
+            continue
+        quality = entry.get("quality")
+        info_hash = entry.get("hash")
+        seeds = entry.get("seeds")
+        if not (isinstance(quality, str) and quality and isinstance(info_hash, str) and info_hash):
+            continue
+        out.append(
+            TorrentCandidate(
+                quality=quality,
+                info_hash=info_hash,
+                seeds=seeds if isinstance(seeds, int) and not isinstance(seeds, bool) else 0,
+            )
+        )
+    return out
 
 
 def _require_object(value: Any, what: str) -> dict[str, Any]:
@@ -128,24 +218,11 @@ def _description_of(movie: dict[str, Any]) -> str:
     return ""
 
 
-def _torrent_map(movie: dict[str, Any]) -> dict[str, str]:
-    """quality → info-hash over the embedded ``torrents[]`` array.
-
-    First quality wins (upstream lists repacks/3D variants alongside;
-    #377 owns any smarter pick).
-    """
-    torrents = movie.get("torrents")
-    if not isinstance(torrents, list):
-        return {}
-    out: dict[str, str] = {}
-    for entry in torrents:
-        if not isinstance(entry, dict):
-            continue
-        quality = entry.get("quality")
-        info_hash = entry.get("hash")
-        if isinstance(quality, str) and quality and isinstance(info_hash, str) and info_hash:
-            out.setdefault(quality, info_hash)
-    return out
+#: LRU bound on recorded torrent candidates (review finding, #377):
+#: search/browse/content thread entries for every parsed item, so an
+#: unbounded per-instance map would grow with the catalog over process
+#: lifetime. OrderedDict move-to-end-on-access; oldest id evicted.
+_TORRENT_ENTRIES_LIMIT = 512
 
 
 class YtsProvider(BaseProvider):
@@ -160,21 +237,46 @@ class YtsProvider(BaseProvider):
     #: AND redirect hop is checked against this declaration (ADR-0005).
     allowed_hosts = frozenset({"yts.gg", "movies-api.accel.li"})
 
-    def __init__(self) -> None:
-        #: imdb_code → {quality: info_hash}, refreshed by every parsed
-        #: list/details payload carrying torrents[]. Instance state on
-        #: the subclass (BaseProvider contract untouched); consumed by
-        #: :meth:`torrent_hashes` / ticket #377.
-        self._torrent_hashes: dict[str, dict[str, str]] = {}
+    def __init__(self, engine: TorrentEngine | None = None) -> None:
+        #: Constructor injection of the engine (the uakino session
+        #: precedent): tests inject :class:`FakeTorrentEngine`; when
+        #: unset, stream-time consults the lazy settings-backed
+        #: singleton (:func:`cs_uk_api.torrent_engine.get_engine`).
+        self._engine = engine
+        #: imdb_code → torrent candidates (quality/hash/seeds), LRU-
+        #: bounded; refreshed by every parsed list/details payload
+        #: carrying torrents[]. Instance state on the subclass
+        #: (BaseProvider contract untouched); consumed by playback.
+        self._torrent_entries: OrderedDict[str, list[TorrentCandidate]] = OrderedDict()
 
     def torrent_hashes(self, external_id: str) -> dict[str, str]:
         """Quality→info-hash map recorded for ``external_id``, or {}.
 
-        Public consumption seam for the torrent-playback slice (#377):
-        build ``magnet:?xt=urn:btih:<hash>`` from here instead of
-        re-fetching, or call ``content()`` again to refresh.
+        Compat view (#376 contract) over the candidate entries: first
+        occurrence per quality wins. The POLICY sees all candidates —
+        including same-quality repack variants with their seeds.
         """
-        return dict(self._torrent_hashes.get(external_id, {}))
+        out: dict[str, str] = {}
+        for cand in self._entries_for(external_id):
+            out.setdefault(cand.quality, cand.info_hash)
+        return out
+
+    def _entries_for(self, external_id: str) -> list[TorrentCandidate]:
+        """Recorded candidates for ``external_id``, touching recency."""
+        entries = self._torrent_entries.get(external_id, [])
+        if entries:
+            self._torrent_entries.move_to_end(external_id)
+        return entries
+
+    def _require_engine(self) -> TorrentEngine:
+        """The injected engine, else the lazy singleton; NONE of the two
+        ⇒ LOUD typed verdict — never a silent pretend-stream."""
+        engine = self._engine
+        if engine is None:
+            engine = get_engine()
+        if engine is None:
+            raise ProviderError("unreachable", "torrent engine not configured")
+        return engine
 
     async def _get_payload(self, path: str, params: dict[str, str], http: httpx.AsyncClient) -> Any:
         return await self.get_json(f"{BASE_URL}{path}?{urlencode(params)}", http)
@@ -256,9 +358,39 @@ class YtsProvider(BaseProvider):
     async def stream(
         self, content_id: str, translation: str | None, http: httpx.AsyncClient
     ) -> StreamResponse:
-        # Torrent playback lands with the movie slice (#377): magnet
-        # selection policy + TorrentEngine handoff. Fail honestly until then.
-        raise ProviderError("not_found", "torrent playback lands with the movie slice (#377)")
+        """Magnet→engine handoff (spec #374 Stream contract): pick ONE
+        torrent server-side, ensure an engine session for its magnet,
+        return the engine's LAN URL as a post-remux progressive mp4 with
+        empty headers (the facade's direct-302 posture stays intact).
+
+        ``translation`` is deliberately ignored — English originals
+        carry no dubs axis; the session IS the original audio.
+        """
+        del translation  # original audio only
+        imdb, _, tail = content_id.partition(":")
+        if not _IMDB_RE.fullmatch(imdb) or tail not in ("", MOVIE_SUFFIX[1:]):
+            raise ProviderError("not_found", "bad external_id")
+        engine = self._require_engine()
+        entries = self._entries_for(imdb)
+        if not entries:
+            # Cold process: magnets are re-derivable from one details
+            # call (yts.py module contract) — refresh, then re-read.
+            await self.content(imdb, http)
+            entries = self._entries_for(imdb)
+        picked = select_torrent(entries)
+        if picked is None:
+            raise ProviderError("not_found", f"no torrents recorded for {imdb}")
+        try:
+            result = await engine.ensure_session(
+                build_magnet(picked.info_hash), file_hint=None
+            )
+        except EngineUnavailable as e:
+            raise ProviderError("unreachable", f"torrent engine unreachable: {e}") from e
+        except EngineRejected as e:
+            # Deterministic verdict on THIS torrent — never reads as a
+            # dead lane (spec #374 error-surface note).
+            raise ProviderError("not_found", "no seeders or dead torrent") from e
+        return StreamResponse(url=result.url, type="mp4", headers={})
 
     def _card(self, movie: dict[str, Any]) -> SearchResult | None:
         """One listing item → SearchResult; unidentifiable items skip."""
@@ -282,9 +414,13 @@ class YtsProvider(BaseProvider):
         )
 
     def _record_torrents(self, external_id: str, movie: dict[str, Any]) -> None:
-        hashes = _torrent_map(movie)
-        if hashes:
-            self._torrent_hashes[external_id] = hashes
+        candidates = _torrent_candidates(movie)
+        if not candidates:
+            return
+        self._torrent_entries[external_id] = candidates
+        self._torrent_entries.move_to_end(external_id)
+        while len(self._torrent_entries) > _TORRENT_ENTRIES_LIMIT:
+            self._torrent_entries.popitem(last=False)
 
 
 __all__ = ["YtsProvider"]

@@ -38,10 +38,17 @@ class EngineStream:
     ``container`` is what the PLAYER receives (e.g. "mp4" after the
     engine's on-the-fly MKV→MP4 remux), not the torrent's original
     container.
+
+    ``seekable`` records whether the player can Range-seek into
+    ``url``. Native byte-serving is seekable (BitPlay fronts each file
+    with Go ``http.ServeContent``); the remux path is chunked fMP4 with
+    ``Accept-Ranges: none`` — progressive but NOT seekable (research
+    #367 §1) — so the adapter stamps those streams ``seekable=False``.
     """
 
     url: str
     container: str
+    seekable: bool = True
 
 
 # ------------------------------------------------------------- errors
@@ -221,7 +228,9 @@ class BitPlayClient:
                 url = f"{self._base_url}{STREAM_PATH_TEMPLATE.format(session_id=quoted_id, file_index=index)}"
                 return EngineStream(url=url, container=direct)
             url = f"{self._base_url}{REMUX_PATH_TEMPLATE.format(session_id=quoted_id, file_index=index)}"
-            return EngineStream(url=url, container="mp4")
+            # Chunked fMP4, Accept-Ranges: none — forward-playable but
+            # the player cannot seek into it (research #367 §1).
+            return EngineStream(url=url, container="mp4", seekable=False)
         finally:
             if own:
                 await http.aclose()
@@ -298,3 +307,31 @@ def build_engine_from_settings() -> TorrentEngine | None:
         username=_config.SETTINGS.torrent_engine_user,
         password=_config.SETTINGS.torrent_engine_password,
     )
+
+
+# ------------------------------------------------ lazy cached singleton
+
+
+_engine: TorrentEngine | None = None
+
+
+def get_engine() -> TorrentEngine | None:
+    """Lazy module-level singleton over :func:`build_engine_from_settings`,
+    mirroring the ``http_client._client`` pattern: built on first use,
+    then the SAME instance on every call. Deliberately SILENT here —
+    while unconfigured it answers None on every call (re-reading
+    settings), so the CALL SITE owns the loud "not configured" verdict
+    and a lane configured later needs no process restart.
+    :func:`reset_engine` drops the cache (tests / settings swaps).
+    """
+    global _engine
+    if _engine is None:
+        _engine = build_engine_from_settings()
+    return _engine
+
+
+def reset_engine() -> None:
+    """Drop the cached engine so the next :func:`get_engine` rebuilds
+    from current settings."""
+    global _engine
+    _engine = None
