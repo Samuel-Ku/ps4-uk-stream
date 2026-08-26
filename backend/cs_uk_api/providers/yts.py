@@ -29,8 +29,9 @@ upstream call — magnets re-derivable at stream-time from
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -60,6 +61,88 @@ _SECTIONS = (Section(id="movies", title="Фільми", form="movie"),)
 _IMDB_RE = re.compile(r"tt\d{7,8}")
 
 _LIST_LIMIT = 50
+
+# ---------------------------------------------------------------------------
+# Magnet→session selection policy (#377) — PURE functions, no I/O.
+#
+# Spec #374 quality policy: the provider picks the best-seeded suitable
+# quality server-side; ONE magnet goes to the engine, there is no
+# fallback chain. Ordering key: (quality tier, seeds desc) — 1080p
+# preferred over 720p over everything else; within a tier more seeders
+# win; full ties keep upstream order (deterministic single pick).
+# ---------------------------------------------------------------------------
+
+#: Quality tiers in preference order; anything unlisted shares the last
+#: tier (2160p is deliberately NOT preferred in v1 — the player floor
+#: this lane targets is 1080p).
+_QUALITY_PREFERENCE: tuple[str, ...] = ("1080p", "720p")
+
+#: Tracker list convention of the fork, appended to every built magnet:
+#: YTS hashes alone carry no announce URLs, so the engine's peer
+#: discovery needs public tracker fallbacks alongside its DHT bootstrap
+#: (same convention as the fork's own magnets / research #367 probe).
+TRACKERS: tuple[str, ...] = (
+    "udp://tracker.opentrackr.org:1337/announce",
+    "udp://tracker.openbittorrent.com:6969/announce",
+    "udp://exodus.desync.com:6969/announce",
+)
+
+
+@dataclass(frozen=True)
+class TorrentCandidate:
+    """One usable ``torrents[]`` entry: quality + info-hash + swarm."""
+
+    quality: str
+    info_hash: str
+    seeds: int
+
+
+def _quality_rank(quality: str) -> int:
+    try:
+        return _QUALITY_PREFERENCE.index(quality)
+    except ValueError:
+        return len(_QUALITY_PREFERENCE)
+
+
+def select_torrent(candidates: list[TorrentCandidate]) -> TorrentCandidate | None:
+    """The single server-side pick under the decided policy.
+
+    ``min`` is stable, so equal (tier, seeds) keys keep upstream's first
+    listing — the deterministic tiebreak. ``None`` when nothing usable.
+    """
+    if not candidates:
+        return None
+    return min(candidates, key=lambda c: (_quality_rank(c.quality), -c.seeds))
+
+
+def build_magnet(info_hash: str) -> str:
+    """``magnet:?xt=urn:btih:<hash>&tr=…`` with the fork's trackers."""
+    tr = "&".join(f"tr={quote(t, safe='')}" for t in TRACKERS)
+    return f"magnet:?xt=urn:btih:{info_hash}&{tr}"
+
+
+def _torrent_candidates(movie: dict[str, Any]) -> list[TorrentCandidate]:
+    """Every usable torrents[] entry of a payload, upstream order kept."""
+    torrents = movie.get("torrents")
+    if not isinstance(torrents, list):
+        return []
+    out: list[TorrentCandidate] = []
+    for entry in torrents:
+        if not isinstance(entry, dict):
+            continue
+        quality = entry.get("quality")
+        info_hash = entry.get("hash")
+        seeds = entry.get("seeds")
+        if not (isinstance(quality, str) and quality and isinstance(info_hash, str) and info_hash):
+            continue
+        out.append(
+            TorrentCandidate(
+                quality=quality,
+                info_hash=info_hash,
+                seeds=seeds if isinstance(seeds, int) and not isinstance(seeds, bool) else 0,
+            )
+        )
+    return out
 
 
 def _require_object(value: Any, what: str) -> dict[str, Any]:
