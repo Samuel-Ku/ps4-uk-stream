@@ -26,6 +26,8 @@ from cs_uk_api.torrent_engine import (
     EngineStream,
     EngineUnavailable,
     FakeTorrentEngine,
+    get_engine,
+    reset_engine,
     TorrentEngine,
     TorrentEngineError,
 )
@@ -306,3 +308,69 @@ async def test_builder_wires_url_and_auth_pair(
         stream = await engine.ensure_session(_MAGNET)
     assert stream.url == f"{_FILES}/remux/0"
     assert add.calls.last.request.headers["Authorization"].startswith("Basic ")
+
+
+# ------------------------------------------------- lazy cached singleton
+
+
+@pytest.fixture(autouse=True)
+def _fresh_engine_singleton() -> object:
+    """Every singleton test starts and ends with a cold accessor."""
+    reset_engine()
+    yield
+    reset_engine()
+
+
+def test_get_engine_builds_from_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        _config,
+        "SETTINGS",
+        replace(_config.SETTINGS, torrent_engine_url="http://bitplay.lan:3347"),
+    )
+    engine = get_engine()
+    assert isinstance(engine, BitPlayClient)
+
+
+def test_get_engine_caches_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mirrors http_client._client: built once, then the SAME instance on
+    every call — settings are re-read only after an explicit reset."""
+    monkeypatch.setattr(
+        _config,
+        "SETTINGS",
+        replace(_config.SETTINGS, torrent_engine_url="http://bitplay.lan:3347"),
+    )
+    first = get_engine()
+    second = get_engine()
+    assert first is second
+
+
+def test_get_engine_none_while_unconfigured_and_picks_up_late_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unset url ⇒ None (lane disabled, call site owns loudness). While
+    unconfigured the accessor keeps re-reading settings, so a lane that
+    becomes configured later is picked up WITHOUT a process restart."""
+    monkeypatch.setattr(
+        _config, "SETTINGS", replace(_config.SETTINGS, torrent_engine_url=None)
+    )
+    assert get_engine() is None
+    monkeypatch.setattr(
+        _config,
+        "SETTINGS",
+        replace(_config.SETTINGS, torrent_engine_url="http://bitplay.lan:3347"),
+    )
+    assert isinstance(get_engine(), BitPlayClient)
+
+
+def test_reset_engine_forces_rebuild(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The test hook: reset drops the cached instance so the next access
+    rebuilds from current settings (and tests can inject fresh state)."""
+    monkeypatch.setattr(
+        _config,
+        "SETTINGS",
+        replace(_config.SETTINGS, torrent_engine_url="http://bitplay.lan:3347"),
+    )
+    first = get_engine()
+    reset_engine()
+    second = get_engine()
+    assert first is not second

@@ -247,15 +247,22 @@ async def test_yts_content_bad_imdb_rejected_before_request():
 
 
 @pytest.mark.asyncio
-async def test_yts_stream_placeholder_raises_not_found():
-    """Torrent playback lands with the movie slice (#377); until then
-    stream() fails honestly instead of pretending."""
+async def test_yts_stream_unconfigured_engine_is_loud(monkeypatch):
+    """#377 replaced the placeholder: stream() now demands an engine.
+    With none injected and settings unconfigured, the verdict is a LOUD
+    typed ``unreachable`` — never silence, never a pretend stream."""
+    import cs_uk_api.config as config_mod
+    from dataclasses import replace as dc_replace
+
+    monkeypatch.setattr(
+        config_mod, "SETTINGS", dc_replace(config_mod.SETTINGS, torrent_engine_url=None)
+    )
     with respx.mock(assert_all_called=False):
         async with httpx.AsyncClient() as http:
             with pytest.raises(ProviderError) as exc:
                 await YtsProvider().stream("tt1160419:__movie__", None, http)
-    assert exc.value.code == "not_found"
-    assert "#377" in exc.value.message
+    assert exc.value.code == "unreachable"
+    assert "not configured" in exc.value.message
 
 
 @pytest.mark.asyncio

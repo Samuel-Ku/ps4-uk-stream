@@ -307,3 +307,31 @@ def build_engine_from_settings() -> TorrentEngine | None:
         username=_config.SETTINGS.torrent_engine_user,
         password=_config.SETTINGS.torrent_engine_password,
     )
+
+
+# ------------------------------------------------ lazy cached singleton
+
+
+_engine: TorrentEngine | None = None
+
+
+def get_engine() -> TorrentEngine | None:
+    """Lazy module-level singleton over :func:`build_engine_from_settings`,
+    mirroring the ``http_client._client`` pattern: built on first use,
+    then the SAME instance on every call. Deliberately SILENT here —
+    while unconfigured it answers None on every call (re-reading
+    settings), so the CALL SITE owns the loud "not configured" verdict
+    and a lane configured later needs no process restart.
+    :func:`reset_engine` drops the cache (tests / settings swaps).
+    """
+    global _engine
+    if _engine is None:
+        _engine = build_engine_from_settings()
+    return _engine
+
+
+def reset_engine() -> None:
+    """Drop the cached engine so the next :func:`get_engine` rebuilds
+    from current settings."""
+    global _engine
+    _engine = None
