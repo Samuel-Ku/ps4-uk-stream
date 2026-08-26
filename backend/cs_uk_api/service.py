@@ -48,6 +48,7 @@ async def upstream_guard(
     *,
     on_error: T | object = _UNSET,
     exc_handler: Callable[[Exception], None] | None = None,
+    record_skip_codes: frozenset[str] = frozenset(),
 ) -> T:
     """Await an upstream provider call with health recording + the 502 guard.
 
@@ -59,7 +60,10 @@ async def upstream_guard(
          as 400/404) or returns. The helper does NOT record when the
          handler raises; translation-level errors are not upstream-health
          signals.
-      2. ``TRACKER.record(provider_id, ok=False)`` + warning log.
+      2. ``TRACKER.record(provider_id, ok=False)`` + warning log —
+         skipped when the error is a ProviderError whose ``code`` is in
+         ``record_skip_codes`` (deterministic item-level verdicts are not
+         lane faults; the wire envelope is unchanged).
       3. Either return ``on_error`` (when an explicit default was passed)
          or raise the canonical 502 ``upstream_unreachable``.
 
@@ -73,6 +77,9 @@ async def upstream_guard(
     except Exception as e:
         if exc_handler is not None:
             exc_handler(e)
+        if isinstance(e, ProviderError) and e.code in record_skip_codes:
+            log.warning("%s deterministic verdict provider=%s err=%s", log_label, provider_id, e)
+            raise HTTPException(502, detail=ErrorResponse(error="upstream_unreachable", message=str(e)).model_dump()) from e
         TRACKER.record(provider_id, ok=False)
         log.warning("%s failed provider=%s err=%s", log_label, provider_id, e)
         if on_error is _UNSET:

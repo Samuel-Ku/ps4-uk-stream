@@ -718,6 +718,10 @@ async def stream(content_id: str, translation: str | None = None) -> StreamRespo
         provider.stream(rest, translation, http),
         f"stream id={content_id}",
         exc_handler=_stream_provider_error,
+        # Deterministic item-level verdicts (dead torrent, bad external
+        # id) must not poison lane health — the envelope stays the
+        # canonical 502 (ADR-0002 spirit: verdicts ≠ infra faults).
+        record_skip_codes=frozenset({"not_found"}),
     )
     return resp
 

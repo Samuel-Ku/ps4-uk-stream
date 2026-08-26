@@ -229,6 +229,11 @@ class StreamResponse(BaseModel):
     url: str
     type: StreamType = "mp4"
     headers: dict[str, str] = Field(default_factory=dict)
+    #: Engine-known truth (spec #374 torrent lane): False when the URL
+    #: serves a remuxed stream that does NOT support HTTP Range. Absent
+    #: (= None) for every classic provider. Additive optional field per
+    #: the non-breaking-extension convention.
+    seekable: bool | None = None
     #: Registrable domains the provider sanctions beyond ``url``'s own
     #: host: a 302 gateway (e.g. ufdub's VIDEOS.php) may hand bytes to a
     #: foreign CDN the provider picked (Dropbox). The stream proxy's CDN

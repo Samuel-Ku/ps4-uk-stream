@@ -51,7 +51,7 @@ from ..torrent_engine import (
     TorrentEngine,
     get_engine,
 )
-from ..wire_identity import MOVIE_SUFFIX
+from ..wire_identity import MOVIE_SUFFIX, is_movie_wire_id, strip_movie_suffix
 from .base import BaseProvider, ProviderError
 
 BASE_URL = "https://yts.gg"
@@ -367,8 +367,13 @@ class YtsProvider(BaseProvider):
         carry no dubs axis; the session IS the original audio.
         """
         del translation  # original audio only
-        imdb, _, tail = content_id.partition(":")
-        if not _IMDB_RE.fullmatch(imdb) or tail not in ("", MOVIE_SUFFIX[1:]):
+        if ":" not in content_id:
+            imdb, tail_ok = content_id, True
+        elif is_movie_wire_id(content_id):
+            imdb, tail_ok = strip_movie_suffix(content_id), True
+        else:
+            imdb, tail_ok = "", False
+        if not tail_ok or not _IMDB_RE.fullmatch(imdb):
             raise ProviderError("not_found", "bad external_id")
         engine = self._require_engine()
         entries = self._entries_for(imdb)
@@ -390,7 +395,7 @@ class YtsProvider(BaseProvider):
             # Deterministic verdict on THIS torrent — never reads as a
             # dead lane (spec #374 error-surface note).
             raise ProviderError("not_found", "no seeders or dead torrent") from e
-        return StreamResponse(url=result.url, type="mp4", headers={})
+        return StreamResponse(url=result.url, type="mp4", headers={}, seekable=result.seekable)
 
     def _card(self, movie: dict[str, Any]) -> SearchResult | None:
         """One listing item → SearchResult; unidentifiable items skip."""

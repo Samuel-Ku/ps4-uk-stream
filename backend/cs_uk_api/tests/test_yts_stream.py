@@ -116,7 +116,7 @@ async def test_injected_engine_serves_the_session():
         async with httpx.AsyncClient() as http:
             await p.content("tt1160419", http)  # warm the hash map
             resp = await p.stream("tt1160419:__movie__", None, http)
-    assert resp == StreamResponse(url=lan.url, type="mp4", headers={})
+    assert resp == StreamResponse(url=lan.url, type="mp4", headers={}, seekable=True)
     assert resp.headers == {}
     assert engine.ensure_count == 1
     assert engine.last_identifier == _MAGNET_1080P
@@ -464,3 +464,47 @@ def test_route_facade_posture_headers_empty_redirects_directly():
     lan = EngineStream(url="http://bitplay.lan:3347/api/v1/torrent/abc/stream/5", container="mp4")
     resp = StreamResponse(url=lan.url, type="mp4", headers={})
     assert resp.headers == {}
+
+
+
+def test_route_yts_dead_torrent_does_not_poison_lane_health():
+    """Deterministic item-level verdicts skip the health record — the
+    runbook's rule of thumb («healthy yts + failing playbacks ⇒ engine»)
+    must survive repeated dead-torrent plays."""
+    from fastapi.testclient import TestClient
+
+    from cs_uk_api.health import TRACKER
+    from cs_uk_api.main import app
+
+    saved = _install(
+        YtsProvider(engine=_ExplodingEngine(EngineRejected("504 metadata timeout")))
+    )
+    try:
+        with respx.mock(assert_all_called=True) as router:
+            _mock_details(router)
+            before = TRACKER.status("yts")
+            r = TestClient(app).get("/api/stream/yts:tt1160419:__movie__")
+        assert r.status_code == 502  # envelope unchanged — wire-invariant held
+        assert TRACKER.status("yts") == before  # not degraded by a dead torrent
+    finally:
+        _restore(saved)
+
+
+def test_route_yts_remux_stream_reports_unseekable():
+    """The engine's seekable verdict rides StreamResponse.seekable so the
+    client layer (#378) can warn — native stays True/None."""
+    from fastapi.testclient import TestClient
+
+    from cs_uk_api.main import app
+    from cs_uk_api.torrent_engine import EngineStream, FakeTorrentEngine
+
+    unseekable = EngineStream(url="http://lan/remux", container="mp4", seekable=False)
+    saved = _install(YtsProvider(engine=FakeTorrentEngine(streams={_MAGNET_1080P: unseekable})))
+    try:
+        with respx.mock(assert_all_called=True) as router:
+            _mock_details(router)
+            r = TestClient(app).get("/api/stream/yts:tt1160419:__movie__")
+        assert r.status_code == 200
+        assert r.json()["seekable"] is False
+    finally:
+        _restore(saved)
