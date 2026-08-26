@@ -151,6 +151,10 @@ state; override with `CS_UK_DRIFT_REPORT` / `CS_UK_DRIFT_STATE`). The
 script exits non-zero when any provider failed — visible in
 `journalctl -u cs-uk-api-drift`.
 
+**Torrent lane (English content, spec #374):** stand the BitPlay engine up
+with `backend/deploy/docker-compose.bitplay.yml`; operate it via
+[docs/torrent-lane.md](docs/torrent-lane.md).
+
 ## Release gate
 
 ```bash
