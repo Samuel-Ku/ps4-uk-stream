@@ -1,0 +1,67 @@
+# BitPlay torrent engine — compose stanza for the English-content lane
+# (spec #374, ticket #381).
+#
+# BitPlay turns a magnet into a LAN video stream: progressive download,
+# on-the-fly MKV→MP4 remux (ffmpeg, stream-copy), SRT→VTT subtitles.
+# It runs beside the backend on the same LAN host; the backend reaches
+# it ONLY by the configured address (CS_UK_TORRENT_ENGINE_URL — see
+# config.py). Operator runbook: docs/torrent-lane.md.
+#
+# First run:
+#   cd backend/deploy
+#   mkdir -p config torrent-data   # config MUST exist before the first up
+#   docker compose -f docker-compose.bitplay.yml up -d
+#
+# Verify:
+#   curl -s http://localhost:3347/api/v1/capabilities
+#   # -> {"ffmpeg":true,"version":"6.1.2"}   (ffmpeg ships IN the image)
+#
+# Web UI (manual magnets, live logs, purge button): http://<host-ip>:3347
+
+services:
+  bitplay:
+    image: ghcr.io/aculix/bitplay:latest
+    container_name: bitplay
+    ports:
+      - "3347:3347"
+    volumes:
+      - ./config:/app/config              # settings.json persists here
+      - ./torrent-data:/app/torrent-data  # active session downloads land here
+    restart: unless-stopped
+    # Optional env knobs (uncomment to tune):
+    #
+    # Basic auth over UI + API + video streams. Upstream contract: auth
+    # engages ONLY when BOTH variables are set — enable the pair or
+    # neither. If enabled, mirror it in the backend's
+    # CS_UK_TORRENT_ENGINE_USER / CS_UK_TORRENT_ENGINE_PASSWORD.
+    #
+    # BITPLAY_MAX_REMUX caps concurrent ffmpeg remuxes (default 3);
+    # full ⇒ 503 on new remuxes, native mp4/webm streams unaffected.
+    #
+    # environment:
+    #   BITPLAY_AUTH_USERNAME: operator
+    #   BITPLAY_AUTH_PASSWORD: change-me
+    #   BITPLAY_MAX_REMUX: 3
+
+# ---------------------------------------------------------------------------
+# Recommended alternative: host networking.
+#
+# Each added torrent spins its own BitTorrent client listening on a RANDOM
+# port (10000–60000). Behind the default docker NAT those listeners are
+# unreachable, so peer discovery degrades (the live probe saw ~1 peer;
+# host networking is the upstream recommendation for production use):
+#
+# services:
+#   bitplay:
+#     image: ghcr.io/aculix/bitplay:latest
+#     container_name: bitplay
+#     network_mode: host         # 3347 binds on the host directly; no ports:
+#     volumes:
+#       - ./config:/app/config
+#       - ./torrent-data:/app/torrent-data
+#     restart: unless-stopped
+#
+# Tradeoffs: best peer discovery (fastest metadata + start) on a LAN host,
+# but no network isolation — BitPlay owns its ports on the host, nothing
+# else may bind 3347, and the service answers on every interface. Pair it
+# with the auth pair above when that is too broad.
