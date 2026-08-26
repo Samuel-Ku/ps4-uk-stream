@@ -432,10 +432,35 @@ def test_route_unknown_provider_prefix_stays_404():
     assert r.status_code == 404
 
 
+def test_facade_empty_headers_redirects_straight_to_engine():
+    """Deliverable 6: the facade keeps its direct-302 posture for empty
+    headers — Switchfin plays straight from the engine URL (spec #374
+    StreamResponse mapping). Episode-wire-id resolution needs no catalog
+    machinery; stream routes are public (no token)."""
+    from fastapi.testclient import TestClient
+    from urllib.parse import quote as _quote
+
+    from cs_uk_api.main import app
+
+    lan = "http://bitplay.lan:3347/api/v1/torrent/abc/stream/5"
+    engine = FakeTorrentEngine(streams={_MAGNET_1080P: EngineStream(url=lan, container="mp4")})
+    saved = _install(YtsProvider(engine=engine))
+    try:
+        with respx.mock(assert_all_called=True) as router:
+            _mock_details(router)
+            item_id = _quote("yts:tt1160419:__movie__", safe="")
+            r = TestClient(app).get(f"/Videos/{item_id}/stream", follow_redirects=False)
+        assert r.status_code == 302
+        assert r.headers["location"] == lan  # bytes come from the ENGINE
+        assert engine.ensure_count == 1
+    finally:
+        _restore(saved)
+
+
 def test_route_facade_posture_headers_empty_redirects_directly():
-    """Deliverable 6, cheap form: empty headers ⇒ the facade's standing
-    direct-302 posture applies untouched. Pinned here at the cheapest
-    available surface — the StreamResponse shape the facade consumes."""
+    """Cheapest shape pin backing the facade decision above: the
+    StreamResponse this lane emits has EMPTY headers, which is exactly
+    the condition the facade's redirect branch keys on."""
     lan = EngineStream(url="http://bitplay.lan:3347/api/v1/torrent/abc/stream/5", container="mp4")
     resp = StreamResponse(url=lan.url, type="mp4", headers={})
     assert resp.headers == {}
