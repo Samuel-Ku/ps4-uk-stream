@@ -41,3 +41,6 @@ docs/test-artifacts/switchfin/backend.log
 docs/test-artifacts/switchfin/logcat-*.txt
 docs/test-artifacts/switchfin/backend-*.txt
 docs/test-artifacts/switchfin/capture/
+
+# Serena MCP local state
+.serena/

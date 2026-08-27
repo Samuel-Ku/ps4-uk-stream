@@ -7,7 +7,7 @@
 ---
 
 > **Architecture notes (spec #309, deepening wave):** the module seams —
-> catalog accessors, wire identity, provider vocabulary, profile store,
+> catalog accessors, wire identity, provider vocabulary, viewer state,
 > configuration binding — are recorded in
 > [`docs/architecture.md`](docs/architecture.md). This file stays the
 > domain glossary (the *what* and *why*); the notes hold the *where*.
@@ -577,7 +577,7 @@ Rules:
 
 > No value carrying a domain schema is ever persisted beyond process lifetime.
 
-A schema change is a code change is a restart is an empty cache — so a version prefix could never differ from the one that wrote the entry. The poster disk caches satisfy the invariant by storing opaque image bytes under a content-addressed key. **Persisting any domain object (offline catalog, warm-start snapshot, disk-backed `content:` layer) breaks this invariant and makes a version token mandatory** — ADR-0003 must be revisited first. The viewer-profile persistence (spec #323) is the first such value: it persists through `versioned_store.py` with a version token + atomic writes (see [`docs/architecture.md`](docs/architecture.md) §6).
+A schema change is a code change is a restart is an empty cache — so a version prefix could never differ from the one that wrote the entry. The poster disk caches satisfy the invariant by storing opaque image bytes under a content-addressed key. **Persisting any domain object (offline catalog, warm-start snapshot, disk-backed `content:` layer) breaks this invariant and makes a version token mandatory** — ADR-0003 must be revisited first. The viewer-state persistence (spec #323) is the first such value: it persists through `versioned_store.py` with a version token + atomic writes (see [`docs/architecture.md`](docs/architecture.md) §6).
 
 The resume state file is exactly that exception: it persists a domain schema, so it carries a **mandatory version token** (`v` field, see above) and a mismatched file is ignored (warn + empty) — the remedy ADR-0003's consequences section prescribes. See the ADR note.
 
