@@ -1104,8 +1104,19 @@ async def _record_playback_from(request: Request, *, flush: bool) -> None:
     response_model_exclude_none=True,
     dependencies=[Depends(require_token)],
 )
-async def items_resume(user_id: str) -> BaseItemDtoQueryResult:
+@router.get(
+    "/Items/Resume",
+    response_model=BaseItemDtoQueryResult,
+    response_model_exclude_none=True,
+    dependencies=[Depends(require_token)],
+)
+async def items_resume(user_id: str = "u") -> BaseItemDtoQueryResult:
     """Continue-watching rail — items with a recorded position (#214).
+
+    Both spellings serve the identical rail: the SDK's ``/Users/{id}/…``
+    form and the bare ``/Items/Resume`` some clients (and careless
+    users) type. ``user_id`` is not validated either way — the facade
+    has a single fixed user (D4).
 
     Movies report their ``g2:`` key (PlaybackInfo on the movie card);
     episodes report the provider-scoped wire id, resolved through the
