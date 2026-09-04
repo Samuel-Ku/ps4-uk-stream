@@ -44,11 +44,26 @@ class EngineStream:
     with Go ``http.ServeContent``); the remux path is chunked fMP4 with
     ``Accept-Ranges: none`` — progressive but NOT seekable (research
     #367 §1) — so the adapter stamps those streams ``seekable=False``.
+
+    #378 — what the file actually carries, discovered from the engine's
+    file listing:
+
+      - ``subtitle_url`` — the VTT conversion endpoint of an external
+        ``.srt`` file in the SAME torrent (BitPlay converts on request:
+        ``stream/{i}?format=vtt``). None when the torrent carries no
+        separate srt — the remux path strips embedded tracks, so only
+        external srt can ever play (research #367 limit 6).
+      - ``audio_tracks`` — the selectable audio streams of the served
+        file as ``(index, label)`` pairs; BitPlay's remux endpoint
+        accepts ``?audio=N`` (absolute stream index). Empty when the
+        file carries a single (default) audio track — nothing to pick.
     """
 
     url: str
     container: str
     seekable: bool = True
+    subtitle_url: str | None = None
+    audio_tracks: tuple[tuple[int, str], ...] = ()
 
 
 # ------------------------------------------------------------- errors
@@ -98,9 +113,10 @@ class FakeTorrentEngine:
 
     Maps identifier→EngineStream from an optional configured table;
     unknown identifiers get a stable synthesized URL derived from the
-    identifier itself. Records calls (ensure count + last identifier)
-    so route-level orchestration assertions can verify session-ensured-
-    before-handoff without touching internals of the mapping.
+    identifier itself. Records calls (ensure count + last identifier +
+    last file hint) so route-level orchestration assertions can verify
+    session-ensured-before-handoff — and, since #379, that the SEASON
+    file hint rode along — without touching internals of the mapping.
     """
 
     def __init__(
@@ -113,12 +129,18 @@ class FakeTorrentEngine:
         self._container = container
         self.ensure_count = 0
         self.last_identifier: str | None = None
+        self.last_file_hint: str | None = None
+
+    #: #378 convenience: full EngineStreams (subtitle_url / audio_tracks
+    #: included) ride the SAME ``streams`` table — no second knob; an
+    #: unconfigured identifier synthesizes a bare stream with neither.
 
     async def ensure_session(
         self, identifier: str, *, file_hint: str | None = None
     ) -> EngineStream:
         self.ensure_count += 1
         self.last_identifier = identifier
+        self.last_file_hint = file_hint
         configured = self._streams.get(identifier)
         if configured is not None:
             return configured
@@ -186,6 +208,54 @@ def _select_file(files: list[tuple[int, str]], file_hint: str | None) -> tuple[i
     return files[0]
 
 
+#: Subtitle files BitPlay can convert to VTT on request (`?format=vtt`)
+#: — only external ``.srt`` tracks in the SAME torrent (research #367).
+SUBTITLE_EXTENSIONS: frozenset[str] = frozenset({".srt"})
+
+
+def _select_subtitle(files: list[tuple[int, str]]) -> int | None:
+    """The external-srt track to surface (or None).
+
+    Preference: an ``.en``-suffixed srt (the English lane's point),
+    then the first srt at all. Index is None when the torrent carries
+    no separate srt — the honest "no subtitles" verdict (embedded
+    tracks are stripped by the remux path, so they can never play).
+    """
+    srts = [e for e in files if os.path.splitext(e[1])[1].lower() in SUBTITLE_EXTENSIONS]
+    if not srts:
+        return None
+    for entry in srts:
+        stem = os.path.splitext(entry[1])[0].lower()
+        if stem.endswith(".en") or ".en." in stem:
+            return entry[0]
+    return srts[0][0]
+
+
+def _audio_tracks(files: list[tuple[int, str]], video_index: int) -> tuple[tuple[int, str], ...]:
+    """Audio ``?audio=N`` choices for the served video file.
+
+    BitPlay reports only FILE entries ({index, name}) — audio streams
+    INSIDE one file are invisible to the listing; the ``audio`` remux
+    parameter addresses absolute STREAM indexes. Without a probe of
+    the bytes themselves (a per-request ffmpeg cost the engine does
+    not expose over HTTP), the honest surface is: a multi-part audio
+    FILE group (``cd1``/``cd2``-style companions of the picked video,
+    the one convention the file listing can actually show) maps to
+    their stream positions 0..N-1, and a lone video file surfaces NO
+    picks — a single embedded track needs no picker.
+    """
+    video_name = next((name for idx, name in files if idx == video_index), "")
+    stem = os.path.splitext(video_name)[0]
+    companions = [
+        (idx, name)
+        for idx, name in files
+        if idx != video_index and os.path.splitext(name)[0] == stem and name.lower() != video_name.lower()
+    ]
+    if len(companions) < 2:
+        return ()
+    return tuple((position, name) for position, (_, name) in enumerate(sorted(companions)))
+
+
 class BitPlayClient:
     """Real adapter: drives the BitPlay HTTP API with httpx directly.
 
@@ -226,11 +296,30 @@ class BitPlayClient:
             direct = DIRECT_CONTAINER_BY_EXT.get(os.path.splitext(name)[1].lower())
             if direct is not None:
                 url = f"{self._base_url}{STREAM_PATH_TEMPLATE.format(session_id=quoted_id, file_index=index)}"
-                return EngineStream(url=url, container=direct)
-            url = f"{self._base_url}{REMUX_PATH_TEMPLATE.format(session_id=quoted_id, file_index=index)}"
+            else:
+                url = f"{self._base_url}{REMUX_PATH_TEMPLATE.format(session_id=quoted_id, file_index=index)}"
             # Chunked fMP4, Accept-Ranges: none — forward-playable but
             # the player cannot seek into it (research #367 §1).
-            return EngineStream(url=url, container="mp4", seekable=False)
+            seekable = direct is not None
+            # #378 — what else the session carries, discovered from the
+            # same listing (no extra engine round-trips): the VTT
+            # conversion endpoint of an external srt, and the multi-part
+            # audio picks the file listing can honestly show.
+            subtitle_url: str | None = None
+            srt_index = _select_subtitle(files)
+            if srt_index is not None:
+                subtitle_url = (
+                    f"{self._base_url}"
+                    f"{STREAM_PATH_TEMPLATE.format(session_id=quoted_id, file_index=srt_index)}"
+                    "?format=vtt"
+                )
+            return EngineStream(
+                url=url,
+                container=direct if direct is not None else "mp4",
+                seekable=seekable,
+                subtitle_url=subtitle_url,
+                audio_tracks=_audio_tracks(files, index),
+            )
         finally:
             if own:
                 await http.aclose()

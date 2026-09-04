@@ -54,15 +54,16 @@ def _details_url_regex() -> re.Pattern[str]:
 
 
 def test_yts_provider_metadata():
-    """Movies-only surface: id/name/types, one movie section that is also
-    the newest listing (home composition picks it up later), and BOTH API
-    hosts declared so the central allowlist admits the in-flight base
-    migration redirect (research #366 §5)."""
+    """Surface: id/name/types (movie+series since #379), two sections —
+    movies stays THE newest listing (home composition rides it) — and
+    BOTH YTS API hosts declared so the central allowlist admits the
+    in-flight base migration redirect (research #366 §5). The series
+    host joins the allowlist only when configured (constructor seed)."""
     p = YtsProvider()
     assert p.id == "yts"
     assert p.name == "YTS"
-    assert p.types == ("movie",)
-    assert [s.id for s in p.sections] == ["movies"]
+    assert p.types == ("movie", "series")
+    assert [s.id for s in p.sections] == ["movies", "series"]
     assert p.newest_section == "movies"
     assert p.allowed_hosts == frozenset({"yts.gg", "movies-api.accel.li"})
 
@@ -175,10 +176,12 @@ async def test_yts_browse_last_page_has_no_next():
 
 @pytest.mark.asyncio
 async def test_yts_browse_unknown_section_raises_not_found():
+    """Since #379 ``series`` is a REAL section (popcorn-backed); a
+    genuinely unknown section keeps its typed not_found."""
     with respx.mock(assert_all_called=False):
         async with httpx.AsyncClient() as http:
             with pytest.raises(ProviderError) as exc:
-                await YtsProvider().browse("series", 1, http)
+                await YtsProvider().browse("anime", 1, http)
     assert exc.value.code == "not_found"
 
 
