@@ -60,6 +60,9 @@ _MAGNET_480 = "magnet:?xt=urn:btih:00112233445566778899AABBCCDDEEFF00112233&dn=c
 _SHOWS_URL = re.compile(rf"{re.escape(_POPCORN)}/shows/\d+\?.*")
 _SHOW_URL = re.compile(rf"{re.escape(_POPCORN)}/show/tt\d+")
 _S1E1 = episode_wire_id("yts", "tt8740758", 1, 1)
+_LAN = EngineStream(
+    url="http://bitplay.lan:3347/api/v1/torrent/s01/stream/2", container="mp4"
+)
 _S1E2 = episode_wire_id("yts", "tt8740758", 1, 2)
 _S1E3 = episode_wire_id("yts", "tt8740758", 1, 3)
 
@@ -475,4 +478,62 @@ async def test_stream_after_churn_refetches_same_imdb_ids(monkeypatch):
             assert [e.id for e in content.seasons[0].episodes] == [_S1E1, _S1E2, _S1E3]
             resp = await p.stream(_S1E1, None, http)
     assert resp.url == lan.url
-    assert route.call_count == 2  # content + stream, same id both times
+    assert route.call_count == 1  # content + stream share the TTL-cached show fetch
+
+
+@pytest.mark.asyncio
+async def test_playback_chain_costs_one_show_fetch(monkeypatch):
+    """Acceptance (lean session slice): PlaybackInfo → stream → VTT-class
+    resolution for ONE episode = exactly ONE Popcorn show fetch. The
+    engine's BitPlay session dedups by infohash, so the provider's
+    upstream conversation is the cost that matters."""
+    _configured(monkeypatch)
+    engine = FakeTorrentEngine(streams={_MAGNET_720: _LAN})
+    with respx.mock(assert_all_called=True) as router:
+        route = router.get(url=_SHOW_URL).respond(
+            200, text=_fixture("series_show_tt8740758.json")
+        )
+        async with httpx.AsyncClient() as http:
+            p = YtsProvider(engine=engine)
+            info = await p.content("tt8740758", http)   # PlaybackInfo path (bare id)
+            assert info.id == "yts:tt8740758"
+            await p.stream(_S1E1, None, http)                # stream path
+            await p.stream(_S1E1, None, http)                # vtt re-resolution
+    assert route.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_playback_survives_popcorn_outage_within_ttl(monkeypatch):
+    """Acceptance: once fetched, the in-TTL chain must NOT re-hit the
+    upstream — an outage after the first fetch cannot break playback."""
+    _configured(monkeypatch)
+    engine = FakeTorrentEngine(streams={_MAGNET_720: _LAN})
+    p = YtsProvider(engine=engine)
+    async with httpx.AsyncClient() as http:
+        with respx.mock:
+            respx.get(url=_SHOW_URL).respond(
+                200, text=_fixture("series_show_tt8740758.json")
+            )
+            info = await p.content("tt8740758", http)
+            assert info.id == "yts:tt8740758"
+        # Upstream now DEAD (no mock) — cached show still serves playback.
+        resp = await p.stream(_S1E1, None, http)
+        assert resp.url == _LAN.url
+
+
+@pytest.mark.asyncio
+async def test_show_cache_expired_entry_refetches(monkeypatch):
+    """Past the TTL the cache must not serve stale data forever: the
+    next call refetches (verify via a direct TTL manipulation)."""
+    _configured(monkeypatch)
+    with respx.mock(assert_all_called=True) as router:
+        route = router.get(url=_SHOW_URL).respond(
+            200, text=_fixture("series_show_tt8740758.json")
+        )
+        async with httpx.AsyncClient() as http:
+            p = YtsProvider(engine=FakeTorrentEngine())
+            await p.content("tt8740758", http)
+            ts, show = p._show_cache["tt8740758"]
+            p._show_cache["tt8740758"] = (ts - 301.0, show)  # age past TTL
+            await p.content("tt8740758", http)
+    assert route.call_count == 2
