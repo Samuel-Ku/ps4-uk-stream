@@ -43,7 +43,8 @@ from typing import Any, cast
 import pytest
 from fastapi.testclient import TestClient
 
-from cs_uk_api import _catalog_state as catalog_state, catalog
+from cs_uk_api import _catalog_state as catalog_state
+from cs_uk_api import catalog
 from cs_uk_api._catalog_state import (
     blocklist_cache,
     clear_playback,
@@ -1507,3 +1508,35 @@ def test_live_tv_channels_is_graceful_empty(client: TestClient) -> None:
     body = r.json()
     assert body["Items"] == []
     assert body["TotalRecordCount"] == 0
+
+
+def test_resume_bare_spelling_serves_the_same_rail(client: TestClient) -> None:
+    """Playtest finding: ``/Items/Resume`` (no /Users/ prefix) used to 404
+    while the /Users/{id} form worked — a careless client (or a user
+    typing the shorter Jellyfin spelling) got a dead Continue Watching
+    rail. Both spellings must serve the identical rail."""
+    serial = _serial()
+    serial.seasons = [
+        Season(
+            number=1,
+            episodes=[
+                Episode(number=1, id="p1:serial-1:s1e1", title="Серія 1"),
+                Episode(number=2, id="p1:serial-1:s1e2", title="Серія 2"),
+            ],
+        )
+    ]
+    stub = _DetailStub(
+        cards=[_card("p1", "serial-1", "Сериалал серіал", "series", poster=_POSTER_SERIES)],
+        content_by_external={"serial-1": serial},
+    )
+    PROVIDERS["p1"] = stub
+    _auth(client)
+    _serial_gk(client)  # warm the group map (the resume walk resolves through it)
+    _post_playback(client, "p1:serial-1:s1e1", 600_000_000)
+
+    bare = _get(client, "/Items/Resume")
+    users = _get(client, "/Users/user1/Items/Resume")
+    assert [(i["Id"], i["PlaybackPositionTicks"]) for i in bare["Items"]] == [
+        (i["Id"], i["PlaybackPositionTicks"]) for i in users["Items"]
+    ]
+    assert bare["Items"] and bare["Items"][0]["Id"] == "p1:serial-1:s1e1"
