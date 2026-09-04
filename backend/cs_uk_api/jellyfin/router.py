@@ -60,7 +60,6 @@ from ..catalog import (
     profiles,
     recent_playback,
     record_dub_choice,
-    record_position,
     refresh_profile,
     refresh_snapshot,
     resolve_item,
@@ -117,6 +116,7 @@ from .models import (
     UserDataResult,
     UserDto,
 )
+from .playback_reports import register as register_playback_reports
 
 log = logging.getLogger("cs_uk_api.jellyfin")
 
@@ -1073,29 +1073,6 @@ async def _resolve_playback_episode(
         else None
     )
     return episode_dto, next_dto
-
-
-async def _record_playback_from(request: Request, *, flush: bool) -> None:
-    """Best-effort store of the client's playback report (#214/#248).
-
-    The @jellyfin/sdk posts PlaybackStartInfo/ProgressInfo/StopInfo
-    bodies here; ``ItemId`` + ``PositionTicks`` are what a resume shelf
-    needs, and ``RunTimeTicks`` rides along so a later tranche can mark
-    finished items (spec #247). A malformed body is not an error — the
-    report is advisory. ``flush=True`` (the Stopped path) persists the
-    state file synchronously; heartbeat reports are debounced.
-    """
-    try:
-        body = await request.json()
-    except Exception:  # noqa: BLE001 — malformed report, keep the 204
-        log.debug("playback report body unreadable, ignoring")
-        return
-    item_id = body.get("ItemId")
-    position = body.get("PositionTicks")
-    if isinstance(item_id, str) and isinstance(position, (int, float)):
-        runtime = body.get("RunTimeTicks")
-        runtime_ticks = int(runtime) if isinstance(runtime, (int, float)) else None
-        record_position(item_id, int(position), runtime_ticks=runtime_ticks, flush=flush)
 
 
 @router.get(
@@ -2369,42 +2346,6 @@ async def live_tv_channels() -> BaseItemDtoQueryResult:
     return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
 
 
-@router.post("/Sessions/Playing", dependencies=[Depends(require_token)])
-async def sessions_playing(request: Request) -> Response:
-    """Playback-start report (D8): accept, answer 204, record position.
-
-    The @jellyfin/sdk posts a full PlaybackStartInfo body here the moment
-    playback starts (capture row 6); the position seeds the resume shelf
-    (ticket #214; persisted per #248).
-    """
-    await _record_playback_from(request, flush=False)
-    return Response(status_code=204)
-
-
-@router.post("/Sessions/Progress", dependencies=[Depends(require_token)])
-@router.post("/Sessions/Playing/Progress", dependencies=[Depends(require_token)])
-async def sessions_progress(request: Request) -> Response:
-    """Playback-progress report (D8): accept, answer 204, record position.
-
-    Heartbeats update the stored position (debounced write, #248); the
-    newest report wins.
-    """
-    await _record_playback_from(request, flush=False)
-    return Response(status_code=204)
-
-
-@router.post("/Sessions/Stopped", dependencies=[Depends(require_token)])
-@router.post("/Sessions/Playing/Stopped", dependencies=[Depends(require_token)])
-async def sessions_stopped(request: Request) -> Response:
-    """Playback-stop report (D8): accept, answer 204, record the stop
-    position — the final value the resume shelf shows (ticket #214).
-    Flushed to the state file immediately (#248), so the position
-    survives a restart.
-    """
-    await _record_playback_from(request, flush=True)
-    return Response(status_code=204)
-
-
 @router.post("/Sessions/Logout", dependencies=[Depends(require_token)])
 async def sessions_logout() -> Response:
     """Session-end report (D8, capture verdict): accept, answer 204.
@@ -2477,5 +2418,11 @@ async def websocket_socket(websocket: WebSocket) -> None:
     except Exception:
         log.debug("websocket closed unexpectedly", exc_info=True)
 
+
+# The Sessions/Playing* report conversation (parser + routes) lives in
+# :mod:`playback_reports` — ONE owner for the client's playback-report
+# surface (#108/#214/#248). Registered flat here so the wire surface
+# and the facade's route table are unchanged.
+register_playback_reports(router)
 
 __all__ = ["require_token", "router"]
