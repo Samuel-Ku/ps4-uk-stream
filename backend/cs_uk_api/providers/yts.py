@@ -42,7 +42,6 @@ view) so playback can build magnets without a second upstream call.
 from __future__ import annotations
 
 import logging
-import re
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
@@ -68,12 +67,10 @@ from ..torrent_engine import (
     get_engine,
 )
 from ..wire_identity import (
+    IMDB_RE,
     MOVIE_SUFFIX,
     episode_wire_id,
-    is_movie_wire_id,
-    parse_episode_tail,
-    split_episode_tail,
-    strip_movie_suffix,
+    parse_playable_id,
 )
 from .base import BaseProvider, ProviderError
 from .popcorn import (
@@ -105,8 +102,9 @@ _SECTIONS = (
 
 log = logging.getLogger(__name__)
 
-#: Boundary validation: only a well-formed IMDb code may reach the URL.
-_IMDB_RE = re.compile(r"tt\d{7,8}")
+#: Boundary validation: only a well-formed external id may reach the
+#: URL — the shape lives on :data:`wire_identity.IMDB_RE` (one
+#: definition, shared with the playable-id parser).
 
 #: Episode wire ids carry a season/episode tail; playable-id parsing
 #: rides the canonical grammar helpers (no second regex here).
@@ -192,42 +190,6 @@ def _torrent_stream_response(result: EngineStream) -> StreamResponse:
         seekable=result.seekable,
         subtitle_url=result.subtitle_url,
     )
-
-
-def _parse_playable_id(content_id: str) -> tuple[str | None, int | None]:
-    """A playable YTS wire id → ``(imdb, season | None)``.
-
-    The wire grammar (module docstring):
-      - ``yts:<imdb>:__movie__`` → ``(imdb, None)`` — the movie sentinel
-        (#376/#377 contract, unchanged);
-      - ``yts:<imdb>:s<N>e<M>`` → ``(imdb, N)`` — the #379 episode form;
-        the parsed season number IS the season discriminator (nothing
-        else rides the tail);
-      - anything else — garbage, a bare id (not playable), a ``g2:``
-        key, or a malformed tail — → ``(None, None)``.
-    """
-    if is_movie_wire_id(content_id):
-        stripped = strip_movie_suffix(content_id)
-        # The id arrives with or without the ``yts:`` prefix (the native
-        # route strips it; episode ids keep it) — accept both spellings.
-        imdb = stripped.partition(":")[2] if stripped.startswith("yts:") else stripped
-        return imdb, None
-    split = split_episode_tail(content_id)
-    if split is None:
-        return None, None
-    composite, tail = split
-    # Both spellings arrive (the facade's episode-wire resolution strips
-    # the provider prefix — the ``tt8740758:s1e1`` form the native route
-    # hands over; provider-scoped ids keep it). Accept both: a leading
-    # ``yts:`` is stripped, anything else foreign is refused.
-    composite = composite.removeprefix("yts:")
-    if ":" in composite or not _IMDB_RE.fullmatch(composite):
-        return None, None
-    parsed = parse_episode_tail(tail)
-    if parsed is None:
-        return None, None
-    season, _episode = parsed
-    return composite, season
 
 
 def _torrent_candidates(movie: dict[str, Any]) -> list[TorrentCandidate]:
@@ -522,7 +484,7 @@ class YtsProvider(BaseProvider):
         ``:sNeM`` tails — stream() tells the two apart by the tail
         grammar alone.
         """
-        if not _IMDB_RE.fullmatch(external_id):
+        if not IMDB_RE.fullmatch(external_id):
             raise ProviderError("not_found", "bad external_id")
         show = await self._show(external_id, http)
         if show is None:
@@ -542,7 +504,7 @@ class YtsProvider(BaseProvider):
         empty answer, it raises, so the envelope always carries a
         season when it exists at all.
         """
-        if not _IMDB_RE.fullmatch(external_id):
+        if not IMDB_RE.fullmatch(external_id):
             raise ProviderError("not_found", "bad external_id")
         if season_number < 1:
             raise ProviderError("not_found", "bad season number")
@@ -646,8 +608,8 @@ class YtsProvider(BaseProvider):
         engine — the hint is the SEASON, not the wire id.
         """
         del translation  # original audio only
-        imdb, season = _parse_playable_id(content_id)
-        if imdb is None or not _IMDB_RE.fullmatch(imdb):
+        imdb, season = parse_playable_id(content_id, provider=self.id)
+        if imdb is None or not IMDB_RE.fullmatch(imdb):
             raise ProviderError("not_found", "bad external_id")
         engine = self._require_engine()
         if season is None:
@@ -722,7 +684,7 @@ class YtsProvider(BaseProvider):
     def _show_card(self, show: dict[str, Any]) -> SearchResult | None:
         """One Popcorn listing item → SearchResult; unidentifiable skip."""
         imdb = show.get("imdb_id")
-        if not isinstance(imdb, str) or not _IMDB_RE.fullmatch(imdb):
+        if not isinstance(imdb, str) or not IMDB_RE.fullmatch(imdb):
             return None
         try:
             title = _require_str(show.get("title"), "show title")
@@ -821,7 +783,7 @@ class YtsProvider(BaseProvider):
     def _card(self, movie: dict[str, Any]) -> SearchResult | None:
         """One listing item → SearchResult; unidentifiable items skip."""
         imdb = movie.get("imdb_code")
-        if not isinstance(imdb, str) or not _IMDB_RE.fullmatch(imdb):
+        if not isinstance(imdb, str) or not IMDB_RE.fullmatch(imdb):
             return None
         try:
             title = _display_title(movie)

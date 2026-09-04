@@ -11,6 +11,10 @@ hand:
 - the movie-suffix sentinel (``:__movie__`` — the episode-slot id a
   movie's content page emits so ``stream()`` can tell a film from an
   episode);
+- the playable-id composition (``parse_playable_id`` — what a
+  ``stream()`` entry needs to route a wire id, spec #374: sentinel +
+  episode tail + both provider-prefix spellings, external shape
+  injectable);
 - the ``provider:external`` composite split (``split_wire_id``, moved
   here from ``probe`` — this is THE canonical copy).
 
@@ -247,6 +251,65 @@ def strip_movie_suffix(item_id: str) -> str:
     if item_id.endswith(MOVIE_SUFFIX):
         return item_id[: -len(MOVIE_SUFFIX)]
     return item_id
+
+
+# ---------------------------------------------------------------------------
+# Playable-id composition — what a stream() entry needs to route a
+# wire id (spec #374). Composes the module's grammars (sentinel +
+# episode tail + composite split) instead of each provider re-deriving
+# the playable routing by hand.
+# ---------------------------------------------------------------------------
+
+#: Boundary shape of an IMDb external id (``tt`` + 7-8 digits) — the
+#: external grammar the English lane's playable ids validate against.
+#: One definition: the playable-id parser and its composing provider
+#: read this (was duplicated in ``yts`` as ``_IMDB_RE``).
+IMDB_RE = re.compile(r"tt\d{7,8}")
+
+
+def parse_playable_id(
+    content_id: str,
+    *,
+    provider: str,
+    external_re: re.Pattern[str] = IMDB_RE,
+) -> tuple[str | None, int | None]:
+    """A playable wire id → ``(external, season | None)``, or ``(None, None)``.
+
+    The playable composition of this module's grammars: a movie-sentinel
+    id yields the external with no season; an episode-tail id yields the
+    external and the tail's season number (the season IS the
+    discriminator — nothing else rides the tail); anything else —
+    garbage, a bare id (not playable), a ``g2:`` group key, a foreign
+    provider's prefix, a malformed tail — yields ``(None, None)``.
+
+    The id arrives with or without the ``<provider>:`` prefix (the
+    facade's episode-wire resolution strips it — the bare-suffix form a
+    native route hands over — while provider-scoped ids keep it). Both
+    spellings are accepted: a leading ``<provider>:`` is stripped, any
+    other foreign prefix is refused. The external must fullmatch
+    ``external_re`` — the composing lane's boundary shape (defaults to
+    the IMDb code, :data:`IMDB_RE`).
+    """
+    if is_movie_wire_id(content_id):
+        stripped = strip_movie_suffix(content_id)
+        external = (
+            stripped.partition(f"{provider}:")[2]
+            if stripped.startswith(f"{provider}:")
+            else stripped
+        )
+        return (external, None) if external_re.fullmatch(external) else (None, None)
+    split = split_episode_tail(content_id)
+    if split is None:
+        return None, None
+    composite, tail = split
+    composite = composite.removeprefix(f"{provider}:")
+    if ":" in composite or not external_re.fullmatch(composite):
+        return None, None
+    parsed = parse_episode_tail(tail)
+    if parsed is None:
+        return None, None
+    season, _episode = parsed
+    return composite, season
 
 
 # ---------------------------------------------------------------------------
