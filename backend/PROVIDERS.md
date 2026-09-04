@@ -123,7 +123,11 @@ status: [`docs/provider-triage.md`](../docs/provider-triage.md).
   canonical `:sNeM` episode ids and episode playback reuses the same
   engine policy + season-torrent file selection. Unconfigured popcorn
   base ⇒ series surfaces the loud typed `unreachable` verdict; movies
-  stay fully live.
+  stay fully live. Both lanes pass the engine's session truth through
+  the wire (#378): an external `.srt` in the torrent surfaces as a
+  `Subtitle` media stream (`/Stream/{item}/vtt` 302s to the engine's
+  `?format=vtt` endpoint) and multi-part audio as `Audio` entries —
+  absent when the session carries neither, so the wire stays unchanged.
 
 ## Content ids
 

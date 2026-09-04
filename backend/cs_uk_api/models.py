@@ -240,6 +240,17 @@ class StreamResponse(BaseModel):
     #: check (D7 SSRF posture) honours these in addition to the
     #: dot-boundary rule — undeclared hosts still fail closed.
     allowed_domains: frozenset[str] = Field(default_factory=frozenset)
+    #: #378 (torrent lane): the engine's VTT subtitle endpoint for an
+    #: external ``.srt`` file in the same session — ``/Stream/{item}/vtt``
+    #: proxies it, so the player never needs the raw LAN host. Omitted
+    #: (None) when the session carries no convertible subtitle file;
+    #: classic providers never set it.
+    subtitle_url: str | None = None
+    #: #378 (torrent lane): selectable audio tracks as (stream_index,
+    #: label) pairs the engine can address (BitPlay remux ``?audio=N``).
+    #: Empty when the served file carries nothing pickable; classic
+    #: providers never set it (their audio choice rides translations).
+    audio_tracks: tuple[tuple[int, str], ...] = ()
 
 
 #: Wire status literals (v3 spec §2.1.3/§3.4) — the single source of truth:

@@ -1703,6 +1703,32 @@ def _container_from_type(stream_type: str) -> str:
     return stream_type
 
 
+def _engine_media_streams(item_id: str, stream: StreamResponse) -> list[MediaStreamInfo]:
+    """#378: media-stream entries for what the file actually carries.
+
+    Torrent-lane truth only — a classic ``StreamResponse`` (subtitle_url
+    None, audio_tracks empty) yields the D6 default ``[{Video}]`` list
+    byte-identically, so the Ukrainian lane's PlaybackInfo wire never
+    moves (parity gate). An enriched one appends, in the stable order
+    audio-then-subtitles:
+
+      - one ``Audio`` entry per engine-addressable track (``Index`` =
+        the engine stream index, ``DisplayTitle`` = the file name);
+      - one ``Subtitle`` entry when the session exposes a convertible
+        srt. ``DeliveryUrl`` points at THIS facade (``/Stream/{item}/vtt``
+        re-resolves the stream and 302s to the engine) — the raw LAN
+        engine host never reaches the player.
+    """
+    if not stream.audio_tracks and stream.subtitle_url is None:
+        return [MediaStreamInfo()]
+    streams: list[MediaStreamInfo] = [MediaStreamInfo(Type="Video")]
+    for index, label in stream.audio_tracks:
+        streams.append(MediaStreamInfo(Type="Audio", Index=index, DisplayTitle=label))
+    if stream.subtitle_url is not None:
+        streams.append(MediaStreamInfo(Type="Subtitle", DeliveryUrl=f"/Stream/{item_id}/vtt"))
+    return streams
+
+
 def _translation_source_id(item_id: str, translation_id: str) -> str:
     """MediaSource.Id for one translation (spec #276).
 
@@ -1818,6 +1844,7 @@ async def playback_info(
         source = MediaSourceInfo(
             Id=item_id,
             Container=_container_from_type(stream.type),
+            MediaStreams=_engine_media_streams(item_id, stream),
             Path=f"/Videos/{item_id}/stream",
             PlaySessionId=play_session_id,
         )
@@ -1971,6 +1998,25 @@ async def video_stream(
     if response is None:
         raise HTTPException(status_code=404, detail="item_unavailable")
     return response
+
+
+@router.get("/Videos/{item_id:path}/vtt")
+@router.get("/Stream/{item_id:path}/vtt")
+async def item_vtt(item_id: str) -> Response:
+    """Subtitle delivery (#378): the engine's VTT-converted track.
+
+    PlaybackInfo's ``Subtitle`` MediaStream carries ``DeliveryUrl``
+    pointing HERE (``/Stream/{item}/vtt``, both spellings — the client's
+    track element follows whatever base URL it already knows). The route
+    resolves the SAME stream seam as playback, then hands the player the
+    engine's ``stream/{i}?format=vtt`` endpoint — BitPlay converts the
+    external srt to WEBVTT on the fly (research #367 §1). No subtitle on
+    the session ⇒ 404 ``item_unavailable``, the standing posture.
+    """
+    stream = await _resolve_stream(item_id)
+    if stream is None or stream.subtitle_url is None:
+        raise HTTPException(status_code=404, detail="item_unavailable")
+    return RedirectResponse(stream.subtitle_url, status_code=302)
 
 
 @router.get("/Items/{item_id:path}/Download")

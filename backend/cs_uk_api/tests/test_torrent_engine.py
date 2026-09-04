@@ -21,15 +21,15 @@ import respx
 from cs_uk_api import config as _config
 from cs_uk_api.torrent_engine import (
     BitPlayClient,
-    build_engine_from_settings,
     EngineRejected,
     EngineStream,
     EngineUnavailable,
     FakeTorrentEngine,
-    get_engine,
-    reset_engine,
     TorrentEngine,
     TorrentEngineError,
+    build_engine_from_settings,
+    get_engine,
+    reset_engine,
 )
 
 _MAGNET = "magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Sintel"
@@ -374,3 +374,93 @@ def test_reset_engine_forces_rebuild(monkeypatch: pytest.MonkeyPatch) -> None:
     reset_engine()
     second = get_engine()
     assert first is not second
+
+
+# ----------------------------------------------------- #378: what the
+# ----------------------------------------------- session actually carries
+
+
+async def test_bitplay_srt_companion_yields_vtt_url() -> None:
+    """#378: an external .srt in the SAME torrent surfaces the engine's
+    `?format=vtt` conversion endpoint on the stream value — English-preferred
+    when several srts ride along."""
+    with respx.mock:
+        _mock_add()
+        _mock_files(
+            [
+                {"index": 5, "name": "Sintel.mp4", "size": 129241752},
+                {"index": 6, "name": "Sintel.uk.srt", "size": 1514},
+                {"index": 7, "name": "Sintel.en.srt", "size": 1499},
+            ]
+        )
+        stream = await _client().ensure_session(_MAGNET)
+    assert stream.subtitle_url == f"{_FILES}/stream/7?format=vtt"
+
+
+async def test_bitplay_single_srt_surfaces_it() -> None:
+    with respx.mock:
+        _mock_add()
+        _mock_files(
+            [
+                {"index": 5, "name": "Sintel.mp4", "size": 129241752},
+                {"index": 6, "name": "Sintel.srt", "size": 1514},
+            ]
+        )
+        stream = await _client().ensure_session(_MAGNET)
+    assert stream.subtitle_url == f"{_FILES}/stream/6?format=vtt"
+
+
+async def test_bitplay_no_srt_means_no_subtitle_url() -> None:
+    """The honest 'no subtitles' verdict: embedded tracks are stripped by
+    the remux path, so only a separate .srt can ever play (research #367
+    limit 6) — its absence must be OMITTED, not faked."""
+    with respx.mock:
+        _mock_add()
+        _mock_files([{"index": 5, "name": "Sintel.mp4", "size": 129241752}])
+        stream = await _client().ensure_session(_MAGNET)
+    assert stream.subtitle_url is None
+
+
+async def test_bitplay_lone_video_yields_no_audio_picks() -> None:
+    """A single video file carries no pickable audio the FILE listing can
+    show — audio_tracks stays empty (no invented picker)."""
+    with respx.mock:
+        _mock_add()
+        _mock_files([{"index": 5, "name": "Sintel.mp4", "size": 129241752}])
+        stream = await _client().ensure_session(_MAGNET)
+    assert stream.audio_tracks == ()
+
+
+async def test_bitplay_remux_path_keeps_subtitle_and_defaults() -> None:
+    """The VTT endpoint is INDEPENDENT of the video container choice: an
+    mkv (remuxed) still exposes its srt companion, and audio stays empty."""
+    with respx.mock:
+        _mock_add()
+        _mock_files(
+            [
+                {"index": 0, "name": "Movie.mkv", "size": 100},
+                {"index": 1, "name": "Movie.en.srt", "size": 20},
+            ]
+        )
+        stream = await _client().ensure_session(_MAGNET)
+    assert stream.url == f"{_FILES}/remux/0"
+    assert stream.container == "mp4"
+    assert stream.seekable is False
+    assert stream.subtitle_url == f"{_FILES}/stream/1?format=vtt"
+    assert stream.audio_tracks == ()
+
+
+async def test_fake_carries_full_engine_streams() -> None:
+    """The fake's configured table passes EngineStreams through verbatim —
+    subtitle/audio ride the SAME knob; unconfigured identifiers synthesize
+    a bare stream with neither (#378 omission default)."""
+    rich = EngineStream(
+        url="http://lan/s/1",
+        container="mp4",
+        subtitle_url="http://lan/s/2?format=vtt",
+        audio_tracks=((1, "cd2"),),
+    )
+    engine = FakeTorrentEngine(streams={_MAGNET: rich})
+    assert await engine.ensure_session(_MAGNET) == rich
+    bare = await engine.ensure_session("magnet:?xt=urn:btih:other")
+    assert bare.subtitle_url is None and bare.audio_tracks == ()

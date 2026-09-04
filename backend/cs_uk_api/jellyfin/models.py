@@ -219,6 +219,11 @@ class MediaStreamInfo(BaseModel):
     Type: str = "Video"
     Index: int | None = None
     DisplayTitle: str | None = None
+    #: #378 (torrent lane): a ``Subtitle`` entry carries the facade's
+    #: VTT proxy URL — the engine-converted track behind
+    #: ``/Stream/{item}/vtt`` — so the player never touches the LAN
+    #: engine host. ``Audio`` entries keep Index/DisplayTitle semantics.
+    DeliveryUrl: str | None = None
 
 
 class MediaSourceInfo(BaseModel):

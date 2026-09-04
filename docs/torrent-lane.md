@@ -77,6 +77,16 @@ torrent (best-seeded suitable quality) and selects the episode's file
 index inside it — the player still receives nothing but the engine's
 LAN URL. Resume/NextUp work per episode via the canonical ids.
 
+**Subtitles and audio (#378)** ride the same session automatically: when
+the torrent carries an external `.srt` (BitPlay converts it to VTT on
+request), PlaybackInfo grows a `Subtitle` media-stream whose
+`DeliveryUrl` is the facade's `/Stream/{item}/vtt` — a 302 to the
+engine's `stream/{i}?format=vtt`, so the player never needs the raw LAN
+host. Selectable audio surfaces as `Audio` media-stream entries the same
+way. A session with neither (no separate srt, one audio track) leaves
+PlaybackInfo byte-identical to the pre-#378 shape — the Ukrainian lane
+never changes.
+
 ## 2. Health interpretation
 
 Three failure classes with different signatures — check them in this
@@ -129,7 +139,7 @@ the engine, not the catalog.
 | Play hangs ~minutes, then item-level `not_found` | Dead torrent: zero seeders / metadata timeout (engine blames this magnet: 400/504) | Try another title or quality; check the peers column in the BitPlay UI. Not a lane fault |
 | 401 from the engine in backend logs | Auth enabled on one side only | Both sides need complete pairs: `BITPLAY_AUTH_USERNAME`+`PASSWORD` AND `CS_UK_TORRENT_ENGINE_USER`+`PASSWORD`, identical values |
 | Remuxed MKV plays but will not seek | Current engine limit: the remux path serves chunked progressive fMP4 with `Accept-Ranges: none` — no HTTP Range support | Expected behaviour, not a bug. Native-container files (`/stream/`) seek normally; restarting playback is the workaround for MKV sources |
-| No subtitles on an MKV | Current engine limit: remux strips embedded subtitle tracks; ONLY `.srt` files present as separate torrent files convert to VTT | Pick releases carrying external `.srt` files if subtitles matter; nothing else will render for MKV sources today |
+| No subtitles on an MKV | Current engine limit: remux strips embedded subtitle tracks; ONLY `.srt` files present as separate torrent files convert to VTT | Pick releases carrying external `.srt` files if subtitles matter; nothing else will render for MKV sources today. When a separate srt IS present, PlaybackInfo surfaces it automatically (#378) as a Subtitle track via `/Stream/{item}/vtt` |
 | New MKV refuses with 503 mid-evening | All remux slots busy (`BITPLAY_MAX_REMUX`) | Wait and retry; raise the cap in the compose file if several MKVs play concurrently |
 | Starts slow, peers ≈ 0–1 | Per-torrent random listen ports blocked behind docker NAT | Switch to the host-networking variant at the bottom of the compose file; verify tracker reachability in the UI |
 | English titles gone from search entirely | Catalog API down, engine irrelevant | Check `yts` in `/api/providers` (§2); restart backend if stuck down |

@@ -1,0 +1,20 @@
+{
+  "MediaSources": [
+    {
+      "Container": "mp4",
+      "Id": "g2:f588536161e88ae8",
+      "IsDirectStream": true,
+      "MediaStreams": [
+        {
+          "Type": "Video"
+        }
+      ],
+      "Path": "/Videos/g2:f588536161e88ae8/stream",
+      "PlaySessionId": "<uuid>",
+      "SupportsDirectPlay": true,
+      "SupportsDirectStream": true,
+      "SupportsTranscoding": false
+    }
+  ],
+  "PlaySessionId": "<uuid>"
+}

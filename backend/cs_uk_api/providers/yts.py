@@ -62,6 +62,7 @@ from ..models import (
 )
 from ..torrent_engine import (
     EngineRejected,
+    EngineStream,
     EngineUnavailable,
     TorrentEngine,
     get_engine,
@@ -167,6 +168,24 @@ def build_magnet(info_hash: str) -> str:
     """``magnet:?xt=urn:btih:<hash>&tr=…`` with the fork's trackers."""
     tr = "&".join(f"tr={quote(t, safe='')}" for t in TRACKERS)
     return f"magnet:?xt=urn:btih:{info_hash}&{tr}"
+
+
+def _torrent_stream_response(result: EngineStream) -> StreamResponse:
+    """EngineStream → wire StreamResponse (#378).
+
+    The engine is the TRUTH about what the file carries: its VTT
+    subtitle endpoint and audio picks ride along verbatim; an empty
+    session (no srt, one audio track) maps to the omitted (None/∅)
+    fields — the wire stays byte-identical to the pre-#378 shape.
+    """
+    return StreamResponse(
+        url=result.url,
+        type="mp4",
+        headers={},
+        seekable=result.seekable,
+        subtitle_url=result.subtitle_url,
+        audio_tracks=result.audio_tracks,
+    )
 
 
 def _parse_playable_id(content_id: str) -> tuple[str | None, int | None]:
@@ -735,7 +754,7 @@ class YtsProvider(BaseProvider):
             # Deterministic verdict on THIS torrent — never reads as a
             # dead lane (spec #374 error-surface note).
             raise ProviderError("not_found", "no seeders or dead torrent") from e
-        return StreamResponse(url=result.url, type="mp4", headers={}, seekable=result.seekable)
+        return _torrent_stream_response(result)
 
     async def _stream_episode(
         self, imdb: str, season: int, engine: TorrentEngine, http: httpx.AsyncClient
@@ -765,7 +784,7 @@ class YtsProvider(BaseProvider):
             raise ProviderError("unreachable", f"torrent engine unreachable: {e}") from e
         except EngineRejected as e:
             raise ProviderError("not_found", "no seeders or dead torrent") from e
-        return StreamResponse(url=result.url, type="mp4", headers={}, seekable=result.seekable)
+        return _torrent_stream_response(result)
 
     async def _show(self, imdb: str, http: httpx.AsyncClient) -> dict[str, Any] | None:
         """The Popcorn show object for ``imdb``, or ``None`` when the
