@@ -533,7 +533,7 @@ async def test_show_cache_expired_entry_refetches(monkeypatch):
         async with httpx.AsyncClient() as http:
             p = YtsProvider(engine=FakeTorrentEngine())
             await p.content("tt8740758", http)
-            ts, show = p._show_cache["tt8740758"]
-            p._show_cache["tt8740758"] = (ts - 301.0, show)  # age past TTL
+            ts, show = p._popcorn._cache["tt8740758"]
+            p._popcorn._cache["tt8740758"] = (ts - 301.0, show)  # age past TTL
             await p.content("tt8740758", http)
     assert route.call_count == 2

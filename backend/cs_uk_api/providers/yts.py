@@ -43,11 +43,10 @@ from __future__ import annotations
 
 import logging
 import re
-import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -77,6 +76,15 @@ from ..wire_identity import (
     strip_movie_suffix,
 )
 from .base import BaseProvider, ProviderError
+from .popcorn import (
+    PopcornShows,
+    _episode_overview,
+    _episode_title,
+    _episodes_of_show,
+    _show_poster_of,
+    _show_rating_of,
+    _show_year_of,
+)
 
 BASE_URL = "https://yts.gg"
 #: Migration base announced by the API banner (research #366 §5) —
@@ -87,23 +95,8 @@ _LIST_PATH = "/api/v2/list_movies.json"
 _DETAILS_PATH = "/api/v2/movie_details.json"
 
 #: Popcorn-API SERIES grammar (research #366 §3) — the pass configured
-#: by ``popcorn_base_url``. ``CS_UK_POPCORN_BASE_URL`` env override kept
-#: literal per module contract (imports stay stdlib + models only).
-POPCORN_SHOWS_PATH = "/shows/{page}"
-
-#: TTL for the in-memory show cache (lean-build session slice): ONE
-#: upstream fetch serves every playback-surface call — PlaybackInfo,
-#: stream, VTT — for one viewing session. Episode ``stream()`` needs
-#: the season torrent map again on EVERY facade call, so without this
-#: each of the three calls re-hits Popcorn and playback dies on any
-#: upstream blip mid-session. 5 min: a season's torrent set changes
-#: on a scale of hours, so staleness is immaterial beside liveness.
-SHOW_CACHE_TTL_S = 300.0
-
-#: LRU bound for the same cache (a long-tail browse must not pin
-#: unbounded show objects).
-_SHOW_CACHE_MAX = 64
-POPCORN_SHOW_PATH = "/show/{imdb_id}"
+#: by ``popcorn_base_url``; the conversation (paths, guards, session
+#: cache) lives in :mod:`popcorn` (imported above).
 
 _SECTIONS = (
     Section(id="movies", title="Фільми", form="movie"),
@@ -309,44 +302,6 @@ def _movie_of_details(payload: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _shows_of_page(payload: Any) -> list[dict[str, Any]]:
-    """The shows array of a Popcorn ``/shows/{page}`` envelope.
-
-    A JSON null (the upstream empty-page answer) is a legitimate empty
-    listing → ``[]``; anything else malformed raises typed
-    ``parse_failed``.
-    """
-    if payload is None:
-        return []
-    if not isinstance(payload, list):
-        raise ProviderError("parse_failed", "shows page not a list")
-    return [s for s in payload if isinstance(s, dict)]
-
-
-def _show_of_details(payload: Any) -> dict[str, Any]:
-    """The show object of a Popcorn ``/show/{imdb_id}`` envelope."""
-    return _require_object(payload, "show object")
-
-
-def _episodes_of_show(show: dict[str, Any]) -> list[dict[str, Any]]:
-    episodes = show.get("episodes")
-    if not isinstance(episodes, list):
-        raise ProviderError("parse_failed", "episodes not a list")
-    return [e for e in episodes if isinstance(e, dict)]
-
-
-def _episode_title(episode: dict[str, Any], fallback: str) -> str:
-    title = episode.get("title")
-    if isinstance(title, str) and title.strip():
-        return title
-    return fallback
-
-
-def _episode_overview(episode: dict[str, Any]) -> str:
-    overview = episode.get("overview")
-    return overview if isinstance(overview, str) else ""
-
-
 def _display_title(movie: dict[str, Any]) -> str:
     title = movie.get("title_english") or movie.get("title")
     if not isinstance(title, str) or not title.strip():
@@ -371,44 +326,9 @@ def _poster_of(movie: dict[str, Any]) -> str | None:
     return poster if isinstance(poster, str) and poster else None
 
 
-def _show_poster_of(show: dict[str, Any]) -> str | None:
-    """The Popcorn poster: nested ``images.poster`` (a null when absent)."""
-    images = show.get("images")
-    if not isinstance(images, dict):
-        return None
-    poster = images.get("poster")
-    return poster if isinstance(poster, str) and poster else None
-
-
 def _rating_of(movie: dict[str, Any]) -> float | None:
     rating = movie.get("rating")
     return float(rating) if isinstance(rating, int | float) else None
-
-
-def _show_year_of(show: dict[str, Any]) -> int | None:
-    """Popcorn ships ``year`` as a STRING ("2019"); YTS ships an int.
-    One coercion the series pass uses so both dialects land as ints."""
-    year = show.get("year")
-    if isinstance(year, bool):
-        return None
-    if isinstance(year, int):
-        return year
-    if isinstance(year, str) and year.isdigit() and len(year) == 4:
-        return int(year)
-    return None
-
-
-def _show_rating_of(show: dict[str, Any]) -> float | None:
-    """Popcorn ships ``rating`` as ``{"percentage": 95.0, ...}`` (the
-    YTS movie shape is a bare number); the series pass reads the
-    percentage, the same 0-100 scale the movie lane reports."""
-    rating = show.get("rating")
-    if isinstance(rating, dict):
-        pct = rating.get("percentage")
-        if isinstance(pct, int | float) and not isinstance(pct, bool):
-            return float(pct)
-        return None
-    return _rating_of(show)
 
 
 def _description_of(movie: dict[str, Any]) -> str:
@@ -456,33 +376,25 @@ class YtsProvider(BaseProvider):
         #: carrying torrents[]. Instance state on the subclass
         #: (BaseProvider contract untouched); consumed by playback.
         self._torrent_entries: OrderedDict[str, list[TorrentCandidate]] = OrderedDict()
-        #: The configured Popcorn-API series base (movies pass is
-        #: independent of it). Empty ⇒ series surfaces the LOUD typed
-        #: not-configured verdict while movies stay fully live.
-        self._popcorn_base = (_config.SETTINGS.popcorn_base_url or "").strip()
-        #: imdb → (monotonic_ts, show) — one Popcorn fetch per TTL
-        #: window per show (see SHOW_CACHE_TTL_S). Instance state on
-        #: the subclass; the provider is the single owner of its
-        #: upstream conversation.
-        self._show_cache: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
-        if self._popcorn_base:
+        #: The Popcorn shows conversation (fetch + parse + session
+        #: show-cache): one owner for the series upstream. Movies are
+        #: independent of it; an empty base ⇒ series surfaces the LOUD
+        #: typed not-configured verdict while movies stay fully live.
+        self._popcorn = PopcornShows(self, _config.SETTINGS.popcorn_base_url)
+        if self._popcorn.base:
             self.allowed_hosts = frozenset(
-                {*type(self).allowed_hosts, urlparse(self._popcorn_base).netloc}
+                {*type(self).allowed_hosts, self._popcorn.netloc}
             )
+
+    @property
+    def _popcorn_base(self) -> str:
+        """Compat view of the configured base (empty when unconfigured)."""
+        return self._popcorn.base
 
     def _require_popcorn(self) -> str:
-        """The configured series base, or a LOUD typed verdict.
-
-        The series pass is deliberately NOT a silent empty listing when
-        unconfigured — the operator must see that the lane is off (the
-        same not-configured posture the engine knob set in #377).
-        """
-        if not self._popcorn_base:
-            raise ProviderError(
-                "unreachable",
-                "popcorn series host not configured (CS_UK_POPCORN_BASE_URL)",
-            )
-        return self._popcorn_base
+        """Compat delegation: the LOUD not-configured verdict lives on
+        the conversation client."""
+        return self._popcorn.require_base()
 
     def torrent_hashes(self, external_id: str) -> dict[str, str]:
         """Quality→info-hash map recorded for ``external_id``, or {}.
@@ -542,11 +454,8 @@ class YtsProvider(BaseProvider):
     async def _search_series(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         """The Popcorn-API series page of the query (page 1 suffices for
         a search box; deep pagination is a browse concern)."""
-        base = self._require_popcorn()
-        url = f"{base}{POPCORN_SHOWS_PATH.format(page=1)}?sort=name&keywords={quote(query, safe='')}"
-        payload = await self.get_json(url, http)
         cards: list[SearchResult] = []
-        for show in _shows_of_page(payload):
+        for show in await self._popcorn.search_shows(query, http):
             card = self._show_card(show)
             if card is not None:
                 cards.append(card)
@@ -592,10 +501,7 @@ class YtsProvider(BaseProvider):
         truth (the same tolerant posture as a DLE pagination tail; one
         extra empty page at worst).
         """
-        base = self._require_popcorn()
-        url = f"{base}{POPCORN_SHOWS_PATH.format(page=page)}?sort=updated&order=-1"
-        payload = await self.get_json(url, http)
-        shows = _shows_of_page(payload)
+        shows = await self._popcorn.updated_shows(page, http)
         results: list[SearchResult] = []
         for show in shows:
             card = self._show_card(show)
@@ -805,29 +711,9 @@ class YtsProvider(BaseProvider):
         return _torrent_stream_response(result)
 
     async def _show(self, imdb: str, http: httpx.AsyncClient) -> dict[str, Any] | None:
-        """The Popcorn show object for ``imdb``, or ``None`` when the
-        series host is not configured (the movies-first envelope falls
-        out instead — typed verdicts are the SERIES-only paths' job).
-
-        Cached for ``SHOW_CACHE_TTL_S``: one upstream fetch serves the
-        whole PlaybackInfo → stream → VTT call chain (acceptance: the
-        in-TTL chain must survive an upstream outage)."""
-        base = self._popcorn_base
-        if not base:
-            return None
-        now = time.monotonic()
-        cached = self._show_cache.get(imdb)
-        if cached is not None and now - cached[0] < SHOW_CACHE_TTL_S:
-            self._show_cache.move_to_end(imdb)
-            return cached[1]
-        url = f"{base}{POPCORN_SHOW_PATH.format(imdb_id=imdb)}"
-        payload = await self.get_json(url, http)
-        show = _show_of_details(payload)
-        self._show_cache[imdb] = (now, show)
-        self._show_cache.move_to_end(imdb)
-        while len(self._show_cache) > _SHOW_CACHE_MAX:
-            self._show_cache.popitem(last=False)
-        return show
+        """Compat delegation: the Popcorn show conversation (fetch,
+        parse, session cache) lives on the client."""
+        return await self._popcorn.show(imdb, http)
 
     # -------------------------------------------------------------
     # Series card + season builders (#379)
@@ -850,7 +736,7 @@ class YtsProvider(BaseProvider):
             title=title,
             year=_show_year_of(show),
             poster=_show_poster_of(show),
-            url=f"{self._popcorn_base}{POPCORN_SHOW_PATH.format(imdb_id=imdb)}",
+            url=self._popcorn.show_url(imdb),
             genres=_genres_of(show),
         )
 
