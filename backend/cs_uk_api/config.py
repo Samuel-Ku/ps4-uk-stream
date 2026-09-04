@@ -118,6 +118,15 @@ class Settings:
     torrent_engine_url: str | None = None
     torrent_engine_user: str | None = None
     torrent_engine_password: str | None = None
+    #: Torrent lane, series pass (#379): the Popcorn-API series host the
+    #: YTS adapter asks for shows/seasons/episodes (research #366: YTS
+    #: itself ships no series catalogue; every historic public host is
+    #: dead — point this at a self-hosted popcorn-api or a live
+    #: mirror). Unset or empty ⇒ the series pass answers a LOUD typed
+    #: verdict while the YTS movies lane stays fully live. Declared to
+    #: the provider's allowlist at construction, so the central SSRF
+    #: check admits it (ADR-0005).
+    popcorn_base_url: str | None = None
 
 
 def _load_resume_path() -> str | None:
@@ -235,6 +244,8 @@ def load_settings() -> Settings:
         torrent_engine_url=os.environ.get("CS_UK_TORRENT_ENGINE_URL") or None,
         torrent_engine_user=os.environ.get("CS_UK_TORRENT_ENGINE_USER") or None,
         torrent_engine_password=os.environ.get("CS_UK_TORRENT_ENGINE_PASSWORD") or None,
+        # Torrent lane, series pass (#379): the Popcorn-API series host.
+        popcorn_base_url=os.environ.get("CS_UK_POPCORN_BASE_URL") or None,
     )
 
 

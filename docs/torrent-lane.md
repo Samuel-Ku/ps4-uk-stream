@@ -43,6 +43,10 @@ Environment=CS_UK_TORRENT_ENGINE_URL=http://192.168.2.166:3347
 # Only when BitPlay auth is enabled — both sides need BOTH values:
 # Environment=CS_UK_TORRENT_ENGINE_USER=operator
 # Environment=CS_UK_TORRENT_ENGINE_PASSWORD=change-me
+# English SERIES (#379): the Popcorn shows host. Every known public
+# host is dead (research #366) — self-host popcorn-api or point at a
+# live mirror. Unset ⇒ movies work, series say `unreachable` loudly.
+# Environment=CS_UK_POPCORN_BASE_URL=http://popcorn.lan:9000
 ```
 
 ```bash
@@ -63,6 +67,15 @@ http://<engine-host>:3347/api/v1/torrent/{sessionId}/stream/{fileIndex}
 
 For testing by hand you can paste any magnet into BitPlay's web UI at
 `:3347`, or drive it with curl (recipe in §5).
+
+**Series (#379)** ride the same magnet path one level deeper: a show
+opened from search/home resolves its season through the Popcorn shows
+host (`CS_UK_POPCORN_BASE_URL`, unset ⇒ series browsing answers the
+loud `unreachable` verdict while movies stay live), episodes carry the
+canonical `:sNeM` ids, and an episode's `stream()` picks the season
+torrent (best-seeded suitable quality) and selects the episode's file
+index inside it — the player still receives nothing but the engine's
+LAN URL. Resume/NextUp work per episode via the canonical ids.
 
 ## 2. Health interpretation
 

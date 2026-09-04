@@ -35,7 +35,7 @@ status: [`docs/provider-triage.md`](../docs/provider-triage.md).
 | simpsonsuatv | simpsonsua.tv                 | updates, page                        | m3u8          |
 | animeon     | animeon.club                  | seasons, popular, page               | m3u8          |
 | uaserialspro | uaserials.com                 | films, series, fcartoon, cartoons, anime, exclusive | m3u8 |
-| yts         | yts.gg (API)                  | movies                               | torrent→mp4 (#377) |
+| yts         | yts.gg (API) + Popcorn shows  | movies, series                       | torrent→mp4 (#377, #379) |
 
 ## Streaming shape
 
@@ -113,6 +113,17 @@ status: [`docs/provider-triage.md`](../docs/provider-triage.md).
   `docs/research/uakino-bypass-2026-08-02.md`). Streams are
   `ashdi.vip/vod/{id}` pages whose `file:'…m3u8'` lines yield direct
   `.m3u8` HLS; only that CDN hop uses plain httpx.
+- **yts** (English lane, spec #374): **movies** — YTS v2 API listings
+  carry per-quality magnet hashes; `stream()` picks the best-seeded
+  suitable quality and plays through the BitPlay engine (#377).
+  **Series** (#379) — the Popcorn-API shows host (`CS_UK_POPCORN_BASE_URL`;
+  every known public host is dead, research #366 — point it at a
+  self-hosted popcorn-api or live mirror) supplies shows/seasons/
+  episodes with per-episode quality maps; one season resolves to the
+  canonical `:sNeM` episode ids and episode playback reuses the same
+  engine policy + season-torrent file selection. Unconfigured popcorn
+  base ⇒ series surfaces the loud typed `unreachable` verdict; movies
+  stay fully live.
 
 ## Content ids
 

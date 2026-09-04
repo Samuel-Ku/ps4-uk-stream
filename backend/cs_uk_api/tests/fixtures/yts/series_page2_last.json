@@ -1,0 +1,38 @@
+[
+  {
+    "_id": "5691901b8a758786d7a2adad",
+    "imdb_id": "tt6468322",
+    "tvdb_id": "330727",
+    "title": "Money Heist",
+    "year": "2017",
+    "slug": "money-heist",
+    "num_seasons": 5,
+    "images": {"poster": "https://pic.timstvshows.nl/tt6468322.jpg", "fanart": "https://pic.timstvshows.nl/fanart/tt6468322.jpg", "banner": null},
+    "rating": {"percentage": 82.0, "watching": 0, "votes": 117838, "loved": 0, "hated": 0},
+    "genres": ["action", "crime", "mystery", "thriller"],
+    "synopsis": "An unusual group of robbers attempt to carry out the most perfect robbery in Spanish history.",
+    "runtime": "70 min",
+    "network": "Antena 3",
+    "country": "es",
+    "status": "ended",
+    "last_updated": 1663692401
+  },
+  {
+    "_id": "5ae87ba1f4c3d9040e1972df",
+    "imdb_id": "tt8740758",
+    "tvdb_id": "364545",
+    "title": "Chernobyl",
+    "year": "2019",
+    "slug": "chernobyl",
+    "num_seasons": 1,
+    "images": {"poster": "https://pic.timstvshows.nl/tt8740758.jpg", "fanart": "https://pic.timstvshows.nl/fanart/tt8740758.jpg", "banner": null},
+    "rating": {"percentage": 95.0, "watching": 0, "votes": 911203, "loved": 0, "hated": 0},
+    "genres": ["drama", "history", "thriller"],
+    "synopsis": "In April 1986, an explosion at the Chernobyl nuclear power plant becomes one of the world's worst man-made catastrophes.",
+    "runtime": "65 min",
+    "network": "HBO",
+    "country": "us",
+    "status": "ended",
+    "last_updated": 1660725078
+  }
+]

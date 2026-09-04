@@ -98,9 +98,10 @@ class FakeTorrentEngine:
 
     Maps identifier→EngineStream from an optional configured table;
     unknown identifiers get a stable synthesized URL derived from the
-    identifier itself. Records calls (ensure count + last identifier)
-    so route-level orchestration assertions can verify session-ensured-
-    before-handoff without touching internals of the mapping.
+    identifier itself. Records calls (ensure count + last identifier +
+    last file hint) so route-level orchestration assertions can verify
+    session-ensured-before-handoff — and, since #379, that the SEASON
+    file hint rode along — without touching internals of the mapping.
     """
 
     def __init__(
@@ -113,12 +114,14 @@ class FakeTorrentEngine:
         self._container = container
         self.ensure_count = 0
         self.last_identifier: str | None = None
+        self.last_file_hint: str | None = None
 
     async def ensure_session(
         self, identifier: str, *, file_hint: str | None = None
     ) -> EngineStream:
         self.ensure_count += 1
         self.last_identifier = identifier
+        self.last_file_hint = file_hint
         configured = self._streams.get(identifier)
         if configured is not None:
             return configured
