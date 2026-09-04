@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import ast
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -35,12 +36,14 @@ from cs_uk_api.merge import item_group_key, merge_results
 from cs_uk_api.models import SearchResult
 from cs_uk_api.wire_identity import (
     GROUP_KEY_PREFIX,
+    IMDB_RE,
     MOVIE_SUFFIX,
     episode_wire_id,
     group_key,
     is_group_key,
     is_movie_wire_id,
     parse_episode_tail,
+    parse_playable_id,
     project_group,
     provider_union,
     split_episode_tail,
@@ -241,6 +244,81 @@ def test_movie_suffix_strip_and_recognize() -> None:
     assert strip_movie_suffix(movie_id) == "cikavaideya:281-duelianty"
     assert not is_movie_wire_id("p1:serial-1:s1e1")
     assert strip_movie_suffix("p1:serial-1:s1e1") == "p1:serial-1:s1e1"
+
+
+# ---------------------------------------------------------------------------
+# Playable-id composition (spec #374 — moved verbatim from ``yts``;
+# these pins capture the dialect that module's stream() path served)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("content_id", "expected"),
+    [
+        # Movie sentinel, both prefix spellings.
+        ("yts:tt8740758:__movie__", ("tt8740758", None)),
+        ("tt8740758:__movie__", ("tt8740758", None)),
+        # Episode form, both prefix spellings; the season IS the
+        # discriminator (the episode number never rides the answer).
+        ("yts:tt8740758:s1e1", ("tt8740758", 1)),
+        ("yts:tt8740758:s2e10", ("tt8740758", 2)),
+        ("tt8740758:s1e1", ("tt8740758", 1)),
+    ],
+)
+def test_parse_playable_id_accepts_the_dual_spellings(
+    content_id: str, expected: tuple[str, int | None]
+) -> None:
+    """Provider-scoped ids (``yts:<imdb>:…``) and the bare-suffix form
+    the facade's episode-wire resolution hands over both parse."""
+    assert parse_playable_id(content_id, provider="yts") == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "content_id",
+    [
+        "",
+        "garbage",
+        "tt8740758",  # bare id — not playable (no suffix, no tail)
+        "g2:0123456789abcdef",  # a merged group key, not a playable id
+        "uakino:tt8740758:s1e1",  # foreign provider prefix — refused
+        "tt8740758:sx",  # malformed tail
+        "tt:tt8740758:s1e1",  # malformed external after prefix strip
+        "tt123:s1e1",  # too short for the IMDb shape
+    ],
+)
+def test_parse_playable_id_rejects_non_playables(content_id: str) -> None:
+    """Garbage, bare ids, group keys, foreign prefixes and malformed
+    tails all read ``(None, None)`` — the caller surfaces its verdict."""
+    assert parse_playable_id(content_id, provider="yts") == (None, None)
+
+
+@pytest.mark.unit
+def test_parse_playable_id_external_shape_is_injectable() -> None:
+    """``external_re`` is the composing lane's boundary shape — the
+    default is the IMDb grammar; a lane with a different external
+    dialect injects its own and the same composition serves it."""
+    digits = re.compile(r"\d+")
+    assert parse_playable_id("x:42:s1e1", provider="x", external_re=digits) == (
+        "42",
+        1,
+    )
+    assert parse_playable_id("x:tt8740758:s1e1", provider="x", external_re=digits) == (
+        None,
+        None,
+    )
+
+
+@pytest.mark.unit
+def test_imdb_re_is_the_boundary_shape() -> None:
+    """``IMDB_RE`` fullmatches exactly ``tt`` + 7-8 digits — the shape
+    the playable-id parser and the English lane validate against."""
+    assert IMDB_RE.fullmatch("tt8740758") is not None
+    assert IMDB_RE.fullmatch("tt1160419") is not None
+    assert IMDB_RE.fullmatch("tt123") is None
+    assert IMDB_RE.fullmatch("tt123456789") is None
+    assert IMDB_RE.fullmatch("8740758") is None
 
 
 # ---------------------------------------------------------------------------
