@@ -246,11 +246,6 @@ class StreamResponse(BaseModel):
     #: (None) when the session carries no convertible subtitle file;
     #: classic providers never set it.
     subtitle_url: str | None = None
-    #: #378 (torrent lane): selectable audio tracks as (stream_index,
-    #: label) pairs the engine can address (BitPlay remux ``?audio=N``).
-    #: Empty when the served file carries nothing pickable; classic
-    #: providers never set it (their audio choice rides translations).
-    audio_tracks: tuple[tuple[int, str], ...] = ()
 
 
 #: Wire status literals (v3 spec §2.1.3/§3.4) — the single source of truth:

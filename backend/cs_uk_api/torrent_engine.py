@@ -53,17 +53,12 @@ class EngineStream:
         ``stream/{i}?format=vtt``). None when the torrent carries no
         separate srt — the remux path strips embedded tracks, so only
         external srt can ever play (research #367 limit 6).
-      - ``audio_tracks`` — the selectable audio streams of the served
-        file as ``(index, label)`` pairs; BitPlay's remux endpoint
-        accepts ``?audio=N`` (absolute stream index). Empty when the
-        file carries a single (default) audio track — nothing to pick.
     """
 
     url: str
     container: str
     seekable: bool = True
     subtitle_url: str | None = None
-    audio_tracks: tuple[tuple[int, str], ...] = ()
 
 
 # ------------------------------------------------------------- errors
@@ -231,31 +226,6 @@ def _select_subtitle(files: list[tuple[int, str]]) -> int | None:
     return srts[0][0]
 
 
-def _audio_tracks(files: list[tuple[int, str]], video_index: int) -> tuple[tuple[int, str], ...]:
-    """Audio ``?audio=N`` choices for the served video file.
-
-    BitPlay reports only FILE entries ({index, name}) — audio streams
-    INSIDE one file are invisible to the listing; the ``audio`` remux
-    parameter addresses absolute STREAM indexes. Without a probe of
-    the bytes themselves (a per-request ffmpeg cost the engine does
-    not expose over HTTP), the honest surface is: a multi-part audio
-    FILE group (``cd1``/``cd2``-style companions of the picked video,
-    the one convention the file listing can actually show) maps to
-    their stream positions 0..N-1, and a lone video file surfaces NO
-    picks — a single embedded track needs no picker.
-    """
-    video_name = next((name for idx, name in files if idx == video_index), "")
-    stem = os.path.splitext(video_name)[0]
-    companions = [
-        (idx, name)
-        for idx, name in files
-        if idx != video_index and os.path.splitext(name)[0] == stem and name.lower() != video_name.lower()
-    ]
-    if len(companions) < 2:
-        return ()
-    return tuple((position, name) for position, (_, name) in enumerate(sorted(companions)))
-
-
 class BitPlayClient:
     """Real adapter: drives the BitPlay HTTP API with httpx directly.
 
@@ -303,8 +273,11 @@ class BitPlayClient:
             seekable = direct is not None
             # #378 — what else the session carries, discovered from the
             # same listing (no extra engine round-trips): the VTT
-            # conversion endpoint of an external srt, and the multi-part
-            # audio picks the file listing can honestly show.
+            # conversion endpoint of an external srt. Audio picks are
+            # deliberately NOT surfaced: the file listing cannot see
+            # audio streams inside a file, so any pick would be
+            # invented (lean-build omission; restore only if the
+            # engine exposes per-file audio stream indexes).
             subtitle_url: str | None = None
             srt_index = _select_subtitle(files)
             if srt_index is not None:
@@ -318,7 +291,6 @@ class BitPlayClient:
                 container=direct if direct is not None else "mp4",
                 seekable=seekable,
                 subtitle_url=subtitle_url,
-                audio_tracks=_audio_tracks(files, index),
             )
         finally:
             if own:

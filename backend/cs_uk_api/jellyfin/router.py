@@ -1707,26 +1707,24 @@ def _engine_media_streams(item_id: str, stream: StreamResponse) -> list[MediaStr
     """#378: media-stream entries for what the file actually carries.
 
     Torrent-lane truth only — a classic ``StreamResponse`` (subtitle_url
-    None, audio_tracks empty) yields the D6 default ``[{Video}]`` list
-    byte-identically, so the Ukrainian lane's PlaybackInfo wire never
-    moves (parity gate). An enriched one appends, in the stable order
-    audio-then-subtitles:
+    None) yields the D6 default ``[{Video}]`` list byte-identically, so
+    the Ukrainian lane's PlaybackInfo wire never moves (parity gate).
+    An enriched one appends ONE ``Subtitle`` entry when the session
+    exposes a convertible srt. ``DeliveryUrl`` points at THIS facade
+    (``/Stream/{item}/vtt`` re-resolves the stream and 302s to the
+    engine) — the raw LAN engine host never reaches the player.
 
-      - one ``Audio`` entry per engine-addressable track (``Index`` =
-        the engine stream index, ``DisplayTitle`` = the file name);
-      - one ``Subtitle`` entry when the session exposes a convertible
-        srt. ``DeliveryUrl`` points at THIS facade (``/Stream/{item}/vtt``
-        re-resolves the stream and 302s to the engine) — the raw LAN
-        engine host never reaches the player.
+    No ``Audio`` entries: the engine's file listing cannot see audio
+    streams inside a file, so any pick would be invented and unselectable
+    (lean-build omission; restore if the engine exposes per-file audio
+    stream indexes).
     """
-    if not stream.audio_tracks and stream.subtitle_url is None:
+    if stream.subtitle_url is None:
         return [MediaStreamInfo()]
-    streams: list[MediaStreamInfo] = [MediaStreamInfo(Type="Video")]
-    for index, label in stream.audio_tracks:
-        streams.append(MediaStreamInfo(Type="Audio", Index=index, DisplayTitle=label))
-    if stream.subtitle_url is not None:
-        streams.append(MediaStreamInfo(Type="Subtitle", DeliveryUrl=f"/Stream/{item_id}/vtt"))
-    return streams
+    return [
+        MediaStreamInfo(Type="Video"),
+        MediaStreamInfo(Type="Subtitle", DeliveryUrl=f"/Stream/{item_id}/vtt"),
+    ]
 
 
 def _translation_source_id(item_id: str, translation_id: str) -> str:

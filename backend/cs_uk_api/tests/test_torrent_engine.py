@@ -421,19 +421,9 @@ async def test_bitplay_no_srt_means_no_subtitle_url() -> None:
     assert stream.subtitle_url is None
 
 
-async def test_bitplay_lone_video_yields_no_audio_picks() -> None:
-    """A single video file carries no pickable audio the FILE listing can
-    show — audio_tracks stays empty (no invented picker)."""
-    with respx.mock:
-        _mock_add()
-        _mock_files([{"index": 5, "name": "Sintel.mp4", "size": 129241752}])
-        stream = await _client().ensure_session(_MAGNET)
-    assert stream.audio_tracks == ()
-
-
-async def test_bitplay_remux_path_keeps_subtitle_and_defaults() -> None:
+async def test_bitplay_remux_path_keeps_subtitle() -> None:
     """The VTT endpoint is INDEPENDENT of the video container choice: an
-    mkv (remuxed) still exposes its srt companion, and audio stays empty."""
+    mkv (remuxed) still exposes its srt companion."""
     with respx.mock:
         _mock_add()
         _mock_files(
@@ -447,20 +437,18 @@ async def test_bitplay_remux_path_keeps_subtitle_and_defaults() -> None:
     assert stream.container == "mp4"
     assert stream.seekable is False
     assert stream.subtitle_url == f"{_FILES}/stream/1?format=vtt"
-    assert stream.audio_tracks == ()
 
 
 async def test_fake_carries_full_engine_streams() -> None:
     """The fake's configured table passes EngineStreams through verbatim —
-    subtitle/audio ride the SAME knob; unconfigured identifiers synthesize
-    a bare stream with neither (#378 omission default)."""
+    subtitle_url rides the SAME knob; unconfigured identifiers synthesize
+    a bare stream with none (#378 omission default)."""
     rich = EngineStream(
         url="http://lan/s/1",
         container="mp4",
         subtitle_url="http://lan/s/2?format=vtt",
-        audio_tracks=((1, "cd2"),),
     )
     engine = FakeTorrentEngine(streams={_MAGNET: rich})
     assert await engine.ensure_session(_MAGNET) == rich
     bare = await engine.ensure_session("magnet:?xt=urn:btih:other")
-    assert bare.subtitle_url is None and bare.audio_tracks == ()
+    assert bare.subtitle_url is None

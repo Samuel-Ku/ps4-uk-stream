@@ -1,12 +1,13 @@
-"""PlaybackInfo media streams — subtitles + audio tracks (#378, spec #374).
+"""PlaybackInfo media streams — subtitle delivery (#378, spec #374).
 
 The single-source PlaybackInfo path stops being blind to the file's
-content: when the provider's ``StreamResponse`` reports what the session
-carries — an engine-converted VTT subtitle endpoint and addressable
-audio tracks — the thin MediaSource's ``MediaStreams`` grow the matching
-``Subtitle``/``Audio`` entries, and ``/Stream/{item}/vtt`` (the
+content: when the provider's ``StreamResponse`` reports the engine's
+VTT subtitle endpoint, the thin MediaSource's ``MediaStreams`` grows
+the matching ``Subtitle`` entry, and ``/Stream/{item}/vtt`` (the
 ``DeliveryUrl`` target) hands the player the VTT bytes via a 302 to the
-engine. A classic response (nothing to report) must leave the wire
+engine. No ``Audio`` entries: the engine's file listing cannot see
+audio streams inside a file, so any pick would be invented and
+unselectable (lean-build omission). A classic response (nothing to report) must leave the wire
 BYTE-IDENTICAL to the pre-#378 shape — the Ukrainian-lane parity gate is
 pinned here against a frozen fixture.
 
@@ -99,7 +100,6 @@ def _torrent_lane() -> StreamResponse:
         url="http://bitplay.lan:3347/api/v1/torrent/abc/stream/5",
         type="mp4",
         subtitle_url="http://bitplay.lan:3347/api/v1/torrent/abc/stream/7?format=vtt",
-        audio_tracks=((1, "Movie.cd2.mkv"),),
     )
 
 
@@ -146,8 +146,9 @@ def _post(client: TestClient, path: str) -> dict[str, Any]:
 
 
 def test_playback_info_enriches_when_session_reports_tracks(client: TestClient) -> None:
-    """A torrent-lane StreamResponse grows the wire: Video + Audio (engine
-    index + file label) + Subtitle (DeliveryUrl = the facade VTT proxy)."""
+    """A torrent-lane StreamResponse grows the wire: Video + Subtitle
+    (DeliveryUrl = the facade VTT proxy). No Audio entries — nothing
+    the engine listing shows is selectable."""
     stub = _PlaybackStub(streams={"dune-1": _torrent_lane()})
     PROVIDERS["p1"] = stub
     gk = _warm_movie_gk(client)
@@ -158,14 +159,13 @@ def test_playback_info_enriches_when_session_reports_tracks(client: TestClient) 
     assert source["Container"] == "mp4"
     assert source["MediaStreams"] == [
         {"Type": "Video"},
-        {"Type": "Audio", "Index": 1, "DisplayTitle": "Movie.cd2.mkv"},
         {"Type": "Subtitle", "DeliveryUrl": f"/Stream/{gk}/vtt"},
     ]
 
 
 def test_playback_info_omits_cleanly_when_session_bare(client: TestClient) -> None:
-    """A session with neither srt nor audio picks must carry ONLY the
-    classic ``[{Type: Video}]`` stream — the omission is clean."""
+    """A session with no srt must carry ONLY the classic
+    ``[{Type: Video}]`` stream — the omission is clean."""
     stub = _PlaybackStub(streams={"dune-1": _classic()})
     PROVIDERS["p1"] = stub
     gk = _warm_movie_gk(client)
@@ -174,7 +174,6 @@ def test_playback_info_omits_cleanly_when_session_bare(client: TestClient) -> No
     source = cast("dict[str, Any]", body["MediaSources"][0])
     assert source["MediaStreams"] == [{"Type": "Video"}]
     assert "subtitle_url" not in source
-    assert "audio_tracks" not in source
 
 
 def test_vtt_route_302s_to_engine_and_404s_without_subtitle(client: TestClient) -> None:

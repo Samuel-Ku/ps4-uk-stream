@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
@@ -89,6 +90,19 @@ _DETAILS_PATH = "/api/v2/movie_details.json"
 #: by ``popcorn_base_url``. ``CS_UK_POPCORN_BASE_URL`` env override kept
 #: literal per module contract (imports stay stdlib + models only).
 POPCORN_SHOWS_PATH = "/shows/{page}"
+
+#: TTL for the in-memory show cache (lean-build session slice): ONE
+#: upstream fetch serves every playback-surface call — PlaybackInfo,
+#: stream, VTT — for one viewing session. Episode ``stream()`` needs
+#: the season torrent map again on EVERY facade call, so without this
+#: each of the three calls re-hits Popcorn and playback dies on any
+#: upstream blip mid-session. 5 min: a season's torrent set changes
+#: on a scale of hours, so staleness is immaterial beside liveness.
+SHOW_CACHE_TTL_S = 300.0
+
+#: LRU bound for the same cache (a long-tail browse must not pin
+#: unbounded show objects).
+_SHOW_CACHE_MAX = 64
 POPCORN_SHOW_PATH = "/show/{imdb_id}"
 
 _SECTIONS = (
@@ -174,9 +188,9 @@ def _torrent_stream_response(result: EngineStream) -> StreamResponse:
     """EngineStream → wire StreamResponse (#378).
 
     The engine is the TRUTH about what the file carries: its VTT
-    subtitle endpoint and audio picks ride along verbatim; an empty
-    session (no srt, one audio track) maps to the omitted (None/∅)
-    fields — the wire stays byte-identical to the pre-#378 shape.
+    subtitle endpoint rides along verbatim; an empty session (no srt)
+    maps to the omitted (None) field — the wire stays byte-identical
+    to the pre-#378 shape.
     """
     return StreamResponse(
         url=result.url,
@@ -184,7 +198,6 @@ def _torrent_stream_response(result: EngineStream) -> StreamResponse:
         headers={},
         seekable=result.seekable,
         subtitle_url=result.subtitle_url,
-        audio_tracks=result.audio_tracks,
     )
 
 
@@ -447,6 +460,11 @@ class YtsProvider(BaseProvider):
         #: independent of it). Empty ⇒ series surfaces the LOUD typed
         #: not-configured verdict while movies stay fully live.
         self._popcorn_base = (_config.SETTINGS.popcorn_base_url or "").strip()
+        #: imdb → (monotonic_ts, show) — one Popcorn fetch per TTL
+        #: window per show (see SHOW_CACHE_TTL_S). Instance state on
+        #: the subclass; the provider is the single owner of its
+        #: upstream conversation.
+        self._show_cache: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
         if self._popcorn_base:
             self.allowed_hosts = frozenset(
                 {*type(self).allowed_hosts, urlparse(self._popcorn_base).netloc}
@@ -789,13 +807,27 @@ class YtsProvider(BaseProvider):
     async def _show(self, imdb: str, http: httpx.AsyncClient) -> dict[str, Any] | None:
         """The Popcorn show object for ``imdb``, or ``None`` when the
         series host is not configured (the movies-first envelope falls
-        out instead — typed verdicts are the SERIES-only paths' job)."""
+        out instead — typed verdicts are the SERIES-only paths' job).
+
+        Cached for ``SHOW_CACHE_TTL_S``: one upstream fetch serves the
+        whole PlaybackInfo → stream → VTT call chain (acceptance: the
+        in-TTL chain must survive an upstream outage)."""
         base = self._popcorn_base
         if not base:
             return None
+        now = time.monotonic()
+        cached = self._show_cache.get(imdb)
+        if cached is not None and now - cached[0] < SHOW_CACHE_TTL_S:
+            self._show_cache.move_to_end(imdb)
+            return cached[1]
         url = f"{base}{POPCORN_SHOW_PATH.format(imdb_id=imdb)}"
         payload = await self.get_json(url, http)
-        return _show_of_details(payload)
+        show = _show_of_details(payload)
+        self._show_cache[imdb] = (now, show)
+        self._show_cache.move_to_end(imdb)
+        while len(self._show_cache) > _SHOW_CACHE_MAX:
+            self._show_cache.popitem(last=False)
+        return show
 
     # -------------------------------------------------------------
     # Series card + season builders (#379)
