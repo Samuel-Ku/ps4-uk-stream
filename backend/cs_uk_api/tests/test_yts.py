@@ -393,7 +393,7 @@ def test_parse_candidates_reads_quality_hash_and_seeds():
             "not-a-dict",
         ]
     }
-    cands = _torrent_candidates(movie)
+    cands = _torrent_candidates(movie["torrents"])
     assert cands == [
         _cand("1080p", "H_A", 50),
         _cand("1080p", "H_B", 200),
