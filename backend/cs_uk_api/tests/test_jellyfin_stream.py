@@ -65,18 +65,20 @@ _COMPANY_HEADERS = {"Referer": f"{_CDN}/referer"}
 _ENCODED = quote
 
 router_mod = importlib.import_module("cs_uk_api.jellyfin.router")
+delivery_mod = importlib.import_module("cs_uk_api.jellyfin.delivery")
 
 
 @contextlib.contextmanager
 def _fake_host() -> Iterator[None]:
-    """Point the router's ``get_client`` binding at a fresh httpx client,
-    which (respx being active) is intercepted for CDN hops."""
-    original = router_mod.get_client
-    router_mod.get_client = lambda: httpx.AsyncClient()  # type: ignore[assignment]
+    """Point the delivery module's ``get_client`` binding at a fresh
+    httpx client, which (respx being active) is intercepted for CDN
+    hops."""
+    original = delivery_mod.get_client
+    delivery_mod.get_client = lambda: httpx.AsyncClient()  # type: ignore[assignment]
     try:
         yield
     finally:
-        router_mod.get_client = original  # type: ignore[assignment]
+        delivery_mod.get_client = original  # type: ignore[assignment]
 
 
 def _dune() -> ContentResponse:

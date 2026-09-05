@@ -24,7 +24,7 @@ import re
 import sys
 import uuid
 from typing import Any, cast
-from urllib.parse import quote, unquote
+from urllib.parse import unquote
 
 from fastapi import (
     APIRouter,
@@ -35,15 +35,13 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from .. import row_kinds
 from ..catalog import (
     card_for_group,
-    episode_group_key,
     extend_row_pool,
-    first_source,
     genres_for_group,
     group_entries,
     group_sources,
@@ -59,7 +57,6 @@ from ..catalog import (
     poster_url_for_group,
     profiles,
     recent_playback,
-    record_dub_choice,
     refresh_profile,
     refresh_snapshot,
     resolve_item,
@@ -71,7 +68,6 @@ from ..catalog import (
     year_for_group,
 )
 from ..config import SETTINGS
-from ..health import TRACKER
 from ..http_client import get_client
 from ..models import (
     ContentResponse,
@@ -86,17 +82,15 @@ from ..models import (
     Translation,
 )
 from ..poster_proxy import fetch as fetch_poster_bytes
-from ..providers import PROVIDERS
-from ..providers.base import ProviderError
 from ..recommend import similarity
 from ..wire_identity import is_group_key
 from . import dto, images
 from .auth import require_token
-from .dto import safe_filename
+from .delivery import register as register_delivery
+from .delivery import resolve_stream as _resolve_stream
 from .hls_proxy import (
     _STREAM_MEMO as _STREAM_MEMO,  # noqa: PLC0414 (re-export: suite clears the memo via router)
 )
-from .hls_proxy import proxy_download, proxy_stream, segment_target, serve_segment
 from .models import (
     ActivityLogEntryQueryResult,
     AuthenticationResult,
@@ -1601,86 +1595,6 @@ async def item_auxiliary_image(item_id: str, index: int = 0) -> Response:
     return await _serve_item_image(item_id)
 
 
-async def _resolve_stream(
-    item_id: str, translation_id: str | None = None
-) -> StreamResponse | None:
-    """The upstream ``StreamResponse`` behind a playable item id, or None.
-
-    Resolves the two playable id families (D2/D3) to their provider, then
-    runs ``provider.stream()`` exactly as the native ``/api/stream/{id}``
-    route does — same bare external ids, ``translation`` (None = default
-    voice, or the picked dub id, spec #276), same shared ``httpx``
-    client:
-
-      - a movie's ``g2:`` group key → the group's first-seen provider
-        (the same provider the detail page shows first), whose BARE
-        external id is what stream() consumes. Playability is decided on
-        the content's FORM — ``content.form == "movie"`` — the same
-        verdict detail renders as ``Type="Movie"``, NOT the card's style
-        literal (``SearchResult.type`` can say ``"anime"`` for an anime
-        FILM; conflating style with form would 404 a film the client just
-        opened as a Movie). The shared ``resolve_group_content`` also
-        carries the blocklist verdict, so a blocked title never gets a
-        stream.
-      - an episode wire id (``p1:s1e1``-style) → the provider is the id
-        prefix; the episode suffix is handed to ``stream()`` exactly, no
-        group-key resolution (episodes are not reverse-lookupable, D2).
-
-    Unplayable ids (a series/season item — a show is not a playable
-    thing, the client plays episodes, D3 — a season suffix, a cold group
-    key, a blocked title, an unknown provider prefix) yield None. Rather
-    than a middle-man tuple hop, the resolution and the stream call live
-    in the same module: this IS the seam the routes cross, so a refusal
-    degrades to None → 404, the facade's standing "never 5xx" posture
-    (D2), and the provider+health recording stays colocated with it.
-    """
-    if is_group_key(item_id):
-        # Series/season keys and cold groups: not playable on their own.
-        group_key, season_number = _split_season_suffix(item_id)
-        if season_number is not None:
-            return None
-        content = (await resolve_item(group_key)).content
-        if content is None or content.form != "movie":
-            return None
-        first = first_source(group_key)
-        if first is None:
-            return None
-        provider_id, result = first
-        _, _, external_id = result.id.partition(":")
-    else:
-        # Provider-scoped episode wire id — split the prefix and hand the
-        # suffix straight to stream(), exactly like /api/stream/{id}.
-        provider_id, _, external_id = item_id.partition(":")
-        if provider_id not in PROVIDERS or not external_id:
-            return None
-
-    provider = PROVIDERS[provider_id]
-    http = get_client()
-    try:
-        stream = await provider.stream(external_id, translation_id, http)
-        TRACKER.record(provider_id, ok=True)
-        return stream
-    except ProviderError as e:
-        # A `gated` verdict is client-side semantics, NOT an upstream
-        # failure (ADR-0002 amendment): the item is deliberately
-        # unavailable — degrade to the standing 404 without marking
-        # the provider down.
-        if e.code == "gated":
-            log.info("jellyfin playback gated provider=%s id=%s", provider_id, item_id)
-            return None
-        log.warning(
-            "jellyfin playback stream failed provider=%s id=%s err=%s", provider_id, item_id, e
-        )
-        TRACKER.record(provider_id, ok=False)
-        return None
-    except Exception as e:  # noqa: BLE001
-        log.warning(
-            "jellyfin playback stream failed provider=%s id=%s err=%s", provider_id, item_id, e
-        )
-        TRACKER.record(provider_id, ok=False)
-        return None
-
-
 def _container_from_type(stream_type: str) -> str:
     """StreamResponse.type → Jellyfin ``Container`` (D6).
 
@@ -1725,17 +1639,6 @@ def _translation_source_id(item_id: str, translation_id: str) -> str:
     on the LAST occurrence (the item id is the prefix).
     """
     return f"{item_id}::{translation_id}"
-
-
-def _decode_translation_source(source_id: str) -> tuple[str, str] | None:
-    """Inverse of ``_translation_source_id``: ``(item_id, translation_id)``
-    or None for a plain (single-translation) item id."""
-    if "::" not in source_id:
-        return None
-    item_id, _, translation_id = source_id.rpartition("::")
-    if not item_id or not translation_id:
-        return None
-    return item_id, translation_id
 
 
 def _multi_source_media_sources(
@@ -1930,144 +1833,6 @@ async def item_special_features(user_id: str, item_id: str) -> list[object]:
     return []
 
 
-# ------------------------------------------------- HLS byte proxy (#342, D7)
-#
-# The byte/segment proxy itself — content-type map, ``URI=`` rewrite,
-# registrable-domain SSRF guard, per-item header memo, redirect-following
-# upstream opener, manifest fetcher and streaming wrapper — lives in
-# ``hls_proxy`` (ticket #342). The routes below stay thin: they resolve a
-# playable id (``_resolve_stream``), decide redirect-vs-proxy, and hand
-# the resolved stream + the shared httpx client (resolved at call time,
-# so tests can swap it) to the proxy module. A None from the module is
-# the standing 404 (D2).
-
-
-@router.get("/Videos/{item_id:path}/stream")
-async def video_stream(
-    item_id: str,
-    request: Request,
-    media_source_id: str | None = Query(default=None, alias="mediaSourceId"),
-) -> Response:
-    """Conditional stream handler (D7): redirect, or the byte proxy.
-
-    ``StreamResponse`` with no header map → 302 straight to the CDN URL
-    (no proxying). With a header map the backend owns the bytes — mp4
-    files forward the client's ``Range``, HLS manifests are fetched,
-    rewritten, and served as mpegurl so segments stay behind the facade
-    too (see ``hls_proxy.proxy_stream``).
-
-    Spec #276: ``mediaSourceId`` is the dub source echoed from
-    PlaybackInfo (``<item_id>::<translation_id>``) — it switches the
-    stream to that translation and records the pick as per-series dub
-    memory (series only; movies never remember, v3). The plain item id
-    (single-translation path) stays exactly as before.
-    """
-    translation_id: str | None = None
-    decoded = _decode_translation_source(media_source_id) if media_source_id else None
-    if decoded is not None:
-        # The echoed source id wins over the path item id — the client
-        # plays the FIRST source, whose item part is the same item.
-        item_id, translation_id = decoded
-    stream = await _resolve_stream(item_id, translation_id)
-    if stream is None:
-        raise HTTPException(status_code=404, detail="item_unavailable")
-    if translation_id is not None:
-        await record_dub_choice(item_id, translation_id)
-    if not stream.headers:
-        return RedirectResponse(stream.url, status_code=302)
-    response = await proxy_stream(
-        item_id=item_id,
-        stream=stream,
-        http=get_client(),
-        range_header=request.headers.get("range"),
-    )
-    if response is None:
-        raise HTTPException(status_code=404, detail="item_unavailable")
-    return response
-
-
-@router.get("/Videos/{item_id:path}/vtt")
-@router.get("/Stream/{item_id:path}/vtt")
-async def item_vtt(item_id: str) -> Response:
-    """Subtitle delivery (#378): the engine's VTT-converted track.
-
-    PlaybackInfo's ``Subtitle`` MediaStream carries ``DeliveryUrl``
-    pointing HERE (``/Stream/{item}/vtt``, both spellings — the client's
-    track element follows whatever base URL it already knows). The route
-    resolves the SAME stream seam as playback, then hands the player the
-    engine's ``stream/{i}?format=vtt`` endpoint — BitPlay converts the
-    external srt to WEBVTT on the fly (research #367 §1). No subtitle on
-    the session ⇒ 404 ``item_unavailable``, the standing posture.
-    """
-    stream = await _resolve_stream(item_id)
-    if stream is None or stream.subtitle_url is None:
-        raise HTTPException(status_code=404, detail="item_unavailable")
-    return RedirectResponse(stream.subtitle_url, status_code=302)
-
-
-@router.get("/Items/{item_id:path}/Download")
-async def item_download(item_id: str) -> Response:
-    """Original-quality download (spec #280): the SAME bytes the stream
-    route serves, with a Content-Disposition filename.
-
-    The download button must fetch exactly what a play would — the same
-    ``_resolve_stream`` seam the stream route crosses — so an unplayable
-    id 404s identically. The redirect path (no upstream headers) is
-    forced through the byte proxy here so the response can carry the
-    ``Content-Disposition`` file name the download manager saves under;
-    HLS manifests are proxied with the provider's headers and their
-    references rewritten to stay behind the facade. The filename is
-    ``<safe-title>.<container>`` (``_download_filename``).
-    """
-    stream = await _resolve_download(item_id)
-    if stream is None:
-        raise HTTPException(status_code=404, detail="item_unavailable")
-    filename = _download_filename(item_id, stream.type)
-    # HTTP header values are latin-1; a Cyrillic title cannot ride in the
-    # bare ``filename=`` (UnicodeEncodeError). ASCII-suffix fallback plus
-    # the RFC 5987 ``filename*=UTF-8''`` form keeps the real name for
-    # modern clients and a usable ASCII name for the rest.
-    ascii_name = filename.encode("ascii", errors="replace").decode("ascii")
-    if ascii_name == filename:
-        disposition = f'attachment; filename="{filename}"'
-    else:
-        encoded = quote(filename, safe="")
-        disposition = (
-            f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{encoded}'
-        )
-
-    # The byte proxy is forced here even when the stream route would 302,
-    # so the Content-Disposition name can ride along (spec #280).
-    response = await proxy_download(
-        item_id=item_id, stream=stream, http=get_client(), content_disposition=disposition
-    )
-    if response is None:
-        raise HTTPException(status_code=404, detail="item_unavailable")
-    return response
-
-
-@router.get("/Videos/{item_id:path}/segment")
-async def video_segment(item_id: str, url: str = Query(...)) -> Response:
-    """Proxy one rewritten HLS reference (D7).
-
-    ``url`` is an upstream reference embedded by the manifest rewriter
-    (already percent-encoded, decoded once by FastAPI): an ordinary
-    segment, or another playlist — a master's variant, or a variant's own
-    segment list, recursively re-rewritten so a multi-level tree keeps
-    every descendant reference pointed at the backend (see
-    ``hls_proxy.serve_segment``). The host must match the item's CDN
-    (dot-boundary) — anything else fails closed to 404 — and
-    Referer-gated CDNs still serve.
-    """
-    target = await segment_target(item_id, resolve_stream=_resolve_stream)
-    if target is None:
-        raise HTTPException(status_code=404, detail="item_unavailable")
-    response = await serve_segment(item_id=item_id, url=url, target=target, http=get_client())
-    if response is None:
-        raise HTTPException(status_code=404, detail="item_unavailable")
-    return response
-
-
 # ------------------------------------------------------------ user state (#257)
 
 
@@ -2134,58 +1899,6 @@ async def sessions_list() -> list[dict[str, object]]:
     tab renders it without errors.
     """
     return []
-
-
-def _title_for(item_id: str) -> str | None:
-    """A display title for a playable item id (spec #280 download name).
-
-    ``g2:`` keys resolve via the snapshot card (first) or the cached
-    content page; episode wire ids resolve through the series group's
-    content cache, matching the episode by its wire suffix. None for an
-    unknown/cold id — the download route then falls back to the id
-    itself so the filename is still stable and unique.
-    """
-    card = _card_for_group(item_id)
-    if card is not None:
-        return card.title
-    content = peek_group_content(item_id)
-    if content is not None:
-        return content.title
-    group_key = episode_group_key(item_id)
-    if group_key is not None:
-        content = peek_group_content(group_key)
-        if content is not None:
-            tail = item_id[len(content.id.partition(":")[0]) + 1 :]
-            for season in content.seasons or []:
-                for ep in season.episodes:
-                    if ep.id == tail or ep.id == item_id:
-                        return ep.title or content.title
-            return content.title
-    return None
-
-
-def _download_filename(item_id: str, stream_type: str) -> str:
-    """Content-Disposition filename for ``/Items/{id}/Download``.
-
-    ``<safe-title>.<container>`` where the container is the provider's
-    actual stream type (mp4/m3u8…) so the saved file is usable offline.
-    The filename-safe rendering lives in ``dto.safe_filename`` (shared
-    with the download-source attach, ticket #344).
-    """
-    title = _title_for(item_id) or item_id.rsplit(":", 1)[-1]
-    return f"{safe_filename(title)}.{stream_type}"
-
-
-async def _resolve_download(
-    item_id: str,
-) -> StreamResponse | None:
-    """The stream behind a download request (spec #280).
-
-    Same resolution as the stream route (``_resolve_stream``) — the
-    download button must fetch the SAME bytes a play would, so an
-    unplayable id 404s exactly like ``/Videos/{id}/stream`` does.
-    """
-    return await _resolve_stream(item_id)
 
 
 @router.get(
@@ -2423,6 +2136,11 @@ async def websocket_socket(websocket: WebSocket) -> None:
 # :mod:`playback_reports` — ONE owner for the client's playback-report
 # surface (#108/#214/#248). Registered flat here so the wire surface
 # and the facade's route table are unchanged.
+# Delivery (stream/vtt/download/segment) first, then reports — the
+# moved routes keep their relative declaration order. Table position
+# (the tail) is inert: no two facade patterns match the same URL, and
+# the full suite exercises every route through the real middleware.
+register_delivery(router)
 register_playback_reports(router)
 
 __all__ = ["require_token", "router"]
