@@ -299,6 +299,15 @@ class BitPlayClient:
     async def _add_torrent(self, http: httpx.AsyncClient, identifier: str) -> str:
         try:
             resp = await http.post(f"{self._base_url}{ADD_TORRENT_PATH}", json={"Magnet": identifier})
+        except httpx.ReadTimeout as e:
+            # The add endpoint BLOCKS until metadata arrives (upstream cap
+            # is 3 min, our ADD_TIMEOUT_S is shorter) — a read timeout here
+            # means we reached the engine and metadata never came: a dead
+            # swarm, not a dead lane. Observed live in the #373 acceptance
+            # (fork-mirror pick, zero real seeders).
+            raise EngineRejected(
+                f"torrent metadata did not arrive within {ADD_TIMEOUT_S:.0f}s (dead swarm?)"
+            ) from e
         except httpx.HTTPError as e:
             raise EngineUnavailable(f"engine unreachable: {e}") from e
         self._ensure_ok(resp, "add")
