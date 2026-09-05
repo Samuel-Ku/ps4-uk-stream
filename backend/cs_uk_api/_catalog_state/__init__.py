@@ -21,7 +21,7 @@ unchanged — the split is interface-neutral.
 from __future__ import annotations
 
 from ..providers import PROVIDERS  # noqa: F401  (catalog_state.PROVIDERS is the registry)
-from . import resolution, search, snapshot, warm  # noqa: F401
+from . import playback, resolution, search, snapshot, warm  # noqa: F401
 from ._stores import (
     _HOME_KEY,
     _SOURCES_KEY,
@@ -65,24 +65,26 @@ from ._stores import (
     sources_cache,
     user_state_store,
 )
+from .playback import (
+    MAX_TRANSLATION_SOURCES,
+    PlaybackEpisodePairing,
+    ordered_translation_candidates,
+    playback_episode_pair,
+    playback_translations,
+    record_dub_choice,
+)
 from .resolution import (
     _GATE_CHECK_CONCURRENCY,
     CONTENT_RETRY_DELAY_S,
     GATE_CHECK_TIMEOUT_S,
-    MAX_TRANSLATION_SOURCES,
     WARM_WAIT_S,
-    PlaybackEpisodePairing,
     await_uakino_ready,
     cached_provider_content,
     episode_group_key,
     filter_gated_items,
     group_key_for_external,
     is_hard_unavailable,
-    ordered_translation_candidates,
     peek_group_content,
-    playback_episode_pair,
-    playback_translations,
-    record_dub_choice,
     register_search_groups,
     resolve_group,
     resolve_group_content,

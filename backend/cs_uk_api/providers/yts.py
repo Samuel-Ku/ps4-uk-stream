@@ -45,7 +45,7 @@ import logging
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote, urlencode
+from urllib.parse import quote
 
 import httpx
 
@@ -74,10 +74,13 @@ from ..wire_identity import (
 )
 from .base import BaseProvider, ProviderError
 from .popcorn import (
-    PopcornShows,
+    PopcornApi,
+    PopcornMovie,
     _episode_overview,
     _episode_title,
     _episodes_of_show,
+    _genres_of,
+    _require_str,
     _show_poster_of,
     _show_rating_of,
     _show_year_of,
@@ -87,9 +90,6 @@ BASE_URL = "https://yts.gg"
 #: Migration base announced by the API banner (research #366 §5) —
 #: declared so an allowlist-followed redirect keeps working.
 MIRROR_BASE_URL = "https://movies-api.accel.li"
-
-_LIST_PATH = "/api/v2/list_movies.json"
-_DETAILS_PATH = "/api/v2/movie_details.json"
 
 #: Popcorn-API SERIES grammar (research #366 §3) — the pass configured
 #: by ``popcorn_base_url``; the conversation (paths, guards, session
@@ -239,11 +239,13 @@ def _torrent_stream_response(result: EngineStream) -> StreamResponse:
     )
 
 
-def _torrent_candidates(movie: dict[str, Any]) -> list[TorrentCandidate]:
-    """Every usable torrents[] entry of a payload, upstream order kept."""
-    torrents = movie.get("torrents")
-    if not isinstance(torrents, list):
-        return []
+def _torrent_candidates(torrents: list[dict[str, Any]]) -> list[TorrentCandidate]:
+    """Every usable torrents[] entry, upstream order kept.
+
+    The entries cross the conversation seam RAW (:class:`PopcornMovie`
+    carries them verbatim); candidate shaping is policy, so it lives
+    here next to the pick/fallback machinery.
+    """
     out: list[TorrentCandidate] = []
     for entry in torrents:
         if not isinstance(entry, dict):
@@ -261,91 +263,6 @@ def _torrent_candidates(movie: dict[str, Any]) -> list[TorrentCandidate]:
             )
         )
     return out
-
-
-def _require_object(value: Any, what: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise ProviderError("parse_failed", f"{what} not an object")
-    return value
-
-
-def _require_str(value: Any, what: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ProviderError("parse_failed", f"{what} missing")
-    return value
-
-
-def _movies_of_list(payload: Any) -> list[dict[str, Any]]:
-    """The movies array of a list_movies envelope.
-
-    A status-ok envelope with NO ``movies`` key is upstream's legitimate
-    no-match answer → ``[]`` (an empty listing is never a parse failure);
-    anything else malformed raises typed ``parse_failed``.
-    """
-    data = _require_object(_require_object(payload, "payload").get("data"), "data")
-    movies = data.get("movies")
-    if movies is None:
-        return []
-    if not isinstance(movies, list):
-        raise ProviderError("parse_failed", "movies not a list")
-    return [m for m in movies if isinstance(m, dict)]
-
-
-def _movie_of_details(payload: Any) -> dict[str, Any]:
-    """The singular movie object of a movie_details envelope."""
-    data = _require_object(_require_object(payload, "payload").get("data"), "data")
-    movie = data.get("movie")
-    return _require_object(movie, "movie object")
-
-
-# ---------------------------------------------------------------------------
-# Popcorn-API SERIES parsing (#379) — the grammar research #366 pinned:
-#   list  GET {base}/shows/{page}?sort=updated&order=-1
-#         → [{"_id","imdb_id","title","year","images":{"poster"},"genres"}, ...]
-#   show  GET {base}/show/{imdb_id}
-#         → {..., "episodes": [{"season":N,"episode":M,"title","overview",
-#              "torrents": {"720p": {"url": "magnet:?...", "seeds": 45,
-#                                    "provider": "EZTV"}, ...}}]}
-# Torrents are QUALITY-MAP OBJECTS whose ``url`` magnets are used
-# VERBATIM (popcorn desktop's tv.js contract) — never hash-rebuilt.
-# ---------------------------------------------------------------------------
-
-
-def _display_title(movie: dict[str, Any]) -> str:
-    title = movie.get("title_english") or movie.get("title")
-    if not isinstance(title, str) or not title.strip():
-        raise ProviderError("parse_failed", "title missing")
-    return title
-
-
-def _year_of(movie: dict[str, Any]) -> int | None:
-    year = movie.get("year")
-    return year if isinstance(year, int) else None
-
-
-def _genres_of(movie: dict[str, Any]) -> list[str]:
-    genres = movie.get("genres")
-    if not isinstance(genres, list):
-        return []
-    return [g for g in genres if isinstance(g, str) and g]
-
-
-def _poster_of(movie: dict[str, Any]) -> str | None:
-    poster = movie.get("medium_cover_image")
-    return poster if isinstance(poster, str) and poster else None
-
-
-def _rating_of(movie: dict[str, Any]) -> float | None:
-    rating = movie.get("rating")
-    return float(rating) if isinstance(rating, int | float) else None
-
-
-def _description_of(movie: dict[str, Any]) -> str:
-    for key in ("description_full", "synopsis", "summary"):
-        text = movie.get(key)
-        if isinstance(text, str) and text.strip():
-            return text
-    return ""
 
 
 #: LRU bound on recorded torrent candidates (review finding, #377):
@@ -389,7 +306,14 @@ class YtsProvider(BaseProvider):
         #: show-cache): one owner for the series upstream. Movies are
         #: independent of it; an empty base ⇒ series surfaces the LOUD
         #: typed not-configured verdict while movies stay fully live.
-        self._popcorn = PopcornShows(self, _config.SETTINGS.popcorn_base_url)
+        #: The Popcorn conversation (fetch + parse + session show-cache)
+        #: owns BOTH dialects — the movie lane on the YTS base, the
+        #: series lane on the configured popcorn host. An empty series
+        #: base ⇒ the series surfaces the LOUD typed not-configured
+        #: verdict while the movies lane stays fully live.
+        self._popcorn = PopcornApi(
+            self, _config.SETTINGS.popcorn_base_url, movie_base=BASE_URL
+        )
         if self._popcorn.base:
             self.allowed_hosts = frozenset(
                 {*type(self).allowed_hosts, self._popcorn.netloc}
@@ -434,9 +358,6 @@ class YtsProvider(BaseProvider):
             raise ProviderError("unreachable", "torrent engine not configured")
         return engine
 
-    async def _get_payload(self, path: str, params: dict[str, str], http: httpx.AsyncClient) -> Any:
-        return await self.get_json(f"{BASE_URL}{path}?{urlencode(params)}", http)
-
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         results = await self._search_movies(query, http)
         if self._popcorn_base:
@@ -449,14 +370,14 @@ class YtsProvider(BaseProvider):
         return results
 
     async def _search_movies(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
-        payload = await self._get_payload(
-            _LIST_PATH, {"query_term": query, "limit": str(_LIST_LIMIT)}, http
+        listing = await self._popcorn.movies(
+            {"query_term": query, "limit": str(_LIST_LIMIT)}, http
         )
         cards: list[SearchResult] = []
-        for movie in _movies_of_list(payload):
+        for movie in listing.movies:
             card = self._card(movie)
-            if card is not None:
-                self._record_torrents(card.id.removeprefix(f"{self.id}:"), movie)
+            if card is not None and movie.imdb is not None:
+                self._record_torrents(movie.imdb, movie)
                 cards.append(card)
         return cards
 
@@ -482,23 +403,19 @@ class YtsProvider(BaseProvider):
     async def _browse_movies(
         self, page: int, http: httpx.AsyncClient
     ) -> tuple[list[SearchResult], bool]:
-        payload = await self._get_payload(
-            _LIST_PATH,
+        listing = await self._popcorn.movies(
             {"sort_by": "date_added", "limit": str(_LIST_LIMIT), "page": str(page)},
             http,
         )
-        data = _require_object(_require_object(payload, "payload").get("data"), "data")
-        count = data.get("movie_count")
-        limit = data.get("limit")
-        if not isinstance(count, int) or not isinstance(limit, int):
+        if not isinstance(listing.movie_count, int) or not isinstance(listing.limit, int):
             raise ProviderError("parse_failed", "listing pagination missing")
         results: list[SearchResult] = []
-        for movie in _movies_of_list(payload):
+        for movie in listing.movies:
             card = self._card(movie)
-            if card is not None:
-                self._record_torrents(card.id.removeprefix(f"{self.id}:"), movie)
+            if card is not None and movie.imdb is not None:
+                self._record_torrents(movie.imdb, movie)
                 results.append(card)
-        return results, count > page * limit
+        return results, listing.movie_count > page * listing.limit
 
     async def _browse_series(
         self, page: int, http: httpx.AsyncClient
@@ -598,19 +515,15 @@ class YtsProvider(BaseProvider):
     ) -> ContentResponse:
         """The original #376 movie envelope (moved verbatim so the
         unconfigured-series default stays byte-identical)."""
-        payload = await self._get_payload(
-            _DETAILS_PATH, {"imdb_id": external_id}, http
-        )
-        movie = _movie_of_details(payload)
-        title = _display_title(movie)
+        movie = await self._popcorn.movie(external_id, http)
         self._record_torrents(external_id, movie)
         return ContentResponse(
             id=f"{self.id}:{external_id}",
             form="movie",
-            title=title,
-            year=_year_of(movie),
-            description=_description_of(movie),
-            poster=_poster_of(movie),
+            title=movie.title,
+            year=movie.year,
+            description=movie.description,
+            poster=movie.poster,
             # Single-audio original: ONE Translation entry, mirroring the
             # single-track pattern of the Ukrainian providers (their
             # `Translation(id="uk", label=…)` default) with the original
@@ -623,15 +536,15 @@ class YtsProvider(BaseProvider):
                         Episode(
                             number=1,
                             id=f"{self.id}:{external_id}{MOVIE_SUFFIX}",
-                            title=title,
+                            title=movie.title,
                         )
                     ],
                 )
             ],
             translations_level="content",
             styles=frozenset(),
-            genres=_genres_of(movie),
-            rating=_rating_of(movie),
+            genres=movie.genres,
+            rating=movie.rating,
         )
 
     async def stream(
@@ -814,29 +727,24 @@ class YtsProvider(BaseProvider):
             merged.extend(self._episode_torrents(raw))
         return merged
 
-    def _card(self, movie: dict[str, Any]) -> SearchResult | None:
-        """One listing item → SearchResult; unidentifiable items skip."""
-        imdb = movie.get("imdb_code")
-        if not isinstance(imdb, str) or not IMDB_RE.fullmatch(imdb):
-            return None
-        try:
-            title = _display_title(movie)
-        except ProviderError:
+    def _card(self, movie: PopcornMovie) -> SearchResult | None:
+        """One typed listing record → SearchResult; unidentifiable skip."""
+        if movie.imdb is None or not IMDB_RE.fullmatch(movie.imdb):
             return None
         return SearchResult(
-            id=f"{self.id}:{imdb}",
+            id=f"{self.id}:{movie.imdb}",
             provider=self.id,
             form="movie",
             styles=frozenset(),
-            title=title,
-            year=_year_of(movie),
-            poster=_poster_of(movie),
-            url=f"{BASE_URL}{_DETAILS_PATH}?{urlencode({'imdb_id': imdb})}",
-            genres=_genres_of(movie),
+            title=movie.title,
+            year=movie.year,
+            poster=movie.poster,
+            url=self._popcorn.movie_url(movie.imdb),
+            genres=movie.genres,
         )
 
-    def _record_torrents(self, external_id: str, movie: dict[str, Any]) -> None:
-        candidates = _torrent_candidates(movie)
+    def _record_torrents(self, external_id: str, movie: PopcornMovie) -> None:
+        candidates = _torrent_candidates(movie.torrents)
         if not candidates:
             return
         self._torrent_entries[external_id] = candidates

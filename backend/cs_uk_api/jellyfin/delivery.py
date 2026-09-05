@@ -42,7 +42,7 @@ from ..catalog import (
     record_dub_choice,
     resolve_item,
 )
-from ..health import TRACKER
+from ..health import ITEM_VERDICT_CODES, TRACKER, record_verdict
 from ..http_client import get_client
 from ..models import StreamResponse
 from ..providers import PROVIDERS
@@ -52,14 +52,6 @@ from .dto import safe_filename
 from .hls_proxy import proxy_download, proxy_stream, segment_target, serve_segment
 
 log = logging.getLogger(__name__)
-
-#: ProviderError codes that are deterministic item/client-level verdicts,
-#: NOT lane health (ADR-0002: 404 codes are client-side semantics; the
-#: native route's ``record_skip_codes`` encodes the same taxonomy):
-#: degrade to the standing 404 without TRACKER.record(ok=False).
-_ITEM_VERDICT_CODES = frozenset(
-    {"gated", "not_found", "invalid_translation", "translation_missing"}
-)
 
 
 async def resolve_stream(
@@ -129,7 +121,7 @@ async def resolve_stream(
         # starve the whole lane's home rows. gated = deliberately
         # unavailable; not_found = no playable file / dead torrent;
         # invalid_translation / translation_missing = client semantics.
-        if e.code in _ITEM_VERDICT_CODES:
+        if e.code in ITEM_VERDICT_CODES:
             log.info(
                 "jellyfin playback item verdict=%s provider=%s id=%s",
                 e.code,
@@ -140,13 +132,13 @@ async def resolve_stream(
         log.warning(
             "jellyfin playback stream failed provider=%s id=%s err=%s", provider_id, item_id, e
         )
-        TRACKER.record(provider_id, ok=False)
+        record_verdict(provider_id, e.code)
         return None
     except Exception as e:  # noqa: BLE001
         log.warning(
             "jellyfin playback stream failed provider=%s id=%s err=%s", provider_id, item_id, e
         )
-        TRACKER.record(provider_id, ok=False)
+        record_verdict(provider_id, None)
         return None
 
 

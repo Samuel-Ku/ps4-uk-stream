@@ -31,7 +31,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import cs_uk_api._catalog_state.resolution as resolution_mod
-from cs_uk_api import main as main_mod
+from cs_uk_api import lifecycle as lifecycle_mod
 from cs_uk_api import uakino_browser
 from cs_uk_api._catalog_state import content_cache, search_cache
 from cs_uk_api.health import TRACKER
@@ -215,7 +215,7 @@ def _monkeypatch_chromium(monkeypatch: pytest.MonkeyPatch) -> None:
     # The lifespan only schedules the warm task when a Chromium binary
     # exists; point it at a path that certainly exists. The stub session
     # never launches a real browser, so the path value itself is unused.
-    monkeypatch.setattr(main_mod, "DEFAULT_CHROMIUM", "/bin/true")
+    monkeypatch.setattr(lifecycle_mod, "DEFAULT_CHROMIUM", "/bin/true")
 
 
 def test_lifespan_warms_session_then_closes_on_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:

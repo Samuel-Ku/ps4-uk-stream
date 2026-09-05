@@ -22,7 +22,7 @@ from fastapi import HTTPException
 
 from .. import config as _config
 from ..filters import matches_axes, style_key
-from ..health import TRACKER
+from ..health import TRACKER, record_verdict
 from ..http_client import get_client
 from ..merge import merge_results
 from ..models import (
@@ -186,22 +186,25 @@ async def merged_search(
             # failure attributed to the provider so the client sees a
             # structured signal rather than a partial response.
             log.warning("search unexpected escapee provider=%s err=%r", pid, e)
-            TRACKER.record(pid, ok=False)
+            record_verdict(pid, None)
             failures_by_pid[pid] = ProviderFailure(
                 provider=pid, code="internal", message=str(e)
             )
             continue
         if isinstance(content, ProviderFailure):
-            TRACKER.record(pid, ok=False)
+            record_verdict(pid, content.code)
             failures_by_pid[pid] = content
         else:
             TRACKER.record(pid, ok=True)
             results_by_pid[pid] = content
 
     # Pending tasks: the overall budget fired before they completed.
-    # Per ADR-0002, each one gets a synthetic ``timeout`` row.
+    # Per ADR-0002, each one gets a synthetic ``timeout`` row — and it
+    # records like one: a provider that hangs every search must still
+    # poison the lane window the watchdog reads.
     for task in pending:
         pid = tasks[task]
+        record_verdict(pid, "timeout")
         failures_by_pid[pid] = ProviderFailure(
             provider=pid,
             code="timeout",

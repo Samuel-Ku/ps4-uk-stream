@@ -1213,7 +1213,7 @@ def test_moon_outer_decode_reproduces_upstream_kotlin():
     with ``state = (data + key) & 0xFF`` after each byte. The first
     252 decoded bytes of the Narutō ep1 iframe start with
     ``b'\\n\\t\\t\\tlet  player_url, referrer, vid'``."""
-    from cs_uk_api.providers.animeon import _moon_outer_decode
+    from cs_uk_api.providers._moon_player import moon_outer_decode as _moon_outer_decode
 
     # First 168 base64 chars of the Narutō ep1 player iframe (3
     # base64 quartets = 189 bytes of data after the 33-byte header).
@@ -1230,7 +1230,7 @@ def test_moon_decrypt_reproduces_upstream_kotlin():
     every byte against ``k[i % len(k)]``. The Narutō ep1 iframe
     has XOR key ``YsElwOFSpj7n`` and the first decoded `_0xd`
     payload is the MoonAnime manifest ending in ``manifest.m3u8``."""
-    from cs_uk_api.providers.animeon import _moon_decrypt
+    from cs_uk_api.providers._moon_player import moon_decrypt as _moon_decrypt
 
     inner = (
         "MQcxHAR1aXwDRFoBNh0kAh4iI30RGENBOhwrGBIhMnwDHkULOB5qDRkmKzZfWwBBMgohBAMqKicR"

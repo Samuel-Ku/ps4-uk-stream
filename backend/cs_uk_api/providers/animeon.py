@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import binascii
 import json
 import logging
 import re
@@ -56,6 +55,9 @@ from ..models import (
     Translation,
 )
 from ..wire_identity import is_movie_wire_id
+from ._ashdi_player import playlist_fallback as _ashdi_playlist_fallback
+from ._ashdi_player import resolve_ashdi_iframe as _resolve_ashdi_iframe
+from ._moon_player import resolve_moon_iframe as _resolve_moon_iframe
 from .base import BaseProvider, MediaTypeStr, ProviderError
 
 BASE_URL = "https://animeon.club"
@@ -94,18 +96,6 @@ _EPISODE_FETCH_CONCURRENCY = 6
 # surface as ``not_found`` before we issue the follow-up GET.
 _SLUG_RE = re.compile(r"\d{1,8}-[a-z0-9][a-z0-9-]{0,80}")
 
-# Playerjs iframe's obfuscation payload:
-#   atob("...==")                            (outer, moonOuterDecode)
-#   var k = "..."                            (inner XOR key)
-#   _0xd("...")                              (inner XOR, moonDecrypt)
-_ATOB_RE = re.compile(r"""atob\(\s*["']([A-Za-z0-9+/=]+)["']\s*\)""")
-_KEY_RE = re.compile(r"""var\s+k\s*=\s*["']([^"']+)["']""")
-_INNER_RE = re.compile(r"""_0xd\s*\(\s*["']([^"']+)["']\s*\)""")
-
-# Playerjs iframe's `file:'<url>'` m3u8 (used as the Ashdi fallback
-# when the JSON `fileUrl` is missing).
-_ASHDI_FILE_RE = re.compile(r"""file\s*:\s*['"]([^'"]+\.m3u8)['"]""")
-
 # Common headers the upstream Kotlin attaches to every call to
 # animeon.club or to the player CDNs (kept in sync with the upstream
 # `userAgent` constant).
@@ -118,50 +108,6 @@ _DEFAULT_HEADERS: dict[str, str] = {
     "Accept-Language": "uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7",
     "Referer": f"{BASE_URL}/",
 }
-
-
-def _moon_outer_decode(blob: str) -> bytes:
-    """Reimplementation of the upstream Kotlin ``moonOuterDecode``.
-
-    The Playerjs ``atob("...")`` payload is base64 of::
-
-        [state0:u8][key:32 bytes][data:N bytes]
-
-    Each data byte is XORed with ``key[i % 32] ^ state`` and the
-    state is updated to ``(data[i] + key[i % 32]) & 0xFF``. The result
-    is the JavaScript body that contains ``var k`` and ``_0xd`` calls.
-    """
-    raw = base64.b64decode(blob)
-    if len(raw) < 33:
-        return b""
-    state = raw[0]
-    key = raw[1:33]
-    data = raw[33:]
-    out = bytearray(len(data))
-    for i, byte in enumerate(data):
-        k = key[i % 32]
-        out[i] = (byte ^ k ^ state) & 0xFF
-        state = (byte + k) & 0xFF
-    return bytes(out)
-
-
-def _moon_decrypt(blob: str, xor_key: str) -> str:
-    """Reimplementation of the upstream Kotlin ``moonDecrypt``.
-
-    The inner cipher is base64-decode + cyclic XOR with the key string.
-    The decoded text usually is a URL or a JSON snippet; failures are
-    swallowed (returns ``""``) because the upstream Kotlin does the
-    same.
-    """
-    try:
-        raw = base64.b64decode(blob)
-    except (ValueError, binascii.Error):
-        return ""
-    out = bytearray(len(raw))
-    keys = [ord(c) for c in xor_key]
-    for i, byte in enumerate(raw):
-        out[i] = (byte ^ keys[i % len(keys)]) & 0xFF
-    return out.decode("utf-8", errors="ignore")
 
 
 def _today_string() -> str:
@@ -987,19 +933,42 @@ class AnimeONProvider(BaseProvider):
         if _is_moon(source):
             if not video_url:
                 raise ProviderError("parse_failed", "moon source without video_url")
-            return await self._resolve_moon_iframe(video_url, http)
+            return await _resolve_moon_iframe(
+                video_url,
+                http,
+                get_html=self.get_html,
+                headers={
+                    **_DEFAULT_HEADERS,
+                    "Referer": f"{BASE_URL}/",
+                    "X-Requested-With": "mark.via.gp",
+                },
+            )
         if _is_ashdi(source):
             if file_url and file_url.endswith(".m3u8"):
                 return str(file_url)
             if video_url:
-                return await self._resolve_ashdi_iframe(video_url, http)
+                return await _resolve_ashdi_iframe(
+                    video_url,
+                    http,
+                    get_html=self.get_html,
+                    headers={"Referer": f"{BASE_URL}/", **_DEFAULT_HEADERS},
+                )
             # Upstream drift (2026-08-14): the episodes endpoint stopped
             # embedding videoUrl/fileUrl in its rows. The direct endpoint
             # `/api/player/<playerId>/<translationId>` still serves the
             # player page (an ashdi serial page whose Playerjs playlist
             # carries every episode's m3u8) — resolve through it.
-            fallback = await self._ashdi_playlist_fallback(
-                anime_id, episode_num, source, http
+            fallback = await _ashdi_playlist_fallback(
+                anime_id,
+                episode_num,
+                str(source.get("translation_name") or ""),
+                str(source.get("player_name") or ""),
+                http,
+                get_json=self.get_json,
+                get_html=self.get_html,
+                headers=_DEFAULT_HEADERS,
+                base_url=BASE_URL,
+                classify_translations=_classify_translations,
             )
             if fallback is not None:
                 return fallback
@@ -1009,188 +978,13 @@ class AnimeONProvider(BaseProvider):
         if file_url and ".m3u8" in file_url:
             return str(file_url)
         if video_url:
-            return await self._resolve_ashdi_iframe(video_url, http)
-        raise ProviderError("parse_failed", "no usable url in source")
-
-    async def _ashdi_playlist_fallback(
-        self,
-        anime_id: int,
-        episode_num: int,
-        source: dict[str, Any],
-        http: httpx.AsyncClient,
-    ) -> str | None:
-        """Resolve an episode through the direct player endpoint when the
-        episode row carries no urls (upstream drift, 2026-08-14).
-
-        ``/api/player/<playerId>/<translationId>`` answers
-        ``{"videoUrl": "https://ashdi.vip/serial/<id>?..."}`` — the ashdi
-        serial page whose Playerjs ``file:'[...]'`` value is a JSON
-        playlist: translation folders -> season folders -> episode
-        entries (``{"title": "Серія N", "file": "...m3u8"}``). Select the
-        requested translation's folder (case-insensitive; first folder
-        when no name matches, mirroring the upstream's pick-first
-        behavior) and the ``Серія <episode_num>`` entry inside it."""
-        trans_name = str(source.get("translation_name") or "").strip().casefold()
-        player_name = str(source.get("player_name") or "").strip().casefold()
-        doc = await self._ask_translations(anime_id, http)
-        direct_url: str | None = None
-        for trans in _classify_translations(doc or {}):
-            t = trans.get("translation") or {}
-            if str(t.get("name") or "").strip().casefold() != trans_name:
-                continue
-            trans_id = t.get("id")
-            for player in trans.get("player") or []:
-                if str(player.get("name") or "").strip().casefold() != player_name:
-                    continue
-                player_id = player.get("id")
-                if trans_id is None or player_id is None:
-                    continue
-                direct = await self.get_json(
-                    f"{BASE_URL}/api/player/{player_id}/{trans_id}",
+            return await _resolve_ashdi_iframe(
+                video_url,
                 http,
-                headers=_DEFAULT_HEADERS,
-                )
-                if isinstance(direct, dict):
-                    value = direct.get("videoUrl")
-                    if isinstance(value, str) and value:
-                        direct_url = value
-        if direct_url is None:
-            return None
-        page = await self.get_html(
-            direct_url,
-            http,
-            headers={"Referer": f"{BASE_URL}/", **_DEFAULT_HEADERS},
-        )
-        match = re.search(r"file:'((?:[^'\\]|\\.)*)'", page)
-        if not match:
-            return None
-        try:
-            raw = re.sub(r"\\'", "'", match.group(1))
-            playlist = json.loads(raw)
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(playlist, list):
-            return None
-        folders = [f for f in playlist if isinstance(f, dict)]
-        target = next(
-            (
-                f
-                for f in folders
-                if str(f.get("title") or "").strip().casefold() == trans_name
-            ),
-            None,
-        )
-        if target is None and folders:
-            target = folders[0]
-        if target is None:
-            return None
-        want = f"Серія {episode_num}"
-        for season in target.get("folder") or []:
-            if not isinstance(season, dict):
-                continue
-            for entry in season.get("folder") or []:
-                if not isinstance(entry, dict):
-                    continue
-                if str(entry.get("title") or "").strip() == want:
-                    file_url = entry.get("file")
-                    if isinstance(file_url, str) and file_url.endswith(".m3u8"):
-                        return file_url
-        return None
-
-    async def _resolve_ashdi_iframe(
-        self, iframe_url: str, http: httpx.AsyncClient
-    ) -> str:
-        """Fetch the Ashdi iframe page and extract the ``file:'<m3u8>'``
-        value. The upstream Kotlin does the same. We append
-        ``?player=animeon.club`` when the URL has no query string,
-        otherwise the CDN returns the wrong page."""
-        clean = iframe_url.rstrip("?")
-        if "?" in clean:
-            fetch_url = clean
-        else:
-            fetch_url = f"{clean}?player=animeon.club"
-        page = await self.get_html(
-            fetch_url,
-            http,
-            headers={"Referer": f"{BASE_URL}/", **_DEFAULT_HEADERS},
-        )
-        match = _ASHDI_FILE_RE.search(page)
-        if not match:
-            raise ProviderError("parse_failed", "ashdi file: '...' missing")
-        return match.group(1)
-
-    async def _resolve_moon_iframe(
-        self, iframe_url: str, http: httpx.AsyncClient
-    ) -> str:
-        """Fetch the MoonAnime iframe page, decode the obfuscated
-        Playerjs config, and return the first ``.m3u8`` URL.
-
-        The decrypted payload is either a direct manifest URL or a JSON
-        array of tracks (live 2026-08-09: movies — e.g. animeon 8102
-        "Ґінтама Фільм 1" — now answer ``[{...,"file":"<m3u8>"}]``;
-        the array previously meant the card was dead, today it is the
-        current upstream shape).
-        """
-        clean = iframe_url.rstrip("?")
-        if "player=" not in clean:
-            separator = "&" if "?" in clean else "?"
-            fetch_url = f"{clean}{separator}player=animeon.club"
-        else:
-            fetch_url = clean
-        page = await self.get_html(
-            fetch_url,
-            http,
-            headers={
-                **_DEFAULT_HEADERS,
-                "Referer": f"{BASE_URL}/",
-                "X-Requested-With": "mark.via.gp",
-            },
-        )
-
-        atob_match = _ATOB_RE.search(page)
-        if not atob_match:
-            raise ProviderError("parse_failed", "moon atob blob missing")
-        decoded_js = _moon_outer_decode(atob_match.group(1)).decode(
-            "utf-8", errors="ignore"
-        )
-        if not decoded_js:
-            raise ProviderError("parse_failed", "moon outer decode failed")
-
-        key_match = _KEY_RE.search(decoded_js)
-        if not key_match:
-            raise ProviderError("parse_failed", "moon xor key missing")
-        xor_key = key_match.group(1)
-
-        for inner in _INNER_RE.findall(decoded_js):
-            decoded = _moon_decrypt(inner, xor_key).strip().rstrip(",")
-            if decoded.startswith("["):
-                try:
-                    tracks = json.loads(decoded)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(tracks, list) and not tracks:
-                    # A well-formed EMPTY track array is deliberate
-                    # upstream unavailability — the movie is listed in
-                    # the catalog but moonanime hasn't published the
-                    # video yet (live 2026-08-09: animeon 8104
-                    # «Літературне дівча Фільм» serves a "Скоро
-                    # доступно" placeholder iframe and an empty `[]`
-                    # player payload). Per ADR-0002's empty-manifest
-                    # amendment this is `gated` (client 404, never a
-                    # health signal), NOT `parse_failed` (502, pollutes
-                    # the health tracker for a healthy provider).
-                    raise ProviderError(
-                        "gated", "no playable tracks — video not yet published"
-                    )
-                for track in tracks if isinstance(tracks, list) else []:
-                    url = str(track.get("file") or "").strip()
-                    if ".m3u8" in url:
-                        return url
-                continue
-            if ".m3u8" not in decoded:
-                continue
-            return decoded
-        raise ProviderError("parse_failed", "no .m3u8 in moon payload")
+                get_html=self.get_html,
+                headers={"Referer": f"{BASE_URL}/", **_DEFAULT_HEADERS},
+            )
+        raise ProviderError("parse_failed", "no usable url in source")
 
 
 def _stream_headers(source: dict[str, Any]) -> dict[str, str]:

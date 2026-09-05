@@ -21,12 +21,13 @@ from collections.abc import Mapping, Sequence
 from typing import cast
 
 from .. import config as _config
-from ..health import TRACKER
+from ..health import TRACKER, record_verdict
 from ..home import build_home_rows, round_robin_dedup, section_row_type
 from ..http_client import get_client
 from ..merge import item_group_key, merge_results
 from ..models import HomeItem, HomeResponse, SearchResult
 from ..providers import PROVIDERS
+from ..providers.base import ProviderError
 from ..row_kinds import ROW_KINDS
 from ..wire_identity import project_group, provider_union
 from ._stores import (
@@ -160,7 +161,7 @@ async def _build_home() -> HomeResponse:
             results, _ = await PROVIDERS[pid].browse(section_id, 1, http)
         except Exception as e:  # noqa: BLE001
             log.warning("home newest skipped provider=%s err=%s", pid, e)
-            TRACKER.record(pid, ok=False)
+            record_verdict(pid, e.code if isinstance(e, ProviderError) else None)
             return
         TRACKER.record(pid, ok=True)
         if results:
@@ -171,7 +172,7 @@ async def _build_home() -> HomeResponse:
             results, _ = await PROVIDERS[pid].browse(section_id, 1, http)
         except Exception as e:  # noqa: BLE001
             log.warning("home popular skipped provider=%s err=%s", pid, e)
-            TRACKER.record(pid, ok=False)
+            record_verdict(pid, e.code if isinstance(e, ProviderError) else None)
             return
         TRACKER.record(pid, ok=True)
         if results:
@@ -182,7 +183,7 @@ async def _build_home() -> HomeResponse:
             results, _ = await PROVIDERS[pid].browse(section_id, 1, http)
         except Exception as e:  # noqa: BLE001
             log.warning("home type skipped provider=%s section=%s err=%s", pid, section_id, e)
-            TRACKER.record(pid, ok=False)
+            record_verdict(pid, e.code if isinstance(e, ProviderError) else None)
             return
         TRACKER.record(pid, ok=True)
         if results:
@@ -462,7 +463,7 @@ async def extend_row_pool(
                     page,
                     e,
                 )
-                TRACKER.record(pid, ok=False)
+                record_verdict(pid, e.code if isinstance(e, ProviderError) else None)
                 return
             TRACKER.record(pid, ok=True)
             deep_page_cache.set(cache_key, list(results))
