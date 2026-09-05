@@ -436,6 +436,40 @@ async def test_stream_episode_engine_rejected_maps_to_not_found(monkeypatch):
     assert exc.value.message == "no seeders or dead torrent"
 
 
+@pytest.mark.asyncio
+async def test_stream_episode_dead_pick_falls_back_with_season_hint(monkeypatch):
+    """The season's policy pick is dead ⇒ the next candidate is tried
+    with the SAME season file hint — the episode lane rides the bounded
+    fallback the #373 finding motivated."""
+    _configured(monkeypatch)
+
+    class _RejectFirst:
+        def __init__(self, stream: EngineStream) -> None:
+            self._stream = stream
+            self._rejected = False
+            self.ensure_count = 0
+            self.last_file_hint: str | None = None
+
+        async def ensure_session(self, identifier, *, file_hint=None):
+            self.ensure_count += 1
+            self.last_file_hint = file_hint
+            if not self._rejected:
+                self._rejected = True
+                raise EngineRejected("metadata timeout")
+            return self._stream
+
+    engine = _RejectFirst(_LAN)
+    with respx.mock(assert_all_called=True) as router:
+        router.get(url=_SHOW_URL).respond(
+            200, text=_fixture("series_show_tt8740758.json")
+        )
+        async with httpx.AsyncClient() as http:
+            resp = await YtsProvider(engine=engine).stream(_S1E1, None, http)
+    assert resp.url == _LAN.url
+    assert engine.ensure_count == 2
+    assert engine.last_file_hint == "s01e"
+
+
 # ---------------------------------------------------------------------------
 # IMDb-derived id stability (the resume/user-state contract, spec #374)
 # ---------------------------------------------------------------------------

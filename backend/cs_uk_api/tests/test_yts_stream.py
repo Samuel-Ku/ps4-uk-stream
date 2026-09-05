@@ -10,8 +10,9 @@ network; the YTS upstream is respx-mocked with the recorded fixtures.
 Covered at this layer:
 - DI: constructor-injected engine wins; unset engine + unconfigured
   settings is a LOUD typed ``unreachable`` verdict, never silence.
-- Policy→session: the engine receives exactly
-  ``build_magnet(<policy-picked hash>)``.
+- Policy→session: the engine receives ``build_magnet(<policy-picked
+  hash>)``; a dead-on-arrival verdict advances to the next candidate
+  (bounded fallback) before item-level ``not_found``.
 - Error taxonomy: EngineUnavailable → ``unreachable`` (flaky infra),
   EngineRejected → ``not_found`` "no seeders or dead torrent"
   (deterministic verdict) per spec #374's error-surface note.
@@ -53,6 +54,9 @@ _DETAILS_URL = re.compile(r"https://yts\.gg/api/v2/movie_details\.json\?.*")
 _HASH_1080P = "B2C3D4E5F60718293A4B5C6D7E8F90123456789A"
 _MAGNET_1080P = build_magnet(_HASH_1080P)
 
+#: The fixture's 720p entry — the fallback candidate after the 1080p pick.
+_MAGNET_720P = build_magnet("A1B2C3D4E5F60718293A4B5C6D7E8F9012345678")
+
 
 def _details_fixture() -> str:
     return (FIX / "details_tt1160419.json").read_text(encoding="utf-8")
@@ -69,11 +73,36 @@ class _ExplodingEngine:
 
     def __init__(self, exc: Exception) -> None:
         self._exc = exc
+        self.attempts = 0
 
     async def ensure_session(
         self, identifier: str, *, file_hint: str | None = None
     ) -> EngineStream:
+        self.attempts += 1
         raise self._exc
+
+
+class _RejectingEngine:
+    """Fake engine that rejects the configured magnets as dead-on-arrival
+    and serves the rest from a stream table; records calls for order
+    assertions."""
+
+    def __init__(
+        self, *, rejects: set[str], streams: dict[str, EngineStream]
+    ) -> None:
+        self._rejects = set(rejects)
+        self._streams = streams
+        self.ensure_count = 0
+        self.last_identifier: str | None = None
+
+    async def ensure_session(
+        self, identifier: str, *, file_hint: str | None = None
+    ) -> EngineStream:
+        self.ensure_count += 1
+        self.last_identifier = identifier
+        if identifier in self._rejects:
+            raise EngineRejected("metadata timeout")
+        return self._streams[identifier]
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +255,60 @@ async def test_engine_rejected_maps_to_not_found_no_seeders():
                 await p.stream("tt1160419:__movie__", None, http)
     assert exc.value.code == "not_found"
     assert exc.value.message == "no seeders or dead torrent"
+
+
+@pytest.mark.asyncio
+async def test_dead_policy_pick_falls_back_to_next_candidate():
+    """The 1080p pick's swarm is dead ⇒ the 720p candidate is tried in
+    policy order and its session serves the stream — the bounded
+    fallback the #373 live finding motivated, instead of an immediate
+    hard not_found."""
+    lan_720 = EngineStream(
+        url="http://bitplay.lan:3347/api/v1/torrent/720/stream/0", container="mp4"
+    )
+    engine = _RejectingEngine(
+        rejects={_MAGNET_1080P}, streams={_MAGNET_720P: lan_720}
+    )
+    p = YtsProvider(engine=engine)
+    with respx.mock(assert_all_called=True) as router:
+        _mock_details(router)
+        async with httpx.AsyncClient() as http:
+            await p.content("tt1160419", http)  # warm the hash map
+            resp = await p.stream("tt1160419:__movie__", None, http)
+    assert resp.url == lan_720.url
+    assert engine.ensure_count == 2
+    assert engine.last_identifier == _MAGNET_720P  # policy order: 1080p first
+
+
+@pytest.mark.asyncio
+async def test_all_candidates_dead_is_still_item_not_found():
+    """Every candidate's swarm dead ⇒ the same deterministic item-level
+    ``not_found`` (message unchanged), never a lane-level ``unreachable``
+    — the taxonomy survives the fallback."""
+    engine = _ExplodingEngine(EngineRejected("metadata timeout"))
+    p = YtsProvider(engine=engine)
+    with respx.mock(assert_all_called=True) as router:
+        _mock_details(router)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await p.stream("tt1160419:__movie__", None, http)
+    assert exc.value.code == "not_found"
+    assert engine.attempts == 2  # both fixture candidates exhausted
+
+
+@pytest.mark.asyncio
+async def test_engine_unavailable_aborts_fallback_immediately():
+    """A lane-level failure must NOT be masked by candidate fallback —
+    the next candidate is never tried (spec #374 error-surface note)."""
+    engine = _ExplodingEngine(EngineUnavailable("connection refused"))
+    p = YtsProvider(engine=engine)
+    with respx.mock(assert_all_called=True) as router:
+        _mock_details(router)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await p.stream("tt1160419:__movie__", None, http)
+    assert exc.value.code == "unreachable"
+    assert engine.attempts == 1
 
 
 @pytest.mark.asyncio
