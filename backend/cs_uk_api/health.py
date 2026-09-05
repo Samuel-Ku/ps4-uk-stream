@@ -77,4 +77,43 @@ class HealthTracker:
         self._markers.clear()
 
 
+#: ProviderError codes that are deterministic item/client-level verdicts,
+#: NOT lane health (ADR-0002: 404 codes are client-side semantics; the
+#: native route's ``record_skip_codes`` and the facade's stream path
+#: encode the same taxonomy). These never flip the tracker — five
+#: dead-title clicks must not starve a whole lane's rows (the #373
+#: finding).
+ITEM_VERDICT_CODES = frozenset(
+    {"gated", "not_found", "invalid_translation", "translation_missing"}
+)
+
+#: The complementary set: codes that ARE lane health (transport, upstream
+#: 5xx, data-shape breakage, and the search fan-out's synthetic rows).
+#: ``is_classified`` + the drift test in tests/test_verdict_drift.py keep
+#: this complete: a new ProviderError code must land in one of the two
+#: sets or CI fails.
+LANE_VERDICT_CODES = frozenset(
+    {"unreachable", "upstream_unreachable", "parse_failed", "timeout", "internal"}
+)
+
+
+def is_classified(code: str) -> bool:
+    """True when a ProviderError/ProviderFailure code has a verdict class."""
+    return code in ITEM_VERDICT_CODES or code in LANE_VERDICT_CODES
+
+
+def record_verdict(provider_id: str, code: str | None) -> None:
+    """Record a provider outcome by its verdict code (single entry point).
+
+    Item-level codes (``ITEM_VERDICT_CODES``) are client-side semantics,
+    not upstream health — they are NOT recorded, matching the facade's
+    stream path and the native route's ``record_skip_codes``. ``None``
+    stands for a generic failure (a non-ProviderError exception) and is
+    recorded as a lane fault, as is any lane/unknown code.
+    """
+    if code in ITEM_VERDICT_CODES:
+        return
+    TRACKER.record(provider_id, ok=False)
+
+
 TRACKER = HealthTracker()

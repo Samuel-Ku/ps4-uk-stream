@@ -15,7 +15,7 @@ from typing import TypeVar, cast
 
 from fastapi import HTTPException
 
-from .health import TRACKER
+from .health import TRACKER, record_verdict
 from .models import ErrorResponse, SearchResult
 from .providers.base import ProviderError
 
@@ -80,7 +80,10 @@ async def upstream_guard(
         if isinstance(e, ProviderError) and e.code in record_skip_codes:
             log.warning("%s deterministic verdict provider=%s err=%s", log_label, provider_id, e)
             raise HTTPException(502, detail=ErrorResponse(error="upstream_unreachable", message=str(e)).model_dump()) from e
-        TRACKER.record(provider_id, ok=False)
+        # The shared classification (health.py) is the backstop: callers
+        # may ADD skip codes, never override the base rule that item-level
+        # verdicts (ADR-0002) are not lane faults.
+        record_verdict(provider_id, e.code if isinstance(e, ProviderError) else None)
         log.warning("%s failed provider=%s err=%s", log_label, provider_id, e)
         if on_error is _UNSET:
             raise HTTPException(502, detail=ErrorResponse(error="upstream_unreachable", message=str(e)).model_dump()) from e
