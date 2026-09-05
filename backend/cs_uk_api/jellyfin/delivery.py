@@ -53,6 +53,14 @@ from .hls_proxy import proxy_download, proxy_stream, segment_target, serve_segme
 
 log = logging.getLogger(__name__)
 
+#: ProviderError codes that are deterministic item/client-level verdicts,
+#: NOT lane health (ADR-0002: 404 codes are client-side semantics; the
+#: native route's ``record_skip_codes`` encodes the same taxonomy):
+#: degrade to the standing 404 without TRACKER.record(ok=False).
+_ITEM_VERDICT_CODES = frozenset(
+    {"gated", "not_found", "invalid_translation", "translation_missing"}
+)
+
 
 async def resolve_stream(
     item_id: str, translation_id: str | None = None
@@ -114,12 +122,20 @@ async def resolve_stream(
         TRACKER.record(provider_id, ok=True)
         return stream
     except ProviderError as e:
-        # A `gated` verdict is client-side semantics, NOT an upstream
-        # failure (ADR-0002 amendment): the item is deliberately
-        # unavailable — degrade to the standing 404 without marking
-        # the provider down.
-        if e.code == "gated":
-            log.info("jellyfin playback gated provider=%s id=%s", provider_id, item_id)
+        # Deterministic item/client-level verdicts (ADR-0002: 404 codes
+        # are client-side semantics, NOT upstream health — the #373
+        # error-surface note): degrade to the standing 404 without
+        # marking the provider down — five dead-title clicks must not
+        # starve the whole lane's home rows. gated = deliberately
+        # unavailable; not_found = no playable file / dead torrent;
+        # invalid_translation / translation_missing = client semantics.
+        if e.code in _ITEM_VERDICT_CODES:
+            log.info(
+                "jellyfin playback item verdict=%s provider=%s id=%s",
+                e.code,
+                provider_id,
+                item_id,
+            )
             return None
         log.warning(
             "jellyfin playback stream failed provider=%s id=%s err=%s", provider_id, item_id, e

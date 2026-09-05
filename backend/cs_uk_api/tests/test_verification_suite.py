@@ -24,10 +24,10 @@ feature suite and is deliberately not duplicated here):
     wire, end to end through the facade: show fixture → PlaybackInfo
     (engine truth + #378 subtitle surface) → stream 302 → real bytes,
     VTT route → engine srt→vtt.
-    E — the session-cost contract fused with the health lane: failures
-    flip the provider DOWN through the facade's recording (ADR-0002:
-    deterministic ``not_found`` records, ``gated`` would not), and
-    successes self-heal the window — all still on ONE upstream fetch.
+    E — the session-cost contract fused with the health lane: item-level
+    verdicts (``not_found``) do NOT move lane health (ADR-0002: 404
+    codes are client-side semantics); a transport failure flips the
+    provider DOWN; successes self-heal the window — all on ONE fetch.
 
 Markers: the two live-socket tests carry ``e2e`` — they are hermetic
 (loopback TCP, <1s) and run in the DEFAULT suite so CI pins them;
@@ -59,7 +59,12 @@ from cs_uk_api.models import SearchResult
 from cs_uk_api.providers import PROVIDERS
 from cs_uk_api.providers.base import BaseProvider
 from cs_uk_api.providers.yts import YtsProvider
-from cs_uk_api.torrent_engine import EngineStream, FakeTorrentEngine, reset_engine
+from cs_uk_api.torrent_engine import (
+    EngineStream,
+    EngineUnavailable,
+    FakeTorrentEngine,
+    reset_engine,
+)
 from cs_uk_api.wire_identity import episode_wire_id
 
 TOKEN = SETTINGS.jellyfin_token
@@ -513,26 +518,47 @@ def _run_live_socket(client: TestClient, base: str, requests: list[Any]) -> None
 
 @pytest.mark.e2e
 def test_facade_session_cost_and_health_lane(client: TestClient, monkeypatch) -> None:
-    """Fused session-cost + health contract through the facade. A seeded
-    home browse resolves the season; FIVE deterministic ``not_found``
-    verdicts (torrent-less season upstream) flip the provider DOWN
-    through the facade's health recording (ADR-0002: ``not_found``
-    records, ``gated`` would not) — and the WHOLE outage costs ONE
-    Popcorn fetch. When the season regains torrents, a fresh session
-    (the next client's) self-heals the health window with successes —
-    again at one upstream fetch per session."""
+    """Fused session-cost + health contract through the facade. Item-level
+    verdicts (``not_found`` — a torrent-less season upstream) do NOT move
+    lane health per ADR-0002 (404 codes are client-side semantics, not
+    upstream health — the #373 error-surface note applied to the facade's
+    recording); a transport failure flips the provider DOWN; and a fresh
+    session self-heals the window — each phase costs ONE Popcorn fetch."""
+
+    class _RaisingEngine:
+        async def ensure_session(
+            self, identifier: str, *, file_hint: str | None = None
+        ) -> EngineStream:
+            raise EngineUnavailable("connection refused")
+
     _seed_series(monkeypatch)
     _warm_home(client)
     TRACKER.reset()  # the warm browse recorded successes; pin a clean window
-    # Phase 1 — torrent-less upstream: five refusals, one fetch, DOWN.
+
+    # Phase A — deterministic item-level verdicts never move the needle:
+    # torrent-less upstream refuses as not_found ×5, health stays ok.
     with respx.mock(assert_all_called=False) as router:
         show = router.get(url=_SHOW_URL).respond(200, text=_torrentless_show())
         for _ in range(5):
             r = client.get(f"/Videos/{quote(_S1E1, safe='')}/stream", follow_redirects=False)
             assert r.status_code == 404
-        assert TRACKER.status("yts") == "down"
+        assert TRACKER.status("yts") == "ok"  # item verdicts are not lane faults
         assert show.call_count == 1  # the season map is cached; one fetch total
-    # Phase 2 — torrents return upstream; the NEXT session (a fresh
+
+    # Phase B — a genuine transport failure (engine unreachable) DOES
+    # flip the lane DOWN through the facade's recording: five refusals,
+    # still one fetch for the season map.
+    PROVIDERS["yts"] = YtsProvider(engine=_RaisingEngine())
+    TRACKER.reset()
+    with respx.mock(assert_all_called=False) as router:
+        show = router.get(url=_SHOW_URL).respond(200, text=_SHOW)
+        for _ in range(5):
+            r = client.get(f"/Videos/{quote(_S1E1, safe='')}/stream", follow_redirects=False)
+            assert r.status_code == 404
+        assert TRACKER.status("yts") == "down"
+        assert show.call_count == 1  # one fetch per session generation
+
+    # Phase C — torrents return upstream; the NEXT session (a fresh
     # provider, the cache generation after the outage) self-heals the
     # window: 5 failures + 15 successes → rate 0.25 < 0.4 → ok. One
     # fetch serves the whole healed session.
@@ -549,4 +575,4 @@ def test_facade_session_cost_and_health_lane(client: TestClient, monkeypatch) ->
             r = client.get(f"/Videos/{quote(_S1E1, safe='')}/stream", follow_redirects=False)
             assert r.status_code == 302
         assert TRACKER.status("yts") == "ok"
-        assert show.call_count == 1  # the healed session fetched once
+        assert show.call_count == 1  # the healed session still costs one fetch
