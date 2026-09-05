@@ -44,3 +44,7 @@ docs/test-artifacts/switchfin/capture/
 
 # Serena MCP local state
 .serena/
+
+# BitPlay runtime state (ticket #373/#381): engine settings + active downloads
+deploy/config/
+deploy/torrent-data/

@@ -151,6 +151,15 @@ first deploy and after any engine change. Prereqs: engine up (§1),
 backend running with `CS_UK_TORRENT_ENGINE_URL` set, PS4 with Switchfin
 pointed at the backend.
 
+> The protocol below has an EXECUTABLE form since the #373 acceptance:
+> `backend/deploy/accept_373.sh {engine|facade|all}` runs steps 1–4 plus
+> the player-floor checks (progressive start, Range seek, srt→VTT,
+> audio track) and the same title through the real backend, and
+> `backend/deploy/run_backend_8003.sh` starts that backend on the
+> Switchfin device port. The walkthrough remains the canonical
+> explanation; the script is the one-command re-run. Findings:
+> `docs/test-artifacts/accept-373-2026-09-05.md`.
+
 ```bash
 BASE=http://192.168.2.166:3347
 MAGNET="magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Sintel&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337"
