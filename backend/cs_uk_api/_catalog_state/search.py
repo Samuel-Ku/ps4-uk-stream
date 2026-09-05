@@ -199,9 +199,12 @@ async def merged_search(
             results_by_pid[pid] = content
 
     # Pending tasks: the overall budget fired before they completed.
-    # Per ADR-0002, each one gets a synthetic ``timeout`` row.
+    # Per ADR-0002, each one gets a synthetic ``timeout`` row — and it
+    # records like one: a provider that hangs every search must still
+    # poison the lane window the watchdog reads.
     for task in pending:
         pid = tasks[task]
+        record_verdict(pid, "timeout")
         failures_by_pid[pid] = ProviderFailure(
             provider=pid,
             code="timeout",

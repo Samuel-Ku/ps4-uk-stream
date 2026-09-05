@@ -26,7 +26,7 @@ from fastapi import HTTPException
 
 from .. import config as _config
 from ..country import is_blocked_country
-from ..health import TRACKER
+from ..health import TRACKER, record_verdict
 from ..http_client import get_client
 from ..merge import group_key_from
 from ..models import (
@@ -397,7 +397,13 @@ async def _resolve_group_content_once(
             "group content failed provider=%s key=%s both attempts err=%s",
             provider_id, group_key, last_err,
         )
-        TRACKER.record(provider_id, ok=False)
+        # The shared item-vs-lane classification (ADR-0002, #373): a
+        # deterministic item verdict (``not_found`` on a dead torrent or
+        # bogus id) is a client-side outcome, not lane health — five dead
+        # titles must not flip the provider down. ``gated`` never gets
+        # here (the early-return above caches the verdict); generic
+        # (non-ProviderError) failures record as lane faults.
+        record_verdict(provider_id, last_err.code if isinstance(last_err, ProviderError) else None)
         return None
     TRACKER.record(provider_id, ok=True)
     if _config.SETTINGS.block_russian and is_blocked_country(resp.country):
