@@ -10,10 +10,6 @@ behaviour is pinned by the route-level suites.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-
-import pytest
-
 from cs_uk_api.jellyfin import resolution as res
 
 
