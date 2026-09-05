@@ -203,6 +203,18 @@ async def test_bitplay_metadata_timeout_dead_torrent_rejected() -> None:
             await _client().ensure_session(_MAGNET)
 
 
+async def test_bitplay_add_read_timeout_is_dead_torrent_rejected() -> None:
+    """A read timeout ON THE ADD CALL itself means the engine accepted
+    the connection and blocked waiting for metadata that never arrived
+    (upstream cap 3 min > our ADD_TIMEOUT_S): a dead swarm, not a dead
+    lane — observed live in the #373 acceptance (fork-mirror pick with
+    zero real seeders)."""
+    with respx.mock:
+        respx.post(_ADD).mock(side_effect=httpx.ReadTimeout("timed out"))
+        with pytest.raises(EngineRejected):
+            await _client().ensure_session(_MAGNET)
+
+
 async def test_bitplay_connection_error_is_unavailable() -> None:
     with respx.mock:
         respx.post(_ADD).mock(side_effect=httpx.ConnectError("refused"))

@@ -77,34 +77,59 @@ engine_floor() {
 }
 
 facade_floor() {
-  step "B1) the title through the real search box"
-  S=$(curl -s "$API/api/search?q=Sintel&provider=yts")
-  echo "$S" | jqpy '[(g["title"], g["group_key"]) for g in d["groups"]][:3]' 2>/dev/null || { bad "search: $S"; return 1; }
-  GK=$(echo "$S" | jqpy 'd["groups"][0]["group_key"]')
+  # The REAL client flow (what Switchfin actually does): search →
+  # group-key detail with ?source= (yields playable ids) → PlaybackInfo
+  # with the playable id (engine add happens HERE, may block ~2 min on a
+  # cold swarm) → stream redirect → bytes + subtitles.
+  local TITLE="${CS_UK_TEST_TITLE:-Inception}"
+  local Q ENC
+  Q=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))" "$TITLE")
+
+  step "B1) '$TITLE' through the real search box"
+  S=$(curl -s -m 30 "$API/api/search?q=$Q&provider=yts")
+  GK=$(echo "$S" | jqpy 'd["groups"][0]["group_key"]') || { bad "search failed: $S"; return 1; }
   [ -n "$GK" ] && ok "group key $GK" || { bad "no group key"; return 1; }
 
-  step "B2) PlaybackInfo — engine truth envelope"
-  PI=$(curl -s -X POST "$API/Items/$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote('$GK',safe=''))")/PlaybackInfo" -H "X-Emby-Token: $TOKEN" -H 'Content-Type: application/json' -d '{}')
-  echo "$PI" | jqpy '[{"Id":s["Id"],"Container":s["Container"],"Streams":[m["Type"] for m in s.get("MediaStreams",[])]} for s in d["MediaSources"]]'
-  echo "$PI" | jqpy 'd["MediaSources"][0]["Container"]' | grep -q "mp4\|m3u8" && ok "container learned from engine" || bad "container missing"
+  step "B1b) group-key detail with ?source=yts — yields the playable id"
+  D=$(curl -s -m 40 "$API/api/content/$GK?source=yts")
+  PID=$(echo "$D" | jqpy 'd["seasons"][0]["episodes"][0]["id"]') || { bad "no detail envelope: $D"; return 1; }
+  [ -n "$PID" ] && ok "playable id $PID" || { bad "no playable episode id"; return 1; }
+
+  step "B2) PlaybackInfo with the playable id — engine truth envelope"
+  ENC=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$PID")
+  PI=$(curl -s -m 150 -X POST "$API/Items/$ENC/PlaybackInfo" \
+    -H "X-Emby-Token: $TOKEN" -H 'Content-Type: application/json' -d '{}')
+  CONT=$(echo "$PI" | jqpy 'd["MediaSources"][0]["Container"]') \
+    || { bad "no MediaSources (dead torrent maps to not_found; engine down to unreachable): $PI"; return 1; }
+  case "$CONT" in
+    mp4|m3u8) ok "container learned from engine: $CONT" ;;
+    *) bad "unexpected container: $CONT"; return 1 ;;
+  esac
 
   step "B3) facade stream route → 302 to the engine LAN URL"
   ITEM=$(echo "$PI" | jqpy 'd["MediaSources"][0]["Id"]')
-  ENC=$(python3 -c "import urllib.parse;print(urllib.parse.quote('$ITEM',safe=''))")
-  LOC=$(curl -s -o /dev/null -w '%{redirect_url}' "$API/Videos/$ENC/stream")
-  echo "  -> $LOC"
-  case "$LOC" in "$BASE"/*) ok "302 hands the player the engine URL";; *) bad "unexpected redirect: $LOC";; esac
+  ENC=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$ITEM")
+  LOC=$(curl -s -o /dev/null -w '%{redirect_url}' -m 30 "$API/Videos/$ENC/stream")
+  case "$LOC" in
+    "$BASE"/*) ok "302 hands the player the engine URL" ;;
+    *) bad "unexpected redirect: $LOC"; return 1 ;;
+  esac
 
-  step "B4) subtitle DeliveryUrl through the facade"
-  DU=$(echo "$PI" | jqpy 'next((m["DeliveryUrl"] for s in d["MediaSources"] for m in s.get("MediaStreams",[]) if m["Type"]=="Subtitle"), "")')
-  [ -n "$DU" ] && ok "DeliveryUrl: $DU" || bad "no Subtitle DeliveryUrl (session may lack an srt)"
+  step "B4) subtitle DeliveryUrl → live WEBVTT (following the facade 302)"
+  DU=$(echo "$PI" | jqpy 'next((m["DeliveryUrl"] for s in d["MediaSources"] for m in s.get("MediaStreams",[]) if m["Type"]=="Subtitle" and m.get("DeliveryUrl")), "")')
+  if [ -n "$DU" ]; then
+    V=$(curl -sL -m 30 "$API$DU" | head -c 6)
+    [ "$V" = "WEBVTT" ] && ok "subtitles live: $DU" || bad "DeliveryUrl did not answer WEBVTT (got: $V)"
+  else
+    bad "no Subtitle DeliveryUrl — pick a CS_UK_TEST_TITLE with a separate .srt"
+  fi
 
-  step "B5) the 302 target serves real bytes (player floor re-check via facade)"
-  FIRST=$(curl -sL -r 0-1023 -o /dev/null -w '%{http_code} %{size_download}' "$LOC")
-  echo "  -> $FIRST"
-  echo "$FIRST" | grep -q "20[06]" && ok "bytes flow end-to-end" || bad "no bytes through the redirect chain"
+  step "B5) real bytes with Range through the redirect chain"
+  FIRST=$(curl -sL -r 0-1023 -o /dev/null -w '%{http_code} %{size_download}' -m 60 "$LOC")
+  echo "$FIRST" | grep -q "^20[06]" && ok "bytes flow end-to-end ($FIRST)" \
+    || bad "no bytes through the redirect chain ($FIRST)"
 
-  step "cleanup: purge the session (or let idle GC reap it)"
+  step "cleanup: purge the engine session (or let idle GC reap it)"
   curl -s -X POST "$BASE/api/v1/cache/purge" >/dev/null && echo "  purged"
 }
 
