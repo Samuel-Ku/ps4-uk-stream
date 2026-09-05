@@ -170,8 +170,13 @@ REMUX_PATH_TEMPLATE = "/api/v1/torrent/{session_id}/remux/{file_index}"
 #: Connect budget for every engine call (LAN host — should be instant).
 ENGINE_CONNECT_TIMEOUT_S = 5.0
 #: ``add`` blocks while BitPlay fetches metadata (its own cap is 3 min);
-#: we bail earlier and let the route layer translate the failure.
-ADD_TIMEOUT_S = 120.0
+#: we bail after this window and let the provider's bounded fallback (or
+#: the route layer) translate the failure. 30 s is the live-tuned
+#: window: healthy swarms yield metadata in seconds, and the #373
+#: acceptance showed the only observed slower case (Sintel's near-empty
+#: swarm) needed ~90 min — a window between them buys nothing, while a
+#: short window keeps the dead-swarm verdict fast.
+ADD_TIMEOUT_S = 30.0
 
 #: Containers BitPlay serves byte-native (extension → reported container).
 DIRECT_CONTAINER_BY_EXT: dict[str, str] = {

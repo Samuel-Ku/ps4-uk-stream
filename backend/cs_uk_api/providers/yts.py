@@ -119,17 +119,24 @@ _SEASON_HINT_FMT = "s{:02d}e"
 # ---------------------------------------------------------------------------
 # Magnet→session selection policy (#377) — PURE functions, no I/O.
 #
-# Spec #374 quality policy: the provider picks the best-seeded suitable
-# quality server-side; ONE magnet goes to the engine, there is no
-# fallback chain. Ordering key: (quality tier, seeds desc) — 1080p
-# preferred over 720p over everything else; within a tier more seeders
-# win; full ties keep upstream order (deterministic single pick).
+# Spec #374 quality policy: the provider orders candidates by (quality
+# tier, seeds desc) — 1080p preferred over 720p over everything else;
+# within a tier more seeders win; full ties keep upstream order
+# (deterministic pick). ONE magnet goes to the engine at a time; since
+# the #373 live finding, a dead-on-arrival verdict (EngineRejected)
+# advances to the NEXT candidate in that order, bounded by
+# ``_MAX_SESSION_ATTEMPTS`` — lane-level failures never advance.
 # ---------------------------------------------------------------------------
 
 #: Quality tiers in preference order; anything unlisted shares the last
 #: tier (2160p is deliberately NOT preferred in v1 — the player floor
 #: this lane targets is 1080p).
 _QUALITY_PREFERENCE: tuple[str, ...] = ("1080p", "720p")
+
+#: Dead-on-arrival candidates tried per stream before item-level
+#: ``not_found``; each attempt costs one engine add window
+#: (``ADD_TIMEOUT_S``), so this bounds the slow path (~90 s worst case).
+_MAX_SESSION_ATTEMPTS = 3
 
 #: Tracker list convention of the fork, appended to every built magnet:
 #: YTS hashes alone carry no announce URLs, so the engine's peer
@@ -158,15 +165,55 @@ def _quality_rank(quality: str) -> int:
         return len(_QUALITY_PREFERENCE)
 
 
+def _policy_key(candidate: TorrentCandidate) -> tuple[int, int]:
+    """The single policy ordering: quality tier, then seeds desc."""
+    return (_quality_rank(candidate.quality), -candidate.seeds)
+
+
 def select_torrent(candidates: list[TorrentCandidate]) -> TorrentCandidate | None:
-    """The single server-side pick under the decided policy.
+    """The server-side pick under the decided policy.
 
     ``min`` is stable, so equal (tier, seeds) keys keep upstream's first
-    listing — the deterministic tiebreak. ``None`` when nothing usable.
+    listing — the deterministic tiebreak, identical to the fallback
+    ordering in :func:`_ensure_any_session`. ``None`` when nothing
+    usable.
     """
     if not candidates:
         return None
-    return min(candidates, key=lambda c: (_quality_rank(c.quality), -c.seeds))
+    return min(candidates, key=_policy_key)
+
+
+async def _ensure_any_session(
+    engine: TorrentEngine,
+    candidates: list[TorrentCandidate],
+    *,
+    file_hint: str | None,
+) -> EngineStream:
+    """Try policy-ordered candidates until one yields a live session.
+
+    A dead-on-arrival verdict (:class:`EngineRejected` — metadata never
+    arrived in the add window) advances to the next candidate, bounded
+    by ``_MAX_SESSION_ATTEMPTS``; each attempt costs the add's metadata
+    window (:data:`ADD_TIMEOUT_S`), so the bound keeps the worst case
+    fast. Lane-level failures (:class:`EngineUnavailable`) propagate
+    immediately — the engine is down for every candidate, retrying
+    would only mask the cause.
+    """
+    for candidate in sorted(candidates, key=_policy_key)[:_MAX_SESSION_ATTEMPTS]:
+        identifier = (
+            candidate.info_hash
+            if candidate.info_hash.startswith("magnet:")
+            else build_magnet(candidate.info_hash)
+        )
+        try:
+            return await engine.ensure_session(identifier, file_hint=file_hint)
+        except EngineRejected as e:
+            log.warning(
+                "swarm %s rejected (%s); falling back to the next candidate",
+                candidate.info_hash[:8],
+                e,
+            )
+    raise ProviderError("not_found", "no seeders or dead torrent")
 
 
 def build_magnet(info_hash: str) -> str:
@@ -619,57 +666,44 @@ class YtsProvider(BaseProvider):
     async def _stream_movie(
         self, imdb: str, engine: TorrentEngine, http: httpx.AsyncClient
     ) -> StreamResponse:
-        """The #377 movie path: policy pick over the recorded movie
-        candidates, magnet to the engine, no file hint."""
+        """The #377 movie path: policy-ordered candidates over the
+        recorded movie torrents, dead picks fall back (bounded), no
+        file hint."""
         entries = self._entries_for(imdb)
         if not entries:
             # Cold process: magnets are re-derivable from one details
             # call (yts.py module contract) — refresh, then re-read.
             await self.content(imdb, http)
             entries = self._entries_for(imdb)
-        picked = select_torrent(entries)
-        if picked is None:
+        if not entries:
             raise ProviderError("not_found", f"no torrents recorded for {imdb}")
         try:
-            result = await engine.ensure_session(
-                build_magnet(picked.info_hash), file_hint=None
-            )
+            result = await _ensure_any_session(engine, entries, file_hint=None)
         except EngineUnavailable as e:
             raise ProviderError("unreachable", f"torrent engine unreachable: {e}") from e
-        except EngineRejected as e:
-            # Deterministic verdict on THIS torrent — never reads as a
-            # dead lane (spec #374 error-surface note).
-            raise ProviderError("not_found", "no seeders or dead torrent") from e
         return _torrent_stream_response(result)
 
     async def _stream_episode(
         self, imdb: str, season: int, engine: TorrentEngine, http: httpx.AsyncClient
     ) -> StreamResponse:
-        """The #379 episode path: the season's single torrent, the
-        season number as the file-selection hint."""
+        """The #379 episode path: the season's torrents, the season
+        number as the file-selection hint; dead picks fall back to the
+        next season candidate (bounded)."""
         show = await self._show(imdb, http)
         if show is None:
             self._require_popcorn()
             raise AssertionError("unreachable: _require_popcorn raises")
         torrents = self._season_torrents(show, season)
-        picked = select_torrent(torrents)
-        if picked is None:
+        if not torrents:
             raise ProviderError(
                 "not_found", f"no torrents recorded for {imdb} season {season}"
             )
         try:
-            identifier = (
-                picked.info_hash
-                if picked.info_hash.startswith("magnet:")
-                else build_magnet(picked.info_hash)
-            )
-            result = await engine.ensure_session(
-                identifier, file_hint=_SEASON_HINT_FMT.format(season)
+            result = await _ensure_any_session(
+                engine, torrents, file_hint=_SEASON_HINT_FMT.format(season)
             )
         except EngineUnavailable as e:
             raise ProviderError("unreachable", f"torrent engine unreachable: {e}") from e
-        except EngineRejected as e:
-            raise ProviderError("not_found", "no seeders or dead torrent") from e
         return _torrent_stream_response(result)
 
     async def _show(self, imdb: str, http: httpx.AsyncClient) -> dict[str, Any] | None:

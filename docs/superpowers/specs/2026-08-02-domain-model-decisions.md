@@ -76,6 +76,14 @@ The current shape is the floor, not the ceiling. Each rejected alternative can b
 - **No backend URL probe** — LAN topology (backend + PS4 share egress) means a 200 from backend ≈ a 200 from PS4; mpv surfaces playback errors directly.
 - **No `expires_at` / TTL contract** — manifest URLs are short-lived but HLS segments refresh them transparently. No observed issue today.
 - **No fallback chain** — PS4 retries by user action; backend does not rank URLs from the same provider as primary / fallback.
+- **No fallback chain (amended after #373)** — the response still carries ONE
+  URL; the PS4 still retries by user action, no ranked URL list is exposed.
+  What the #373 live acceptance added is an INTERNAL bounded retry: when the
+  policy pick's engine session is dead-on-arrival (EngineRejected — metadata
+  never arrived in the add window), the provider advances to the next
+  policy-ordered candidate, capped at ``_MAX_SESSION_ATTEMPTS = 3``, before
+  reporting item-level ``not_found``. Lane-level failures (engine
+  unreachable) never advance. The StreamResponse wire contract is unchanged.
 
 ### Translation contract (Q16–Q20, minimum surface)
 
