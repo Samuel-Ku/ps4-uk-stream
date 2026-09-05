@@ -31,7 +31,6 @@ from fastapi import (
     Depends,
     HTTPException,
     Query,
-    Request,
     WebSocket,
     WebSocketDisconnect,
 )
@@ -49,11 +48,9 @@ from ..catalog import (
     is_favorite,
     is_hard_unavailable,
     is_played,
-    ordered_translation_candidates,
     peek_group_content,
     playback_episode_pair,
     playback_positions,
-    playback_translations,
     poster_url_for_group,
     profiles,
     recent_playback,
@@ -78,8 +75,6 @@ from ..models import (
     SearchGroup,
     SearchResult,
     Season,
-    StreamResponse,
-    Translation,
 )
 from ..poster_proxy import fetch as fetch_poster_bytes
 from ..recommend import similarity
@@ -87,7 +82,6 @@ from ..wire_identity import is_group_key
 from . import dto, images
 from .auth import require_token
 from .delivery import register as register_delivery
-from .delivery import resolve_stream as _resolve_stream
 from .hls_proxy import (
     _STREAM_MEMO as _STREAM_MEMO,  # noqa: PLC0414 (re-export: suite clears the memo via router)
 )
@@ -100,9 +94,6 @@ from .models import (
     DisplayPreferencesDto,
     FolderStorageDto,
     ItemCounts,
-    MediaSourceInfo,
-    MediaStreamInfo,
-    PlaybackInfoResponse,
     SearchHint,
     SearchHintResult,
     SystemInfoPublic,
@@ -110,6 +101,7 @@ from .models import (
     UserDataResult,
     UserDto,
 )
+from .playback_info import register as register_playback_info
 from .playback_reports import register as register_playback_reports
 
 log = logging.getLogger("cs_uk_api.jellyfin")
@@ -1341,7 +1333,9 @@ async def genres(
                 continue
             for genre in item.genres:
                 counts[genre] = counts.get(genre, 0) + 1
-    dtos = [dto.genre_shelf_entry(genre, server_id, count) for genre, count in sorted(counts.items())]
+    dtos = [
+        dto.genre_shelf_entry(genre, server_id, count) for genre, count in sorted(counts.items())
+    ]
     return BaseItemDtoQueryResult(Items=dtos, TotalRecordCount=len(dtos))
 
 
@@ -1595,163 +1589,6 @@ async def item_auxiliary_image(item_id: str, index: int = 0) -> Response:
     return await _serve_item_image(item_id)
 
 
-def _container_from_type(stream_type: str) -> str:
-    """StreamResponse.type → Jellyfin ``Container`` (D6).
-
-    The native types are already Jellyfin container strings (``mp4``,
-    ``m3u8``, ``hls``, ``dash``); pass them through verbatim rather than
-    inventing a second mapping that could disagree.
-    """
-    return stream_type
-
-
-def _engine_media_streams(item_id: str, stream: StreamResponse) -> list[MediaStreamInfo]:
-    """#378: media-stream entries for what the file actually carries.
-
-    Torrent-lane truth only — a classic ``StreamResponse`` (subtitle_url
-    None) yields the D6 default ``[{Video}]`` list byte-identically, so
-    the Ukrainian lane's PlaybackInfo wire never moves (parity gate).
-    An enriched one appends ONE ``Subtitle`` entry when the session
-    exposes a convertible srt. ``DeliveryUrl`` points at THIS facade
-    (``/Stream/{item}/vtt`` re-resolves the stream and 302s to the
-    engine) — the raw LAN engine host never reaches the player.
-
-    No ``Audio`` entries: the engine's file listing cannot see audio
-    streams inside a file, so any pick would be invented and unselectable
-    (lean-build omission; restore if the engine exposes per-file audio
-    stream indexes).
-    """
-    if stream.subtitle_url is None:
-        return [MediaStreamInfo()]
-    return [
-        MediaStreamInfo(Type="Video"),
-        MediaStreamInfo(Type="Subtitle", DeliveryUrl=f"/Stream/{item_id}/vtt"),
-    ]
-
-
-def _translation_source_id(item_id: str, translation_id: str) -> str:
-    """MediaSource.Id for one translation (spec #276).
-
-    The source id must survive the round trip: the client echoes it as
-    ``mediaSourceId`` on the stream request and the stream route decodes
-    it back to item + translation. ``item_id`` itself can contain ``:``
-    (episode wire ids), so the separator is ``::`` and the decode splits
-    on the LAST occurrence (the item id is the prefix).
-    """
-    return f"{item_id}::{translation_id}"
-
-
-def _multi_source_media_sources(
-    item_id: str, candidates: list[Translation]
-) -> list[MediaSourceInfo]:
-    """One MediaSource per ordered candidate translation (spec #276).
-
-    Pure wire assembly (#347): the ORDER was chosen behind the seam
-    (``ordered_translation_candidates`` — dedupe by label, cap 8,
-    picked/remembered re-rank); this builder only stamps the facade
-    shapes: the ``<item_id>::<translation_id>`` source id, an audio
-    MediaStream with ``Index`` = the response position (1-based, the
-    client's default selected index is 1) and ``DisplayTitle`` = the
-    dub label so the picker renders names.
-    """
-    return [
-        MediaSourceInfo(
-            Id=_translation_source_id(item_id, t.id),
-            Container="m3u8",
-            MediaStreams=[
-                MediaStreamInfo(Type="Video"),
-                MediaStreamInfo(Type="Audio", Index=index, DisplayTitle=t.label),
-            ],
-            Path=f"/Videos/{item_id}/stream",
-            PlaySessionId="",
-            DisplayTitle=t.label,
-        )
-        for index, t in enumerate(candidates, start=1)
-    ]
-
-
-@router.get(
-    "/Items/{item_id:path}/PlaybackInfo",
-    response_model=PlaybackInfoResponse,
-    response_model_exclude_none=True,
-    dependencies=[Depends(require_token)],
-)
-@router.post(
-    "/Items/{item_id:path}/PlaybackInfo",
-    response_model=PlaybackInfoResponse,
-    response_model_exclude_none=True,
-    dependencies=[Depends(require_token)],
-)
-async def playback_info(
-    item_id: str,
-    request: Request,
-    audio_stream_index: int | None = Query(default=None, alias="AudioStreamIndex"),
-) -> PlaybackInfoResponse:
-    """PlaybackInfo: one thin MediaSource per playable item (D6), and
-    with multiple translations (spec #276) ONE MediaSource per dub — the
-    client's named source picker becomes real.
-
-    The @jellyfin/sdk hits this with POST (capture row 6) and the spec
-    declares GET; both spellings serve the identical envelope. The
-    container is learned from the provider's actual ``StreamResponse`` —
-    one upstream ``stream()`` call, the same cost a native client pays
-    for ``/api/stream``. ``Path`` is fictitious (bytes always come from
-    ``/Videos/{id}/stream``); ``PlaySessionId`` is a fresh UUID. Unplayed
-    ids 404 (D2); a series/season card is not playable and 404s too.
-
-    Multi-source (spec #276): when the item exposes more than one
-    translation, the response lists one MediaSource per translation
-    (cap 8, deduped by label, first player per label), each with an
-    audio MediaStream carrying ``Index`` + ``DisplayTitle`` so the
-    picker renders names. ``AudioStreamIndex`` (POST body or query) is
-    the picker's selection — the matching source goes FIRST (the client
-    plays MediaSources[0]); with the default index the remembered dub
-    (spec #276) goes first, so a replay of the series defaults to it.
-    Single-translation items stay exactly as before: one source, no
-    picker.
-    """
-    # The body carries AudioStreamIndex (and MediaSourceId) on the
-    # source-switch path; the query spelling covers GET.
-    picked_index = audio_stream_index
-    if picked_index is None and request.method == "POST":
-        try:
-            body = await request.json()
-        except Exception:  # noqa: BLE001 — a malformed body keeps the default
-            body = {}
-        if isinstance(body, dict):
-            raw = body.get("AudioStreamIndex")
-            if isinstance(raw, int):
-                picked_index = raw
-
-    translations, remembered = await playback_translations(item_id)
-    if len(translations) <= 1:
-        # Single-translation path (D6, unchanged): one thin source.
-        stream = await _resolve_stream(item_id)
-        if stream is None:
-            raise HTTPException(status_code=404, detail="item_unavailable")
-        play_session_id = str(uuid.uuid4())
-        source = MediaSourceInfo(
-            Id=item_id,
-            Container=_container_from_type(stream.type),
-            MediaStreams=_engine_media_streams(item_id, stream),
-            Path=f"/Videos/{item_id}/stream",
-            PlaySessionId=play_session_id,
-        )
-        return PlaybackInfoResponse(MediaSources=[source], PlaySessionId=play_session_id)
-
-    # The ORDER (dedupe by label, cap 8, picked-index / remembered-dub
-    # re-rank) is a seam decision (#347); the sources below are its
-    # wire shapes.
-    candidates = ordered_translation_candidates(
-        translations, remembered=remembered, picked_index=picked_index
-    )
-    sources = _multi_source_media_sources(item_id, candidates)
-    play_session_id = str(uuid.uuid4())
-    for src in sources:
-        src.PlaySessionId = play_session_id
-    return PlaybackInfoResponse(MediaSources=sources, PlaySessionId=play_session_id)
-
-
 @router.get(
     "/Items/{item_id:path}/Similar",
     response_model=BaseItemDtoQueryResult,
@@ -1974,12 +1811,7 @@ async def run_llm_profile_refresh() -> Response:
     if ok:
         return Response(status_code=204)
     return JSONResponse(
-        {
-            "Message": (
-                "LLM taste profile not refreshed "
-                "(not configured or the model call failed)"
-            )
-        },
+        {"Message": ("LLM taste profile not refreshed (not configured or the model call failed)")},
         status_code=200,
     )
 
@@ -2141,6 +1973,7 @@ async def websocket_socket(websocket: WebSocket) -> None:
 # (the tail) is inert: no two facade patterns match the same URL, and
 # the full suite exercises every route through the real middleware.
 register_delivery(router)
+register_playback_info(router)
 register_playback_reports(router)
 
 __all__ = ["require_token", "router"]

@@ -152,7 +152,7 @@ def _split_season_suffix(parent_id: str) -> tuple[str, int | None]:
 
 
 def decode_translation_source(source_id: str) -> tuple[str, str] | None:
-    """Inverse of ``router._translation_source_id``: ``(item_id,
+    """Inverse of ``playback_info._translation_source_id``: ``(item_id,
     translation_id)`` or None for a plain (single-translation) item id.
 
     The encode side stays with the PlaybackInfo assembly (the builder
