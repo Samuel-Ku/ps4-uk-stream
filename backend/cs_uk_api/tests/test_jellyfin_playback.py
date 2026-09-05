@@ -559,16 +559,16 @@ async def test_eneyida_dead_embed_playback_info_404_health_ok(
 
     TRACKER.reset()
 
-    router_mod = importlib.import_module("cs_uk_api.jellyfin.router")
+    delivery_mod = importlib.import_module("cs_uk_api.jellyfin.delivery")
 
     @contextlib.contextmanager
     def _fake_host() -> Iterator[None]:
-        original = router_mod.get_client
-        router_mod.get_client = lambda: httpx.AsyncClient()  # type: ignore[assignment]
+        original = delivery_mod.get_client
+        delivery_mod.get_client = lambda: httpx.AsyncClient()  # type: ignore[assignment]
         try:
             yield
         finally:
-            router_mod.get_client = original  # type: ignore[assignment]
+            delivery_mod.get_client = original  # type: ignore[assignment]
 
     PROVIDERS["eneyida"] = EneyidaProvider()
     fix = Path(__file__).parent / "fixtures" / "eneyida"
