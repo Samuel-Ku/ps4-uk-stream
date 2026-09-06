@@ -1,0 +1,17 @@
+# cs-uk-api release-check timer (the PR #402 guard)
+#
+# Daily sweep at 03:40 — after the drift monitor's 03:10 slot. Runs the
+# guard until the GitHub Actions workflow ships (see DEPLOY.md §8);
+# afterwards it is redundant-but-harmless (belt and suspenders).
+# Persistent=true catches a missed run at next boot.
+
+[Unit]
+Description=Run the cs-uk-api release check daily
+
+[Timer]
+OnCalendar=*-*-* 03:40:00
+Persistent=true
+Unit=cs-uk-api-release-check.service
+
+[Install]
+WantedBy=timers.target

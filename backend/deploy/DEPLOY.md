@@ -160,3 +160,39 @@ rm ~/.cache/cs-uk-api/user-state.json      # wipe favorites/played
 
 The README's deploy section (§Deploy) is the abbreviated version of this
 runbook; this file is the durable reference for standing up a fresh host.
+
+## 8. Release-check guard (timer fallback)
+
+`scripts/check_releases.py` (PR #402) fails when a pushed `vX.Y.Z` tag
+has no GitHub release — the v1.1.0 lesson, where the tag sat un-released
+for a day and had to be backfilled. The GitHub Actions wiring is written
+(branch `feat/release-check-workflow`) but not yet pushed: uploading
+workflow files requires the token's `workflow` scope, which cannot be
+granted non-interactively (see PR #402's body for the 2-minute enable
+recipe). Until it lands, the operator-side timer below is the
+enforcement; afterwards it is redundant-but-harmless belt-and-suspenders.
+
+```bash
+# install (edit User=/WorkingDirectory= in the unit first to match host):
+sudo cp backend/deploy/cs-uk-api-release-check.service \
+       backend/deploy/cs-uk-api-release-check.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now cs-uk-api-release-check.timer
+
+# verify by hand once (same command the unit runs):
+cd /home/<user>/<repo> && python3 scripts/check_releases.py
+#   release-check: 4/4 v-tags have releases   ← exit 0
+
+systemctl list-timers cs-uk-api-release-check.timer   # next 03:40
+journalctl -u cs-uk-api-release-check                 # on failure
+```
+
+Behavior: daily at **03:40** (the slot after the drift monitor's 03:10;
+`Persistent=true` catches a missed run). Prereqs are the same as the
+drift monitor's issue filing — `git` + `gh` on PATH with `gh`
+authenticated against the repo; the script itself is stdlib-only.
+Exit codes: `0` every tag has a release; `1` **drift** (each output line
+names the un-released tag — fix by publishing the release, then re-run);
+`2` query failure (missing binary / broken auth — operational, not
+drift). A **draft-only** release still fails: an abandoned backfill is
+not a release.
