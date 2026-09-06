@@ -22,13 +22,29 @@ import logging
 import os
 import urllib.parse
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 import httpx
 
 from . import config as _config
+from .health import TRACKER
 
 log = logging.getLogger(__name__)
+
+#: Spec #394 — the engine's own tracker entry. NOT a registry provider:
+#: it renders on /api/providers + /api/health only when the engine is
+#: configured, so a dead engine is visible between play presses.
+ENGINE_TRACKER_ID = "yts:engine"
+
+#: Probe cadence default (settings knob CS_UK_ENGINE_PROBE_INTERVAL,
+#: seconds; 0 disables the loop).
+ENGINE_PROBE_INTERVAL_S = 300.0
+
+#: The path every probe hits. BitPlay exposes no dedicated health route
+#: (research #367); /api/v1/capabilities is the cheap GET the compose
+#: recipe already uses for the first-run check. ANY answer — including
+#: 401/403/5xx — proves the process is alive.
+ENGINE_PROBE_PATH = "/api/v1/capabilities"
 
 
 @dataclass(frozen=True)
@@ -68,7 +84,19 @@ class TorrentEngineError(Exception):
     """Base for every torrent-engine failure."""
 
 
-class EngineUnavailable(TorrentEngineError):
+class EnginePathError(TorrentEngineError):
+    """Marker base for engine-TRANSPORT faults (spec #394).
+
+    ``EngineUnavailable`` subclasses it: a transport death is the
+    engine's fault, so the provider layer retargets the health record
+    to :data:`ENGINE_TRACKER_ID`. ``EngineRejected`` (dead swarm —
+    metadata never arrived) deliberately does NOT: that is an ITEM
+    verdict (``not_found`` after the bounded fallback), never engine
+    health.
+    """
+
+
+class EngineUnavailable(EnginePathError):
     """The engine itself is unreachable / broken (transport failure,
     auth misconfiguration, malformed response, unexpected status).
 
@@ -365,23 +393,88 @@ class BitPlayClient:
 # ------------------------------------------------------- construction
 
 
-def build_engine_from_settings() -> TorrentEngine | None:
+def build_engine_from_settings(settings: Any = None) -> TorrentEngine | None:
     """The one construction path (architecture.md §5: single settings
     binding) — reads ``_config.SETTINGS`` at call time, never binds the
-    value at import.
+    value at import. (Optional ``settings`` override: tests / the marker
+    check pass an explicit one; production uses the live binding.)
 
     Unset/empty ``torrent_engine_url`` ⇒ None: the lane is DISABLED,
     and the future call site must surface that loudly (a deliberate
     "not configured" verdict), never silently pretend to stream.
     """
-    url = (_config.SETTINGS.torrent_engine_url or "").strip()
+    s = settings if settings is not None else _config.SETTINGS
+    url = (s.torrent_engine_url or "").strip()
     if not url:
         return None
     return BitPlayClient(
         base_url=url,
-        username=_config.SETTINGS.torrent_engine_user,
-        password=_config.SETTINGS.torrent_engine_password,
+        username=s.torrent_engine_user,
+        password=s.torrent_engine_password,
     )
+
+
+def engine_configured(settings: Any) -> bool:
+    """True when the engine knob names a usable engine (spec #394).
+
+    A URL without a scheme is malformed, not configured — the marker
+    path treats it as a deterministic fault instead of letting the
+    probe loop spin against ``bitplay.lan:3347`` relative URLs.
+    """
+    url = (settings.torrent_engine_url or "").strip()
+    if not url:
+        return False
+    return urllib.parse.urlparse(url).scheme in ("http", "https")
+
+
+def engine_half_configured(settings: Any) -> bool:
+    """True when the engine is named but its auth pair is split — the
+    deterministic-down marker case (BitPlay engages auth only with BOTH
+    credentials; a lone one would silently half-authenticate)."""
+    if not (settings.torrent_engine_url or "").strip():
+        return False
+    return bool(settings.torrent_engine_user) != bool(settings.torrent_engine_password)
+
+
+async def probe_engine(base_url: str, *, record: bool = False) -> bool:
+    """One engine liveness probe (spec #394).
+
+    ANY HTTP answer — 200, 401, 403, 5xx — proves the engine process is
+    alive; transport death (refused, timeout, DNS) is the failure.
+    Control-plane only: no session creation, no torrent I/O. With
+    ``record=True`` (the background loop's mode) the outcome lands in
+    the ``yts:engine`` sliding window as a plain boolean — the legal
+    runtime-boolean form the verdict-drift walker permits (uakino
+    heartbeat precedent); a probe outcome needs no ProviderError code.
+    """
+    url = f"{base_url.rstrip('/')}{ENGINE_PROBE_PATH}"
+    try:
+        # Own short client: the probe must never inherit or hold the
+        # shared outbound client's pool for a LAN liveness ping.
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(5.0, connect=2.0),
+            auth=_probe_auth(),
+        ) as http:
+            resp = await http.get(url)
+        ok = True  # any answer = alive; status code deliberately ignored
+        _ = resp
+    except (httpx.HTTPError, OSError):
+        ok = False
+    if record:
+        TRACKER.record(ENGINE_TRACKER_ID, ok)
+        if not ok:
+            log.warning("engine probe failed: %s (dead engine?)", base_url)
+    return ok
+
+
+def _probe_auth() -> tuple[str, str] | None:
+    """Mirror the engine's auth pair so an AUTH-ENABLED engine's probe
+    still gets any answer (401 would also prove liveness, but a clean
+    200 keeps the probe out of the engine's auth-failure logs)."""
+    s = _config.SETTINGS
+    return (s.torrent_engine_user, s.torrent_engine_password) if (
+        s.torrent_engine_user and s.torrent_engine_password
+    ) else None
 
 
 # ------------------------------------------------ lazy cached singleton

@@ -25,6 +25,14 @@ from . import watchdog as watchdog_mod
 from .health import TRACKER
 from .http_client import close_client
 from .llm import llm_enabled as _llm_enabled
+from .torrent_engine import (
+    ENGINE_PROBE_INTERVAL_S,
+    ENGINE_TRACKER_ID,
+    build_engine_from_settings,
+    engine_configured,
+    engine_half_configured,
+    probe_engine,
+)
 from .uakino_browser import DEFAULT_CHROMIUM, get_session
 
 log = logging.getLogger("cs_uk_api")
@@ -65,6 +73,54 @@ _llm_task: asyncio.Task[None] | None = None
 #: Daily LLM taste-profile cadence (spec #290 §Cadence: "refreshed
 #: daily in the background").
 _LLM_PROFILE_INTERVAL_S: float = 24 * 60 * 60
+
+#: Handle of the background engine-probe task started by ``lifespan``
+#: (spec #394) — None when the engine is unconfigured or the knob is 0.
+_engine_probe_task: asyncio.Task[None] | None = None
+
+
+def mark_engine_startup_state() -> None:
+    """Deterministic engine-entry marker (spec #394).
+
+    A half-configured engine (auth pair split) or a malformed base URL
+    is a fault that will never heal on its own — pin ``yts:engine``
+    down at startup (the uakino chromium_missing convention) instead of
+    letting the probe window or a stream-time 401 tell the operator.
+    Unconfigured = invisible (a deployment choice, not a fault);
+    fully configured = nothing to mark.
+    """
+    s = _config.SETTINGS
+    if not (s.torrent_engine_url or "").strip():
+        return
+    if engine_half_configured(s) or not engine_configured(s):
+        TRACKER.mark_startup(ENGINE_TRACKER_ID, "engine_misconfigured")
+        log.warning(
+            "yts:engine marked down at startup: engine misconfigured "
+            "(split auth pair or schemeless URL)"
+        )
+
+
+async def _engine_probe_loop() -> None:
+    """Engine liveness probe (spec #394).
+
+    Scheduled once by ``lifespan`` when the engine is configured and
+    the interval knob is non-zero. Each tick probes the engine's
+    capabilities endpoint (ANY HTTP answer = alive) and records the
+    boolean into the ``yts:engine`` sliding window, so a dead engine
+    is visible on /api/providers between play presses. A tick failure
+    must never kill the loop — log and move on.
+    """
+    while True:
+        await asyncio.sleep(_config.SETTINGS.engine_probe_interval_s or ENGINE_PROBE_INTERVAL_S)
+        try:
+            engine = build_engine_from_settings()
+            if engine is None:
+                continue  # unconfigured mid-flight: nothing to probe
+            base = getattr(engine, "_base_url", None)
+            if base:
+                await probe_engine(base, record=True)
+        except Exception:
+            log.exception("engine probe tick failed")
 
 
 def catalog_warm_state() -> catalog_warm_mod.CatalogWarmState | None:
@@ -152,7 +208,8 @@ async def _warm_and_heartbeat() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    global _warm_task, _watchdog_task, _catalog_warm_task, _llm_task
+    global _warm_task, _watchdog_task, _catalog_warm_task, _llm_task, _engine_probe_task
+    mark_engine_startup_state()
     if os.path.exists(DEFAULT_CHROMIUM):
         # Background warm+heartbeat (issue #193): uakino's browser session
         # is brought up once at startup instead of lazily on first request,
@@ -173,6 +230,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # the layer is configured — no knobs, no task, no LLM calls.
     if _llm_enabled():
         _llm_task = asyncio.create_task(_llm_profile_loop())
+    # Engine liveness probe (spec #394): only when the engine is
+    # configured and the cadence knob is non-zero — unconfigured means
+    # invisible, 0 means the operator turned the loop off.
+    if engine_configured(_config.SETTINGS) and _config.SETTINGS.engine_probe_interval_s > 0:
+        _engine_probe_task = asyncio.create_task(_engine_probe_loop())
     yield
     if _watchdog_task is not None:
         _watchdog_task.cancel()
@@ -202,6 +264,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         except (TimeoutError, asyncio.CancelledError):
             pass
         _llm_task = None
+    if _engine_probe_task is not None:
+        _engine_probe_task.cancel()
+        try:
+            await asyncio.wait_for(_engine_probe_task, timeout=1.0)
+        except (TimeoutError, asyncio.CancelledError):
+            pass
+        _engine_probe_task = None
     # Persist any debounced playback-progress state (ticket #248): the
     # Stopped report already flushed, but heartbeat positions may still
     # be pending a debounce when the process is told to stop.

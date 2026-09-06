@@ -116,6 +116,11 @@ class Settings:
     #: BITPLAY_AUTH_USERNAME/BITPLAY_AUTH_PASSWORD env contract — both
     #: must be set for auth to engage.
     torrent_engine_url: str | None = None
+    #: Engine liveness probe cadence (spec #394): seconds between the
+    #: background probe of the configured engine (0 disables the loop).
+    #: Default 300 — five minutes is plenty for a LAN process whose
+    #: death otherwise only surfaces at play time.
+    engine_probe_interval_s: float = 300.0
     torrent_engine_user: str | None = None
     torrent_engine_password: str | None = None
     #: Torrent lane, series pass (#379): the Popcorn-API series host the
@@ -242,6 +247,7 @@ def load_settings() -> Settings:
         # Torrent lane (spec #374): engine base URL + optional basic
         # auth. Empty string disables like absent (llm-knob convention).
         torrent_engine_url=os.environ.get("CS_UK_TORRENT_ENGINE_URL") or None,
+        engine_probe_interval_s=float(os.environ.get("CS_UK_ENGINE_PROBE_INTERVAL", "300")),
         torrent_engine_user=os.environ.get("CS_UK_TORRENT_ENGINE_USER") or None,
         torrent_engine_password=os.environ.get("CS_UK_TORRENT_ENGINE_PASSWORD") or None,
         # Torrent lane, series pass (#379): the Popcorn-API series host.

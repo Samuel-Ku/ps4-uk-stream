@@ -545,9 +545,11 @@ def test_facade_session_cost_and_health_lane(client: TestClient, monkeypatch) ->
         assert TRACKER.status("yts") == "ok"  # item verdicts are not lane faults
         assert show.call_count == 1  # the season map is cached; one fetch total
 
-    # Phase B — a genuine transport failure (engine unreachable) DOES
-    # flip the lane DOWN through the facade's recording: five refusals,
-    # still one fetch for the season map.
+    # Phase B — a genuine transport failure (engine unreachable) is an
+    # ENGINE-path fault (spec #394): it flips the yts:engine entry DOWN
+    # while the catalog lane stays ok — user story 16 of spec #374 (tell
+    # a dead catalog API from a dead engine). Five refusals, still one
+    # fetch for the season map.
     PROVIDERS["yts"] = YtsProvider(engine=_RaisingEngine())
     TRACKER.reset()
     with respx.mock(assert_all_called=False) as router:
@@ -555,7 +557,8 @@ def test_facade_session_cost_and_health_lane(client: TestClient, monkeypatch) ->
         for _ in range(5):
             r = client.get(f"/Videos/{quote(_S1E1, safe='')}/stream", follow_redirects=False)
             assert r.status_code == 404
-        assert TRACKER.status("yts") == "down"
+        assert TRACKER.status("yts") == "ok"  # the engine fault is not the catalog lane's
+        assert TRACKER.status("yts:engine") == "down"  # it is the engine entry's (spec #394)
         assert show.call_count == 1  # one fetch per session generation
 
     # Phase C — torrents return upstream; the NEXT session (a fresh
