@@ -1,0 +1,35 @@
+# cs-uk-api release-check service unit (the PR #402 guard)
+#
+# One-shot: fails when a pushed vX.Y.Z tag has no GitHub release (the
+# v1.1.0 lesson — the tag sat un-released for a day and had to be
+# backfilled). Exit 1 = drift (each output line names the tag), exit 2
+# = query failure (missing gh / broken auth — operational, not drift).
+# Visible via systemctl status / journalctl.
+#
+# This unit is the FALLBACK runner until the GitHub Actions workflow
+# ships (branch feat/release-check-workflow; the push needs the token's
+# workflow scope — see PR #402's body). See DEPLOY.md §8.
+#
+# Install (with the timer):
+#   sudo cp deploy/cs-uk-api-release-check.service deploy/cs-uk-api-release-check.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now cs-uk-api-release-check.timer
+#
+# Edit User= and WorkingDirectory= to match the host before enabling.
+# Needs: git + gh on PATH, gh authenticated as a user that can read the
+# repo (the same requirement as the drift monitor's issue filing). The
+# script is stdlib-only — no venv needed.
+
+[Unit]
+Description=cs-uk-api - release-check drift guard (tags without releases)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=rorschach
+WorkingDirectory=/home/rorschach/UA flims/ps4-uk-stream
+ExecStart=/usr/bin/python3 "/home/rorschach/UA flims/ps4-uk-stream/scripts/check_releases.py"
+
+[Install]
+WantedBy=multi-user.target
