@@ -291,6 +291,55 @@ minutes, feeding the sliding-window health tracker.
 - The fan-out skip keeps a cold uakino off the 12s search budget; the
   session warms in the background once per process.
 
+## Amendment: the `yts:engine` entry on the health surface (2026-09-06)
+
+The base ADR scoped health reporting to the provider registry:
+`/api/providers` is "the per-provider health data" the tracker feeds,
+and every entry in it corresponded to a registered provider. Spec #394
+(PRs [#397](https://github.com/Samuel-Ku/ps4-uk-stream/pull/397),
+[#399](https://github.com/Samuel-Ku/ps4-uk-stream/pull/399),
+[#400](https://github.com/Samuel-Ku/ps4-uk-stream/pull/400)) adds ONE
+deliberate exception so «dead catalog API» and «dead engine» are
+distinguishable on the wire.
+
+#### Wire shape
+
+- Both `/api/providers` and `/api/health` return the engine as an
+  additional entry keyed `yts:engine` in the same `providers` map,
+  with the same status vocabulary — but never `warming` (the engine
+  has no warm lifecycle).
+- **Visibility rule**: the entry is present iff the engine URL is
+  configured (`CS_UK_TORRENT_ENGINE_URL`, with a scheme). Unconfigured
+  ⇒ the key is absent entirely — clients must not special-case a
+  `null` status; absence IS the "no engine" wire fact.
+- **Half-configured** (split auth pair or schemeless URL) ⇒ the entry
+  is present and pinned `down` at startup with zero samples — the
+  uakino `chromium_missing` marker precedent, applied to the engine.
+
+#### What samples it
+
+- The background liveness probe (every `CS_UK_ENGINE_PROBE_INTERVAL`,
+  default 300s, `0` disables): any HTTP answer = a success sample,
+  transport death = a failure sample. Process-liveness only.
+- Stream-time `EngineUnavailable` faults, retargeted via the explicit
+  `ProviderError.engine_path` flag — a play attempt that cannot reach
+  the engine records here, never against `yts`.
+- NOT sampled here: a dead swarm (`EngineRejected` → the item-level
+  `not_found` verdict — per the #373 acceptance, swarm health is a
+  per-title fact, not lane health) and every catalog/listing fault
+  (those stay on `yts`, unchanged by this amendment).
+
+#### Deliberate non-features
+
+- The watchdog's `all_down` set does NOT enumerate the entry: the
+  engine is LAN-local, and folding it into the wedge set would suppress
+  the classic WAN-loss wedge (engine up, WAN dead). The spec's only
+  normative watchdog claim — a dead engine alone never resets the
+  client — is test-pinned.
+- No per-entry `latency_ms`/probe-timestamp fields: the sliding-window
+  status + `last_error_at` vocabulary is the established surface; the
+  probe's raw booleans feed the same window as any provider.
+
 ## References
 
 - [`CONTEXT.md`](../../CONTEXT.md) — glossary of the failure-envelope
