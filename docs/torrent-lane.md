@@ -46,6 +46,7 @@ Environment=CS_UK_TORRENT_ENGINE_URL=http://192.168.2.166:3347
 # English SERIES (#379): the Popcorn shows host. Every known public
 # host is dead (research #366) — self-host popcorn-api or point at a
 # live mirror. Unset ⇒ movies work, series say `unreachable` loudly.
+# Recipe: §1 «Self-host the series host (popcorn-api)» below.
 # Environment=CS_UK_POPCORN_BASE_URL=http://popcorn.lan:9000
 ```
 
@@ -86,6 +87,90 @@ host. Selectable audio surfaces as `Audio` media-stream entries the same
 way. A session with neither (no separate srt, one audio track) leaves
 PlaybackInfo byte-identical to the pre-#378 shape — the Ukrainian lane
 never changes.
+
+### Self-host the series host (popcorn-api)
+
+Series discovery is the one dependency of the lane with **no live
+public host** (research #366, probed 2026-08-25: `api.popcorntime.app`
+is a marketing site, `*.api-fetch.sh` is DNS-dead, `popcorn-ru.tk` sits
+behind an anti-bot wall). The backend's knob (`CS_UK_POPCORN_BASE_URL`)
+points at whatever host speaks the contract — self-hosted or a mirror.
+Unset ⇒ movies keep working and series answer the loud typed verdict;
+nothing breaks silently.
+
+**What the host must serve** (the acceptance bar — any candidate is
+tested against exactly these; shapes per `providers/popcorn.py` and
+the byte-true fixtures in `cs_uk_api/tests/fixtures/yts/`):
+
+| Route | Returns |
+| --- | --- |
+| `GET /shows/{page}?sort=updated&order=-1` | JSON array of show objects (`null` = empty page) — home "newest" rail |
+| `GET /shows/{page}?sort=name&keywords=<query>` | same shape — search |
+| `GET /show/{imdb_id}` | one show object (see below) |
+
+The show object carries `imdb_id`, `tvdb_id`, `title`, `year` (STRING),
+`slug`, `description`, `num_seasons`, `genres`, `images.poster`,
+`rating.percentage`, and `episodes[]` with `season`, `episode`,
+`title`, `overview` and a **per-episode quality map**:
+`torrents: {"720p": {"url": "magnet:?xt=…", "seeds": N}, …}` — quality
+`"0"` means unknown. Episode magnets are used VERBATIM (popcorn
+desktop's tv.js contract); the backend never rebuilds them from hashes.
+`series_show_tt8740758.json` (Chernobyl) in the fixtures directory is a
+complete example.
+
+**Option A — self-host popcorn-official/popcorn-api** (MIT, Node ≥6.3,
+MongoDB + `mongoimport`, gulp build; this is the implementation the
+dialect was documented from):
+
+```bash
+git clone https://github.com/popcorn-official/popcorn-api.git
+cd popcorn-api && npm install && gulp build
+# MongoDB must be reachable; run `mongod` and note the api's port (default per its config)
+npm start   # or the built entry point; keep it on a LAN port, e.g. 9000
+```
+
+> **Honest limitation:** the upstream ships the API, **not a catalog** —
+> its database starts empty (its CLI populates metadata from Trakt;
+> episode magnets came from provider scrapers that died with the
+> 2017-era public servers). An empty deployment answers `200 []` —
+> alive but useless. Self-hosting is only the whole fix if you also
+> source catalog data (community scrapes of that era exist but none is
+> maintained or clearnet-listed as of research #366).
+
+**Option B — point at a live mirror.** Any host — a community deployment
+or a friend's LAN box — that passes the acceptance table above works:
+set the knob, verify with the curls below, done. This is the cheap path
+while it lasts; mirrors churn (§5 of research #366).
+
+**Wire it** (same unit as the other knobs):
+
+```ini
+Environment=CS_UK_POPCORN_BASE_URL=http://<host>:9000
+```
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl restart cs-uk-api
+```
+
+The configured host joins the yts provider's `safe_get` allowlist
+automatically (seeded from the knob at construction) — no code or
+declaration change needed.
+
+**Verify:**
+
+```bash
+curl -s "http://<host>:9000/shows/1?sort=updated&order=-1" | head -c 300
+curl -s "http://<host>:9000/show/tt8740758" | python3 -m json.tool | head -20
+# then through the backend — the show must appear in search:
+curl -s "http://127.0.0.1:8003/api/search?q=chernobyl" | grep -c chernobyl
+```
+
+**Failure signatures:** a dead or wrong series host does NOT take the
+English lane down — search degrades to movies-only with a
+`yts series search degraded` warning in the backend log, and series
+browse/play answers the typed not-configured/`unreachable` verdict.
+Playback-surface failures against the host do record against `yts`'s
+sliding window like any lane fault (§2). Movies are never affected.
 
 ## 2. Health interpretation
 
