@@ -57,6 +57,19 @@ class ProviderError(Exception):
         super().__init__(f"{code}: {message}")
         self.code = code
         self.message = message
+        #: Spec #394: True when the fault belongs to the torrent ENGINE
+        #: (transport-level), so recorders retarget it to the
+        #: ``yts:engine`` tracker entry instead of the lane provider.
+        #: Raised only via :meth:`with_engine_path` at the provider's
+        #: engine-boundary sites; default False keeps every other
+        #: raiser untouched.
+        self.engine_path: bool = False
+
+    def with_engine_path(self) -> ProviderError:
+        """Tag this error as an engine-path fault (spec #394). Chainable
+        at the raise site; returns self for ``raise ... with_engine_path()``."""
+        self.engine_path = True
+        return self
 
 
 def dle_page_number(href: str) -> int:

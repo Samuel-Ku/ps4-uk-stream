@@ -18,6 +18,7 @@ from fastapi import HTTPException
 from .health import TRACKER, record_verdict
 from .models import ErrorResponse, SearchResult
 from .providers.base import ProviderError
+from .torrent_engine import ENGINE_TRACKER_ID
 
 log = logging.getLogger("cs_uk_api")
 
@@ -82,8 +83,14 @@ async def upstream_guard(
             raise HTTPException(502, detail=ErrorResponse(error="upstream_unreachable", message=str(e)).model_dump()) from e
         # The shared classification (health.py) is the backstop: callers
         # may ADD skip codes, never override the base rule that item-level
-        # verdicts (ADR-0002) are not lane faults.
-        record_verdict(provider_id, e.code if isinstance(e, ProviderError) else None)
+        # verdicts (ADR-0002) are not lane faults. Engine-path faults
+        # (spec #394) retarget to the yts:engine tracker entry.
+        record_verdict(
+            ENGINE_TRACKER_ID
+            if isinstance(e, ProviderError) and e.engine_path
+            else provider_id,
+            e.code if isinstance(e, ProviderError) else None,
+        )
         log.warning("%s failed provider=%s err=%s", log_label, provider_id, e)
         if on_error is _UNSET:
             raise HTTPException(502, detail=ErrorResponse(error="upstream_unreachable", message=str(e)).model_dump()) from e

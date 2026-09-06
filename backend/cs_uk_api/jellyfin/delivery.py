@@ -47,6 +47,7 @@ from ..http_client import get_client
 from ..models import StreamResponse
 from ..providers import PROVIDERS
 from ..providers.base import ProviderError
+from ..torrent_engine import ENGINE_TRACKER_ID
 from ..wire_identity import is_group_key
 from .dto import safe_filename
 from .hls_proxy import proxy_download, proxy_stream, segment_target, serve_segment
@@ -132,7 +133,9 @@ async def resolve_stream(
         log.warning(
             "jellyfin playback stream failed provider=%s id=%s err=%s", provider_id, item_id, e
         )
-        record_verdict(provider_id, e.code)
+        # Engine-path faults (spec #394) belong to the engine's own
+        # tracker entry, not the catalog lane's.
+        record_verdict(ENGINE_TRACKER_ID if e.engine_path else provider_id, e.code)
         return None
     except Exception as e:  # noqa: BLE001
         log.warning(

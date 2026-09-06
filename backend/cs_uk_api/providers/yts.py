@@ -593,7 +593,12 @@ class YtsProvider(BaseProvider):
         try:
             result = await _ensure_any_session(engine, entries, file_hint=None)
         except EngineUnavailable as e:
-            raise ProviderError("unreachable", f"torrent engine unreachable: {e}") from e
+            # engine_path=True (spec #394): the recorder retargets this
+            # fault to the yts:engine entry — a dead engine is the
+            # engine's fault, not the catalog lane's.
+            raise ProviderError(
+                "unreachable", f"torrent engine unreachable: {e}"
+            ).with_engine_path() from e
         return _torrent_stream_response(result)
 
     async def _stream_episode(
@@ -616,7 +621,9 @@ class YtsProvider(BaseProvider):
                 engine, torrents, file_hint=_SEASON_HINT_FMT.format(season)
             )
         except EngineUnavailable as e:
-            raise ProviderError("unreachable", f"torrent engine unreachable: {e}") from e
+            raise ProviderError(
+                "unreachable", f"torrent engine unreachable: {e}"
+            ).with_engine_path() from e
         return _torrent_stream_response(result)
 
     async def _show(self, imdb: str, http: httpx.AsyncClient) -> dict[str, Any] | None:

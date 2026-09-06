@@ -54,6 +54,7 @@ from .service import inject_sources_into_unavailable_error as _inject_sources_in
 from .service import split_content_id as _split_content_id
 from .service import stream_provider_error as _stream_provider_error
 from .service import upstream_guard as _upstream_guard
+from .torrent_engine import ENGINE_TRACKER_ID, engine_configured
 from .uakino_browser import get_session
 from .wire_identity import is_group_key
 
@@ -123,6 +124,10 @@ async def health() -> dict[str, object]:
         p.id: _provider_status(p.id)
         for p in PROVIDERS.values()
     }
+    # The engine's own tracker entry (spec #394), same visibility rule
+    # as /api/providers: present only when the engine is configured.
+    if engine_configured(_config.SETTINGS):
+        statuses[ENGINE_TRACKER_ID] = _provider_status(ENGINE_TRACKER_ID)
     return {
         "providers": statuses,
         "all_down": watchdog_mod.WATCHDOG.all_relevant_down(),
@@ -158,7 +163,7 @@ async def health() -> dict[str, object]:
 
 @app.get("/api/providers")
 async def list_providers() -> list[ProviderInfo]:
-    return [
+    entries = [
         ProviderInfo(
             id=p.id,
             name=p.name,
@@ -172,6 +177,21 @@ async def list_providers() -> list[ProviderInfo]:
         )
         for p in PROVIDERS.values()
     ]
+    # The engine's own tracker entry (spec #394): NOT a registry
+    # provider — it rides after the registry, only when the engine is
+    # configured. Unconfigured = invisible (a deployment choice).
+    if engine_configured(_config.SETTINGS):
+        entries.append(
+            ProviderInfo(
+                id=ENGINE_TRACKER_ID,
+                name="BitPlay engine",
+                forms=[],
+                styles=[],
+                status=_provider_status(ENGINE_TRACKER_ID),
+                last_error_at=TRACKER.last_error_at(ENGINE_TRACKER_ID),
+            )
+        )
+    return entries
 
 
 def _provider_forms(p: BaseProvider) -> list[MediaForm]:
