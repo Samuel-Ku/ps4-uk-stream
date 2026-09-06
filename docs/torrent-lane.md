@@ -43,6 +43,9 @@ Environment=CS_UK_TORRENT_ENGINE_URL=http://192.168.2.166:3347
 # Only when BitPlay auth is enabled — both sides need BOTH values:
 # Environment=CS_UK_TORRENT_ENGINE_USER=operator
 # Environment=CS_UK_TORRENT_ENGINE_PASSWORD=change-me
+# Engine liveness probe cadence (§2): seconds between ticks, default 300,
+# 0 disables. A split auth pair above pins yts:engine down at startup.
+# Environment=CS_UK_ENGINE_PROBE_INTERVAL=300
 # English SERIES (#379): the Popcorn shows host. Every known public
 # host is dead (research #366) — self-host popcorn-api or point at a
 # live mirror. Unset ⇒ movies work, series say `unreachable` loudly.
@@ -180,17 +183,51 @@ order when playback breaks:
 | Failure | What you see | Why |
 | --- | --- | --- |
 | Catalog API down | `/api/providers` slides `yts` to `degraded` → `down` (with `last_error_at`); English titles vanish from search/browse while Ukrainian ones still work; drift sweep flags it | Listing calls fail through the usual upstream guard |
-| Engine down | Catalog stays healthy — posters and search work fine; pressing play fails fast with the typed error `unreachable` | The engine is only touched at play time; catalog health never probes it |
-| Zero seeders / dead torrent | Play fails with an item-level rejection (`not_found` class) after the engine gives up fetching metadata (≤3 min); other titles unaffected | Swarm-level failure of THIS torrent, deliberately distinct from a dead lane |
+| Engine down | `yts:engine` slides `degraded` → `down` on its own row (spec #394); catalog and search keep working; pressing play fails fast with the typed error `unreachable` (a typed 404 through the facade) | The engine's liveness has its own tracked entry — see «The `yts:engine` entry» below |
+| Zero seeders / dead torrent | Play fails with an item-level rejection (`not_found` class) after the engine gives up fetching metadata (≤3 min); other titles unaffected; **`yts:engine` stays healthy** | Swarm-level failure of THIS torrent, deliberately distinct from a dead lane AND from a dead engine |
+
+### The `yts:engine` entry
+
+When the engine URL is configured, `/api/providers` and `/api/health`
+carry a separate `yts:engine` row ("BitPlay engine") so «dead catalog
+API» and «dead engine» are distinguishable at a glance. Unconfigured ⇒
+the row simply does not exist.
+
+What moves it: **engine-process unreachability only**, from two sample
+sources — the background liveness probe and stream-time
+`EngineUnavailable` faults (a play attempt that cannot reach the
+engine records against `yts:engine`, never against `yts`; a dead swarm
+is an item-level `not_found` and never samples this row). The same
+sliding-window thresholds apply as for any provider: `degraded` is the
+early-warning tier, `down` is a persistently unreachable engine.
+
+- **The probe.** Every `CS_UK_ENGINE_PROBE_INTERVAL` seconds (default
+  300; `0` disables the loop) the backend pings the engine's
+  capabilities endpoint with a 5s timeout. **Any HTTP answer —
+  200/401/403/5xx — counts as alive**; only transport death (refused,
+  timeout, DNS) is a failure sample. It is a process-liveness check,
+  not a deep-health check, and it needs no engine-side changes.
+- **The misconfiguration marker.** A HALF-configured engine — the URL
+  set but the auth pair split (user without password or vice versa),
+  or a schemeless URL — pins `yts:engine` `down` deterministically at
+  startup with zero samples. Fix the env pair (BOTH values or neither —
+  BitPlay engages auth only for the pair) and restart the backend.
+- **The client is never reset by it.** The engine is LAN-local; the
+  entry is deliberately NOT part of the watchdog's all-down set, so a
+  dead engine alone (e.g. during a WAN outage, when the engine stays
+  reachable) never resets the client.
 
 ```bash
 curl -s http://127.0.0.1:8003/api/providers | grep -A4 '"id":"yts"'
+curl -s http://127.0.0.1:8003/api/providers | grep -A4 'yts:engine'
 curl -s http://127.0.0.1:8003/api/health          # all_down + warm state
 curl -s http://192.168.2.166:3347/api/v1/sessions # engine alive + sessions
 ```
 
-Rule of thumb: healthy `yts` status plus failing playbacks ⇒ look at
-the engine, not the catalog.
+Rule of thumb: healthy `yts` plus failing playbacks used to mean
+"probably the engine" — now the `yts:engine` row answers it directly:
+`degraded`/`down` there is the engine, `ok` there with failing plays is
+this title's swarm.
 
 ## 3. Maintenance
 
@@ -220,7 +257,8 @@ the engine, not the catalog.
 
 | Symptom | Cause | Action |
 | --- | --- | --- |
-| Play fails instantly with `unreachable` | Engine down, wrong `CS_UK_TORRENT_ENGINE_URL`, container crash-looping | `docker compose -f backend/deploy/docker-compose.bitplay.yml ps`; `curl -s localhost:3347/api/v1/capabilities`; fix address/compose, restart backend |
+| Play fails instantly with `unreachable` | Engine down, wrong `CS_UK_TORRENT_ENGINE_URL`, container crash-looping | Check `yts:engine` in `/api/providers` (§2); `docker compose -f backend/deploy/docker-compose.bitplay.yml ps`; `curl -s localhost:3347/api/v1/capabilities`; fix address/compose, restart backend |
+| `yts:engine` down at startup, never played | Half-configured engine: auth pair split (one env var set) or schemeless URL | Set BOTH `CS_UK_TORRENT_ENGINE_USER`/`PASSWORD` or neither; give the URL an `http(s)://` scheme; restart backend |
 | Play hangs ~minutes, then item-level `not_found` | Dead torrent: zero seeders / metadata timeout (engine blames this magnet: 400/504) | Try another title or quality; check the peers column in the BitPlay UI. Not a lane fault |
 | 401 from the engine in backend logs | Auth enabled on one side only | Both sides need complete pairs: `BITPLAY_AUTH_USERNAME`+`PASSWORD` AND `CS_UK_TORRENT_ENGINE_USER`+`PASSWORD`, identical values |
 | Remuxed MKV plays but will not seek | Current engine limit: the remux path serves chunked progressive fMP4 with `Accept-Ranges: none` — no HTTP Range support | Expected behaviour, not a bug. Native-container files (`/stream/`) seek normally; restarting playback is the workaround for MKV sources |
