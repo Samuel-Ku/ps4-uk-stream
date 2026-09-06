@@ -40,12 +40,23 @@ from typing import Protocol
 
 from .models import MediaForm, MediaStyle, SearchResult
 
-#: The versioned prefix of a merged-title group key (``g2:`` = Model B
-#: contract step #135 regeneration). A version bump edits ONE file:
-#: ``merge.group_key`` builds every key from this constant and
-#: ``is_group_key`` recognizes it, so callers never spell ``gN:``
-#: themselves.
+#: The versioned prefixes of merged-title group keys. ``g2:`` = Model B
+#: contract step #135 regeneration (alias+form+year); ``g3:`` = the
+#: cross-language IMDb-keyed tier (spec #395). A version bump edits ONE
+#: file: this module builds/recognizes every key so callers never spell
+#: ``gN:`` themselves. The namespaces COEXIST — nothing mutates old keys.
 GROUP_KEY_PREFIX = "g2:"
+GROUP_KEY_PREFIX_G3 = "g3:"
+_GROUP_KEY_PREFIXES = (GROUP_KEY_PREFIX, GROUP_KEY_PREFIX_G3)
+
+#: A cyrillic-locale title (spec #395's display rule): any char in the
+#: Ukrainian/Russian extended ranges — the household's language marker.
+_HAS_CYRILLIC = re.compile(r"[\u0400-\u04FF]")
+
+#: The provider-asserted IMDb shape (``tt`` + digits) that admits an
+#: item into the g3 tier. Deliberately strict: only verified ids merge
+#: across languages (spec #395 — nothing fuzzy).
+IMDB_ID_RE = re.compile(r"tt\d{7,10}")
 
 
 def group_key(alias: str, form: str, year: int | None) -> str:
@@ -54,14 +65,30 @@ def group_key(alias: str, form: str, year: int | None) -> str:
     return f"{GROUP_KEY_PREFIX}{digest[:16]}"
 
 
+def group_key_from_imdb(imdb_id: str, form: str = "") -> str:
+    """The g3 identity: ``g3:<tt-number>`` (spec #395).
+
+    Keyed DIRECTLY on the IMDb id — no digest, no alias, no year — so
+    any provider asserting the same tt lands in the same group. Form
+    does not change identity (one tt = one work); it is accepted for
+    signature symmetry and ignored.
+    """
+    if not IMDB_ID_RE.fullmatch(imdb_id):
+        raise ValueError(f"not an IMDb id: {imdb_id!r}")
+    return f"{GROUP_KEY_PREFIX_G3}{imdb_id}"
+
+
 def is_group_key(item_id: str) -> bool:
-    """True for a merged ``g2:`` group key (the wire's merged-title id).
+    """True for a merged group key of EITHER namespace (the wire's
+    merged-title id).
 
     The shape that distinguishes a group key from an episode wire id or
     a view id on the wire, so callers can route without re-deriving the
-    prefix.
+    prefix. ``g2:`` digest keys and ``g3:`` IMDb keys both qualify; a
+    bare id never starts with either prefix (providers/externals do not
+    begin with ``g2:``/``g3:``).
     """
-    return item_id.startswith(GROUP_KEY_PREFIX)
+    return item_id.startswith(_GROUP_KEY_PREFIXES)
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +191,12 @@ def item_group_key(it: SearchResult) -> str:
     year field is passed through — ``group_key_from`` applies the effective
     year itself. The identity axis is ``form`` (contract #135) — ``type``
     no longer exists on items.
+
+    Spec #395: an item asserting a validated IMDb id keys the ``g3:``
+    tier — the same stateless key the merge core prefers for its group.
     """
+    if it.imdb_id and IMDB_ID_RE.fullmatch(it.imdb_id):
+        return group_key_from_imdb(it.imdb_id)
     return group_key_from(it.title, it.form, it.year, it.id)
 
 
@@ -386,7 +418,13 @@ def project_group(mg: MergedGroupLike) -> GroupProjection:
     (issue #89 — the client matches a resume record against ANY member
     key, not only the canonical ``group_key``).
     """
-    sample = mg.sources[0]
+    # Spec #395's added rule: the display alias prefers a member with a
+    # cyrillic-locale title (the household's language), falling back to
+    # the first-seen member when no member carries one.
+    sample = next(
+        (s for s in mg.sources if _HAS_CYRILLIC.search(s.title)),
+        mg.sources[0],
+    )
     return GroupProjection(
         key=mg.key,
         title=sample.title,

@@ -29,6 +29,9 @@ from dataclasses import dataclass, field
 
 from .models import SearchResult
 from .wire_identity import (
+    IMDB_ID_RE as IMDB_ID_RE,  # noqa: PLC0414
+)
+from .wire_identity import (
     effective_year as effective_year,  # noqa: PLC0414
 )
 from .wire_identity import (
@@ -39,6 +42,9 @@ from .wire_identity import (
 )
 from .wire_identity import (
     group_key_from as group_key_from,  # noqa: PLC0414
+)
+from .wire_identity import (
+    group_key_from_imdb as group_key_from_imdb,  # noqa: PLC0414
 )
 from .wire_identity import (
     item_group_key as item_group_key,  # noqa: PLC0414
@@ -112,6 +118,17 @@ def merge_results(items: Iterable[SearchResult]) -> list[MergeGroup]:
                     union(i, j)
             seen.setdefault((alias, it.form), []).append(i)
 
+    # The g3 tier (spec #395): a provider-asserted IMDb id is the
+    # cross-language identity — same tt ⇒ same work, form-independent,
+    # year/title disagreements are data noise (the union log already
+    # records them). Idless items are untouched by this pass.
+    imdb_seen: dict[str, int] = {}
+    for i, it in enumerate(items):
+        imdb = it.imdb_id
+        if imdb and IMDB_ID_RE.fullmatch(imdb):
+            j = imdb_seen.setdefault(imdb, i)
+            union(i, j)
+
     buckets: dict[int, list[int]] = {}
     for i in range(len(items)):
         buckets.setdefault(find(i), []).append(i)
@@ -126,9 +143,21 @@ def merge_results(items: Iterable[SearchResult]) -> list[MergeGroup]:
         # would both min to the yearless member's key (its digest hashes
         # below both year variants) and collide, silently dropping one
         # title at groupKey-dedup. Yearless singletons keep their own key.
-        yearful = [m for m in members if _effective_year(items[m]) is not None]
-        preferred = yearful if yearful else members
-        key = min(item_group_key(items[m]) for m in preferred)
+        #
+        # Spec #395: when ANY member asserts a validated IMDb id, the g3
+        # tt-key IS the canonical identity (one tt = one work; every
+        # member carrying that id recomputes the same key statelessly).
+        imdb_ids = sorted({
+            it.imdb_id
+            for it in (items[m] for m in members)
+            if it.imdb_id and IMDB_ID_RE.fullmatch(it.imdb_id)
+        })
+        if imdb_ids:
+            key = group_key_from_imdb(imdb_ids[0])
+        else:
+            yearful = [m for m in members if _effective_year(items[m]) is not None]
+            preferred = yearful if yearful else members
+            key = min(item_group_key(items[m]) for m in preferred)
         groups.append(
             MergeGroup(
                 key=key,
