@@ -224,6 +224,26 @@ curl -s http://127.0.0.1:8003/api/health          # all_down + warm state
 curl -s http://192.168.2.166:3347/api/v1/sessions # engine alive + sessions
 ```
 
+On the wire, `/api/health`'s `providers` map carries the engine entry
+alongside the registry (same status vocabulary, never `warming`):
+
+```json
+{
+  "providers": {
+    "uakino": "ok", "yts": "ok",
+    "yts:engine": "ok"
+  },
+  "all_down": false,
+  "watchdog": {"reset_count": 0, "cooldown_s": 300.0}
+}
+```
+
+`yts:engine` absent = the engine is not configured (that absence is
+the wire's "no engine" fact — there is no `null` status); present and
+`down` at startup with no plays attempted = the misconfiguration
+marker. Full semantics: ADR-0002, «The `yts:engine` entry on the
+health surface».
+
 Rule of thumb: healthy `yts` plus failing playbacks used to mean
 "probably the engine" — now the `yts:engine` row answers it directly:
 `degraded`/`down` there is the engine, `ok` there with failing plays is
