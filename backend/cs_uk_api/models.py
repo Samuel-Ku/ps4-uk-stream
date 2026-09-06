@@ -39,6 +39,11 @@ class SearchResult(BaseModel):
     #: home snapshot's ``HomeItem.genres`` and the Jellyfin ``/Genres``
     #: shelf + ``genreIds`` filter.
     genres: list[str] = Field(default_factory=list)
+    #: The provider-asserted IMDb id (``tt…``) when the listing carries
+    #: one (spec #395): the ``g3:`` cross-language identity tier's input.
+    #: ``None`` = the provider asserts no id — the item participates in
+    #: the ``g2:`` alias+form+year tier only.
+    imdb_id: str | None = None
 
     @field_serializer("styles")
     def _ser_styles(self, value: frozenset[MediaStyle]) -> list[str]:
@@ -114,11 +119,11 @@ class SearchGroup(BaseModel):
     sources: list[SearchResult]
     #: Every per-item group key that contributed to this merged card
     #: (issue #89). First-seen order — the canonical ``group_key``
-    #: (``yearful-preferred-min``) is always the first element for
-    #: groups with at least one yearful member. Sort key is the
-    #: ``g2:`` digest in lexicographic order; ``"g2:"`` prefix sorts
-    #: before any other character so the yearful preference still
-    #: wins on tie.
+    #: (``yearful-preferred-min``, or the ``g3:`` tt key when any
+    #: member asserts a validated IMDb id — spec #395) is always the
+    #: first element for such groups. Sort key is the ``g2:`` digest in
+    #: lexicographic order; ``"g2:"`` prefix sorts before any other
+    #: character so the yearful preference still wins on tie.
     member_keys: list[str] = Field(default_factory=list)
 
     @field_serializer("styles")

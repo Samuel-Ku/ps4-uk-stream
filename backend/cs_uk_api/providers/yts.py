@@ -654,6 +654,7 @@ class YtsProvider(BaseProvider):
             poster=_show_poster_of(show),
             url=self._popcorn.show_url(imdb),
             genres=_genres_of(show),
+            imdb_id=imdb,
         )
 
     def _seasons_of(
@@ -748,6 +749,7 @@ class YtsProvider(BaseProvider):
             poster=movie.poster,
             url=self._popcorn.movie_url(movie.imdb),
             genres=movie.genres,
+            imdb_id=movie.imdb,
         )
 
     def _record_torrents(self, external_id: str, movie: PopcornMovie) -> None:
