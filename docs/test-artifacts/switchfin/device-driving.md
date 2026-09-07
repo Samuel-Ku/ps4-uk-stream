@@ -1339,3 +1339,62 @@ across all providers, e.g. `animeon /api/anime?search=…`,
 Suggest column rendered 10 result cards. A cold merged search (8–21 s)
 pops the client's B1 "Timeout was reached" dialog mid-typing — the
 results still render behind it; dismiss with KEYCODE_BACK.
+
+## Run #20 (2026-09-06–07, openclaw-home deployment) — 42/43, one tap-drift ✗
+
+First full device sweep against a SECOND deployment host. openclaw-home
+(192.168.2.223) was stood up from scratch: BitPlay engine via the repo's
+compose file (no elevation needed — Docker), backend from merged master
+on `:8003` (the phone-facing port contract), all providers `ok`,
+«Дюна» merging 7 sources on first search. Runner report archived at
+`report-2026-09-06-openclaw-home.md` (the runner's own
+`docs/switchfin-test-report.md` path is gitignored — archive under
+`test-artifacts/` instead).
+
+**Result: 42 passed, 1 failed** — `play_dorama` (first_season /
+first_episode timeouts). Classified as the B8/B22 tap-drift class, NOT a
+backend defect: the wire shows the backend answered the dorama's
+`Seasons` in **4ms** during the battery, and a manual recovery walk
+opened the Дорами grid + detail fine — the runner's fixed coordinates
+miss because the Дорами cell sits on the grid's scrolled sliver row and
+the seasons row's offset depends on each title's detail content. Same
+recovery path as previous drift sightings: re-orient by screenshot at
+every hop, verify by the wire, never trust stale Y coords.
+
+### Deployment deltas (openclaw-home recipe)
+
+- `UAKINO_CHROMIUM` must point at the Playwright-installed chrome
+  (`~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome`) — the
+  uakino session expects a chromium binary the host doesn't have
+  system-wide; the existing env knob covered it, no code change. Without
+  it the providers endpoint shows uakino `down` at boot.
+- Phone wireless-debug ports rotate every session and this build's mDNS
+  is silent — a stale port from a prior session is dead; pair fresh via
+  "Pair device with pairing code", then note the new main IP:port.
+- Retargeting the app's stored server (`.166` → `.223`) needs the app
+  force-stopped first; after ANY backend restart the app pops the B12
+  "Could not connect" dialog — one BACK dismisses it (fresh launch lands
+  home, B21).
+- The openclaw-home clone is single-branch (`--depth 50`): plain
+  `git fetch origin <branch>` only fills FETCH_HEAD — checkout with
+  `git checkout -B <branch> FETCH_HEAD`, or widen the refspec once.
+- Over ssh, `pkill -f` self-matches the wrapper's own command line
+  (boot scripts contain the pattern) — split kill and boot into
+  separate ssh calls; expect the booting call to "time out" while the
+  detached backend comes up fine.
+
+### Wire-level notes (2026-09-07, post-run probes)
+
+- The Episodes route wants `?seasonId=<group_key>:S<n>` (the season id
+  `shows_seasons` hands out); passing the season id as the path
+  series_id silently returns an empty 200 — easy to misprobe by hand.
+- Warm cards post-boot: Seasons 2–9ms, Episodes 2–3ms with real episode
+  lists — the Seasons → Episodes → PlaybackInfo chain is cache-only
+  once a card's group content is warm (`_hierarchy` /
+  `playback_translations` are reads of the same content cache).
+- Two warm layers coexist: the gated startup warm (catalog_warm, now
+  3 cards/row after PR #407 — `planned=38 content_warmed=38 cold=0`
+  inside the 300s gate) and spec #252's ungated profile warm over ALL
+  home groups' first-provider content. A first-play tap on a gated card
+  is guaranteed warm when the runner's gate opens; deeper cards ride
+  #252's background tail (12ms observed for a non-plan key).
