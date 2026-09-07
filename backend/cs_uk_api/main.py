@@ -142,6 +142,7 @@ async def health() -> dict[str, object]:
                 "status": warm_state.status,
                 "home_warmed": warm_state.home_warmed,
                 "content_warmed": warm_state.content_warmed,
+                "planned": warm_state.planned,
                 "failed": warm_state.failed,
                 "cold_keys": warm_state.cold_keys,
             }
@@ -154,6 +155,7 @@ async def health() -> dict[str, object]:
                 "status": "done" if not _config.SETTINGS.catalog_warm_enabled else "pending",
                 "home_warmed": False,
                 "content_warmed": 0,
+                "planned": 0,
                 "failed": 0,
                 "cold_keys": [],
             }

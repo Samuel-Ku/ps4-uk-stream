@@ -173,12 +173,16 @@ async def _catalog_warm_loop() -> None:
     the process; the outcome is observable via ``/api/health``.
     """
     global _catalog_warm_state
-    _catalog_warm_state = await catalog_warm_mod.warm_catalog()
+    _catalog_warm_state = await catalog_warm_mod.warm_catalog(
+        per_row=_config.SETTINGS.catalog_warm_per_row,
+    )
     log.info(
-        "catalog warm done: home_warmed=%s content_warmed=%d failed=%d",
+        "catalog warm done: home_warmed=%s content_warmed=%d/%d failed=%d cold=%d",
         _catalog_warm_state.home_warmed,
         _catalog_warm_state.content_warmed,
+        _catalog_warm_state.planned,
         _catalog_warm_state.failed,
+        len(_catalog_warm_state.cold_keys),
     )
 
 

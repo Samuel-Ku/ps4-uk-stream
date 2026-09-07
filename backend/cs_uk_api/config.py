@@ -86,6 +86,15 @@ class Settings:
     #: Default ON; tests disable it (``CS_UK_CATALOG_WARM=0``) so no
     #: TestClient lifespan triggers real provider scrapes.
     catalog_warm_enabled: bool = True
+    #: Per-row width of the startup warm's card coverage (the B13 class,
+    #: ticket #224): ``Seasons``/``Episodes``/PlaybackInfo-translations
+    #: are all reads of the per-group content cache, so each warmed card
+    #: makes its WHOLE first-play chain cache-only. 3 ≈ the cards a real
+    #: thumb reaches on a row; each extra card adds one sequential
+    #: provider scrape to the background warm (~8 rows × 3 stays well
+    #: inside the runner's 300s warm gate). Override via
+    #: ``CS_UK_CATALOG_WARM_PER_ROW``.
+    catalog_warm_per_row: int = 3
     # v3 (Jellyfin facade, spec D4/D10): fixed opaque token; the
     # ``load_settings`` env default mirrors this so explicit
     # ``Settings(...)`` constructions (tests) stay valid.
@@ -229,6 +238,7 @@ def load_settings() -> Settings:
         # v3 (issue #70): per-row cap for «Новинки» + type rows.
         home_row_limit=int(os.environ.get("CS_UK_HOME_ROW_LIMIT", "20")),
         catalog_warm_enabled=warm,
+        catalog_warm_per_row=max(1, int(os.environ.get("CS_UK_CATALOG_WARM_PER_ROW", "3"))),
         # v3 (Jellyfin facade, spec D4/D10): the fixed opaque Jellyfin
         # token. Accept-any-credentials login (the LAN API stays open),
         # but subsequent facade requests must present this token via

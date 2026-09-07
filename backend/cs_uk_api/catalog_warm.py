@@ -11,11 +11,20 @@ phone drives:
   1. ``load_home()`` — the shared 30-min home snapshot. Warm ⇒ the
      first ``/UserViews`` and every view's ``/Items`` grid serve from
      cache, no provider re-invocation.
-  2. ``resolve_group_content(gk)`` for the first card(s) of each row —
+  2. ``resolve_group_content(gk)`` for the first cards of each row —
      the single primitive the facade's detail/seasons/episodes/playback
      paths all read through (the 30-min ``content_cache``). Warm ⇒ the
      app's first card tap and the play chain find warm caches instead
      of a 15-20s cold scrape inside an 8s step window.
+
+     Card coverage is the first ``catalog_warm_per_row`` cards per row
+     (default 3, ticket #224's B13 class): ``Seasons``/``Episodes``
+     (``_hierarchy``) and ``playback_translations`` (PlaybackInfo) are
+     ALL reads of the same per-group content cache, so one warm resolve
+     per card covers its whole first-play chain. The only leg that
+     stays just-in-time is ``provider.stream()`` — its URLs expire, so
+     pre-warming them is unsound (measured ≤1.3s, well under the
+     client timeout).
 
 Both steps are best-effort: a provider failure or a cold-verdict 404
 never aborts the warm or the process. State is exposed via
@@ -63,6 +72,11 @@ class CatalogWarmState:
     home_warmed: bool
     content_warmed: int
     failed: int
+    #: Group keys the warm attempted (warmed + cold + failed) — the
+    #: plan's width. Widened from one card per row to
+    #: ``catalog_warm_per_row`` so the health block shows the actual
+    #: first-play coverage, not just the successes.
+    planned: int = 0
     #: First-card group keys whose content was NOT in the cache after
     #: the warm (ticket #224) — a provider-error None (upstream down at
     #: warm time) is indistinguishable from a legit unavailable verdict
@@ -91,15 +105,17 @@ def first_card_keys(home: HomeResponse, per_row: int = 1) -> list[str]:
 
 
 async def warm_catalog(
-    per_row: int = 1,
+    per_row: int = 3,
     *,
     _resolve: _ResolveContent | None = None,
 ) -> CatalogWarmState:
     """Build the home snapshot, then warm the first cards' detail chain.
 
-    One-shot best-effort: a broken home build marks the run failed and
-    stops; a per-card resolve failure is counted and skipped (the card
-    stays cold — the app's own retry / runner warmup still covers it).
+    ``per_row`` cards per row (the B13 coverage knob — see the module
+    docstring). One-shot best-effort: a broken home build marks the run
+    failed and stops; a per-card resolve failure is counted and skipped
+    (the card stays cold — the app's own retry / runner warmup still
+    covers it).
     """
     state = CatalogWarmState(
         status="warming", home_warmed=False, content_warmed=0, failed=0,
@@ -113,7 +129,9 @@ async def warm_catalog(
         state.failed = 1
         return state
     state.home_warmed = True
-    for gk in first_card_keys(home, per_row=per_row):
+    keys = first_card_keys(home, per_row=per_row)
+    state.planned = len(keys)
+    for gk in keys:
         try:
             content = await resolve(gk)
         except Exception:  # noqa: BLE001 — keep warming the other cards
