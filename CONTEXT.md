@@ -320,6 +320,15 @@ If any of these start biting in production, each can be added as a **non-breakin
 
 ---
 
+### Term: Torrent lane
+
+The English-content pipeline: YTS/Popcorn catalog → torrent candidate
+policy (quality tier, seeds, bounded dead-swarm fallback) → the
+BitPlay engine's streamable session. Owned by `cs_uk_api/torrent_lane.py`
+(policy) over the `TorrentEngine` seam (`torrent_engine.py`, adapter:
+BitPlayClient); the yts provider keeps only its popcorn catalog
+dialect. Operations: `docs/torrent-lane.md`.
+
 ## Provider lifecycle (decided on Q34–Q40)
 
 Provider lifecycle is a deployment-time, code-reviewed concern. The project follows the minimum-surface principle: active providers are explicit in the registry, upstream reachability is learned lazily, and retirement does not introduce a second runtime configuration system.
