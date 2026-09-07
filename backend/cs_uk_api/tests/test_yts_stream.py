@@ -35,16 +35,14 @@ import respx
 
 from cs_uk_api.models import StreamResponse
 from cs_uk_api.providers.base import ProviderError
-from cs_uk_api.providers.yts import (
-    YtsProvider,
-    build_magnet,
-)
+from cs_uk_api.providers.yts import YtsProvider
 from cs_uk_api.torrent_engine import (
     EngineRejected,
     EngineStream,
     EngineUnavailable,
     FakeTorrentEngine,
 )
+from cs_uk_api.torrent_lane import build_magnet
 
 FIX = pathlib.Path(__file__).parent / "fixtures" / "yts"
 
