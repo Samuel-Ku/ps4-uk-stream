@@ -93,10 +93,14 @@ async def test_warm_catalog_builds_home_once_and_resolves_each_key(
 
     state = await catalog_warm.warm_catalog()
 
+    # Default coverage is ``catalog_warm_per_row`` (3): the first three
+    # cards of every row, in row order — the B13 widening (a play tap on
+    # a non-first card used to cold-scrape the whole chain).
     assert home_calls == ["load_home"]
-    assert calls == ["gk1", "gk3"]
+    assert calls == ["gk1", "gk2", "gk3"]
     assert state.home_warmed is True
-    assert state.content_warmed == 2
+    assert state.content_warmed == 3
+    assert state.planned == 3
     assert state.failed == 0
 
 
@@ -120,6 +124,39 @@ async def test_warm_catalog_tolerates_resolve_failures(
 
     assert state.content_warmed == 2
     assert state.failed == 1
+
+
+async def test_warm_catalog_planned_counts_every_attempted_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``planned`` is the plan width, not the successes: warmed + cold +
+    failed must add up to it, so the health block shows the first-play
+    coverage the warm actually attempted."""
+    home = _home([["gk1", "gk2", "gk3", "gk4"]])
+
+    async def fake_load_home() -> HomeResponse:
+        return home
+
+    async def mixed_resolve(gk: str) -> ContentResponse | None:
+        if gk == "gk2":
+            raise RuntimeError("provider exploded")  # failed
+        if gk == "gk3":
+            return None  # cold (unavailable verdict)
+        return _content(gk)
+
+    monkeypatch.setattr(catalog_warm, "load_home", fake_load_home)
+    monkeypatch.setattr(catalog_warm, "resolve_group_content", mixed_resolve)
+
+    state = await catalog_warm.warm_catalog(per_row=4)
+
+    assert state.planned == 4
+    assert state.content_warmed == 2
+    assert state.failed == 1
+    # A failed resolve is ALSO a cold card — the app would hit the same
+    # cold scrape — so failed ⊆ cold and the partition is warmed|cold.
+    assert state.cold_keys == ["gk2", "gk3"]
+    assert state.content_warmed + len(state.cold_keys) == state.planned
+    assert state.status == "done"
 
 
 async def test_warm_catalog_tolerates_home_build_failure(
@@ -213,4 +250,6 @@ def test_health_exposes_catalog_warm_state() -> None:
     body = client.get("/api/health").json()
     assert "catalog_warm" in body
     block = body["catalog_warm"]
-    assert set(block) >= {"status", "home_warmed", "content_warmed", "failed"}
+    assert set(block) >= {
+        "status", "home_warmed", "content_warmed", "planned", "failed",
+    }
