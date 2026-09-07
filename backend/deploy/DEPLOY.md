@@ -196,3 +196,67 @@ names the un-released tag — fix by publishing the release, then re-run);
 `2` query failure (missing binary / broken auth — operational, not
 drift). A **draft-only** release still fails: an abandoned backfill is
 not a release.
+
+## 9. Persistent services (engine + backend across reboots)
+
+The long-running pair ships as systemd units following the drift
+monitor's pattern (§5): edit `User=`/`WorkingDirectory=`/`Environment=`
+to the host, install into `/etc/systemd/system/`, enable both.
+
+```bash
+# install (edit User=/WorkingDirectory=/Environment= in the units first):
+sudo cp backend/deploy/cs-uk-engine.service \
+       backend/deploy/cs-uk-api.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now cs-uk-engine.service cs-uk-api.service
+
+# verify:
+systemctl status cs-uk-engine cs-uk-api   # both active
+curl -s http://127.0.0.1:8003/api/health | python3 -m json.tool \
+  | grep -A4 catalog_warm                  # warm runs after start
+journalctl -u cs-uk-api -f                 # live backend log
+```
+
+Semantics: the engine unit is a oneshot `docker compose up -d`
+(RemainAfterExit) — idempotent, and `restart: unless-stopped` in the
+compose file already revives the container at boot; the unit adds the
+first-boot start and the observable handle. The backend unit is a plain
+`Restart=on-failure` service on **:8003** (the phone-facing port
+contract), ordered after the engine with `Wants` (not `Requires` — the
+facade boots and reports `yts:engine: down` rather than wedging when the
+engine fails). The units ship with the original operator's paths as
+defaults — edit `User=`/`WorkingDirectory=` to the host, and uncomment
+the `Environment=` knobs the host needs (`CS_UK_TORRENT_ENGINE_URL` for
+the torrent lane; `UAKINO_CHROMIUM` for the uakino browser session — a
+host without a system chromium shows uakino `down` without it).
+
+### No-root hosts (user units + linger)
+
+On a host where systemd root access isn't available, the same units
+install as USER units — systemd runs them under the user's manager and
+`linger` makes them survive logout AND reboot:
+
+```bash
+mkdir -p ~/.config/systemd/user
+# swap the install target AND point the paths at this host — user units
+cannot carry User= (the manager is already the user), cannot reference
+system units (docker.service — the user manager just can't see it), and
+the shipped defaults belong to the original operator's host:
+sed -e 's/WantedBy=multi-user.target/WantedBy=default.target/' \
+    -e 's|^User=.*||' \
+    -e '/^After=docker.service/d' -e '/^Requires=docker.service/d' \
+    -e 's|/home/rorschach/UA flims|'"$HOME"'|g' \
+    backend/deploy/cs-uk-engine.service > ~/.config/systemd/user/cs-uk-engine.service
+sed -e 's/WantedBy=multi-user.target/WantedBy=default.target/' \
+    -e 's|^User=.*||' \
+    -e 's|/home/rorschach/UA flims|'"$HOME"'|g' \
+    backend/deploy/cs-uk-api.service > ~/.config/systemd/user/cs-uk-api.service
+# ...then uncomment the Environment= knobs the host needs in the copies.
+systemctl --user daemon-reload
+loginctl enable-linger          # one-time; without it units stop at logout
+systemctl --user enable --now cs-uk-engine.service cs-uk-api.service
+```
+
+Caveat: user units keep working only while the repo/venv/chromium paths
+the units reference exist; `journalctl --user -u cs-uk-api` replaces the
+system journal handle.

@@ -1,16 +1,18 @@
 # cs-uk-api systemd unit
 #
-# Install:
-#   sudo cp deploy/cs-uk-api.service /etc/systemd/system/
+# Install (with cs-uk-engine.service):
+#   sudo cp deploy/cs-uk-engine.service deploy/cs-uk-api.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
-#   sudo systemctl enable --now cs-uk-api
+#   sudo systemctl enable --now cs-uk-engine.service cs-uk-api.service
 #
 # Edit User= and WorkingDirectory= to match the host before enabling.
+# No root on the host? The same units install as USER units with linger
+# (DEPLOY.md §9).
 
 [Unit]
 Description=cs-uk-api - PS4 UK Stream backend (Ukrainian-dubbed catalog)
-After=network-online.target
-Wants=network-online.target
+After=network-online.target cs-uk-engine.service
+Wants=network-online.target cs-uk-engine.service
 
 [Service]
 Type=simple
@@ -29,6 +31,8 @@ RestartSec=5
 # Environment=CS_UK_CACHE_POSTER=3600
 # uakino needs a system Chromium (default /usr/bin/chromium).
 # Environment=UAKINO_CHROMIUM=/usr/bin/chromium
+# Torrent lane: engine address (BitPlay compose stack, docs/torrent-lane.md).
+# Environment=CS_UK_TORRENT_ENGINE_URL=http://127.0.0.1:3347
 
 [Install]
 WantedBy=multi-user.target

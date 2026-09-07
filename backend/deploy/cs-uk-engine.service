@@ -1,0 +1,44 @@
+# cs-uk torrent engine service unit (BitPlay compose stack, spec #374)
+#
+# Keeps the BitPlay engine up across reboots: a oneshot `compose up -d`
+# (idempotent — an already-running stack is a no-op) that systemd then
+# reports as active, so the operator sees engine state via systemctl and
+# journalctl like any other unit. The compose file pins
+# `container_name: bitplay` and `restart: unless-stopped` (which alone
+# already revives the container at boot once docker.service is up — this
+# unit adds the explicit, observable handle and the first-boot start).
+#
+# Install (with cs-uk-api.service):
+#   sudo cp deploy/cs-uk-engine.service deploy/cs-uk-api.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now cs-uk-engine.service cs-uk-api.service
+#
+# Edit User= and WorkingDirectory= to match the host before enabling.
+# No root on the host? The same units install as USER units with linger
+# (DEPLOY.md §9).
+
+[Unit]
+Description=cs-uk torrent engine - BitPlay compose stack (ensure up)
+# NOTE (no-root/user-unit installs): the docker.service references below
+# are system-manager-only — the §9 user-unit sed drops them (the user
+# manager cannot see system units; docker's own restart policy covers
+# ordering there).
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=rorschach
+# Keep this directory stable: the compose project name follows
+# --project-directory, and starting under a different one orphans the
+# existing container instead of adopting it. (WorkingDirectory= is NOT
+# quoted even when the path has spaces — systemd only splits ExecStart
+# on whitespace.)
+WorkingDirectory=/home/rorschach/UA flims/ps4-uk-stream/backend/deploy
+ExecStart=/usr/bin/docker compose -f docker-compose.bitplay.yml up -d
+ExecStop=/usr/bin/docker compose -f docker-compose.bitplay.yml stop
+
+[Install]
+WantedBy=multi-user.target
