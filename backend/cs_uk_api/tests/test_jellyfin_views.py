@@ -38,7 +38,7 @@ from cs_uk_api.providers.base import BaseProvider
 
 #: The router *module* (the ``cs_uk_api.jellyfin`` package re-exports
 #: ``router`` as the APIRouter, shadowing the submodule under that name).
-jf_router = importlib.import_module("cs_uk_api.jellyfin.router")
+jf_router = importlib.import_module("cs_uk_api.jellyfin.image_routes")
 
 TOKEN = SETTINGS.jellyfin_token
 USER = "fdc808859fc45eb8ac5aa6faddc12c72"
@@ -1333,11 +1333,13 @@ def test_llm_idea_kinds_registered_in_facade_view_vocabulary() -> None:
     from cs_uk_api.recommend import LLM_IDEA_ROW_TYPES
     from cs_uk_api.row_kinds import ROW_KINDS
 
+    # _view_id_for lives on the facade router (the view-id vocabulary's owner).
+    jf_routes = importlib.import_module("cs_uk_api.jellyfin.router")
     for kind in LLM_IDEA_ROW_TYPES:
         assert ROW_KINDS[kind].collection_type == "tvshows"
-        vid = jf_router._view_id_for(kind)
-        assert len(vid) == 32 and vid == jf_router._view_id_for(kind)
-    assert jf_router._view_id_for("llm_idea_1") != jf_router._view_id_for("llm_idea_2")
+        vid = jf_routes._view_id_for(kind)
+        assert len(vid) == 32 and vid == jf_routes._view_id_for(kind)
+    assert jf_routes._view_id_for("llm_idea_1") != jf_routes._view_id_for("llm_idea_2")
 
 
 def test_llm_idea_row_is_a_view(client: TestClient) -> None:

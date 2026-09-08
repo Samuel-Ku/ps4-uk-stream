@@ -451,7 +451,7 @@ def test_search_requires_token(client: TestClient) -> None:
 def test_search_result_poster_served_inline(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     import importlib
 
-    jf_router = importlib.import_module("cs_uk_api.jellyfin.router")
+    jf_router = importlib.import_module("cs_uk_api.jellyfin.image_routes")
     poster_bytes = b"\xff\xd8\xff\xe0jpegbytes"
 
     async def _fake(url: str, client: Any) -> tuple[bytes, str]:
