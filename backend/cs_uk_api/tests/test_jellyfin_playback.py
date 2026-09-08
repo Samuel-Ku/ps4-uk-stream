@@ -32,19 +32,29 @@ contract is pinned.
 
 from __future__ import annotations
 
+import pathlib
+import re
 import uuid
 from collections.abc import Iterator
 from typing import Any, cast
 from urllib.parse import quote
 
 import pytest
+import respx
 from fastapi.testclient import TestClient
 
-from cs_uk_api._catalog_state import blocklist_cache, content_cache, home_cache, sources_cache
+from cs_uk_api._catalog_state import (
+    blocklist_cache,
+    content_cache,
+    home_cache,
+    register_search_groups,
+    sources_cache,
+)
 from cs_uk_api.config import SETTINGS
 from cs_uk_api.models import (
     ContentResponse,
     Episode,
+    SearchGroup,
     SearchResult,
     Season,
     StreamResponse,
@@ -746,3 +756,87 @@ def test_playback_info_translation_list_needs_no_extra_fetch(client: TestClient)
         "Оригінал",
         "Субтитри",
     ]
+
+
+# ---------------------------------------------------------------------------
+# The g3 torrent-lane card is playable end-to-end (live playtest finding):
+# resolve_stream's group-key branch hands the provider the BARE external
+# (the D6 contract), and the lane's grammar must accept it.
+# ---------------------------------------------------------------------------
+
+
+def _yts_card() -> SearchResult:
+    return SearchResult(
+        id="yts:tt1160419",
+        provider="yts",
+        form="movie",
+        styles=frozenset(),
+        title="Dune: Part One",
+        year=2021,
+        url="https://yts.gg/movie/dune-2021",
+        imdb_id="tt1160419",
+    )
+
+
+def test_g3_torrent_card_playback_info_plays_the_engine(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``g3:`` movie group (the merged search card whose first source
+    is yts) must reach the real provider with the BARE IMDb id — the
+    pre-fix lane refused bare ids at parse and every merged torrent
+    card 404'd in milliseconds. The engine seam is the FakeTorrentEngine;
+    the YTS upstream is respx-mocked at the transport level."""
+    from cs_uk_api.providers.yts import YtsProvider
+    from cs_uk_api.torrent_engine import EngineStream, FakeTorrentEngine
+
+    engine = FakeTorrentEngine(
+        streams={
+            "magnet:?xt=urn:btih:B2C3D4E5F60718293A4B5C6D7E8F90123456789A": EngineStream(
+                url="http://bitplay.lan:3347/api/v1/torrent/x/stream/0",
+                container="mp4",
+            )
+        }
+    )
+    provider = YtsProvider(engine=engine)
+    monkeypatch.setitem(PROVIDERS, "yts", provider)
+
+    register_search_groups(
+        [
+            SearchGroup(
+                group_key="g3:tt1160419",
+                title="Dune: Part One",
+                year=2021,
+                poster=None,
+                form="movie",
+                styles=[],
+                genres=[],
+                sources=[_yts_card()],
+                member_keys=["g3:tt1160419"],
+            )
+        ]
+    )
+    content_cache.set(
+        "content:yts:tt1160419",
+        ContentResponse(
+            id="yts:tt1160419",
+            form="movie",
+            title="Dune: Part One",
+            translations=[Translation(id="en", label="English")],
+        ),
+    )
+
+    # The cached envelope bypasses _record_torrents, so the stream path's
+    # cold-entries leg re-fetches the details — mock the upstream.
+    fix_dir = pathlib.Path(__file__).parent / "fixtures" / "yts"
+    with respx.mock(assert_all_called=False) as yts_mock:
+        yts_mock.get(url=re.compile(r"https://yts\.gg/api/v2/movie_details\.json\?.*")).respond(
+            200, text=(fix_dir / "details_tt1160419.json").read_text(encoding="utf-8")
+        )
+        body = _post(client, "/Items/g3%3Att1160419/PlaybackInfo", userId="u")
+    source = _source(body)
+    assert source["Id"] == "g3:tt1160419"
+    assert source["Container"] == "mp4"  # the engine's remux container
+    assert source["Path"] == "/Videos/g3:tt1160419/stream"
+    # The lane received the BARE external (D6) and ensured THE policy magnet.
+    assert provider._torrent_entries  # details were parsed into candidates
+    assert engine.ensure_count == 1

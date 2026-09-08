@@ -65,6 +65,7 @@ from ..torrent_engine import (
 from ..torrent_lane import (
     TorrentCandidate,
     ensure_any_session,
+    parse_stream_content_id,
     torrent_candidates,
     torrent_stream_response,
 )
@@ -72,7 +73,6 @@ from ..wire_identity import (
     IMDB_RE,
     MOVIE_SUFFIX,
     episode_wire_id,
-    parse_playable_id,
 )
 from .base import BaseProvider, ProviderError
 from .popcorn import (
@@ -437,7 +437,7 @@ class YtsProvider(BaseProvider):
         engine — the hint is the SEASON, not the wire id.
         """
         del translation  # original audio only
-        imdb, season = parse_playable_id(content_id, provider=self.id)
+        imdb, season = parse_stream_content_id(content_id)
         if imdb is None or not IMDB_RE.fullmatch(imdb):
             raise ProviderError("not_found", "bad external_id")
         engine = self._require_engine()

@@ -33,6 +33,13 @@ from .torrent_engine import (
     EngineStream,
     TorrentEngine,
 )
+from .wire_identity import (
+    IMDB_RE,
+    is_movie_wire_id,
+    parse_playable_id,
+    split_episode_tail,
+    strip_movie_suffix,
+)
 
 log = logging.getLogger(__name__)
 
@@ -157,6 +164,43 @@ def torrent_stream_response(result: EngineStream) -> StreamResponse:
         seekable=result.seekable,
         subtitle_url=result.subtitle_url,
     )
+
+
+def parse_stream_content_id(content_id: str) -> tuple[str, int | None]:
+    """The lane's playable-content-id grammar → ``(external, season)``.
+
+    ONE owner for every spelling a caller may hold for a torrent-lane
+    play — the lane's boundary with the facade, which hands over the
+    BARE external for a movie group (the D6 contract: every provider
+    takes the bare id) while native /api/stream and the #378 wire use
+    the sentinel/episode forms:
+
+      - the sentinel form (``tt…:__movie__``, provider-scoped or not)
+        → the bare IMDb code, no season;
+      - the BARE IMDb code (``tt1160419``) and the provider-scoped bare
+        id (``yts:tt1160419`` — the merged search card's own item id)
+        → the bare IMDb code, no season. Before this grammar the lane
+        refused both in milliseconds and a ``g3:`` search card was
+        unplayable end-to-end;
+      - an episode tail (``tt…:s1e2``) → :func:`parse_playable_id`'s
+        season parse (the season IS the discriminator, #379).
+
+    Anything else raises typed ``not_found`` — the lane's item verdict
+    (ADR-0002), never a lane fault.
+    """
+    if is_movie_wire_id(content_id):
+        external = strip_movie_suffix(content_id).removeprefix("yts:")
+        if IMDB_RE.fullmatch(external):
+            return external, None
+    elif split_episode_tail(content_id) is not None:
+        imdb, season = parse_playable_id(content_id, provider="yts")
+        if imdb is not None:
+            return imdb, season
+    else:
+        candidate = content_id.removeprefix("yts:")
+        if IMDB_RE.fullmatch(candidate):
+            return candidate, None
+    raise ProviderError("not_found", "bad external_id")
 
 
 def torrent_candidates(torrents: list[dict[str, Any]]) -> list[TorrentCandidate]:
