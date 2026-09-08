@@ -7,6 +7,12 @@ and the LLM taste-profile refresh (spec #290). Profiles live in
 ``_stores._profiles``; this module owns everything that builds, scores
 and refreshes them.
 
+ONE writer for the content cache: the profile warm resolves through
+``resolution.resolve_group_content`` — the same primitive the facade's
+detail path uses — never a provider ``content()`` call of its own, so
+retry, the blocklist filter, single-flight, and the verdict-classified
+health recording have exactly one owner (ADR-0002).
+
 Depends on ``_stores`` (profiles, caches, playback/user-state entries)
 and ``resolution`` (group-key + content resolution). Never imports the
 snapshot or search modules — the snapshot module imports THIS module
@@ -23,10 +29,8 @@ from typing import Any, cast
 
 from .. import config as _config
 from ..home import build_genre_rows
-from ..http_client import get_client
 from ..llm import active_profile, fetch_profile, set_active_profile
-from ..models import ContentResponse, HomeResponse, HomeRow
-from ..providers import PROVIDERS
+from ..models import HomeResponse, HomeRow
 from ..recommend import (
     ANCHOR_WEIGHTS,
     MAX_ANCHORS,
@@ -37,8 +41,6 @@ from ..recommend import (
 from ._stores import (
     _HOME_KEY,
     _profiles,
-    content_cache,
-    gated_cache,
     home_cache,
     playback_entries,
     recent_history_entries,
@@ -46,7 +48,7 @@ from ._stores import (
     recent_search_queries,
     row_deep_cache,
 )
-from .resolution import _gate_cache_key, episode_group_key, resolve_group
+from .resolution import episode_group_key, resolve_group_content
 
 log = logging.getLogger("cs_uk_api.catalog_state.warm")
 
@@ -58,13 +60,15 @@ _PROFILE_CONCURRENCY = 8
 async def _warm_profiles(home: HomeResponse) -> None:
     """Background content-profile build for the home groups (spec #252).
 
-    Bounded concurrency, piggybacking the shared content cache — only
-    cold groups cost a fetch. On completion, if any NEW profile landed,
-    the home cache is invalidated so the next read rebuilds the
-    snapshot WITH the recommendation rows (they are computed at build
-    time). A warm that adds nothing (steady state) never invalidates,
-    so the rebuild→warm loop terminates. A failed profile is just a
-    missing signal — never an error.
+    Bounded concurrency, resolving through the shared content primitive
+    — only cold groups cost a fetch, with the primitive's retry,
+    blocklist filter, single-flight, and verdict-classified health
+    recording (ONE content-cache writer, ADR-0002). On completion, if
+    any NEW profile landed, the home cache is invalidated so the next
+    read rebuilds the snapshot WITH the recommendation rows (they are
+    computed at build time). A warm that adds nothing (steady state)
+    never invalidates, so the rebuild→warm loop terminates. A failed
+    profile is just a missing signal — never an error.
     """
     groups = sorted({it.group_key for row in home.rows for it in row.items})
     if not groups:
@@ -76,27 +80,19 @@ async def _warm_profiles(home: HomeResponse) -> None:
         nonlocal added
         if group_key in _profiles:
             return
-        per_provider = resolve_group(group_key)
-        if per_provider is None:
-            return
-        provider_id, item = next(iter(per_provider.items()))
-        cache_key = _gate_cache_key(item)
-        if gated_cache.get(cache_key) is True:
-            return
-        cached = content_cache.get(cache_key)
-        if cached is None:
-            provider = PROVIDERS.get(provider_id)
-            if provider is None:
+        async with sem:
+            # The shared primitive answers from the content cache when
+            # warm and fetches (bounded, retried, health-recorded)
+            # when cold; None is a legit unavailable verdict — a
+            # missing profile signal, never an error.
+            try:
+                content = await resolve_group_content(group_key)
+            except Exception as e:  # noqa: BLE001 — a failed profile is just a missing signal
+                log.debug("profile warm failed group=%s err=%s", group_key, e)
                 return
-            async with sem:
-                try:
-                    _, _, external = item.id.partition(":")
-                    cached = await provider.content(external, get_client())
-                    content_cache.set(cache_key, cached)
-                except Exception as e:  # noqa: BLE001 — a failed profile is just a missing signal
-                    log.debug("profile warm failed group=%s err=%s", group_key, e)
-                    return
-        _profiles[group_key] = profile_from_content(cast(ContentResponse, cached))
+        if content is None:
+            return
+        _profiles[group_key] = profile_from_content(content)
         added = True
 
     tasks = [asyncio.create_task(_one(gk)) for gk in groups]
