@@ -388,15 +388,16 @@ async def test_stream_episode_of_season_without_torrents_is_not_found(monkeypatc
 
 @pytest.mark.asyncio
 async def test_stream_episode_bad_wire_id_rejected_before_everything(monkeypatch):
-    """A bare id (no tail), a movie-suffix id on a SHOW external, or a
-    malformed tail is rejected at the wire grammar — no network, no
-    engine."""
+    """A season-less episode tail or a malformed id is rejected at the
+    wire grammar — no network, no engine. (BARE ids stopped being
+    rejections when the lane's grammar absorbed the facade's bare-external
+    D6 contract: they are movie plays now, pinned in test_torrent_lane.)"""
     _configured(monkeypatch)
     engine = FakeTorrentEngine()
     with respx.mock(assert_all_called=False):
         async with httpx.AsyncClient() as http:
             p = YtsProvider(engine=engine)
-            for bad in ("tt8740758", "yts:tt8740758", "yts:tt8740758:e1", "yts:../../etc:__movie__"):
+            for bad in ("yts:tt8740758:e1", "yts:../../etc:__movie__", "g3:tt8740758"):
                 with pytest.raises(ProviderError) as exc:
                     await p.stream(bad, None, http)
                 assert exc.value.code == "not_found"

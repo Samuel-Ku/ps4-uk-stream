@@ -1,13 +1,17 @@
 """Torrent lane conversation pins — the policy moved here from
 test_yts.py with its module (providers/yts.py -> torrent_lane.py):
 pure candidate parsing, the deterministic quality pick, the fork's
-magnet convention. The provider-facing stream/fallback pins stay in
-test_yts_stream.py; the popcorn-dialect payload pins stay in
-test_yts.py.
+magnet convention, and the lane's playable-content-id grammar. The
+provider-facing stream/fallback pins stay in test_yts_stream.py; the
+popcorn-dialect payload pins stay in test_yts.py.
 """
+import pytest
+
+from cs_uk_api.providers.base import ProviderError
 from cs_uk_api.torrent_lane import (
     TorrentCandidate,
     build_magnet,
+    parse_stream_content_id,
     select_torrent,
     torrent_candidates,
 )
@@ -109,3 +113,43 @@ def test_parse_candidates_reads_quality_hash_and_seeds():
         _cand("1080p", "H_B", 200),
         _cand("720p", "H_C", 0),
     ]
+
+
+# ---------------------------------------------------------------------------
+# The lane's playable-content-id grammar (g3-card playback fix)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_stream_content_id_accepts_every_movie_spelling():
+    """One grammar, three movie spellings, one play: the sentinel form
+    (native /api/stream + the #378 wire), the BARE IMDb code (what the
+    facade hands over when the user plays the ``g3:`` search card — D6:
+    every provider takes the bare external), and the provider-scoped
+    bare id (the search card's own item id)."""
+    for cid in (
+        "tt1160419:__movie__",
+        "yts:tt1160419:__movie__",
+        "tt1160419",
+        "yts:tt1160419",
+    ):
+        assert parse_stream_content_id(cid) == ("tt1160419", None), cid
+
+
+def test_parse_stream_content_id_episode_tails_keep_their_season():
+    """The #379 episode forms ride the same grammar: the tail's SEASON
+    is the discriminator, provider prefix or not (``s1e2`` = season 1)."""
+    assert parse_stream_content_id("tt1160419:s1e2") == ("tt1160419", 1)
+    assert parse_stream_content_id("yts:tt1160419:s1e2") == ("tt1160419", 1)
+    assert parse_stream_content_id("yts:tt1160419:s2e10") == ("tt1160419", 2)
+
+
+@pytest.mark.parametrize(
+    "cid",
+    ["garbage", "yts:", "p1:dune-1", "g3:tt1160419", "tt1160419:s9e99x"],
+)
+def test_parse_stream_content_id_refuses_the_rest_loudly(cid: str):
+    """Everything else is the lane's typed item verdict ``not_found``
+    (ADR-0002) — never a lane fault, never a silent None."""
+    with pytest.raises(ProviderError) as exc:
+        parse_stream_content_id(cid)
+    assert exc.value.code == "not_found"
