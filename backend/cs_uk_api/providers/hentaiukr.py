@@ -30,7 +30,7 @@ from ..models import (
     Translation,
 )
 from ..wire_identity import split_wire_id
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, provider_stream_response
 
 BASE_URL = "https://hentaiukr.com"
 OBJECTS_URL = f"{BASE_URL}/search/objects.json"
@@ -262,10 +262,10 @@ class HentaiUkrProvider(BaseProvider):
             if str(s.get("size")) in _QUALITY_RANK
             else len(_QUALITY_RANK),
         )
-        return StreamResponse(
-            url=urljoin(content_url, str(best["src"])),
-            type="mp4",
-            headers=self.stream_headers(f"{BASE_URL}/"),
+        return provider_stream_response(
+            urljoin(content_url, str(best["src"])),
+            "mp4",
+            f"{BASE_URL}/",
         )
 
 

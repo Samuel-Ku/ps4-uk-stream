@@ -28,7 +28,7 @@ from ..models import (
     Translation,
 )
 from ..wire_identity import split_wire_id
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, provider_stream_response
 
 API_URL = "https://api.unimay.media"
 MAIN_URL = "https://www.unimay.media"
@@ -309,10 +309,10 @@ class UnimayProvider(BaseProvider):
         url = hls.get("master")
         if not url:
             raise ProviderError("parse_failed", "episode has no hls.master")
-        return StreamResponse(
-            url=str(url),
-            type="m3u8",
-            headers=self.stream_headers(f"{MAIN_URL}/"),
+        return provider_stream_response(
+            str(url),
+            "m3u8",
+            f"{MAIN_URL}/",
         )
 
 

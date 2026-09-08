@@ -37,7 +37,7 @@ from ..wire_identity import (
     parse_episode_tail,
     strip_movie_suffix,
 )
-from .base import BaseProvider, MediaTypeStr, ProviderError, dle_has_next
+from .base import BaseProvider, MediaTypeStr, ProviderError, dle_has_next, provider_stream_response
 
 BASE_URL = "https://bambooua.com"
 
@@ -546,10 +546,10 @@ class BambooUAProvider(BaseProvider):
         # Live titles are HLS (hlsN.bambooua.com/…/index.m3u8) or plain
         # mp4; label the stream by its actual URL, not a fixed "mp4".
         stream_type: StreamType = "m3u8" if media_url.lower().endswith(".m3u8") else "mp4"
-        return StreamResponse(
-            url=urljoin(BASE_URL, media_url),
-            type=stream_type,
-            headers=self.stream_headers(f"{BASE_URL}/"),
+        return provider_stream_response(
+            urljoin(BASE_URL, media_url),
+            stream_type,
+            f"{BASE_URL}/",
         )
 
     @staticmethod

@@ -38,7 +38,7 @@ from ..models import (
     Translation,
 )
 from ..wire_identity import episode_wire_id, parse_episode_tail
-from .base import BaseProvider, MediaTypeStr, ProviderError, dle_has_next
+from .base import BaseProvider, MediaTypeStr, ProviderError, dle_has_next, provider_stream_response
 
 BASE_URL = "https://doramy.world"
 # ashdi.vip hosts the HLS manifest for each episode; the upstream Kotlin
@@ -443,10 +443,10 @@ class DoramyWorldProvider(BaseProvider):
         extracted = RegexExtractor().extract(ashdi_resp.text)
         if extracted is None or not extracted.url:
             raise ProviderError("parse_failed", "no m3u8 in ashdi page")
-        return StreamResponse(
-            url=extracted.url,
-            type=extracted.type,
-            headers=self.stream_headers(ASHDI_REFERER),
+        return provider_stream_response(
+            extracted.url,
+            extracted.type,
+            ASHDI_REFERER,
         )
 
     @staticmethod

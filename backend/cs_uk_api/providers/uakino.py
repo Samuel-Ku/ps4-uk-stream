@@ -24,7 +24,7 @@ from ..models import (
 )
 from ..uakino_browser import _UA, BASE_URL, UakinoSessionProtocol, get_session
 from ..wire_identity import MOVIE_SUFFIX
-from .base import BaseProvider, MediaTypeStr, ProviderError
+from .base import BaseProvider, MediaTypeStr, ProviderError, provider_stream_response
 
 # Sections exposed by Uakino's new-theme navigation. The /animeukr URL is
 # the anime sub-site (Ukrainian-dubbed anime). Section ids are stable;
@@ -568,10 +568,10 @@ class UakinoProvider(BaseProvider):
         # commas (e.g. mpv's --http-header-fields): the CDN then sees a
         # malformed User-Agent and 400s the stream. Use the plain client
         # UA like every other ashdi-backed provider.
-        return StreamResponse(
-            url=m3u8_url,
-            type="m3u8",
-            headers=self.stream_headers(_CDN_REFERER),
+        return provider_stream_response(
+            m3u8_url,
+            "m3u8",
+            _CDN_REFERER,
         )
 
     async def browse(

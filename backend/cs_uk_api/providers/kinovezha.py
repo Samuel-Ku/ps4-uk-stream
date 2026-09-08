@@ -44,7 +44,7 @@ from ..wire_identity import (
     strip_movie_suffix,
 )
 from ._tortuga import decode as _tor_decrypt
-from .base import BaseProvider, MediaTypeStr, ProviderError, dle_has_next
+from .base import BaseProvider, MediaTypeStr, ProviderError, dle_has_next, provider_stream_response
 
 BASE_URL = "https://kinovezha.tv"
 # Hosts the upstream may legally redirect to: the DLE CMS and the
@@ -497,7 +497,7 @@ class KinoVezhaProvider(BaseProvider):
         stream_url = self._select_stream_url(decoded, ep_suffix, translation)
         if stream_url is None:
             raise ProviderError("parse_failed", f"no stream url for {ep_suffix!r}")
-        return StreamResponse(url=stream_url, type="m3u8", headers=self.stream_headers(BASE_URL + "/"))
+        return provider_stream_response(stream_url, "m3u8", BASE_URL + "/")
 
     @staticmethod
     def _select_stream_url(
