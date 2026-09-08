@@ -144,6 +144,93 @@ def test_with_recommendation_rows_cold_profiles_ship_plain_rows() -> None:
     assert [r.type for r in out] == ["popular", "movie"]
 
 
+def test_warm_profiles_resolves_through_shared_primitive(monkeypatch) -> None:
+    """ONE writer for the content cache: the profile warm must resolve
+    through ``resolution.resolve_group_content`` — never a provider
+    ``content()`` call of its own. The drift guard re-points the name
+    the warm actually calls at a stub, and a spy provider fails loudly
+    if any direct fetch remains; if the warm still hand-rolls the
+    fetch, its call never reaches the stub and the profile store stays
+    empty."""
+    home = HomeResponse(rows=[_row("movie", "Дюна")])
+    resolved: list[str] = []
+
+    async def fake_resolve(group_key: str) -> ContentResponse:
+        resolved.append(group_key)
+        return ContentResponse(
+            id="p1:1", form="movie", title="Дюна",
+            translations=[Translation(id="uk", label="UK")],
+        )
+
+    class _SpyProvider(BaseProvider):
+        """Fails the test if the warm bypasses the primitive."""
+
+        id = "p1"
+        name = "P1"
+        types = ("movie",)
+
+        async def search(self, query, http):  # type: ignore[no-untyped-def]
+            raise AssertionError("profile warm must not search")
+
+        async def content(self, external_id, http):  # type: ignore[no-untyped-def]
+            raise AssertionError("profile warm must not fetch directly")
+
+        async def stream(self, content_id, translation, http):  # type: ignore[no-untyped-def]
+            raise AssertionError("profile warm must not stream")
+
+    PROVIDERS["p1"] = _SpyProvider()
+    # Patch the warm module's own binding — the name it actually calls.
+    monkeypatch.setattr(
+        catalog_state.warm, "resolve_group_content", fake_resolve
+    )
+    asyncio.run(_warm_profiles(home))
+    assert resolved == ["g2:Дюна"]
+    assert set(catalog_state.get_profiles()) == {"g2:Дюна"}
+
+
+def test_warm_profiles_records_lane_verdict_on_provider_fault(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Resolving through the shared primitive means a provider fault
+    during the profile warm is verdict-classified into the health
+    tracker (ADR-0002) — the old private fetch loop swallowed it
+    silently (log.debug, no recording)."""
+    from cs_uk_api.health import TRACKER
+    from cs_uk_api.providers.base import ProviderError
+
+    home = HomeResponse(rows=[_row("movie", "Дюна")])
+    catalog_state.sources_cache.set(
+        catalog_state._SOURCES_KEY,
+        {"g2:Дюна": {"p1": _item("p1", "1", "Дюна")}},
+    )
+
+    class _FlakyProvider(BaseProvider):
+        id = "p1"
+        name = "P1"
+        types = ("movie",)
+
+        async def search(self, query, http):  # type: ignore[no-untyped-def]
+            return []
+
+        async def content(self, external_id, http):  # type: ignore[no-untyped-def]
+            raise ProviderError("unreachable", "upstream down")
+
+        async def stream(self, content_id, translation, http):  # type: ignore[no-untyped-def]
+            raise NotImplementedError
+
+    PROVIDERS["p1"] = _FlakyProvider()
+    # The primitive retries once (B23) with a 1s sleep — collapse it.
+    monkeypatch.setattr(
+        catalog_state.resolution, "CONTENT_RETRY_DELAY_S", 0.0
+    )
+    asyncio.run(_warm_profiles(home))
+    # A lane fault recorded (the warm's failure is a missing profile
+    # signal, but the lane's health sample is real).
+    assert TRACKER.last_error_at("p1") is not None
+    # And the failed profile is just missing — the warm never raises.
+    assert catalog_state.get_profiles() == {}
+
+
 def test_warm_profiles_invalidates_home_when_new_profile_lands() -> None:
     """The background warm clears the home cache only when it added a
     profile — a steady-state warm (nothing new) never invalidates."""
