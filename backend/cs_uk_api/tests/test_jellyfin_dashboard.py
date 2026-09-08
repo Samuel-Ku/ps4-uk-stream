@@ -283,14 +283,15 @@ def test_graceful_empties_answer_expected_envelopes(client: TestClient) -> None:
 
 @contextlib.contextmanager
 def _fake_host() -> Iterator[None]:
-    """Point the router's ``get_client`` binding at a fresh httpx client
-    so CDN hops are intercepted by the active respx mock."""
-    original = jf_router.get_client
-    jf_router.get_client = lambda: httpx.AsyncClient()  # type: ignore[assignment]
+    """Point the delivery module's ``get_client`` binding at a fresh
+    httpx client so CDN hops are intercepted by the active respx mock."""
+    jf_delivery = __import__("cs_uk_api.jellyfin.delivery", fromlist=["register"])
+    original = jf_delivery.get_client
+    jf_delivery.get_client = lambda: httpx.AsyncClient()  # type: ignore[assignment]
     try:
         yield
     finally:
-        jf_router.get_client = original  # type: ignore[assignment]
+        jf_delivery.get_client = original  # type: ignore[assignment]
 
 
 def test_download_returns_bytes_with_disposition(client: TestClient) -> None:

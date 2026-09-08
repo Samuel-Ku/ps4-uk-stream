@@ -33,7 +33,7 @@ from fastapi.testclient import TestClient
 from cs_uk_api._catalog_state import blocklist_cache, content_cache, home_cache, sources_cache
 from cs_uk_api.config import SETTINGS
 
-jf_router = importlib.import_module("cs_uk_api.jellyfin.router")
+jf_router = importlib.import_module("cs_uk_api.jellyfin.image_routes")
 from cs_uk_api.models import (
     ContentResponse,
     Episode,

@@ -399,7 +399,7 @@ def test_detail_image_tag_agrees_with_poster_route(
     PROVIDERS["p1"] = stub
     _auth(client)
 
-    jf_router = importlib.import_module("cs_uk_api.jellyfin.router")
+    jf_router = importlib.import_module("cs_uk_api.jellyfin.image_routes")
     async def _fake_poster(url: str, client: Any) -> tuple[bytes, str]:
         return b"\x89PNG", "image/png"
 

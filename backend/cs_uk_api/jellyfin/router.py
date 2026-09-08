@@ -17,7 +17,6 @@ behind the same ``require_token`` gate.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import os
 import re
@@ -35,7 +34,6 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel
 
 from .. import row_kinds
 from ..catalog import (
@@ -51,11 +49,8 @@ from ..catalog import (
     refresh_snapshot,
     resolve_item,
     search,
-    set_favorite,
-    set_played,
 )
 from ..config import SETTINGS
-from ..http_client import get_client
 from ..models import (
     ContentResponse,
     Episode,
@@ -64,18 +59,19 @@ from ..models import (
     SearchGroup,
     Season,
 )
-from ..poster_proxy import fetch as fetch_poster_bytes
 from ..recommend import similarity
 from ..wire_identity import is_group_key
-from . import dto, images
+from . import dto
 from .auth import require_token
 from .delivery import register as register_delivery
+from .handshake import register as register_handshake
 from .hls_proxy import (
     _STREAM_MEMO as _STREAM_MEMO,  # noqa: PLC0414 (re-export: suite clears the memo via router)
 )
+from .identity import _server_id, _user_name_for
+from .image_routes import register as register_image_routes
 from .models import (
     ActivityLogEntryQueryResult,
-    AuthenticationResult,
     BaseItemDto,
     BaseItemDtoQueryResult,
     DeviceInfoDtoQueryResult,
@@ -84,9 +80,7 @@ from .models import (
     ItemCounts,
     SearchHint,
     SearchHintResult,
-    SystemInfoPublic,
     SystemStorageDto,
-    UserDataResult,
     UserDto,
 )
 from .playback_info import register as register_playback_info
@@ -107,6 +101,7 @@ from .resolution import (
     _year_for_group,
     person_filmography_pairs,
 )
+from .userdata import register as register_userdata
 
 log = logging.getLogger("cs_uk_api.jellyfin")
 
@@ -167,50 +162,9 @@ def normalize_jellyfin_path(path: str) -> str | None:
     return canonical
 
 
-#: What the server tells the client it is. The official Jellyfin apps
-#: validate the server's product/version on connect and refuse anything
-#: that doesn't look like a real Jellyfin ("unsupported version or
-#: product"). Surface a genuine Jellyfin identity so any client accepts
-#: the handshake; the facade itself is version-agnostic.
-_PRODUCT = "Jellyfin Server"
-_VERSION = "10.11.11"
-
-
-def _user_name_for(user_id: str) -> str:
-    """The display name backed by a remembered ``/Users/{id}`` check.
-
-    The facade is stateless and cannot recall what the user typed at
-    login; a stable label ("User") keeps every client's "signed in as"
-    UI consistent without persisting anything (D8).
-    """
-    return "User"
-
-
-def _server_id() -> str:
-    """Stable per-process identity: deterministic hash of host:port.
-
-    A restart keeps the same ServerId (clients pin it in their local
-    database), while two different deployments differ.
-    """
-    return hashlib.sha256(f"{SETTINGS.host}:{SETTINGS.port}".encode()).hexdigest()[:16]
-
-
-def _row_dto(row: HomeRow, server_id: str) -> BaseItemDto:
-    """One virtual library (D5): a ``CollectionFolder`` whose ``Id`` the
-    client echoes back as ``parentId`` on ``/Items``.
-
-    The CollectionType derives from the row-kind table (spec #362 B):
-    a table kind carries its entry's mapping; rows outside the table
-    (the recipe-inserted personalized rows, the ``genre:<slug>`` rails)
-    stay CollectionType-less.
-    """
-    entry = row_kinds.ROW_KINDS.get(row.type)
-    return dto.row_dto(
-        row.title,
-        server_id,
-        view_id=_view_id_for(row.type),
-        collection_type=entry.collection_type if entry is not None else None,
-    )
+#: The genuine-Jellyfin product/version pair and the stateless user
+#: label / stable ServerId live in :mod:`identity` (ONE owner); this
+#: module binds them to the routes it still owns.
 
 
 def _item_dto(row: HomeRow, item: HomeItem, server_id: str) -> BaseItemDto:
@@ -368,19 +322,6 @@ def _episode_dto(
     )
 
 
-async def _user_views() -> BaseItemDtoQueryResult:
-    """One virtual library per ``/api/home`` row, in home-row order (D5).
-
-    Triggers the shared home build on a cold cache (the same cost as
-    ``GET /api/home``), so a fresh client launch never sees an empty
-    library list; afterwards it serves from the 30-min snapshot.
-    """
-    home = await refresh_snapshot()
-    server_id = _server_id()
-    dtos = [_row_dto(row, server_id) for row in home.rows]
-    return BaseItemDtoQueryResult(Items=dtos, TotalRecordCount=len(dtos))
-
-
 def _search_group_dto(group: SearchGroup, server_id: str) -> BaseItemDto:
     """One search-result card (ticket #106): pure pass-through to
     ``dto.search_card_dto`` (ticket #344)."""
@@ -428,186 +369,6 @@ async def _jf_search(search_term: str) -> BaseItemDtoQueryResult:
     dtos = [_search_group_dto(g, server_id) for g in groups]
     return BaseItemDtoQueryResult(Items=dtos, TotalRecordCount=len(dtos))
 
-
-class AuthenticateByNameRequest(BaseModel):
-    """Login body. Any username/password completes the handshake (D4)."""
-
-    Username: str = ""
-    Pw: str = ""
-
-
-@router.get(
-    "/System/Info/Public", response_model=SystemInfoPublic, response_model_exclude_none=True
-)
-async def system_info_public() -> SystemInfoPublic:
-    """Server discovery: what a client hits first when adding the server.
-
-    Unauthenticated by design (D4): the client needs this to render the
-    login screen at all.
-    """
-    return SystemInfoPublic(
-        LocalAddress=f"{SETTINGS.host}:{SETTINGS.port}",
-        ServerName=_PRODUCT,
-        Version=_VERSION,
-        ProductName=_PRODUCT,
-        StartupWizardCompleted=True,
-        Id=_server_id(),
-    )
-
-
-@router.get(
-    "/System/Info",
-    response_model=SystemInfoPublic,
-    response_model_exclude_none=True,
-    dependencies=[Depends(require_token)],
-)
-async def system_info(
-    _token: str = Depends(require_token),
-) -> SystemInfoPublic:
-    """Full server info — authenticated in real Jellyfin.
-
-    A client that has completed the handshake fetches this to confirm
-    the server identity; the web UI reads ``ServerName``/``Version`` off
-    it when reconnecting to a cached server. The first private facade
-    route: proves the ``require_token`` gate on a real endpoint.
-    """
-    return SystemInfoPublic(
-        LocalAddress=f"{SETTINGS.host}:{SETTINGS.port}",
-        ServerName=_PRODUCT,
-        Version=_VERSION,
-        ProductName=_PRODUCT,
-        StartupWizardCompleted=True,
-        Id=_server_id(),
-    )
-
-
-@router.get("/QuickConnect/Enabled", response_model=bool)
-async def quickconnect_enabled() -> bool:
-    """Advertise that QuickConnect login is off.
-
-    Switchfin probes this before rendering the login screen and compares
-    the raw body to ``"true"`` before showing the Quick Connect button.
-    Real Jellyfin answers with a bare boolean, so the facade mirrors
-    that: ``false`` keeps the client on the password path.
-    """
-    return False
-
-
-@router.get(
-    "/Branding/Configuration", response_model=dict[str, object], response_model_exclude_none=True
-)
-async def branding_configuration() -> dict[str, object]:
-    """Empty branding block — the client falls back to defaults.
-
-    Probed alongside ``/QuickConnect/Enabled`` during login-screen
-    render. ``LoginDisclaimer`` must be a string, NOT null — Switchfin
-    parses it into ``std::string`` via
-    ``NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT`` and a null value
-    raises ``type_error.302`` on the console.
-    """
-    return {"LoginDisclaimer": ""}
-
-
-@router.get(
-    "/Plugins",
-    response_model=list[object],
-    response_model_exclude_none=True,
-    dependencies=[Depends(require_token)],
-)
-async def plugins() -> list[object]:
-    """Plugin listing — always empty.
-
-    Switchfin probes this on EVERY app start (``AppConfig::checkDanmuku``)
-    to detect the Danmu plugin; an unimplemented route answered 404 and
-    the client's HTTP layer logged "http status 404" on the console. An
-    empty ``PluginList`` (bare JSON array) means "no plugins" and
-    disables danmaku cleanly.
-    """
-    return []
-
-
-@router.get(
-    "/Users/{user_id}",
-    response_model=UserDto,
-    response_model_exclude_none=True,
-    dependencies=[Depends(require_token)],
-)
-async def user_info(user_id: str) -> UserDto:
-    """Persist a client's remembered session (Switchfin ``checkLogin``).
-
-    On every start Switchfin calls ``GET /Users/{id}`` with the stored
-    token to decide whether the previous login is still valid (config.cpp
-    ``checkLogin``): a 200+parseable User keeps it in the main screen,
-    anything else bounces it back to the login form. Since the facade is
-    stateless and accepts any valid token, the remembered user is
-    confirmed with a 200 echoing a stable UserDto — the client then skips
-    re-authentication entirely.
-    """
-    return UserDto(
-        Name=_user_name_for(user_id),
-        ServerId=_server_id(),
-        Id=user_id,
-    )
-
-
-@router.post(
-    "/Users/AuthenticateByName",
-    response_model=AuthenticationResult,
-    response_model_exclude_none=True,
-)
-async def authenticate_by_name(
-    body: AuthenticateByNameRequest,
-) -> AuthenticationResult:
-    """Accept-any-credentials login (D4): return the fixed token.
-
-    The request username is echoed back as the user's name so the
-    client's "signed in as X" UI shows what the user typed; nothing is
-    stored (sessions are no-ops, D8).
-    """
-    token = SETTINGS.jellyfin_token
-    server_id = _server_id()
-    user = UserDto(
-        Name=body.Username,
-        ServerId=server_id,
-        Id=uuid.uuid5(uuid.NAMESPACE_URL, f"cs-uk-api-user:{body.Username}").hex,
-    )
-    return AuthenticationResult(
-        User=user,
-        AccessToken=token,
-        ServerId=server_id,
-        SessionInfo=None,
-    )
-
-
-@router.get(
-    "/UserViews",
-    response_model=BaseItemDtoQueryResult,
-    response_model_exclude_none=True,
-    dependencies=[Depends(require_token)],
-)
-async def user_views_sdk(
-    user_id: str | None = Query(default=None, alias="userId"),
-) -> BaseItemDtoQueryResult:
-    """SDK spelling of the views call (capture report, ticket #103).
-
-    The official ``@jellyfin/sdk`` sends bare ``/UserViews?userId=…``
-    rather than the server-style ``/Users/{id}/Views``; both spellings
-    are served (capture verdict, ticket #103). The echoed ``User.Id``
-    carries no server-side meaning — every client on this LAN is the
-    same viewer.
-    """
-    return await _user_views()
-
-
-@router.get(
-    "/Users/{user_id}/Views",
-    response_model=BaseItemDtoQueryResult,
-    response_model_exclude_none=True,
-    dependencies=[Depends(require_token)],
-)
-async def user_views_server(user_id: str) -> BaseItemDtoQueryResult:
-    """Server-style spelling of the views call (spec D5)."""
-    return await _user_views()
 
 
 @router.get(
@@ -1184,102 +945,6 @@ async def item_detail(item_id: str) -> BaseItemDto:
     return _content_dto(group_key, content, _server_id())
 
 
-@router.get(
-    "/Items/{item_id}/Images/Primary",
-)
-async def item_primary_image(
-    item_id: str, format: str | None = None, maxWidth: int | None = None
-) -> Response:
-    """Poster art (D9): the poster bytes, served directly with 200.
-
-    The client's own ``format=Webp`` / ``maxWidth`` query (Switchfin
-    always asks for ``Webp``) is honored: a non-WebP original is
-    transcoded once (Pillow, resized to ``maxWidth`` when the original
-    is larger) and cached per poster. Unknown item or poster-less item →
-    404; Jellyfin clients render a placeholder instead of an image.
-
-    Public on purpose: Jellyfin serves images without a token (media
-    is addressable by URL), and client image loaders do not attach the
-    ``X-Emby-Token`` header — requiring one here produces a wall of
-    ``401 Unauthorized`` console errors.
-
-    The bytes are fetched via the same ``fetch_poster_bytes`` cache the
-    native ``/api/poster`` route uses, and returned inline — NOT as a
-    302 to it. Switchfin's image loader does not chase a redirect; a
-    redirect status is rendered as an error storm ("302") on the
-    console while the home screen retries each card's art dozens of
-    times (observed: ~72 attempts per poster).
-    """
-    return await _serve_item_image(item_id, format=format, maxWidth=maxWidth)
-
-
-async def _serve_item_image(
-    item_id: str, *, format: str | None = None, maxWidth: int | None = None
-) -> Response:
-    """The poster for ``item_id`` as an inline image response, or 404.
-
-    Resolution (poster URL lookup + the shared poster-cache fetch) stays
-    here; the WebP verdict/transcode delegates to the image module
-    (ticket #343). ``fetch_poster_bytes`` resolves through THIS module at
-    call time — the suite stubs it here.
-    """
-    poster_url = _poster_for(item_id)
-    if poster_url is None and is_group_key(item_id):
-        # Item not in the home snapshot (surfaced via Latest/search);
-        # resolve from the content cache which holds the poster URL.
-        content = (await resolve_item(item_id)).content
-        poster_url = content.poster if content else None
-    if poster_url is None:
-        raise HTTPException(status_code=404, detail="poster_unavailable")
-    fetched = await fetch_poster_bytes(poster_url, get_client())
-    if fetched is None:
-        raise HTTPException(status_code=404, detail="poster_unavailable")
-    body, ctype = fetched
-    if images.wants_webp(format) and not ctype.startswith("image/webp"):
-        body = images.as_webp(poster_url, body, maxWidth)
-        ctype = "image/webp"
-    return Response(content=body, media_type=ctype)
-
-
-@router.get(
-    "/Users/{user_id}/Images/Primary",
-)
-async def user_primary_image(user_id: str, format: str | None = None) -> Response:
-    """User avatar — no user concept on the facade.
-
-    A transparent placeholder is served instead of a 404: Switchfin's
-    server list always requests the avatar and logs "http status 404"
-    on the console when it's missing. Public like every other image
-    endpoint (token-less image loading, see ``item_primary_image``).
-    """
-    body, ctype = images.placeholder_avatar(format)
-    return Response(content=body, media_type=ctype)
-
-
-@router.get(
-    "/Items/{item_id}/Images/Thumb",
-)
-@router.get(
-    "/Items/{item_id}/Images/Logo",
-)
-@router.get(
-    "/Items/{item_id}/Images/Backdrop",
-)
-@router.get(
-    "/Items/{item_id}/Images/Backdrop/{index}",
-)
-async def item_auxiliary_image(item_id: str, index: int = 0) -> Response:
-    """Backdrop/Logo/Thumb art — same poster bytes as ``Primary``.
-
-    The catalog stores a single poster per item (no fanart, logos, or
-    backdrops), so each variant serves that same image inline with 200,
-    matching Switchfin's probe expectations (``apiThumbImage``/
-    ``apiLogoImage``/``apiBackdropImage``). Public like all image
-    endpoints; unknown/poster-less item → 404 (the client treats that
-    as "no such art").
-    """
-    return await _serve_item_image(item_id)
-
 
 @router.get(
     "/Items/{item_id:path}/Similar",
@@ -1360,63 +1025,6 @@ async def item_similar(
 )
 async def item_special_features(user_id: str, item_id: str) -> list[object]:
     return []
-
-
-# ------------------------------------------------------------ user state (#257)
-
-
-@router.post(
-    "/Users/{user_id}/FavoriteItems/{item_id}",
-    response_model=UserDataResult,
-    response_model_exclude_none=True,
-    dependencies=[Depends(require_token)],
-)
-async def favorite_add(user_id: str, item_id: str) -> UserDataResult:
-    """Favorite an item (spec #257).
-
-    The RESPONSE is the UserDataResult — Switchfin updates its heart
-    button from the response's ``IsFavorite``, so a bare 204 would
-    leave the button stuck. State is single-user (D4) and persists in
-    the versioned user-state file.
-    """
-    set_favorite(item_id, True)
-    return _user_data(item_id)  # type: ignore[return-value]
-
-
-@router.delete(
-    "/Users/{user_id}/FavoriteItems/{item_id}",
-    response_model=UserDataResult,
-    response_model_exclude_none=True,
-    dependencies=[Depends(require_token)],
-)
-async def favorite_remove(user_id: str, item_id: str) -> UserDataResult:
-    """Un-favorite an item (spec #257) — same response contract."""
-    set_favorite(item_id, False)
-    return _user_data(item_id)  # type: ignore[return-value]
-
-
-@router.post(
-    "/Users/{user_id}/PlayedItems/{item_id}",
-    response_model=UserDataResult,
-    response_model_exclude_none=True,
-    dependencies=[Depends(require_token)],
-)
-async def played_add(user_id: str, item_id: str) -> UserDataResult:
-    """Mark an item played (spec #257) — the context-menu affordance."""
-    set_played(item_id, True)
-    return _user_data(item_id)  # type: ignore[return-value]
-
-
-@router.delete(
-    "/Users/{user_id}/PlayedItems/{item_id}",
-    response_model=UserDataResult,
-    response_model_exclude_none=True,
-    dependencies=[Depends(require_token)],
-)
-async def played_remove(user_id: str, item_id: str) -> UserDataResult:
-    """Mark an item unplayed (spec #257) — same response contract."""
-    set_played(item_id, False)
-    return _user_data(item_id)  # type: ignore[return-value]
 
 
 @router.get("/Sessions", dependencies=[Depends(require_token)])
@@ -1656,16 +1264,19 @@ async def websocket_socket(websocket: WebSocket) -> None:
         log.debug("websocket closed unexpectedly", exc_info=True)
 
 
-# The Sessions/Playing* report conversation (parser + routes) lives in
-# :mod:`playback_reports` — ONE owner for the client's playback-report
-# surface (#108/#214/#248). Registered flat here so the wire surface
-# and the facade's route table are unchanged.
-# Delivery (stream/vtt/download/segment) first, then reports — the
-# moved routes keep their relative declaration order. Table position
-# (the tail) is inert: no two facade patterns match the same URL, and
-# the full suite exercises every route through the real middleware.
+# The moved conversations (delivery, playback info, playback reports,
+# handshake, images, user state) live in their own modules — ONE owner
+# each — and register flat here so the wire surface and the facade's
+# route table are unchanged. Declaration order is preserved: delivery
+# first, then info/reports, then the carved-out conversations — table
+# position (the tail) is inert: no two facade patterns match the same
+# URL, and the full suite exercises every route through the real
+# middleware.
 register_delivery(router)
 register_playback_info(router)
 register_playback_reports(router)
+register_handshake(router)
+register_image_routes(router)
+register_userdata(router)
 
 __all__ = ["require_token", "router"]
