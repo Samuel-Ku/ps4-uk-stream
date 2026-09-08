@@ -32,7 +32,7 @@ from ..models import (
     Translation,
 )
 from ..wire_identity import episode_wire_id, parse_episode_tail, split_wire_id
-from .base import BaseProvider, MediaTypeStr, ProviderError, dle_has_next
+from .base import BaseProvider, MediaTypeStr, ProviderError, dle_has_next, provider_stream_response
 
 
 def _itemprop_values(soup: BeautifulSoup, name: str) -> list[str]:
@@ -726,10 +726,10 @@ class UAFlixProvider(BaseProvider):
                     "parse_failed", "no media URL found in player page"
                 )
             extracted = ExtractResult(url=serial_url, type="m3u8")
-        return StreamResponse(
-            url=extracted.url,
-            type=extracted.type,
-            headers=self.stream_headers(f"{BASE_URL}/"),
+        return provider_stream_response(
+            extracted.url,
+            extracted.type,
+            f"{BASE_URL}/",
         )
 
     @staticmethod

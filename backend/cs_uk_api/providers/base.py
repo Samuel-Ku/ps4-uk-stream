@@ -14,10 +14,39 @@ from ..models import (
     SearchResult,
     Section,
     StreamResponse,
+    StreamType,
 )
 from ..wire_identity import MOVIE_SUFFIX as MOVIE_SUFFIX  # noqa: PLC0414 (re-export, spec #340)
 
 MediaTypeStr = Literal["movie", "series", "anime", "cartoon", "dorama"]
+
+
+def provider_stream_response(
+    url: str,
+    stream_type: StreamType,
+    referer: str,
+    *,
+    allowed_domains: frozenset[str] | None = None,
+) -> StreamResponse:
+    """One owner for the classic provider stream wire shape (candidate 4,
+    2026-09-07 architecture review).
+
+    ``url + type + BaseProvider.stream_headers(referer)`` was re-typed at
+    16 call sites across the catalog providers; this factory is its
+    single owner — the same seam role ``torrent_lane.\
+    torrent_stream_response`` plays for the engine dialect (``seekable``
+    / ``subtitle_url``). Wire shape unchanged: the same two headers,
+    byte-identical responses. Providers with a genuinely different
+    header dialect keep raw constructions (uaserialspro's desktop UA for
+    Tortuga, eneyida's UA-less CDN, animeon's moon/ashdi picker); the
+    drift pin in ``test_base_provider.py`` holds that allowlist closed.
+    """
+    return StreamResponse(
+        url=url,
+        type=stream_type,
+        headers=BaseProvider.stream_headers(referer),
+        allowed_domains=allowed_domains or frozenset[str](),
+    )
 
 
 def parse_actor_list(

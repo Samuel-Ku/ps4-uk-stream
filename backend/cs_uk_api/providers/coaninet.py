@@ -44,7 +44,7 @@ from ..models import (
     Translation,
 )
 from ..wire_identity import split_wire_id
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, provider_stream_response
 
 API_URL = "https://api.coani.net/api"
 SITE_URL = "https://coani.net"
@@ -375,10 +375,10 @@ class CoaninetProvider(BaseProvider):
             raise ProviderError(
                 "parse_failed", f"no video url for episode {episode_number}"
             )
-        return StreamResponse(
-            url=video_url,
-            type="m3u8",
-            headers=self.stream_headers(f"{SITE_URL}/"),
+        return provider_stream_response(
+            video_url,
+            "m3u8",
+            f"{SITE_URL}/",
         )
 
 

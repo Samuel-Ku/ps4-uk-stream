@@ -45,7 +45,7 @@ from ..models import (
     StreamResponse,
     Translation,
 )
-from .base import BaseProvider, ProviderError, dle_has_next
+from .base import BaseProvider, ProviderError, dle_has_next, provider_stream_response
 
 BASE_URL = "https://simpsonsua.tv"
 BASE_URL_HOST = urlparse(BASE_URL).hostname
@@ -681,10 +681,10 @@ class SimpsonsUATvProvider(BaseProvider):
                 m3u8 = decoded
         if ".m3u8" not in m3u8:
             raise ProviderError("parse_failed", "no m3u8 in player file value")
-        return StreamResponse(
-            url=m3u8,
-            type="m3u8",
-            headers=self.stream_headers(ASHDI_REFERER),
+        return provider_stream_response(
+            m3u8,
+            "m3u8",
+            ASHDI_REFERER,
         )
 
 

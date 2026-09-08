@@ -31,7 +31,7 @@ from ..wire_identity import (
     parse_episode_tail,
     strip_movie_suffix,
 )
-from .base import BaseProvider, MediaTypeStr, ProviderError, dle_has_next
+from .base import BaseProvider, MediaTypeStr, ProviderError, dle_has_next, provider_stream_response
 
 BASE_URL = "https://cikava-ideya.top"
 # Hosts the upstream may legally redirect to: the CMS and the ashdi
@@ -471,10 +471,10 @@ class CikavaIdeyaProvider(BaseProvider):
         extracted = RegexExtractor().extract(ashdi_resp.text)
         if extracted is None or not extracted.url:
             raise ProviderError("parse_failed", "no m3u8 in ashdi page")
-        return StreamResponse(
-            url=extracted.url,
-            type=extracted.type,
-            headers=self.stream_headers(ASHDI_REFERER),
+        return provider_stream_response(
+            extracted.url,
+            extracted.type,
+            ASHDI_REFERER,
         )
 
     @staticmethod

@@ -44,7 +44,7 @@ from ..wire_identity import (
     parse_episode_tail,
     strip_movie_suffix,
 )
-from .base import BaseProvider, MediaTypeStr, ProviderError, dle_has_next
+from .base import BaseProvider, MediaTypeStr, ProviderError, dle_has_next, provider_stream_response
 
 
 def _jsonld_doc(soup: BeautifulSoup) -> dict[str, Any] | None:
@@ -622,10 +622,10 @@ class KlonTVProvider(BaseProvider):
             raise ProviderError("parse_failed", f"no media url for {ep_suffix!r}")
         # ashdi.vip refuses manifest requests without the upstream
         # Referer; same Referer the upstream Kotlin uses for HLS.
-        return StreamResponse(
-            url=media_url,
-            type="m3u8",
-            headers=self.stream_headers(ASHDI_REFERER),
+        return provider_stream_response(
+            media_url,
+            "m3u8",
+            ASHDI_REFERER,
         )
 
     @staticmethod

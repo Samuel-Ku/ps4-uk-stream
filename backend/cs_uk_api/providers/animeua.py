@@ -24,7 +24,7 @@ from ..models import (
     TranslationLevel,
 )
 from ..wire_identity import episode_wire_id, parse_episode_tail
-from .base import BaseProvider, MediaTypeStr, ProviderError, dle_has_next
+from .base import BaseProvider, MediaTypeStr, ProviderError, dle_has_next, provider_stream_response
 
 BASE_URL = "https://animeua.club"
 # The ashdi.vip CDN serves the HLS manifest only with this Referer; the
@@ -364,10 +364,10 @@ class AnimeUAProvider(BaseProvider):
             url = raw if raw and not ep_suffix else None
         if url is None:
             raise ProviderError("parse_failed", f"no stream URL for {ep_suffix!r}")
-        return StreamResponse(
-            url=url,
-            type="m3u8",
-            headers=self.stream_headers(ASHDI_REFERER),
+        return provider_stream_response(
+            url,
+            "m3u8",
+            ASHDI_REFERER,
         )
 
     async def episode_translations(

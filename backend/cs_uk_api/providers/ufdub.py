@@ -23,7 +23,7 @@ from ..models import (
     Translation,
 )
 from ..wire_identity import is_movie_wire_id, parse_episode_tail, strip_movie_suffix
-from .base import BaseProvider, MediaTypeStr, ProviderError, dle_has_next
+from .base import BaseProvider, MediaTypeStr, ProviderError, dle_has_next, provider_stream_response
 
 BASE_URL = "https://ufdub.com"
 
@@ -479,10 +479,10 @@ class UFDubProvider(BaseProvider):
         # episodes to ``dl.dropboxusercontent.com``, a foreign domain the
         # provider sanctions. Declare it so the stream proxy follows the
         # hop (D7 SSRF posture: only provider-declared hosts pass).
-        return StreamResponse(
-            url=media_url,
-            type="mp4",
-            headers=self.stream_headers(f"{BASE_URL}/"),
+        return provider_stream_response(
+            media_url,
+            "mp4",
+            f"{BASE_URL}/",
             allowed_domains=frozenset({"dropboxusercontent.com"}),
         )
 

@@ -56,7 +56,7 @@ from ..models import (
     Translation,
 )
 from ..wire_identity import episode_wire_id, parse_episode_tail
-from .base import BaseProvider, ProviderError, dle_has_next
+from .base import BaseProvider, ProviderError, dle_has_next, provider_stream_response
 
 BASE_URL = "https://anitube.in.ua"
 # Hosts the upstream may legally redirect to: the DLE CMS. A hostile
@@ -676,10 +676,10 @@ class AnitubeinuaProvider(BaseProvider):
         m3u8 = _FILE_RE.search(player_resp.text)
         if not m3u8:
             raise ProviderError("parse_failed", "no m3u8 in player page")
-        return StreamResponse(
-            url=m3u8.group(1),
-            type="m3u8",
-            headers=self.stream_headers(_referer_for(file_url)),
+        return provider_stream_response(
+            m3u8.group(1),
+            "m3u8",
+            _referer_for(file_url),
         )
 
     @staticmethod
