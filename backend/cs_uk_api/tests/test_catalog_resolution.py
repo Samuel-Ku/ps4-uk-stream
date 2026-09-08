@@ -17,6 +17,7 @@ from typing import Any, cast
 import pytest
 
 from cs_uk_api import _catalog_state as catalog_state
+from cs_uk_api._catalog_state import resolution
 from cs_uk_api._catalog_state.resolution import (
     episode_group_key,
     filter_gated_items,
@@ -25,6 +26,7 @@ from cs_uk_api._catalog_state.resolution import (
     register_search_groups,
     resolve_group,
 )
+from cs_uk_api.health import STATUS_OK, TRACKER
 from cs_uk_api.models import (
     ContentResponse,
     SearchGroup,
@@ -195,3 +197,59 @@ def test_is_hard_unavailable_unknown_gated_and_clean() -> None:
     # A gated verdict flips it to hard-unavailable.
     catalog_state.gated_cache.set("content:p1:1", True)
     assert is_hard_unavailable("g2:abc") is True
+
+
+class _FlakyThenReal(BaseProvider):
+    """YTS-stub whose details flake (the playtest's stripped payload):
+    the first TWO content() calls raise typed not_found — a sustained
+    burst strip, both B23 attempts dead — then the third returns the
+    real envelope, the upstream having healed between resolves."""
+
+    id = "flaky-stub"
+    name = "FlakyStub"
+    types = ("movie",)
+    calls = 0
+
+    async def search(self, query, http):  # type: ignore[no-untyped-def]
+        return []
+
+    async def content(self, external_id, http):  # type: ignore[no-untyped-def]
+        _FlakyThenReal.calls += 1
+        if _FlakyThenReal.calls <= 2:
+            raise ProviderError(code="not_found", message="carried no torrents")
+        return ContentResponse(
+            id=f"flaky-stub:{external_id}",
+            form="movie",
+            title="Dune",
+            translations=[Translation(id="en", label="EN")],
+        )
+
+    async def stream(self, content_id, translation, http):  # type: ignore[no-untyped-def]
+        raise NotImplementedError
+
+
+async def test_stripped_details_not_cached_and_next_resolve_heals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The playtest fix's wire contract: a provider ``not_found`` from a
+    stripped details payload must NEVER enter ``content_cache`` — the
+    poisoned envelope was what turned a one-off upstream flake into a
+    30-minute title outage. The very next ``resolve_group_content``
+    re-fetches and serves the healed answer. (ADR-0002: the verdict is
+    item-class, so the lane stays healthy.)"""
+    monkeypatch.setattr(resolution, "CONTENT_RETRY_DELAY_S", 0.0)
+    PROVIDERS["flaky-stub"] = _FlakyThenReal()
+    item = _item("flaky-stub", "tt1160419", "Dune")
+    _seed_sources({"g2:dune": {"flaky-stub": item}})
+
+    assert await resolution.resolve_group_content("g2:dune") is None
+    # Nothing cached — the failure left no envelope behind.
+    assert catalog_state.content_cache.get("content:flaky-stub:tt1160419") is None
+    assert TRACKER.status("flaky-stub") is STATUS_OK  # item-class verdict
+
+    healed = await resolution.resolve_group_content("g2:dune")
+    assert healed is not None and healed.title == "Dune"
+    # calls 1-2: the first resolve's B23 pair (both stripped); call 3: the
+    # fresh upstream probe the second resolve was allowed to make.
+    assert _FlakyThenReal.calls == 3
+    assert catalog_state.content_cache.get("content:flaky-stub:tt1160419") is not None

@@ -238,8 +238,42 @@ async def test_yts_content_bad_imdb_rejected_before_request():
     assert exc.value.code == "not_found"
 
 
+@pytest.mark.asyncio
+async def test_yts_content_movie_details_without_torrents_is_typed_not_found():
+    """The playtest finding (yts.gg drift): the upstream intermittently
+    serves HTTP 200 with ``torrents[]`` stripped. That payload is an
+    INCOMPLETE answer, never a cacheable one — the provider raises typed
+    ``not_found`` at the boundary (an item verdict per ADR-0002) so the
+    resolution layer caches nothing and every later play re-probes."""
+    stripped = {
+        "status": "ok",
+        "status_message": "Query successful!",
+        "data": {
+            "movie": {
+                "id": 48491,
+                "imdb_code": "tt1160419",
+                "title": "Dune",
+                "title_long": "Dune (2021)",
+                "year": 2021,
+                "description_full": "Paul Atreides.",
+                "medium_cover_image": "https://yts.gg/p.jpg",
+                "torrents": [],
+            }
+        },
+    }
+    with respx.mock(assert_all_called=True) as router:
+        router.get(url=_details_url_regex()).respond(200, json=stripped)
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(ProviderError) as exc:
+                await YtsProvider().content("tt1160419", http)
+    assert exc.value.code == "not_found"
+    assert "no torrents" in exc.value.message
+
+
 # ---------------------------------------------------------------------------
 # stream placeholder + torrent payload threading (#377 consumption)
+
+
 # ---------------------------------------------------------------------------
 
 

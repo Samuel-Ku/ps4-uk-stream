@@ -372,10 +372,20 @@ class YtsProvider(BaseProvider):
     async def _movie_content(
         self, external_id: str, http: httpx.AsyncClient
     ) -> ContentResponse:
-        """The original #376 movie envelope (moved verbatim so the
-        unconfigured-series default stays byte-identical)."""
+        """The original #376 movie envelope, with one guard added after
+        the live playtest (yts.gg drift): a details payload WITHOUT
+        ``torrents[]`` is an INCOMPLETE answer, never a cacheable one —
+        raise typed ``not_found`` so the resolution layer records the
+        item verdict and caches nothing, and every later play re-probes
+        the upstream. The truly dead title keeps its fast verdict; the
+        flaky edge gets a second chance instead of a 30-minute outage."""
         movie = await self._popcorn.movie(external_id, http)
         self._record_torrents(external_id, movie)
+        if external_id not in self._torrent_entries:
+            raise ProviderError(
+                "not_found",
+                f"details payload for {external_id} carried no torrents",
+            )
         return ContentResponse(
             id=f"{self.id}:{external_id}",
             form="movie",
