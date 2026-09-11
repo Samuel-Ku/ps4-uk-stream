@@ -34,7 +34,6 @@ import pytest
 from cs_uk_api import llm
 from cs_uk_api._catalog_state import _stores
 from cs_uk_api.health import TRACKER
-from cs_uk_api.main import _browse_cache
 from cs_uk_api.poster_proxy import _cache as _poster_cache
 from cs_uk_api.providers import (
     PROVIDERS,
@@ -48,7 +47,7 @@ from cs_uk_api.watchdog import WATCHDOG
 #: profiles, playback/user/snapshot state, or watchdog counters.
 _SHARED_STORES: tuple[object, ...] = (
     _poster_cache,
-    _browse_cache,
+    _stores.browse_cache,
     _stores.home_cache,
     _stores.search_cache,
     _stores.content_cache,

@@ -23,8 +23,8 @@ import pytest
 from fastapi import HTTPException
 
 from cs_uk_api import health
-from cs_uk_api.main import _upstream_guard
 from cs_uk_api.providers.base import ProviderError
+from cs_uk_api.service import upstream_guard as _upstream_guard
 
 
 @pytest.fixture(autouse=True)

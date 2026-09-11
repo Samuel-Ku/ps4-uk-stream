@@ -39,6 +39,7 @@ from ._catalog_state import PlaybackEpisodePairing
 from ._catalog_state._stores import (
     all_home_cards_in_index_order as _all_home_cards_in_index_order,
 )
+from ._catalog_state._stores import browse_cache as browse_cache  # noqa: PLC0414  (seam re-export)
 from ._catalog_state._stores import get_group_entry as _get_group_entry
 from ._catalog_state._stores import group_index_entries as _group_index_entries
 from .models import (
@@ -84,6 +85,12 @@ class PlaybackPosition:
 # ---------------------------------------------------------------------------
 # Snapshot: read / refresh
 # ---------------------------------------------------------------------------
+
+
+#: The native browse route's per-page cache (ADR-0003 browse TTL),
+#: re-homed to the shared store layer (2026-09-08 review, candidate 1)
+#: and re-exported here — the one store object the routes touch, now
+#: through the seam like every other cache.
 
 
 def snapshot() -> HomeResponse | None:

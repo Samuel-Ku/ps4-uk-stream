@@ -24,9 +24,8 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from cs_uk_api._catalog_state import content_cache, search_cache
+from cs_uk_api._catalog_state import browse_cache, content_cache, search_cache
 from cs_uk_api.main import (
-    _browse_cache,
     app,
 )
 from cs_uk_api.models import ContentResponse, SearchResult, Translation
@@ -193,7 +192,7 @@ def test_browse_second_call_hits_cache():
 
         PROVIDERS["browse-stub"] = _BrowseStub()
 
-        _browse_cache.clear()
+        browse_cache.clear()
         r1 = client.get("/api/browse?provider=browse-stub&section=top")
         assert r1.status_code == 200
 
@@ -219,7 +218,7 @@ def test_browse_second_call_hits_cache():
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved)
-        _browse_cache.clear()
+        browse_cache.clear()
 
 
 # ---------------------------------------------------------------------------

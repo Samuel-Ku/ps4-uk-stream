@@ -114,7 +114,6 @@ class _FreeStub(BaseProvider):
 def _isolate() -> Iterator[None]:
     """Snapshot + restore PROVIDERS and every cache the sweep/facade reads."""
     from cs_uk_api import _catalog_state as catalog_state
-    from cs_uk_api import main as main_mod
 
     saved = dict(PROVIDERS)
     caches = [
@@ -124,7 +123,7 @@ def _isolate() -> Iterator[None]:
         catalog_state.blocklist_cache,
         catalog_state.gated_cache,
         catalog_state.search_cache,
-        main_mod._browse_cache,
+        catalog_state.browse_cache,
     ]
     for cache in caches:
         cache.clear()
