@@ -39,6 +39,12 @@ home_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_home_s)
 #: the route's contract exactly (``search:{provider}:{q}:{form}:{style}``).
 search_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_search_s)
 
+#: The native browse route's per-page cache (ADR-0003 browse TTL): the
+#: one store ``main.py`` used to own outright (``_browse_cache``),
+#: re-homed beside its siblings by the 2026-09-08 architecture review
+#: (candidate 1) so no route module owns a store any more.
+browse_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_search_s)
+
 #: Content-detail + blocked-country caches (ADR-0003). Moved here from
 #: ``main.py`` so the Jellyfin facade's ticket #105 detail resolver reads
 #: the SAME stores the native ``/api/content`` route uses — one TTL, one

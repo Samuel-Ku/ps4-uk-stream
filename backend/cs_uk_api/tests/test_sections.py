@@ -79,8 +79,8 @@ def test_browse_returns_results_for_uakino_section(monkeypatch):
     first_section_id = p.sections[0].id
     # The endpoint caches per (provider, section, page), so the cache key
     # must be unique across tests; clear it for the page=1 case.
-    from cs_uk_api import main as m
-    m._browse_cache.clear()
+    from cs_uk_api._catalog_state import browse_cache
+    browse_cache.clear()
     r = client.get(f"/api/browse?provider=uakino&section={first_section_id}&page=1")
     assert r.status_code == 200
     data = r.json()
