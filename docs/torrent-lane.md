@@ -301,7 +301,12 @@ pointed at the backend.
 > `backend/deploy/run_backend_8003.sh` starts that backend on the
 > Switchfin device port. The walkthrough remains the canonical
 > explanation; the script is the one-command re-run. Findings:
-> `docs/test-artifacts/accept-373-2026-09-05.md`.
+> `docs/test-artifacts/accept-373-2026-09-05.md`. For the quick
+> deployment check use `backend/deploy/smoke.sh` — it drives the same
+> engine path with no fixed magnet and no cache purge, playing whatever
+> the lane lists; its post-merge run is recorded in
+> `docs/test-artifacts/openclaw-home-smoke-2026-09-12.md`. Every proof
+> lives in `docs/test-artifacts/` — start at its `README.md`.
 
 ```bash
 BASE=http://192.168.2.166:3347
