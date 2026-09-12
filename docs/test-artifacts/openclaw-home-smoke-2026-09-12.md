@@ -137,3 +137,41 @@ Point it at another host with `CS_UK_API_URL` / `CS_UK_ENGINE_URL`; the
 script header lists the rest of the knobs. For the ticket-level floors
 (engine F1–F4, facade B1–B5, subtitles) use `accept_373.sh` — it purges
 the engine cache, which is why the deployment gate above does not.
+
+## Round 2 — #420 confirmed, fixed, and re-proven live (same day)
+
+Finding 2 above is no longer an open question. The transient was
+**confirmed, measured, and fixed**; this section records the fix proof and
+supersedes that finding's status (the run-1 evidence above is left as it
+was observed).
+
+- **Confirmed** by instrumenting the index replacement (PRs
+  [#422](https://github.com/Samuel-Ku/ps4-uk-stream/pull/422) /
+  [#423](https://github.com/Samuel-Ku/ps4-uk-stream/pull/423)): a search
+  registered 16 keys, the next replacement logged exactly
+  `dropped 16 search-registered key(s)`, and the following `/Items/{id}`
+  read answered 404 in 0 ms. The reason "it did not reproduce" was the
+  race needing a wipe *inside* the window.
+- **Decided** in ADR-0010 (PR
+  [#424](https://github.com/Samuel-Ku/ps4-uk-stream/pull/424)) and
+  **implemented** in PR
+  [#425](https://github.com/Samuel-Ku/ps4-uk-stream/pull/425): one owned
+  catalog state and one apply step for the resolution map + group index;
+  search registrations are carried forward and expire on the *search* TTL
+  (5 m), not the snapshot cycle. Issue #420 is closed.
+
+### Proof on `68e2eb6` (openclaw-home, service restarted onto the fix)
+
+| step | observation |
+|---|---|
+| search `q=дюна` | 61 groups, **56 of them absent from the home snapshot** (search-only), 20:59:09 |
+| sanctioned invalidation after the search | `catalog snapshot invalidated reason=profile warm added profiles`, 20:59:12 |
+| replacement read (`/api/home` on the emptied cache) | 20:59:14 — **both** replacement sites are the apply step, so a cold-cache home read *is* a replacement |
+| the reads that 404-ed in run 1 | 4/4 search-only keys → **200** (`/Items/g2:c3200c673b15493a`, `g2:9275bc434ff43d7e`, `g2:551531834212e8fa`, `g2:efa0cde3d98f347d`) |
+| the #420 instrument | **0** `retired` lines since the search — nothing was dropped |
+
+The instrument's *silence* while a key is still wanted is the fix's
+observable; it now fires only for a registration that genuinely ages out at
+the search TTL. Unit-level A/B on identical state (`resolve_group` for the
+same key): old whole-replace → `None` (the 404), apply step → the provider
+union.
