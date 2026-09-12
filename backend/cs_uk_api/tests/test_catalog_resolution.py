@@ -51,7 +51,7 @@ def _item(pid: str, external: str, title: str) -> SearchResult:
 
 
 def _seed_sources(mapping: dict[str, dict[str, SearchResult]]) -> None:
-    catalog_state.sources_cache.set(catalog_state._SOURCES_KEY, mapping)
+    catalog_state.seed_group_sources(mapping)
 
 
 @pytest.fixture(autouse=True)
@@ -59,13 +59,13 @@ def isolate() -> Iterator[None]:
     saved = dict(PROVIDERS)
     PROVIDERS.clear()
     for cache in (
-        catalog_state.sources_cache,
         catalog_state.content_cache,
         catalog_state.gated_cache,
         catalog_state.blocklist_cache,
         catalog_state.home_cache,
     ):
         cache.clear()
+    catalog_state.reset_catalog_state()
     catalog_state.clear_playback()
     try:
         yield

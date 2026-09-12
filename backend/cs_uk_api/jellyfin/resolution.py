@@ -18,26 +18,20 @@ from __future__ import annotations
 
 import re
 import uuid
-from typing import Any, cast
+from typing import Any
 from urllib.parse import unquote
 
 from .. import row_kinds
 from ..catalog import (
-    card_for_group,
-    genres_for_group,
-    group_entries,
-    group_sources,
-    home_items_in_index_order,
+    group_resolution,
     is_favorite,
     is_played,
     peek_group_content,
     playback_positions,
-    poster_url_for_group,
     profiles,
     refresh_snapshot,
     snapshot,
-    view_row_type_for_group,
-    year_for_group,
+    snapshot_entries,
 )
 from ..models import HomeItem, HomeResponse, HomeRow
 from ..wire_identity import is_group_key
@@ -164,20 +158,14 @@ def _home_items() -> list[tuple[HomeRow, HomeItem]]:
 
     Deliberately does NOT trigger a home build — a read that would fan
     out to every provider belongs to the detail/list routes, not to
-    cheap snapshot lookups (poster, similar shelf).
+    cheap snapshot lookups (poster, similar shelf). Snapshot layer only:
+    a key a search registered has no card to shelve. The row kind rides
+    on each entry, so it is no longer looked up a second time.
     """
-    # Spec #364: index-backed, same order (row then item) as the
-    # snapshot helper it replaces; callers needing the row use
-    # group_entries() directly.
-    items = home_items_in_index_order()
-    # Reconstruct pairs via the index's row_type for callers that still
-    # expect (row, item); row title is not used by the remaining callers.
-    pairs: list[tuple[HomeRow, HomeItem]] = []
-    for it in items:
-        rt = view_row_type_for_group(it.group_key)
-        row = HomeRow(type=rt or "", title="", items=[it])
-        pairs.append((row, it))
-    return pairs
+    return [
+        (HomeRow(type=e.row_type or "", title="", items=[e.card]), e.card)
+        for e in snapshot_entries()
+    ]
 
 
 def _group_cards(group_key: str) -> list[Any]:
@@ -190,25 +178,26 @@ def _group_cards(group_key: str) -> list[Any]:
     sources so a search-opened item renders the same metadata its own
     search card surfaced.
     """
-    return group_sources(group_key)
+    res = group_resolution(group_key)
+    return list(res.sources) if res is not None else []
 
 
 def _genres_for_group(group_key: str) -> list[str]:
     """The card's genres for a ``g2:`` item, or [] (ticket #219, #364).
 
-    Delegates to the indexed seam — home-snapshot card wins, then any
-    card the resolution map holds (#233).
+    The one lookup already resolved card-then-sources (#233).
     """
-    return genres_for_group(group_key)
+    res = group_resolution(group_key)
+    return list(res.genres) if res is not None else []
 
 
 def _year_for_group(group_key: str) -> int | None:
     """The card's year for a ``g2:`` item, or None (ticket #220, #364).
 
-    Delegates to the indexed seam — home-snapshot card wins, then any
-    card the resolution map holds (#233).
+    The one lookup already resolved card-then-sources (#233).
     """
-    return year_for_group(group_key)
+    res = group_resolution(group_key)
+    return res.year if res is not None else None
 
 
 def _snapshot_counts() -> ItemCounts:
@@ -248,38 +237,39 @@ def _snapshot_counts() -> ItemCounts:
 def _is_series_key(group_key: str) -> bool:
     """True when the snapshot form for a group key is a series form.
 
-    Cheap home-snapshot lookup mirroring ``_card_for_group``: a group
-    whose card is a movie is a movie; everything else (series/anime/
-    cartoon/dorama forms) is a series for counting purposes.
+    A group whose card is a movie is a movie; everything else (series/
+    anime/cartoon/dorama forms) is a series for counting purposes.
     """
-    card = _card_for_group(group_key)
+    res = group_resolution(group_key)
+    card = res.card if res is not None else None
     if card is not None:
         return card.form != "movie"
     return not is_group_key(group_key) or True
 
 
 def _card_for_group(group_key: str) -> HomeItem | None:
-    """The snapshot card for a ``g2:`` item, or None (ticket #224, #364).
-
-    Delegates to the indexed seam.
-    """
-    return card_for_group(group_key)
+    """The snapshot card for a ``g2:`` item, or None (ticket #224, #364)."""
+    res = group_resolution(group_key)
+    return res.card if res is not None else None
 
 
 def _poster_for(item_id: str) -> str | None:
     """The canonical poster URL for a ``g2:`` item id, or None (spec #364).
 
-    Delegates to the indexed seam.
+    The snapshot card's poster — a search-only key has none (#233).
     """
-    return poster_url_for_group(item_id)
+    res = group_resolution(item_id)
+    if res is None or res.card is None:
+        return None
+    return res.card.poster
 
 
 def _view_id_for_item(item_id: str) -> str | None:
-    """The view id that surfaced a ``g2:`` item, from the index (spec #364)."""
-    row_type = view_row_type_for_group(item_id)
-    if row_type is None:
+    """The view id that surfaced a ``g2:`` item, from the one lookup (#364)."""
+    res = group_resolution(item_id)
+    if res is None or res.row_type is None:
         return None
-    return _view_id_for(row_type)
+    return _view_id_for(res.row_type)
 
 
 def _episode_wire_id(provider_id: str, episode_id: str) -> str:
@@ -344,9 +334,9 @@ def person_filmography_pairs(
     profile_store = profiles()
     pairs: list[tuple[HomeRow, HomeItem]] = []
     seen: set[str] = set()
-    for entry in group_entries().values():
-        it = cast(Any, entry).home_item
-        if it is None or it.group_key in seen:
+    for entry in snapshot_entries():
+        it = entry.card
+        if it.group_key in seen:
             continue
         profile = profile_store.get(it.group_key)
         if profile is None:
@@ -356,6 +346,6 @@ def person_filmography_pairs(
         if forms is not None and it.form not in forms:
             continue
         seen.add(it.group_key)
-        row = HomeRow(type=cast(Any, entry).row_type or "", title="", items=[it])
+        row = HomeRow(type=entry.row_type or "", title="", items=[it])
         pairs.append((row, it))
     return pairs

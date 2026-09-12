@@ -201,7 +201,7 @@ def test_cold_start_serves_persisted_snapshot_without_fanout(
     try:
         cs.clear_snapshot_store()
         cs.home_cache.clear()
-        cs.sources_cache.clear()
+        cs.reset_catalog_state()
         cs.PROVIDERS.clear()
         # The heal rebuild would run against the empty registry; stub it so
         # the test isolates the restore path.

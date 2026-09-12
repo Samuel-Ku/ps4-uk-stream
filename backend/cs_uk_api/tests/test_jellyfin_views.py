@@ -30,7 +30,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from cs_uk_api import catalog
-from cs_uk_api._catalog_state import content_cache, home_cache, sources_cache
+from cs_uk_api._catalog_state import (
+    content_cache,
+    home_cache,
+    reset_catalog_state,
+)
 from cs_uk_api.config import SETTINGS
 from cs_uk_api.models import ContentResponse, SearchResult, Section, Translation
 from cs_uk_api.providers import PROVIDERS
@@ -165,13 +169,13 @@ def _seed() -> _ViewsStub:
 
 @pytest.fixture(autouse=True)
 def _isolate() -> Iterator[None]:
-    """Snapshot + restore PROVIDERS and the home/sources caches so no
+    """Snapshot + restore PROVIDERS and the home/resolution caches so no
     real upstream calls leak into assertions (pattern from
     test_home.py / test_lazy_group_content.py)."""
     saved_providers = dict(PROVIDERS)
     PROVIDERS.clear()
     home_cache.clear()
-    sources_cache.clear()
+    reset_catalog_state()
     content_cache.clear()
     try:
         yield
@@ -179,7 +183,7 @@ def _isolate() -> Iterator[None]:
         PROVIDERS.clear()
         PROVIDERS.update(saved_providers)
         home_cache.clear()
-        sources_cache.clear()
+        reset_catalog_state()
         content_cache.clear()
 
 
@@ -1315,7 +1319,7 @@ def test_genre_view_id_survives_home_cache_invalidation(client: TestClient) -> N
 
     # Simulate the profile-warm invalidation: cache cleared, snapshot gone.
     home_cache.clear()
-    sources_cache.clear()
+    reset_catalog_state()
     items = _items(client, genre_view["Id"])
     assert {i["Name"] for i in items} == {"Фільм А", "Фільм Б"}
 

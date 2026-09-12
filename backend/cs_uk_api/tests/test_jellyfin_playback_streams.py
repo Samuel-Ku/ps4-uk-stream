@@ -26,7 +26,12 @@ from typing import Any, cast
 import pytest
 from fastapi.testclient import TestClient
 
-from cs_uk_api._catalog_state import blocklist_cache, content_cache, home_cache, sources_cache
+from cs_uk_api._catalog_state import (
+    blocklist_cache,
+    content_cache,
+    home_cache,
+    reset_catalog_state,
+)
 from cs_uk_api.config import SETTINGS
 from cs_uk_api.models import ContentResponse, SearchResult, StreamResponse, Translation
 from cs_uk_api.providers import PROVIDERS
@@ -114,15 +119,17 @@ def client() -> TestClient:
 def _isolate() -> Any:
     saved = dict(PROVIDERS)
     PROVIDERS.clear()
-    for cache in (home_cache, sources_cache, content_cache, blocklist_cache):
+    for cache in (home_cache, content_cache, blocklist_cache):
         cache.clear()
+    reset_catalog_state()
     try:
         yield
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved)
-        for cache in (home_cache, sources_cache, content_cache, blocklist_cache):
+        for cache in (home_cache, content_cache, blocklist_cache):
             cache.clear()
+        reset_catalog_state()
 
 
 def _warm_movie_gk(client: TestClient) -> str:

@@ -38,8 +38,8 @@ from cs_uk_api._catalog_state import (
     content_cache,
     gated_cache,
     home_cache,
+    reset_catalog_state,
     search_cache,
-    sources_cache,
 )
 from cs_uk_api.config import SETTINGS
 from cs_uk_api.models import ContentResponse, Episode, SearchResult, Season, Translation
@@ -175,12 +175,12 @@ def _isolate() -> Iterator[None]:
     for cache in (
         search_cache,
         home_cache,
-        sources_cache,
         content_cache,
         blocklist_cache,
         gated_cache,
     ):
         cache.clear()
+    reset_catalog_state()
     try:
         yield
     finally:
@@ -189,12 +189,12 @@ def _isolate() -> Iterator[None]:
         for cache in (
             search_cache,
             home_cache,
-            sources_cache,
             content_cache,
             blocklist_cache,
             gated_cache,
         ):
             cache.clear()
+        reset_catalog_state()
 
 
 @pytest.fixture()

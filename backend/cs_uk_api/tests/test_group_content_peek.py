@@ -30,11 +30,11 @@ import pytest
 
 from cs_uk_api import _catalog_state as catalog_state
 from cs_uk_api._catalog_state import (
-    _SOURCES_KEY,
     blocklist_cache,
     content_cache,
     gated_cache,
-    sources_cache,
+    reset_catalog_state,
+    seed_group_sources,
 )
 from cs_uk_api._catalog_state import (
     resolution as resolution_mod,
@@ -80,18 +80,20 @@ def _content(pid: str, ext: str, media_type: str = "series") -> ContentResponse:
 
 
 def _seed_sources(gk: str, *items: SearchResult) -> None:
-    sources_cache.set(_SOURCES_KEY, {gk: {it.provider: it for it in items}})
+    seed_group_sources({gk: {it.provider: it for it in items}})
 
 
 @pytest.fixture(autouse=True)
 def _isolate() -> Iterator[None]:
-    for cache in (sources_cache, content_cache, gated_cache, blocklist_cache):
+    for cache in (content_cache, gated_cache, blocklist_cache):
         cache.clear()
+    reset_catalog_state()
     try:
         yield
     finally:
-        for cache in (sources_cache, content_cache, gated_cache, blocklist_cache):
+        for cache in (content_cache, gated_cache, blocklist_cache):
             cache.clear()
+        reset_catalog_state()
 
 
 def test_peek_returns_cached_content() -> None:

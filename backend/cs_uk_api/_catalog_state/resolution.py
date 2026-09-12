@@ -1,7 +1,7 @@
 """Group-key + content resolution machinery (spec #309 T5).
 
 The resolution half of the catalog state: a ``g2:`` group key resolves
-to its ``{provider: SearchResult}`` map (``sources_cache``), a played
+to its ``{provider: SearchResult}`` map, a played
 episode's wire id resolves to its merged group, and a group key resolves
 to ONE provider's content detail — all through the same content /
 blocklist / gated stores the native routes use. Also home here: the
@@ -217,7 +217,7 @@ def group_key_for_external(composite: str) -> str | None:
     episode that is the provider-scoped wire id
     (``ufdub:dorama-408-...:s1e1``), whose ``provider:external`` prefix
     identifies the merged group (ticket #214). Built from the same
-    ``sources_cache`` map ``resolve_group`` reads.
+    resolution map ``resolve_group`` reads.
 
     Ticket #234: the episode prefix is NOT always the card's composite
     id. uakino's episode wire id carries only the bare numeric news id
@@ -525,7 +525,7 @@ def register_search_groups(groups: Sequence[SearchGroup]) -> None:
 
     Ticket #106: the Jellyfin facade's search must open in the #105
     detail surface, and ``resolve_group_content`` only knows keys the
-    resolution map (``sources_cache``) carries. A search covers the whole
+    resolution map carries. A search covers the whole
     catalog — most results are NOT in the 30-min home snapshot — so the
     facade registers each merged group's provider union under EVERY
     member key it holds, the same shape ``_build_sources_map`` stores for

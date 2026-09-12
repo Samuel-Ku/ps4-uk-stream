@@ -21,6 +21,7 @@ import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from enum import Enum
 from typing import cast
 
 from .. import config as _config
@@ -110,10 +111,107 @@ _SOURCES_KEY = "home:sources:v1"
 
 @dataclass(frozen=True)
 class GroupIndexEntry:
-    """One indexed group key: the home row's item + its row kind."""
+    """One indexed group key: the home row's item + its row kind.
+
+    ``home_item`` is None for a key that only a SEARCH registered — the
+    registered layer of the catalog state (ADR-0010). Routes never read
+    this shape: they read ``GroupResolution`` below, so the two layers
+    cannot be mixed by accident.
+    """
 
     home_item: HomeItem | None
     row_type: str | None
+
+
+class GroupOrigin(str, Enum):
+    """Which layer of the catalog state carries a group key (ADR-0010)."""
+
+    #: A home-snapshot row carries it — the card and row kind are real.
+    SNAPSHOT = "snapshot"
+    #: Only a search registered it. It has sources but no card, and it
+    #: lives on the search TTL that created it, not the snapshot cycle.
+    REGISTERED = "registered"
+
+
+@dataclass(frozen=True)
+class SnapshotEntry:
+    """One distinct home-snapshot card with the row kind that surfaced it.
+
+    The snapshot layer's iteration unit: the row kind rides along, so a
+    caller (counts, person filmography, the similar shelf, the genre
+    rails) never looks it up a second time.
+    """
+
+    card: HomeItem
+    row_type: str | None
+
+
+@dataclass(frozen=True)
+class GroupResolution:
+    """THE typed answer for one group key — the whole read side, once.
+
+    Before this value the read side asked the index for a card, then the
+    resolution map for sources, then the map again for a year or a genre
+    list, and every caller had to know that order. One lookup now answers
+    all of it, and ``origin`` says which layer answered.
+
+    ``card`` and ``row_type`` are the SNAPSHOT layer's (ADR-0010: the
+    snapshot wins a key both layers hold). ``sources`` is the resolution
+    map's ordered card list — first-seen provider order, the same order
+    the home row's chip strip shows — which is the union of the layers,
+    because a registration is merged into the map at registration time.
+    ``year``/``genres`` keep their card-then-sources fallback.
+    """
+
+    group_key: str
+    origin: GroupOrigin
+    card: HomeItem | None
+    row_type: str | None
+    sources: tuple[SearchResult, ...]
+    year: int | None
+    genres: tuple[str, ...]
+
+    @property
+    def providers(self) -> tuple[str, ...]:
+        """Provider ids in first-seen order (the chip strip).
+
+        The snapshot path echoes the CARD's own provider list, not the
+        map's provider keys — the wire contract ``GroupContentResponse``
+        has always had, preserved deliberately for a shared key where a
+        registration added providers the snapshot row does not list.
+        """
+        if self.card is not None:
+            return tuple(self.card.providers)
+        return tuple(s.provider for s in self.sources)
+
+    def source(self, provider: str) -> SearchResult | None:
+        """One provider's card in this group, or None (source-switch routes)."""
+        for s in self.sources:
+            if s.provider == provider:
+                return s
+        return None
+
+
+def _first_year(card: HomeItem | None, sources: tuple[SearchResult, ...]) -> int | None:
+    """The card's year, else the first source carrying one (ticket #233)."""
+    if card is not None and card.year is not None:
+        return card.year
+    for s in sources:
+        if s.year is not None:
+            return s.year
+    return None
+
+
+def _first_genres(
+    card: HomeItem | None, sources: tuple[SearchResult, ...]
+) -> tuple[str, ...]:
+    """The card's genres, else the first source carrying any (ticket #233)."""
+    if card is not None and card.genres:
+        return tuple(card.genres)
+    for s in sources:
+        if s.genres:
+            return tuple(s.genres)
+    return ()
 
 
 class CatalogState:
@@ -148,12 +246,38 @@ class CatalogState:
     # ----------------------------------------------------------------- reads
 
     def entry(self, group_key: str) -> GroupIndexEntry | None:
-        """Indexed entry for a group key, or None."""
+        """Indexed entry for a group key, or None.
+
+        The owner's own introspection seam (a test asserting what the
+        index carries), NOT a read accessor: routes answer through
+        ``group_resolution`` / ``snapshot_entries``.
+        """
         return self._index.get(group_key)
 
-    def entries(self) -> Mapping[str, GroupIndexEntry]:
-        """Read-only view of the index (insertion order = row then item)."""
-        return self._index
+    def group_resolution(self, group_key: str) -> GroupResolution | None:
+        """One typed answer for a group key, or None when no layer holds it.
+
+        Reads both layers ONCE — the index entry and the resolution map —
+        so no caller has to know that order, and reports which layer
+        answered (``origin``). A key that only a search registered has no
+        card and no row kind, but does have sources; a key both layers
+        hold answers from the snapshot and carries the merged sources.
+        """
+        entry = self._index.get(group_key)
+        per_provider = self.sources().get(group_key)
+        if entry is None and per_provider is None:
+            return None
+        card = entry.home_item if entry is not None else None
+        sources = tuple(per_provider.values()) if per_provider else ()
+        return GroupResolution(
+            group_key=group_key,
+            origin=GroupOrigin.SNAPSHOT if card is not None else GroupOrigin.REGISTERED,
+            card=card,
+            row_type=entry.row_type if entry is not None else None,
+            sources=sources,
+            year=_first_year(card, sources),
+            genres=_first_genres(card, sources),
+        )
 
     def sources(self) -> dict[str, dict[str, SearchResult]]:
         """The current resolution map (``group_key -> {provider: card}``).
@@ -167,17 +291,25 @@ class CatalogState:
             dict[str, dict[str, SearchResult]], sources_cache.get(_SOURCES_KEY) or {}
         )
 
-    def home_items_in_index_order(self) -> list[HomeItem]:
-        """Every distinct HomeItem in index insertion order (row then item)."""
+    def snapshot_entries(self) -> tuple[SnapshotEntry, ...]:
+        """The SNAPSHOT layer's distinct cards, in row-then-item order.
+
+        The iteration surface (ADR-0010): counts, person filmography, the
+        similar shelf and the genre rails walk snapshot content only, and
+        this returns exactly that layer. A key a search registered has no
+        card and cannot appear here, so a route cannot mix the layers by
+        forgetting to filter — the pre-ADR-0010 index handed out entries
+        with ``home_item=None`` and every site re-checked for None.
+        """
         seen: set[str] = set()
-        out: list[HomeItem] = []
+        out: list[SnapshotEntry] = []
         for ent in self._index.values():
-            it = ent.home_item
-            if it is None or it.group_key in seen:
+            card = ent.home_item
+            if card is None or card.group_key in seen:
                 continue
-            seen.add(it.group_key)
-            out.append(it)
-        return out
+            seen.add(card.group_key)
+            out.append(SnapshotEntry(card=card, row_type=ent.row_type))
+        return tuple(out)
 
     # -------------------------------------------------- the one apply step
 
@@ -294,6 +426,47 @@ class CatalogState:
         home_cache.clear()
         row_deep_cache.clear()
 
+    # -------------------------------------------------------- test seams (#330)
+    #
+    # The suite's two handles on the owned derived state. They exist so a
+    # test never reaches for ``sources_cache`` (or its cache key) again:
+    # the map, the index and the registrations are ONE owned value, and a
+    # test that poked the map alone left the index describing a catalog
+    # the map no longer had — the exact divergence ADR-0010 prevents.
+
+    def seed_sources(
+        self, mapping: Mapping[str, Mapping[str, SearchResult]]
+    ) -> None:
+        """Install a pre-built resolution map (test seed).
+
+        The ``{group_key: {provider: card}}`` shape a home build or a
+        search registration produces, handed over whole so a test can
+        exercise resolution without a provider fan-out or a home build.
+
+        Writes the map ONLY: a seeded key is neither a snapshot card nor
+        a registration, so a read through ``group_resolution`` sees it
+        with the REGISTERED origin, no row kind, and no index entry —
+        which is what a bare ``sources_cache`` write did before this
+        seam existed.
+        """
+        sources_cache.set(
+            _SOURCES_KEY,
+            {key: dict(per_provider) for key, per_provider in mapping.items()},
+        )
+
+    def reset(self) -> None:
+        """Drop the owned derived state: map, index, registrations.
+
+        The reset seam, and the honest meaning of "cold": the three
+        pieces move together, so a test cannot empty the map and leave
+        the index behind. Called by conftest before every test (beside a
+        fresh owner) instead of clearing ``sources_cache`` in a loop of
+        unrelated stores.
+        """
+        sources_cache.clear()
+        self._index.clear()
+        self._registrations.clear()
+
     # ------------------------------------------------------------ internals
 
     def _live_registrations(self) -> dict[str, dict[str, SearchResult]]:
@@ -363,19 +536,42 @@ def install_catalog_state(state: CatalogState) -> None:
     _CATALOG = state
 
 
+def reset_catalog_state() -> None:
+    """Drop the owned derived state: the map, the index, the registrations.
+
+    The suite's reset seam. Prefer this to clearing ``sources_cache``:
+    the three pieces are one owned value, and emptying only the map is
+    what let the layers disagree before ADR-0010 (issue #420).
+    """
+    _CATALOG.reset()
+
+
+def seed_group_sources(
+    mapping: Mapping[str, Mapping[str, SearchResult]],
+) -> None:
+    """Install a pre-built resolution map (the suite's seed seam).
+
+    The one way a test hands the owner group sources it did not build —
+    the same shape ``register_search_groups`` writes, without the search
+    bookkeeping. See ``CatalogState.seed_sources`` for what it does and
+    does not install.
+    """
+    _CATALOG.seed_sources(mapping)
+
+
 def get_group_entry(group_key: str) -> GroupIndexEntry | None:
     """Indexed entry for a group key, or None."""
     return _CATALOG.entry(group_key)
 
 
-def group_index_entries() -> Mapping[str, GroupIndexEntry]:
-    """Read-only view of the index (iteration sites preserve row order)."""
-    return _CATALOG.entries()
+def group_resolution(group_key: str) -> GroupResolution | None:
+    """THE process-wide group lookup (ADR-0010): one typed answer, or None."""
+    return _CATALOG.group_resolution(group_key)
 
 
-def all_home_cards_in_index_order() -> list[HomeItem]:
-    """Every distinct HomeItem in index insertion order (row then item)."""
-    return _CATALOG.home_items_in_index_order()
+def snapshot_entries() -> tuple[SnapshotEntry, ...]:
+    """The process-wide snapshot layer's entries, for iteration."""
+    return _CATALOG.snapshot_entries()
 
 
 # ---------------------------------------------------------- profiles (#252)
