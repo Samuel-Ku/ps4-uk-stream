@@ -37,6 +37,7 @@ from ._stores import (
     _set_group_index,
     _snapshot_store,
     deep_page_cache,
+    group_index_entries,
     home_cache,
     playback_entries,
     recent_history_entries,
@@ -341,6 +342,20 @@ def _cache_home(
     # sources map; repopulated on persisted cold start; merged
     # incrementally in register_search_groups — single mutation site
     # so map and index cannot diverge.
+    #
+    # Both stores are replaced WHOLE, so every key a search registered
+    # (an index entry with no home card) disappears on this line. That is
+    # the documented contract — register_search_groups says a registered
+    # key "expires with the next snapshot refresh" — but the drop used to
+    # be invisible, which is why issue #420 (a search result 404-ing at
+    # /Items/{id} seconds after it resolved) took a journal reconstruction
+    # to explain. Counting it here makes the window measurable.
+    dropped = sum(1 for e in group_index_entries().values() if e.home_item is None)
+    if dropped:
+        log.info(
+            "home rebuild drops %d search-registered group key(s) from resolution",
+            dropped,
+        )
     _populate_group_index(resp)
     _snapshot_store().save(resp, sources)
     return resp
