@@ -145,6 +145,27 @@ cd /home/<user>/<repo>/backend && .venv/bin/python \
 journalctl -u cs-uk-api.service -f
 ```
 
+### Smoke test (one command, non-zero exit when anything breaks)
+
+`deploy/smoke.sh` drives the four flows a first user hits — handshake,
+views, browse, and a torrent-lane play (search → detail → PlaybackInfo →
+stream bytes → seek) — and is the fastest way to tell a working host from
+a broken one after an update or a restart:
+
+```bash
+backend/deploy/smoke.sh              # all four flows
+backend/deploy/smoke.sh --skip-lane  # host with no engine
+backend/deploy/smoke.sh; echo $?     # 0 = every flow passed, 1 = broken, 2 = usage
+```
+
+It writes nothing into the repo and purges no cache — safe to run against
+a stack someone is using. The play flow tries up to three search hits and
+passes on the first that yields a MediaSource, because a title can be
+listed by the lane yet carry no torrents (an upstream gap, not a broken
+deployment); each skipped candidate is reported with its reason. Point it
+at another host with `CS_UK_API_URL` / `CS_UK_ENGINE_URL`; the script
+header lists the rest of the knobs.
+
 On the PS4, add a Switchfin server at `http://<host-ip>:8003` (any
 username/password completes the accept-any handshake).
 
