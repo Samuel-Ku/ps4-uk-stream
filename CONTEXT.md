@@ -263,6 +263,12 @@ catalog is movies/series/episodes — there is no danmaku surface and no
 music/playlist content, so the client's related screens stay quietly
 empty rather than erroring.
 
+**Surface home (decided 2026-09-12).** The Dashboard surface is its own
+conversation — `jellyfin/dashboard.py` — alongside `identity`,
+`handshake`, `image_routes` and `userdata`. `GET /Items/{id}/Download`
+is defined by this surface but lives in `delivery.py`, where the bytes
+are, so a surface's routes and its module are not always the same set.
+
 ### Upstream drift monitor (spec #285)
 
 A standalone nightly probe (``scripts/drift_monitor.py``, modules in
@@ -553,6 +559,15 @@ build with a logged warning, never a crash.
 | Restart | survives (cold start answers instantly, heals in background) |
 | Wipe | `rm ~/.cache/cs-uk-api/home-snapshot.json` (or `CS_UK_SNAPSHOT_PATH`) |
 
+### Catalog snapshot owner (ADR-0010)
+
+The snapshot, its group resolution map, the group index and the deep-row pools are **one owned value**, not four stores that happen to be written together. A replacement — the persisted cold start above, or a finished rebuild — goes through a **single apply step**, and that step decides what survives:
+
+- **Search registrations are carried forward.** Keys a search registered are merged into the new map and index rather than dropped, and they expire on the **search** TTL that created them — *not* on the snapshot's cycle. A snapshot replacement is an internal event and must not shorten the promise a search made to the client (issue #420 is what happens when it does).
+- **The derived state is not written elsewhere.** Readers go through the owner; a module that appears to need a second write path is a sign the owner's interface is missing an operation.
+
+This does not change *when* a client sees fresh content — the persisted snapshot still serves at any age with a rebuild behind it, and the TTL table above stands. It changes who owns the writes and what survives them.
+
 ### Cache key format
 
 Flat, colon-joined `{namespace}:{discriminants…}` strings, one store per namespace:
@@ -574,10 +589,12 @@ Rules:
 
 ### Invalidation
 
-**TTL-only.** There is no flush endpoint, no event-driven invalidation, no manual purge API.
+**TTL-only for provider responses.** There is no flush endpoint, no manual purge API, and no invalidation driven by an upstream event.
 
 - A **process restart is the global flush**, and it is free because every store is in-memory.
 - Providers are scraped websites — there are no webhooks and no push channel, so event-driven invalidation is not merely undesirable, it is unavailable.
+
+**One sanctioned exception (ADR-0010).** The **catalog snapshot** is additionally invalidated on purpose, in exactly two places, both in the warm path: the profile warm (a newly added taste profile must show up in the rows) and the LLM taste refresh (same reason — the rows are built from the active profile). Both go through the snapshot owner; no module clears the snapshot behind the owner's back. This is why a live search registration needed a rule at all: the snapshot is replaced far more often than its 30-minute TTL suggests.
 - The poster **disk** layers and the resume state file are the only state that survives a restart; `rm -rf ~/.cache/cs-uk-api/posters` flushes the posters (opaque bytes, never need one for correctness), and `rm ~/.cache/cs-uk-api/playback.json` (or `CS_UK_RESUME_PATH`) wipes the resume shelf.
 
 ### Versioning
