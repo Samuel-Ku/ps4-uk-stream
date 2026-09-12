@@ -343,26 +343,27 @@ def _cache_home(
     # incrementally in register_search_groups — single mutation site
     # so map and index cannot diverge.
     #
-    # Both stores are replaced WHOLE, so every key a search registered
-    # (an index entry with no home card) disappears on this line. That is
-    # the documented contract — register_search_groups says a registered
-    # key "expires with the next snapshot refresh" — but the drop used to
-    # be invisible, which is why issue #420 (a search result 404-ing at
-    # /Items/{id} seconds after it resolved) took a journal reconstruction
-    # to explain. Counting it here makes the window measurable.
-    dropped = sum(1 for e in group_index_entries().values() if e.home_item is None)
-    if dropped:
-        log.info(
-            "home rebuild drops %d search-registered group key(s) from resolution",
-            dropped,
-        )
     _populate_group_index(resp)
     _snapshot_store().save(resp, sources)
     return resp
 
 
 def _populate_group_index(home: HomeResponse) -> None:
-    """(Re)build the group index from a HomeResponse's rows."""
+    """(Re)build the group index from a HomeResponse's rows.
+
+    Replaces the index WHOLE, so every key a search registered — an entry
+    with no home card — is dropped by this call. That is the documented
+    contract (``register_search_groups``: a registered key "expires with
+    the next snapshot refresh"), but the drop used to be invisible, which
+    is why issue #420 (a search result 404-ing at ``/Items/{id}`` seconds
+    after it resolved) took a journal reconstruction to explain.
+
+    Instrumented HERE rather than at either caller on purpose: the two
+    callers are ``_cache_home`` (a finished rebuild) and ``load_home``'s
+    persisted cold-start path, and the persisted path runs FIRST — an
+    instrument that only watched the rebuild reported nothing at all when
+    the 404 was reproduced live on 2026-09-12.
+    """
     entries: dict[str, GroupIndexEntry] = {}
     for row in home.rows:
         for it in row.items:
@@ -370,6 +371,12 @@ def _populate_group_index(home: HomeResponse) -> None:
             for k in keys:
                 if k not in entries:
                     entries[k] = GroupIndexEntry(home_item=it, row_type=row.type)
+    dropped = sum(1 for e in group_index_entries().values() if e.home_item is None)
+    if dropped:
+        log.info(
+            "group index replaced: dropped %d search-registered key(s) (issue #420 window)",
+            dropped,
+        )
     _set_group_index(entries)
 
 
