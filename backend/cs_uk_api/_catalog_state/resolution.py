@@ -40,14 +40,12 @@ from ..models import (
 from ..providers import PROVIDERS
 from ..providers.base import ProviderError
 from ..uakino_browser import get_session
-from ..wire_identity import is_group_key, provider_union, split_episode_tail
+from ..wire_identity import is_group_key, split_episode_tail
 from ._stores import (
-    _SOURCES_KEY,
-    _merge_search_keys,
     blocklist_cache,
+    catalog_state,
     content_cache,
     gated_cache,
-    sources_cache,
 )
 
 log = logging.getLogger("cs_uk_api.catalog_state.resolution")
@@ -199,19 +197,16 @@ def resolve_group(group_key: str) -> dict[str, SearchResult] | None:
     ``None`` when the key is absent (cold cache → the caller yields a
     404 "item unavailable", which Jellyfin clients tolerate).
     """
-    per_provider: dict[str, dict[str, SearchResult]] = cast(
-        dict[str, dict[str, SearchResult]], sources_cache.get(_SOURCES_KEY) or {}
-    )
-    entry = per_provider.get(group_key)
+    entry = catalog_state().sources().get(group_key)
     if entry is None:
-        # Absent means a cold cache OR a rebuild dropped it: a snapshot
-        # rebuild replaces the map whole and search registrations do not
-        # survive it (issue #420). Debug-level, because an unknown key is
-        # routine and the callers already log their own 404 verdict.
-        log.debug(
-            "group resolution miss key=%s (cold cache, or dropped by a rebuild)",
-            group_key,
-        )
+        # Absent means a cold cache: no snapshot row carries the key and no
+        # search ever registered it. Since ADR-0010 a rebuild is no longer
+        # a way to lose an actionable key — registrations ride the apply
+        # step forward and lapse on the search TTL (issue #420 was the
+        # version of this comment that had to say otherwise). Debug-level,
+        # because an unknown key is routine and the callers already log
+        # their own 404 verdict.
+        log.debug("group resolution miss key=%s (cold cache)", group_key)
     return entry
 
 
@@ -233,9 +228,7 @@ def group_key_for_external(composite: str) -> str | None:
     as the ``{section}:{item_id}-{slug}`` shape of one of the group's
     cards.
     """
-    per_provider: dict[str, dict[str, SearchResult]] = cast(
-        dict[str, dict[str, SearchResult]], sources_cache.get(_SOURCES_KEY) or {}
-    )
+    per_provider = catalog_state().sources()
     for group_key, providers in per_provider.items():
         for result in providers.values():
             if result.id == composite:
@@ -537,42 +530,11 @@ def register_search_groups(groups: Sequence[SearchGroup]) -> None:
     facade registers each merged group's provider union under EVERY
     member key it holds, the same shape ``_build_sources_map`` stores for
     home rows. First-seen provider order is preserved; providers the map
-    already knows are left untouched. The whole map keeps the home
-    cache's TTL (ADR-0003), so a registered key expires with the next
-    snapshot refresh.
+    already knows are left untouched.
+
+    The write itself belongs to the catalog snapshot owner (ADR-0010): it
+    updates the resolution map and the group index in one step and
+    records the keys with the SEARCH TTL, so a snapshot replacement
+    carries them forward instead of dropping them (issue #420).
     """
-    if not groups:
-        return
-    existing: dict[str, dict[str, SearchResult]] = cast(
-        dict[str, dict[str, SearchResult]], sources_cache.get(_SOURCES_KEY) or {}
-    )
-    changed = False
-    # All keys the search wants to register — merged into the index
-    # alongside the map at the single mutation site.
-    all_search_keys: list[str] = []
-    for g in groups:
-        all_search_keys.extend(g.member_keys or [g.group_key])
-    for g in groups:
-        union = provider_union(g.sources)
-        keys = g.member_keys or [g.group_key]
-        for key in keys:
-            current = existing.get(key)
-            if current is None:
-                existing[key] = dict(union)
-                changed = True
-            else:
-                merged = dict(current)
-                for pid, item in union.items():
-                    merged.setdefault(pid, item)
-                if merged != current:
-                    existing[key] = merged
-                    changed = True
-    if changed:
-        # Re-set refreshes the TTL on the whole map (ADR-0003): a search
-        # extends the snapshot's life, never shortens it.
-        sources_cache.set(_SOURCES_KEY, existing)
-        # Merge incrementally into the index beside sources_cache; entries
-        # carry no TTL of their own and die exactly with the home/sources
-        # lifecycle (rebuild = clear+rebuild). Only new keys create a
-        # placeholder (home_item None); existing home entries stay intact.
-        _merge_search_keys(all_search_keys)
+    catalog_state().register_search(groups)

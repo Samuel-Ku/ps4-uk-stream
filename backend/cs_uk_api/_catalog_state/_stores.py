@@ -17,16 +17,22 @@ internal modules import the store objects they need from here directly.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import logging
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import cast
 
 from .. import config as _config
 from ..cache import TtlCache
-from ..models import HomeItem
+from ..models import HomeItem, HomeResponse, SearchGroup, SearchResult
 from ..recommend import ItemProfile
 from ..resume_store import ResumeStore
 from ..snapshot_store import SnapshotStore
 from ..user_state import UserStateStore
+from ..wire_identity import provider_union
+
+log = logging.getLogger("cs_uk_api.catalog_state.stores")
 
 #: v3 (issue #70): the merged home view — «Новинки» + «Популярні зараз»
 #: + the five type rows — is a curated snapshot, refreshed every 30 min.
@@ -85,70 +91,282 @@ _HOME_KEY = "home:v1"
 _SOURCES_KEY = "home:sources:v1"
 
 
-# ----------------------------------------------------------------- index (#364)
+# ------------------------------------------------- catalog snapshot (ADR-0010)
 #
-# Locality, not performance (LAN, single household): the home snapshot's
-# rows were scanned O(rows×items) at ~10 call sites differing only in
-# return value. The index answers them from one truth source beside
-# sources_cache, so map and index cannot diverge — single mutation site
-# (register_search_groups + _cache_home). No TTL of its own; lives and
-# dies with the home/sources lifecycle (rebuild = clear+rebuild).
+# The catalog's derived state — the group index beside sources_cache, and
+# the search registrations that must survive a snapshot replacement — is
+# owned by ONE value, ``CatalogState``. ``apply_snapshot`` is the single
+# writer of the map + index pair (the persisted cold start and a finished
+# rebuild both go through it), so the two cannot diverge; the two
+# sanctioned clears in the warm path go through ``invalidate``.
+#
+# Why it exists: issue #420. A group key returned by search answered
+# ``/Items/{id}`` with 404 seconds after it had resolved, because a
+# snapshot replacement replaced the map and index WHOLE and silently
+# dropped the registration. Measured on the deployment: 16 keys
+# registered, the next replacement dropped exactly 16, the read 404-ed.
+# ADR-0010 records the decision.
 
 
 @dataclass(frozen=True)
 class GroupIndexEntry:
-    """One indexed g2: group: the home row's item + its row kind."""
+    """One indexed group key: the home row's item + its row kind."""
 
     home_item: HomeItem | None
     row_type: str | None
 
 
-_group_index: dict[str, GroupIndexEntry] = {}
+class CatalogState:
+    """The catalog snapshot's owned derived state (ADR-0010).
+
+    Owns the two pieces that must move together: the group index beside
+    ``sources_cache`` and the live search registrations. The snapshot
+    rows and the resolution map themselves stay in the shared TTL caches
+    above (ADR-0003 owns their TTLs) — this object owns *who writes
+    them* and *what survives a replacement*.
+
+    ``now`` is the injectable clock (the ``ResumeStore`` idiom) so tests
+    drive registration expiry deterministically instead of sleeping.
+    """
+
+    def __init__(
+        self,
+        *,
+        search_ttl_s: int | None = None,
+        now: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._index: dict[str, GroupIndexEntry] = {}
+        #: group key -> (expires_at, provider union) for keys a SEARCH
+        #: created. They outlive a snapshot replacement and expire on the
+        #: search TTL that created them, never on the snapshot's cycle.
+        self._registrations: dict[str, tuple[float, dict[str, SearchResult]]] = {}
+        self._search_ttl_s = (
+            _config.SETTINGS.cache_search_s if search_ttl_s is None else search_ttl_s
+        )
+        self._now = now
+
+    # ----------------------------------------------------------------- reads
+
+    def entry(self, group_key: str) -> GroupIndexEntry | None:
+        """Indexed entry for a group key, or None."""
+        return self._index.get(group_key)
+
+    def entries(self) -> Mapping[str, GroupIndexEntry]:
+        """Read-only view of the index (insertion order = row then item)."""
+        return self._index
+
+    def sources(self) -> dict[str, dict[str, SearchResult]]:
+        """The current resolution map (``group_key -> {provider: card}``).
+
+        Read THROUGH the owner (ADR-0010): the map's cache key and its
+        empty-vs-absent handling stay in this layer, so resolution reads
+        and writes it through one interface instead of reaching for the
+        cache's key itself.
+        """
+        return cast(
+            dict[str, dict[str, SearchResult]], sources_cache.get(_SOURCES_KEY) or {}
+        )
+
+    def home_items_in_index_order(self) -> list[HomeItem]:
+        """Every distinct HomeItem in index insertion order (row then item)."""
+        seen: set[str] = set()
+        out: list[HomeItem] = []
+        for ent in self._index.values():
+            it = ent.home_item
+            if it is None or it.group_key in seen:
+                continue
+            seen.add(it.group_key)
+            out.append(it)
+        return out
+
+    # -------------------------------------------------- the one apply step
+
+    def apply_snapshot(
+        self,
+        home: HomeResponse,
+        sources: Mapping[str, dict[str, SearchResult]] | None,
+        *,
+        persist: bool = False,
+    ) -> None:
+        """Install a snapshot: rows, resolution map, index. THE apply step.
+
+        The only writer of the map + index pair, called by both sites that
+        replace the derived state (the persisted cold start and a finished
+        rebuild). Live search registrations are merged into the NEW map
+        and index before either is installed — snapshot content wins
+        first-seen — so a rebuild can no longer drop a key a client just
+        opened (ADR-0010). The deep-row pools are anchored to the previous
+        snapshot's page-1 items and are always dropped.
+
+        ``sources`` is None for a persisted snapshot written before the
+        resolution map was persisted: the rows and the index are installed
+        and the map is left alone (the pre-#269 cold-start shape).
+        ``persist`` writes the versioned snapshot file — a rebuild only,
+        since the cold start is reading it.
+        """
+        merged: dict[str, dict[str, SearchResult]] | None = None
+        if sources is not None:
+            merged = {key: dict(per_provider) for key, per_provider in sources.items()}
+        entries = self._entries_from_rows(home)
+        for key, per_provider in self._live_registrations().items():
+            if merged is not None:
+                target = merged.setdefault(key, {})
+                for pid, card in per_provider.items():
+                    target.setdefault(pid, card)
+            entries.setdefault(key, GroupIndexEntry(home_item=None, row_type=None))
+        home_cache.set(_HOME_KEY, home)
+        if merged is not None:
+            sources_cache.set(_SOURCES_KEY, merged)
+        self._replace_index(entries)
+        row_deep_cache.clear()
+        if persist:
+            _snapshot_store().save(home, merged or {})
+
+    # --------------------------------------------- search registration (#106)
+
+    def register_search(self, groups: Sequence[SearchGroup]) -> None:
+        """Fold search-group unions into the map + index, and remember them.
+
+        Ticket #106: the facade's search must open in the #105 detail
+        surface, and only keys the resolution map carries resolve. A search
+        covers the whole catalog — most results are NOT in the home
+        snapshot — so each merged group's provider union is registered
+        under every member key, first-seen provider order preserved and
+        providers the map already knows left untouched.
+
+        Each key is ALSO recorded here with the search TTL (ADR-0010).
+        That record is what ``apply_snapshot`` merges into a replacement,
+        so the promise a search makes — your results stay actionable for
+        as long as the results themselves are cached — survives a rebuild.
+        Re-registering a key extends its TTL, never shortens it.
+        """
+        if not groups:
+            return
+        existing = self.sources()
+        expires_at = self._now() + self._search_ttl_s
+        changed = False
+        for group in groups:
+            union = provider_union(group.sources)
+            for key in group.member_keys or [group.group_key]:
+                current = existing.get(key)
+                if current is None:
+                    existing[key] = dict(union)
+                    changed = True
+                else:
+                    merged = dict(current)
+                    for pid, card in union.items():
+                        merged.setdefault(pid, card)
+                    if merged != current:
+                        existing[key] = merged
+                        changed = True
+                if key not in self._index:
+                    self._index[key] = GroupIndexEntry(home_item=None, row_type=None)
+                    changed = True
+                self._registrations[key] = (expires_at, dict(existing[key]))
+        if changed:
+            # Re-set refreshes the whole map's TTL (ADR-0003): a search
+            # extends the snapshot's life, never shortens it.
+            sources_cache.set(_SOURCES_KEY, existing)
+
+    # ------------------------------------------------------ sanctioned clear
+
+    def invalidate(self, *, reason: str) -> None:
+        """Drop the cached snapshot so the next read rebuilds it.
+
+        A SANCTIONED event-driven invalidation (ADR-0010): the rows are
+        derived from the active taste profile, so a warm profile landing (or
+        an LLM refresh) makes the cached snapshot wrong — a correctness bug,
+        not a TTL decision. The deep-row pools are snapshot-anchored, so
+        they go with it. Search registrations are deliberately KEPT: they
+        are the client's promise rather than derived state, and
+        ``apply_snapshot`` re-merges them into whatever replaces this.
+        """
+        log.info("catalog snapshot invalidated reason=%s", reason)
+        home_cache.clear()
+        row_deep_cache.clear()
+
+    # ------------------------------------------------------------ internals
+
+    def _live_registrations(self) -> dict[str, dict[str, SearchResult]]:
+        """Registrations still inside their search TTL (expired ones drop)."""
+        now = self._now()
+        live: dict[str, dict[str, SearchResult]] = {}
+        for key, (expires_at, per_provider) in list(self._registrations.items()):
+            if expires_at < now:
+                del self._registrations[key]
+                continue
+            live[key] = per_provider
+        return live
+
+    @staticmethod
+    def _entries_from_rows(home: HomeResponse) -> dict[str, GroupIndexEntry]:
+        """Fresh index entries from a snapshot's rows (row then item order)."""
+        entries: dict[str, GroupIndexEntry] = {}
+        for row in home.rows:
+            for item in row.items:
+                for key in item.member_keys or [item.group_key]:
+                    if key not in entries:
+                        entries[key] = GroupIndexEntry(home_item=item, row_type=row.type)
+        return entries
+
+    def _replace_index(self, entries: dict[str, GroupIndexEntry]) -> None:
+        """Replace the index in place, logging the registrations that lapse.
+
+        In place, so an already-handed-out ``entries()`` view stays live
+        (the pre-ADR-0010 ``_set_group_index`` semantics). The log line is
+        the fix's observable: before ADR-0010 it fired on every
+        replacement; it now fires only for a registration that has aged
+        out at the search TTL, so a carried-forward key stays silent
+        (issue #420's instrument, kept as the residual check).
+        """
+        retired = [
+            key
+            for key, ent in self._index.items()
+            if ent.home_item is None and key not in entries
+        ]
+        if retired:
+            log.info(
+                "group index replaced: %d registered key(s) retired"
+                " (search TTL, not the snapshot cycle)",
+                len(retired),
+            )
+        self._index.clear()
+        self._index.update(entries)
+
+
+#: The process-wide catalog snapshot owner (ADR-0010).
+_CATALOG = CatalogState()
+
+
+def catalog_state() -> CatalogState:
+    """The process-wide catalog snapshot owner (ADR-0010)."""
+    return _CATALOG
+
+
+def install_catalog_state(state: CatalogState) -> None:
+    """Swap the process-wide catalog state (test seam, spec #309 T5).
+
+    Tests CONSTRUCT an isolated catalog through this instead of reaching
+    for a private index clear — the escape hatch the 2026-09-12 review
+    (candidate 3) removed.
+    """
+    global _CATALOG
+    _CATALOG = state
 
 
 def get_group_entry(group_key: str) -> GroupIndexEntry | None:
-    """Indexed entry for a g2: group, or None."""
-    return _group_index.get(group_key)
-
-
-def _set_group_index(entries: dict[str, GroupIndexEntry]) -> None:
-    """Replace the index wholesale (rebuild / cold start)."""
-    _group_index.clear()
-    _group_index.update(entries)
-
-
-def _clear_group_index() -> None:
-    """Drop the index (test isolation)."""
-    _group_index.clear()
-
-
-def _merge_search_keys(keys: list[str]) -> None:
-    """Ensure search-registered keys exist in the index (home_item None).
-
-    Called from the single mutation site that already mutates the
-    resolution map, so index and map cannot diverge.
-    """
-    for k in keys:
-        if k not in _group_index:
-            _group_index[k] = GroupIndexEntry(home_item=None, row_type=None)
+    """Indexed entry for a group key, or None."""
+    return _CATALOG.entry(group_key)
 
 
 def group_index_entries() -> Mapping[str, GroupIndexEntry]:
     """Read-only view of the index (iteration sites preserve row order)."""
-    return _group_index
+    return _CATALOG.entries()
 
 
 def all_home_cards_in_index_order() -> list[HomeItem]:
     """Every distinct HomeItem in index insertion order (row then item)."""
-    seen: set[str] = set()
-    out: list[HomeItem] = []
-    for ent in _group_index.values():
-        it = ent.home_item
-        if it is None or it.group_key in seen:
-            continue
-        seen.add(it.group_key)
-        out.append(it)
-    return out
+    return _CATALOG.home_items_in_index_order()
 
 
 # ---------------------------------------------------------- profiles (#252)
