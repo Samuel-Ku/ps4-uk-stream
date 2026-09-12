@@ -27,6 +27,11 @@ from cs_uk_api._catalog_state import (
 )
 from cs_uk_api.config import SETTINGS
 
+#: The Dashboard surface's own module (spec #280 split, 2026-09-12): the
+#: routes moved out of ``router``, so its module-level patch targets
+#: (SETTINGS, the restart seams, ``os``) are patched HERE. The routes that
+#: stayed (the LLM-profile trigger) keep ``jf_router``.
+jf_dashboard = __import__("cs_uk_api.jellyfin.dashboard", fromlist=["register"])
 jf_router = __import__("cs_uk_api.jellyfin.router", fromlist=["router"])
 from cs_uk_api.models import (
     ContentResponse,
@@ -193,11 +198,14 @@ def test_items_counts_cold_snapshot_is_zero(client: TestClient) -> None:
 def _patch_poster_dir(
     monkeypatch: pytest.MonkeyPatch, poster_cache_dir: str | None
 ) -> None:
-    """Swap the router's frozen SETTINGS for a copy with a new poster
-    dir — SETTINGS is frozen, so tests replace it wholesale."""
+    """Swap the Dashboard module's frozen SETTINGS for a copy with a new
+    poster dir — SETTINGS is frozen, so tests replace it wholesale, and
+    the storage route reads it from its own module now."""
     from dataclasses import replace
 
-    monkeypatch.setattr(jf_router, "SETTINGS", replace(SETTINGS, poster_cache_dir=poster_cache_dir))
+    monkeypatch.setattr(
+        jf_dashboard, "SETTINGS", replace(SETTINGS, poster_cache_dir=poster_cache_dir)
+    )
 
 
 def test_storage_reports_poster_cache_footprint(
@@ -359,7 +367,7 @@ def test_system_restart_answers_204_and_schedules_re_exec(
     def fake_schedule() -> None:  # type: ignore[no-untyped-def]
         events.append("schedule")
 
-    monkeypatch.setattr(jf_router, "_schedule_restart", fake_schedule)
+    monkeypatch.setattr(jf_dashboard, "_schedule_restart", fake_schedule)
 
     r = client.post("/System/Restart", headers={"X-Emby-Token": TOKEN})
     assert r.status_code == 204
@@ -379,14 +387,14 @@ def test_system_restart_schedule_targets_exec_restart(monkeypatch) -> None:
     def fake_exec() -> None:  # type: ignore[no-untyped-def]
         calls.append("exec")
 
-    monkeypatch.setattr(jf_router, "_exec_restart", fake_exec)
+    monkeypatch.setattr(jf_dashboard, "_exec_restart", fake_exec)
 
     # Drive the seam on an explicit loop: ``get_event_loop`` needs a
     # current loop, and the suite leaves none set on this thread.
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        jf_router._schedule_restart()
+        jf_dashboard._schedule_restart()
         loop.run_until_complete(asyncio.sleep(0.2))
     finally:
         loop.close()
@@ -406,8 +414,8 @@ def test_system_restart_reexec_uses_running_command_line(monkeypatch) -> None:
     def fake_execv(executable: str, argv: list[str]) -> None:  # type: ignore[no-untyped-def]
         captured.append((executable, argv))
 
-    monkeypatch.setattr(jf_router.os, "execv", fake_execv)
-    jf_router._exec_restart()
+    monkeypatch.setattr(jf_dashboard.os, "execv", fake_execv)
+    jf_dashboard._exec_restart()
 
     assert captured, "the real re-exec must call os.execv"
     executable, argv = captured[0]
