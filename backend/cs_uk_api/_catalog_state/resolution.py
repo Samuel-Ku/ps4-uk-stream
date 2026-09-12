@@ -202,7 +202,17 @@ def resolve_group(group_key: str) -> dict[str, SearchResult] | None:
     per_provider: dict[str, dict[str, SearchResult]] = cast(
         dict[str, dict[str, SearchResult]], sources_cache.get(_SOURCES_KEY) or {}
     )
-    return per_provider.get(group_key)
+    entry = per_provider.get(group_key)
+    if entry is None:
+        # Absent means a cold cache OR a rebuild dropped it: a snapshot
+        # rebuild replaces the map whole and search registrations do not
+        # survive it (issue #420). Debug-level, because an unknown key is
+        # routine and the callers already log their own 404 verdict.
+        log.debug(
+            "group resolution miss key=%s (cold cache, or dropped by a rebuild)",
+            group_key,
+        )
+    return entry
 
 
 def group_key_for_external(composite: str) -> str | None:
