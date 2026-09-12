@@ -59,7 +59,6 @@ def isolate() -> Iterator[None]:
     for cache in (
         catalog_state.home_cache,
         catalog_state.search_cache,
-        catalog_state.sources_cache,
         catalog_state.content_cache,
         catalog_state.gated_cache,
         catalog_state.blocklist_cache,
@@ -67,6 +66,7 @@ def isolate() -> Iterator[None]:
         catalog_state.deep_page_cache,
     ):
         cache.clear()
+    catalog_state.reset_catalog_state()
     catalog_state.install_catalog_state(catalog_state.CatalogState())
     saved_profiles = dict(catalog_state.get_profiles())
     catalog_api.install_profiles({})
@@ -619,22 +619,24 @@ def _poster_item(pid: str, title: str, year: int | None, genres: list[str], post
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_card_for_group_home_wins_and_poster_year_genres_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    """card/poster/year/genres/view_row_type answer from the index; year/genres
-    fall back to any resolution-map card (#233) when the home card lacks them."""
+async def test_group_resolution_home_wins_and_year_genres_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The one lookup answers card/row kind/sources/origin from the index, and
+    year/genres from the card first, then any resolution-map card (#233)."""
     # Home carries a year-less genre-rich card
     item = _poster_item("p1", "Дюна", year=None, genres=["Драми"], poster="https://cdn/1.jpg")
     stub = _HomeStub("p1", newest=[item])
     _register(stub, monkeypatch)
     await catalog_api.refresh_snapshot()
     gk = item_group_key(item)
-    # Direct index answers
-    card = catalog_api.card_for_group(gk)
-    assert card is not None and card.title == "Дюна"
-    assert catalog_api.poster_url_for_group(gk) == "https://cdn/1.jpg"
-    assert catalog_api.view_row_type_for_group(gk) == "recent_movie"
-    assert catalog_api.genres_for_group(gk) == ["Драми"]
-    assert catalog_api.year_for_group(gk) is None
+    res = catalog_api.group_resolution(gk)
+    assert res is not None
+    assert res.origin is catalog_api.GroupOrigin.SNAPSHOT
+    assert res.card is not None and res.card.title == "Дюна"
+    assert res.card.poster == "https://cdn/1.jpg"
+    assert res.row_type == "recent_movie"
+    assert res.genres == ("Драми",)
+    assert res.year is None
+    assert [s.provider for s in res.sources] == ["p1"]
     # Add a source-card fallback for year via search registration (different
     # provider — same-provider registration leaves the map untouched per spec).
     fb = SearchResult(
@@ -642,36 +644,84 @@ async def test_card_for_group_home_wins_and_poster_year_genres_fallback(monkeypa
         title="Дюна", year=2021, poster="https://cdn/1.jpg",
         genres=["Драми"], url="https://p2.example/1",
     )
-    from cs_uk_api.models import SearchGroup
     from cs_uk_api._catalog_state import register_search_groups
+    from cs_uk_api.models import SearchGroup
     group = SearchGroup(
         group_key=gk, title="Дюна", year=2021, poster="https://cdn/1.jpg",
         form="movie", styles=frozenset(), genres=["Драми"], sources=[fb], member_keys=[gk],
     )
     register_search_groups([group])
-    assert catalog_api.year_for_group(gk) == 2021
-    assert catalog_api.genres_for_group(gk) == ["Драми"]  # still home wins
+    merged = catalog_api.group_resolution(gk)
+    assert merged is not None
+    # Snapshot layer still wins the card and the row kind; sources are the union.
+    assert merged.origin is catalog_api.GroupOrigin.SNAPSHOT
+    assert merged.row_type == "recent_movie"
+    assert [s.provider for s in merged.sources] == ["p1", "p2"]
+    assert merged.year == 2021
+    assert merged.genres == ("Драми",)  # still home wins
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_accessors_search_only_group_uses_source_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A search-registered group absent from home has no card/poster/view
-    but year/genres fall back to its source cards (spec #364)."""
+async def test_group_resolution_search_only_key_is_registered(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A search-registered key absent from home answers with the REGISTERED
+    origin: no card and no row kind, but sources and their year/genres (#364)."""
     sr = _poster_item("p1", "Смолфут", year=2018, genres=["Комедії"], poster="https://cdn/s.jpg")
-    from cs_uk_api.models import SearchGroup
     from cs_uk_api._catalog_state import register_search_groups
+    from cs_uk_api.models import SearchGroup
     gk = item_group_key(sr)
     group = SearchGroup(
         group_key=gk, title="Смолфут", year=2018, poster="https://cdn/s.jpg",
         form="movie", styles=frozenset(), genres=["Комедії"], sources=[sr], member_keys=[gk],
     )
     register_search_groups([group])
-    assert catalog_api.card_for_group(gk) is None
-    assert catalog_api.poster_url_for_group(gk) is None
-    assert catalog_api.view_row_type_for_group(gk) is None
-    assert catalog_api.year_for_group(gk) == 2018
-    assert catalog_api.genres_for_group(gk) == ["Комедії"]
+    res = catalog_api.group_resolution(gk)
+    assert res is not None
+    assert res.origin is catalog_api.GroupOrigin.REGISTERED
+    assert res.card is None
+    assert res.row_type is None
+    assert res.year == 2018
+    assert res.genres == ("Комедії",)
+    # The registered layer has no card, so the chip strip comes from the map.
+    assert res.providers == ("p1",)
+    assert res.source("p1") is not None
+    assert res.source("nope") is None
+    # A key neither layer holds is None — the cold-cache 404 answer.
+    assert catalog_api.group_resolution("g2:0000000000000000") is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_snapshot_entries_excludes_search_registrations(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The iteration surface is the SNAPSHOT layer only, so a search-only key
+    cannot leak into counts/shelves/genre rails by a route forgetting a filter."""
+    item = _poster_item("p1", "Дюна", year=2021, genres=["Драми"], poster="https://cdn/1.jpg")
+    stub = _HomeStub("p1", newest=[item])
+    _register(stub, monkeypatch)
+    await catalog_api.refresh_snapshot()
+    home_key = item_group_key(item)
+    sr = SearchResult(
+        id="p1:2", provider="p1", form="movie", styles=frozenset(),
+        title="Смолфут", year=2018, poster="https://cdn/s.jpg",
+        genres=["Комедії"], url="https://p1.example/2",
+    )
+    from cs_uk_api._catalog_state import register_search_groups
+    from cs_uk_api.models import SearchGroup
+    search_key = item_group_key(sr)
+    assert search_key != home_key
+    register_search_groups([
+        SearchGroup(
+            group_key=search_key, title="Смолфут", year=2018, poster="https://cdn/s.jpg",
+            form="movie", styles=frozenset(), genres=["Комедії"], sources=[sr],
+            member_keys=[search_key],
+        )
+    ])
+    entries = catalog_api.snapshot_entries()
+    keys = [e.card.group_key for e in entries]
+    assert home_key in keys
+    assert search_key not in keys
+    # The row kind rides on the entry, so no second lookup is needed.
+    assert next(e for e in entries if e.card.group_key == home_key).row_type == "recent_movie"
 
 
 def test_native_content_bug_fix_search_only_group_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -729,17 +779,20 @@ async def test_index_repopulated_on_persisted_cold_start(monkeypatch: pytest.Mon
     try:
         await catalog_api.refresh_snapshot()
         gk = item_group_key(item)
-        assert catalog_api.card_for_group(gk) is not None
+        assert catalog_api.group_resolution(gk) is not None
         # Simulate process restart: clear in-memory caches+index, then cold start via persisted file
         catalog_state.home_cache.clear()
-        catalog_state.sources_cache.clear()
+        catalog_state.reset_catalog_state()
         catalog_state.install_catalog_state(catalog_state.CatalogState())
         loaded = await load_home()
         assert loaded is not None
-        assert catalog_api.card_for_group(gk) is not None
-        assert catalog_api.view_row_type_for_group(gk) == "recent_movie"
+        cold = catalog_api.group_resolution(gk)
+        assert cold is not None
+        assert cold.origin is catalog_api.GroupOrigin.SNAPSHOT
+        assert cold.card is not None
+        assert cold.row_type == "recent_movie"
     finally:
         install_snapshot_store(prev)
         catalog_state.home_cache.clear()
-        catalog_state.sources_cache.clear()
+        catalog_state.reset_catalog_state()
         catalog_state.install_catalog_state(catalog_state.CatalogState())

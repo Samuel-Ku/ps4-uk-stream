@@ -118,7 +118,6 @@ def _isolate() -> Iterator[None]:
     saved = dict(PROVIDERS)
     caches = [
         catalog_state.home_cache,
-        catalog_state.sources_cache,
         catalog_state.content_cache,
         catalog_state.blocklist_cache,
         catalog_state.gated_cache,
@@ -127,11 +126,13 @@ def _isolate() -> Iterator[None]:
     ]
     for cache in caches:
         cache.clear()
+    catalog_state.reset_catalog_state()
     yield
     PROVIDERS.clear()
     PROVIDERS.update(saved)
     for cache in caches:
         cache.clear()
+    catalog_state.reset_catalog_state()
 
 
 @pytest.mark.asyncio
@@ -232,7 +233,7 @@ async def test_resolve_group_content_gated_backstop_no_health_down() -> None:
     # Seed the group's sources map WITHOUT running the load_home sweep,
     # so `gated_cache` is cold when the detail call resolves.
     group_key = item_group_key(item)
-    catalog_state.sources_cache.set(catalog_state._SOURCES_KEY, {group_key: {"gated-stub": item}})
+    catalog_state.seed_group_sources({group_key: {"gated-stub": item}})
     assert catalog_state.gated_cache.get("content:gated-stub:g1") is None
 
     content = await resolve_group_content(group_key)
@@ -294,9 +295,7 @@ async def test_resolve_group_content_retries_transient_failure() -> None:
     PROVIDERS["flaky-ok-stub"] = _FlakyThenOk()
     item = _item("flaky-ok-stub", "f1")
     group_key = item_group_key(item)
-    catalog_state.sources_cache.set(
-        catalog_state._SOURCES_KEY, {group_key: {"flaky-ok-stub": item}}
-    )
+    catalog_state.seed_group_sources({group_key: {"flaky-ok-stub": item}})
 
     content = await resolve_group_content(group_key)
 
@@ -344,9 +343,7 @@ async def test_resolve_group_content_404_after_both_attempts_fail() -> None:
     PROVIDERS["always-down-stub"] = _AlwaysDown()
     item = _item("always-down-stub", "f1")
     group_key = item_group_key(item)
-    catalog_state.sources_cache.set(
-        catalog_state._SOURCES_KEY, {group_key: {"always-down-stub": item}}
-    )
+    catalog_state.seed_group_sources({group_key: {"always-down-stub": item}})
 
     content = await resolve_group_content(group_key)
 

@@ -198,20 +198,19 @@ async def _content_by_id(content_id: str) -> ContentResponse:
 async def _content_by_group_key(group_key: str) -> GroupContentResponse:
     """Look up a merged item by its stateless group key (issue #70, #364).
 
-    Spec #364 bug fix: resolves via the shared resolution map (the index
-    beside sources_cache), not a snapshot scan — a search-found title
+    Spec #364 bug fix: resolves via the shared group-resolution lookup
+    (ADR-0010), not a snapshot scan — a search-found title
     absent from the 30-min home snapshot now resolves instead of 404ing
     for up to 30 min while the facade already shows it. Wire shape
     unchanged (GroupContentResponse{item, providers}); only the lookup
     source moves.
     """
-    card = catalog.card_for_group(group_key)
-    if card is not None:
-        return GroupContentResponse(item=card, providers=list(card.providers))
-    sources = catalog.group_sources(group_key)
-    if sources:
-        first = sources[0]
-        providers = [s.provider for s in sources]
+    res = catalog.group_resolution(group_key)
+    if res is not None and res.card is not None:
+        return GroupContentResponse(item=res.card, providers=list(res.providers))
+    if res is not None and res.sources:
+        first = res.sources[0]
+        providers = list(res.providers)
         from ..models import HomeItem
 
         item = HomeItem(
@@ -253,16 +252,17 @@ async def _content_by_group_key_and_source(
       - 404 ``not_found`` when the group key itself is unknown (no entry
         in the sources side cache).
     """
-    sources_echo = catalog.group_sources(group_key)
-    if not sources_echo:
+    res = catalog.group_resolution(group_key)
+    if res is None or not res.sources:
         raise HTTPException(
             404,
             detail=ErrorResponse(error="not_found", message=group_key).model_dump(),
         )
+    sources_echo = list(res.sources)
 
     # First-seen order: matches the home row's ``HomeItem.providers``
     # because both reads walk the same build_home_rows iteration order.
-    card = catalog.group_source(group_key, source)
+    card = res.source(source)
     if card is None or source not in PROVIDERS:
         raise HTTPException(
             400,

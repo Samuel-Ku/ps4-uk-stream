@@ -48,7 +48,7 @@ from cs_uk_api._catalog_state import (
     content_cache,
     home_cache,
     register_search_groups,
-    sources_cache,
+    reset_catalog_state,
 )
 from cs_uk_api.config import SETTINGS
 from cs_uk_api.models import (
@@ -293,15 +293,17 @@ def _isolate() -> Iterator[None]:
     real upstream calls or stale state leak into assertions."""
     saved_providers = dict(PROVIDERS)
     PROVIDERS.clear()
-    for cache in (home_cache, sources_cache, content_cache, blocklist_cache):
+    for cache in (home_cache, content_cache, blocklist_cache):
         cache.clear()
+    reset_catalog_state()
     try:
         yield
     finally:
         PROVIDERS.clear()
         PROVIDERS.update(saved_providers)
-        for cache in (home_cache, sources_cache, content_cache, blocklist_cache):
+        for cache in (home_cache, content_cache, blocklist_cache):
             cache.clear()
+        reset_catalog_state()
 
 
 @pytest.fixture()

@@ -307,7 +307,7 @@ def _show_record(imdb: str) -> dict[str, Any]:
 
 
 def test_g3_key_round_trips_group_resolution() -> None:
-    """A g3 group key resolves through the SAME sources_cache map the
+    """A g3 group key resolves through the SAME group-resolution map the
     g2 keys use — via the real search-registration path (namespace-blind
     after registration)."""
     from cs_uk_api._catalog_state import _stores as stores
@@ -320,7 +320,7 @@ def test_g3_key_round_trips_group_resolution() -> None:
     (mg,) = merge_results([uk, en])
     proj = project_group(mg)
     g3 = proj.key
-    stores.sources_cache.clear()
+    stores.reset_catalog_state()
     resolution.register_search_groups([
         SearchGroup(
             group_key=proj.key,
@@ -341,7 +341,7 @@ def test_g3_key_round_trips_group_resolution() -> None:
         # both namespaces point at the same group map
         assert resolution.resolve_group(item_group_key(uk)) == resolved
     finally:
-        stores.sources_cache.clear()
+        stores.reset_catalog_state()
 
 
 
@@ -369,8 +369,8 @@ def test_facade_floor_g3_card_end_to_end(monkeypatch: pytest.MonkeyPatch) -> Non
         blocklist_cache,
         content_cache,
         home_cache,
+        reset_catalog_state,
         resolution,
-        sources_cache,
     )
     from cs_uk_api.health import TRACKER
     from cs_uk_api.providers import PROVIDERS
@@ -412,8 +412,9 @@ def test_facade_floor_g3_card_end_to_end(monkeypatch: pytest.MonkeyPatch) -> Non
 
     saved = dict(PROVIDERS)
     PROVIDERS.clear()
-    for cache in (home_cache, sources_cache, content_cache, blocklist_cache):
+    for cache in (home_cache, content_cache, blocklist_cache):
         cache.clear()
+    reset_catalog_state()
     try:
         # The Ukrainian lane rides its browser-session protocol seam; the
         # established FakeSession serves the real fixture bodies per path.
@@ -502,5 +503,6 @@ def test_facade_floor_g3_card_end_to_end(monkeypatch: pytest.MonkeyPatch) -> Non
         resolution.get_session = saved_res_session
         PROVIDERS.clear()
         PROVIDERS.update(saved)
-        for cache in (home_cache, sources_cache, content_cache, blocklist_cache):
+        for cache in (home_cache, content_cache, blocklist_cache):
             cache.clear()
+        reset_catalog_state()

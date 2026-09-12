@@ -63,12 +63,12 @@ def isolate() -> Iterator[None]:
     PROVIDERS.clear()
     for cache in (
         catalog_state.home_cache,
-        catalog_state.sources_cache,
         catalog_state.content_cache,
         catalog_state.gated_cache,
         catalog_state.row_deep_cache,
     ):
         cache.clear()
+    catalog_state.reset_catalog_state()
     catalog_state.install_profiles({})
     catalog_state.clear_playback()
     catalog_state.clear_user_state()
@@ -115,8 +115,7 @@ def test_with_recommendation_rows_inserts_after_popular_and_appends_rails() -> N
         }
     )
     # Sources so the episode reverse lookup resolves the watched group.
-    catalog_state.sources_cache.set(
-        catalog_state._SOURCES_KEY,
+    catalog_state.seed_group_sources(
         {
             "g2:Дюна": {"p1": _item("p1", "1", "Дюна")},
             "g2:Війна": {"p1": _item("p1", "2", "Війна")},
@@ -199,10 +198,7 @@ def test_warm_profiles_records_lane_verdict_on_provider_fault(
     from cs_uk_api.providers.base import ProviderError
 
     home = HomeResponse(rows=[_row("movie", "Дюна")])
-    catalog_state.sources_cache.set(
-        catalog_state._SOURCES_KEY,
-        {"g2:Дюна": {"p1": _item("p1", "1", "Дюна")}},
-    )
+    catalog_state.seed_group_sources({"g2:Дюна": {"p1": _item("p1", "1", "Дюна")}})
 
     class _FlakyProvider(BaseProvider):
         id = "p1"
@@ -236,10 +232,7 @@ def test_warm_profiles_invalidates_home_when_new_profile_lands() -> None:
     profile — a steady-state warm (nothing new) never invalidates."""
     home = HomeResponse(rows=[_row("movie", "Дюна")])
     catalog_state.home_cache.set("home:v1", home)
-    catalog_state.sources_cache.set(
-        catalog_state._SOURCES_KEY,
-        {"g2:Дюна": {"p1": _item("p1", "1", "Дюна")}},
-    )
+    catalog_state.seed_group_sources({"g2:Дюна": {"p1": _item("p1", "1", "Дюна")}})
 
     class _ContentStub(BaseProvider):
         id = "p1"

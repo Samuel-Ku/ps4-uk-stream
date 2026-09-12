@@ -205,3 +205,76 @@ def test_invalidate_clears_the_snapshot_but_keeps_live_registrations() -> None:
     assert catalog_state.get_home() is None
     assert pool.get("row-deep:movie") is None
     assert catalog_state.resolve_group(key) is not None
+
+
+# ---------------------------------------------------------------------------
+# The suite's seed / reset seam
+# ---------------------------------------------------------------------------
+
+
+def test_seed_group_sources_installs_the_map_and_nothing_else() -> None:
+    """The seed writes the resolution map, not a snapshot row.
+
+    A test that seeds group sources gets map-side resolution only: no
+    card, no row kind, no index entry — the shape a bare write to the
+    map's cache used to produce, now spelled once and named for what it
+    is.
+    """
+    hit = _item("p1", "Дюна", year=2021)
+    key = item_group_key(hit)
+    catalog_state.seed_group_sources({key: {"p1": hit}})
+
+    assert catalog_state.resolve_group(key) is not None
+    assert catalog_state.get_group_entry(key) is None
+    answer = catalog_state.group_resolution(key)
+    assert answer is not None
+    assert answer.origin is catalog_state.GroupOrigin.REGISTERED
+    assert answer.card is None
+
+
+def test_a_map_only_clear_strands_the_index() -> None:
+    """Why the reset seam moves three pieces: clearing one strands the rest.
+
+    This is the shape the suite used to create by hand (clear the map's
+    cache, leave the index alone) and the shape issue #420 was made of —
+    resolution answered from a map the index no longer described. Pinned
+    so the seam's contract has its reason attached, and so the reset test
+    below is read as "all three", not "the map".
+    """
+    snap_hit = _item("p2", "Снапшот", year=2019)
+    snap_key = item_group_key(snap_hit)
+    _cache_home({"p2": [snap_hit]}, {}, {})
+    assert catalog_state.get_group_entry(snap_key) is not None
+
+    # The map-only clear (the old idiom), performed through the seed seam:
+    catalog_state.seed_group_sources({})
+
+    assert catalog_state.resolve_group(snap_key) is None  # the map: emptied
+    assert catalog_state.get_group_entry(snap_key) is not None  # the index: stranded
+
+
+def test_reset_drops_the_map_the_index_and_the_registrations_together() -> None:
+    """One call clears all three pieces of the owned state (ADR-0010).
+
+    The pre-ADR-0010 suite emptied the map by hand, which left the index
+    still describing snapshot rows the map no longer held — the
+    divergence this ownership exists to remove. So the reset seam moves
+    all three: a caller that clears one and not the others can no longer
+    reproduce the half-state.
+    """
+    snap_hit = _item("p2", "Снапшот", year=2019)
+    snap_key = item_group_key(snap_hit)
+    _cache_home({"p2": [snap_hit]}, {}, {})
+    searched = _group(_item("p1", "Пошуковий", year=2024))
+    catalog_state.register_search_groups([searched])
+    assert catalog_state.get_group_entry(snap_key) is not None
+    assert catalog_state.resolve_group(searched.group_key) is not None
+
+    catalog_state.reset_catalog_state()
+
+    # The map is gone...
+    assert catalog_state.resolve_group(searched.group_key) is None
+    assert catalog_state.group_resolution(snap_key) is None
+    # ...and so is the SNAPSHOT row's index entry: a map-only clear would
+    # have left the index describing a catalog the map no longer had.
+    assert catalog_state.get_group_entry(snap_key) is None

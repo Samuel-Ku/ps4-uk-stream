@@ -35,9 +35,8 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
 
 from ..catalog import (
-    card_for_group,
     episode_group_key,
-    first_source,
+    group_resolution,
     peek_group_content,
     record_dub_choice,
     resolve_item,
@@ -96,10 +95,11 @@ async def resolve_stream(
         content = (await resolve_item(group_key)).content
         if content is None or content.form != "movie":
             return None
-        first = first_source(group_key)
-        if first is None:
+        res = group_resolution(group_key)
+        if res is None or not res.sources:
             return None
-        provider_id, result = first
+        result = res.sources[0]
+        provider_id = result.provider
         _, _, external_id = result.id.partition(":")
     else:
         # Provider-scoped episode wire id — split the prefix and hand the
@@ -187,9 +187,9 @@ def title_for(item_id: str) -> str | None:
     unknown/cold id — the download route then falls back to the id
     itself so the filename is still stable and unique.
     """
-    card = card_for_group(item_id)
-    if card is not None:
-        return card.title
+    res = group_resolution(item_id)
+    if res is not None and res.card is not None:
+        return res.card.title
     content = peek_group_content(item_id)
     if content is not None:
         return content.title

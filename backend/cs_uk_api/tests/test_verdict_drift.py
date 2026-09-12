@@ -332,9 +332,7 @@ def _seed_group_sources(stub: BaseProvider, external: str) -> str:
 
     item = _item(stub.id, external, "Загублені")
     group_key = item_group_key(item)
-    catalog_state.sources_cache.set(
-        catalog_state._SOURCES_KEY, {group_key: {stub.id: item}}
-    )
+    catalog_state.seed_group_sources({group_key: {stub.id: item}})
     return group_key
 
 

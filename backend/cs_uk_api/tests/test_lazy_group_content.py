@@ -43,7 +43,11 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from cs_uk_api._catalog_state import home_cache, search_cache, sources_cache
+from cs_uk_api._catalog_state import (
+    home_cache,
+    reset_catalog_state,
+    search_cache,
+)
 from cs_uk_api.main import app
 from cs_uk_api.models import (
     ContentResponse,
@@ -93,7 +97,7 @@ def _isolate() -> Iterator[None]:
     saved_providers = dict(PROVIDERS)
     PROVIDERS.clear()
     home_cache.clear()
-    sources_cache.clear()
+    reset_catalog_state()
     search_cache.clear()
     try:
         yield
@@ -101,7 +105,7 @@ def _isolate() -> Iterator[None]:
         PROVIDERS.clear()
         PROVIDERS.update(saved_providers)
         home_cache.clear()
-        sources_cache.clear()
+        reset_catalog_state()
         search_cache.clear()
 
 

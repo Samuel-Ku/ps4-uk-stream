@@ -187,7 +187,7 @@ def test_a_cold_start_from_the_file_cannot_resurrect_a_registration(
     # empty, and only the file is left to answer from.
     catalog_state.install_catalog_state(catalog_state.CatalogState())
     catalog_state.home_cache.clear()
-    catalog_state.sources_cache.clear()
+    catalog_state.reset_catalog_state()
     catalog_state.PROVIDERS.clear()
 
     async def _noop_heal() -> None:

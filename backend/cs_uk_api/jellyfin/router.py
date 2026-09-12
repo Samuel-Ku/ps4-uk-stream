@@ -38,7 +38,6 @@ from fastapi.responses import JSONResponse, Response
 from .. import row_kinds
 from ..catalog import (
     extend_row_pool,
-    group_entries,
     is_hard_unavailable,
     peek_group_content,
     playback_episode_pair,
@@ -49,6 +48,7 @@ from ..catalog import (
     refresh_snapshot,
     resolve_item,
     search,
+    snapshot_entries,
 )
 from ..config import SETTINGS
 from ..models import (
@@ -979,9 +979,9 @@ async def item_similar(
     if item_profile is not None:
         scored: list[tuple[float, HomeRow, HomeItem]] = []
         scored_seen: set[str] = set()
-        for entry in group_entries().values():
-            it = cast(Any, entry).home_item
-            if it is None or item_id == it.group_key or it.group_key in scored_seen:
+        for entry in snapshot_entries():
+            it = entry.card
+            if item_id == it.group_key or it.group_key in scored_seen:
                 continue
             cand = profiles().get(it.group_key)
             if cand is None:
@@ -990,7 +990,7 @@ async def item_similar(
             if score <= 0:
                 continue
             scored_seen.add(it.group_key)
-            row = HomeRow(type=cast(Any, entry).row_type or "", title="", items=[it])
+            row = HomeRow(type=entry.row_type or "", title="", items=[it])
             scored.append((score, row, it))
         if scored:
             scored.sort(key=lambda t: t[0], reverse=True)
@@ -1003,14 +1003,14 @@ async def item_similar(
         return BaseItemDtoQueryResult()
     dtos = []
     seen: set[str] = set()
-    for entry in group_entries().values():
-        it = cast(Any, entry).home_item
-        if it is None or item_id == it.group_key or it.group_key in seen:
+    for entry in snapshot_entries():
+        it = entry.card
+        if item_id == it.group_key or it.group_key in seen:
             continue
         if not (set(it.genres) & wanted):
             continue
         seen.add(it.group_key)
-        row = HomeRow(type=cast(Any, entry).row_type or "", title="", items=[it])
+        row = HomeRow(type=entry.row_type or "", title="", items=[it])
         dtos.append(_item_dto(row, it, server_id))
         if len(dtos) >= limit:
             break

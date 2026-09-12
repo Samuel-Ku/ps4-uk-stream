@@ -45,6 +45,12 @@ from cs_uk_api.watchdog import WATCHDOG
 #: Order-independent hygiene: each is cleared before every test so no
 #: test can poison another through cached verdicts, health windows,
 #: profiles, playback/user/snapshot state, or watchdog counters.
+#:
+#: The resolution map is deliberately NOT here: it is one of the three
+#: pieces of state the catalog owner owns (ADR-0010), so it is reset
+#: through the owner below rather than cleared as a loose cache. Doing
+#: otherwise left the group index describing a map this loop had just
+#: emptied.
 _SHARED_STORES: tuple[object, ...] = (
     _poster_cache,
     _stores.browse_cache,
@@ -55,7 +61,6 @@ _SHARED_STORES: tuple[object, ...] = (
     _stores.row_deep_cache,
     _stores.deep_page_cache,
     _stores.gated_cache,
-    _stores.sources_cache,
 )
 
 
@@ -73,10 +78,12 @@ def _reset_global_state() -> None:
     WATCHDOG.reset()
     for store in _SHARED_STORES:
         store.clear()  # type: ignore[attr-defined]
-    # The catalog snapshot owner (ADR-0010): a FRESH state each test, so no
-    # index entry or search registration survives into the next one. The
-    # state is constructed, not cleared — the owned value is what replaced
-    # the old private ``_clear_group_index()`` test escape hatch.
+    # The catalog snapshot owner (ADR-0010): reset the owned derived state
+    # through the owner, then install a FRESH one — so no resolution-map
+    # entry, index entry or search registration survives into the next
+    # test. The state is constructed, not cleared — the owned value is
+    # what replaced the old private ``_clear_group_index()`` escape hatch.
+    _stores.reset_catalog_state()
     _stores.install_catalog_state(_stores.CatalogState())
     # Tests mutate PROVIDERS directly (clear/add stubs) with save/restore
     # attempts that are NOT order-safe: a test that clears without

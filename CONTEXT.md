@@ -568,6 +568,34 @@ The snapshot, its group resolution map, the group index and the deep-row pools a
 
 This does not change *when* a client sees fresh content — the persisted snapshot still serves at any age with a rebuild behind it, and the TTL table above stands. It changes who owns the writes and what survives them.
 
+### The group resolution read side (spec #364, ADR-0010)
+
+The owner answers through **two surfaces, deliberately separate**:
+
+- **Group resolution** — `group_resolution(key)`, ONE typed value for one
+  `g2:` key: the card, the row kind, the ordered source cards, and the
+  **origin** naming which layer answered (`snapshot` or `registered`).
+  `None` is the cold-cache answer every caller already reads as the D2
+  "item unavailable" 404.
+- **Snapshot entries** — `snapshot_entries()`, the iteration surface for
+  the sites that count, shelve or match by profile (library counts,
+  person filmography, the similar shelf, the genre rails). It yields the
+  **snapshot layer only**, each entry carrying the row kind that surfaced
+  it, so a search registration cannot reach those rows by a route
+  forgetting to filter.
+
+"Group resolution" is the one name for the concept; "the resolution map",
+"the group index" and "the indexed accessors" were three names for parts
+of it, and asking the index and then the map was the three-hop read this
+replaced.
+
+**Precedence, stated once.** For a key both layers hold, the snapshot
+wins: its card and its row kind answer, and `registered` origins appear
+only for a key no snapshot row carries. `sources` is the **union** —
+snapshot providers first, then any a registration added, first-seen order
+preserved — which is what the detail chips and the native
+`/api/content/{key}` provider echo already showed.
+
 ### Cache key format
 
 Flat, colon-joined `{namespace}:{discriminants…}` strings, one store per namespace:

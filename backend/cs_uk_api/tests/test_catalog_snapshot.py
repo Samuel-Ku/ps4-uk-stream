@@ -61,13 +61,13 @@ def isolate() -> Iterator[None]:
     PROVIDERS.clear()
     for cache in (
         catalog_state.home_cache,
-        catalog_state.sources_cache,
         catalog_state.row_deep_cache,
         catalog_state.deep_page_cache,
         catalog_state.content_cache,
         catalog_state.gated_cache,
     ):
         cache.clear()
+    catalog_state.reset_catalog_state()
     catalog_state.clear_playback()
     try:
         yield
