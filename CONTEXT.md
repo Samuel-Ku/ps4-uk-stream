@@ -563,7 +563,7 @@ build with a logged warning, never a crash.
 
 The snapshot, its group resolution map, the group index and the deep-row pools are **one owned value**, not four stores that happen to be written together. A replacement — the persisted cold start above, or a finished rebuild — goes through a **single apply step**, and that step decides what survives:
 
-- **Search registrations are carried forward.** Keys a search registered are merged into the new map and index rather than dropped, and they expire on the **search** TTL that created them — *not* on the snapshot's cycle. A snapshot replacement is an internal event and must not shorten the promise a search made to the client (issue #420 is what happens when it does).
+- **Search registrations are carried forward.** Keys a search registered are merged into the new map and index rather than dropped. They are bounded by the **search** TTL that created them — *not* by the snapshot's cycle — with the precision that the TTL is enforced **at the next replacement** (an aged-out registration is retired by the apply step, never by a read); with no replacement, the resolution map's own lifetime is the outer bound. A snapshot replacement is an internal event and must not shorten the promise a search made to the client (issue #420 is what happens when it does).
 - **The derived state is not written elsewhere.** Readers go through the owner; a module that appears to need a second write path is a sign the owner's interface is missing an operation.
 
 This does not change *when* a client sees fresh content — the persisted snapshot still serves at any age with a rebuild behind it, and the TTL table above stands. It changes who owns the writes and what survives them.
