@@ -109,10 +109,15 @@ arguments:
    a search-only group missing from the resolution map (the #415 class).
    It did **not** reproduce: a re-run of the identical sequence returned
    200, and a deliberate 70s wait proved registrations survive well past a
-   60s stall (so it is not TTL expiry). Mechanism unknown; `smoke.sh` now
-   re-issues the search before each candidate (~0s, cached) so a
-   background index rebuild landing mid-run cannot fail the verdict
-   spuriously. **Open question for a ticket, not a claimed fix.**
+   60s stall (so it is not TTL expiry). `smoke.sh` now re-issues the
+   search before each candidate (~0s, cached) so a background index
+   rebuild landing mid-run cannot fail the verdict spuriously. **Filed as
+   issue [#420](https://github.com/Samuel-Ku/ps4-uk-stream/issues/420)** —
+   not a fix, and not a claimed mechanism: the issue traces the code path
+   (a snapshot rebuild replacing the resolution map and index wholesale,
+   with no re-registration on the read path) and lists the instrumentation
+   that would confirm it. That trace was done *after* this run and is not
+   part of the evidence above.
 3. **Never time an unbounded read against the engine.** The engine serves
    from its own local copy, so a follow-the-redirect read without a Range
    pulled the whole ~3.07 GB body (the file size `Content-Range` reports) —
