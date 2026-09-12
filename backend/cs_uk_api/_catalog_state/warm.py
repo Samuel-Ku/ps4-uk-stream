@@ -41,12 +41,12 @@ from ..recommend import (
 from ._stores import (
     _HOME_KEY,
     _profiles,
+    catalog_state,
     home_cache,
     playback_entries,
     recent_history_entries,
     recent_playback_entries,
     recent_search_queries,
-    row_deep_cache,
 )
 from .resolution import episode_group_key, resolve_group_content
 
@@ -98,10 +98,11 @@ async def _warm_profiles(home: HomeResponse) -> None:
     tasks = [asyncio.create_task(_one(gk)) for gk in groups]
     await asyncio.wait(tasks, timeout=_config.SETTINGS.search_total_timeout_s)
     if added:
-        home_cache.clear()
-        # The next home rebuild changes the snapshot — drop the
-        # snapshot-anchored deep pools with it (spec #305).
-        row_deep_cache.clear()
+        # Sanctioned invalidation (ADR-0010): the rows are built FROM the
+        # profiles, so a cached snapshot without them is stale. Goes
+        # through the owner, which also drops the snapshot-anchored deep
+        # pools (spec #305) and keeps live search registrations.
+        catalog_state().invalidate(reason="profile warm added profiles")
 
 
 def _recommendation_rows(rows: Sequence[HomeRow]) -> list[HomeRow]:
@@ -252,8 +253,9 @@ async def refresh_profile(*, client: Any | None = None) -> bool:
     set_active_profile(profile)
     # The home rows are BUILT from the active profile — the new weights/
     # tags/ideas must surface on the next build, not after the 30-min
-    # home TTL. Clearing only invalidates; the next request rebuilds.
-    home_cache.clear()
+    # home TTL. A sanctioned invalidation (ADR-0010), not a TTL decision:
+    # it only invalidates, the next request rebuilds.
+    catalog_state().invalidate(reason="llm taste-profile refresh")
     return True
 
 

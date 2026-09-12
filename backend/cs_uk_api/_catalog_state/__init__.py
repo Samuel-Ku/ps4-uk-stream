@@ -6,10 +6,18 @@ in-memory home snapshot (``HomeResponse``) and the same
 surfaced in ``/api/home`` resolves identically from ``/Items/{id}`` with
 no second upstream fetch.
 
-ADR-0003 (cache contract) holds here: TTL-only, in-memory, no persisted
-domain schema, no version token. ``load_home()`` is the single builder —
-a cache hit on a facade request does the same round trips the native
-``/api/home`` route would do, because it IS the same code path.
+ADR-0003 (cache contract) holds here: TTL-only for provider responses and
+endpoint caches, in-memory, no version token. ``load_home()`` is the
+single builder — a cache hit on a facade request does the same round
+trips the native ``/api/home`` route would do, because it IS the same
+code path.
+
+ADR-0010 owns the catalog layer's derived state: ``CatalogState`` is the
+one writer of the resolution map + group index pair (``apply_snapshot``),
+search registrations outlive a snapshot replacement on their own TTL, and
+the warm path's two invalidations go through ``invalidate``. The
+persisted home snapshot (ticket #269) and viewer state (spec #323) are
+the documented exceptions to the earlier "no persisted schema" wording.
 
 Internal split (spec #309 T5): the implementation lives in the internal
 modules ``_stores`` / ``resolution`` / ``warm`` / ``snapshot`` /
@@ -25,15 +33,14 @@ from . import playback, resolution, search, snapshot, warm  # noqa: F401
 from ._stores import (
     _HOME_KEY,
     _SOURCES_KEY,
+    CatalogState,
     GroupIndexEntry,
-    _clear_group_index,
-    _merge_search_keys,
     _resume_store,
-    _set_group_index,
     _snapshot_store,
     all_home_cards_in_index_order,
     blocklist_cache,
     browse_cache,
+    catalog_state,
     clear_playback,
     clear_snapshot_store,
     clear_user_state,
@@ -47,6 +54,7 @@ from ._stores import (
     get_profiles,
     group_index_entries,
     home_cache,
+    install_catalog_state,
     install_profiles,
     install_resume_store,
     install_snapshot_store,
@@ -104,18 +112,17 @@ __all__ = [
     # stores / caches
     "_HOME_KEY",
     "_SOURCES_KEY",
+    "CatalogState",
     "GroupIndexEntry",
     "PlaybackEpisodePairing",
-    "_clear_group_index",
-    "_merge_search_keys",
     "_resume_store",
-    "_set_group_index",
     "_snapshot_store",
     "all_home_cards_in_index_order",
     "await_uakino_ready",
     "blocklist_cache",
     "browse_cache",
     "cached_provider_content",
+    "catalog_state",
     "clear_playback",
     "clear_snapshot_store",
     "clear_user_state",
@@ -135,6 +142,7 @@ __all__ = [
     "group_index_entries",
     "group_key_for_external",
     "home_cache",
+    "install_catalog_state",
     "install_profiles",
     "install_resume_store",
     "install_snapshot_store",

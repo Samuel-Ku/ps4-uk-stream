@@ -32,17 +32,13 @@ from ..row_kinds import ROW_KINDS
 from ..wire_identity import project_group, provider_union
 from ._stores import (
     _HOME_KEY,
-    _SOURCES_KEY,
-    GroupIndexEntry,
-    _set_group_index,
     _snapshot_store,
+    catalog_state,
     deep_page_cache,
-    group_index_entries,
     home_cache,
     playback_entries,
     recent_history_entries,
     row_deep_cache,
-    sources_cache,
 )
 from .resolution import (
     _GATE_CHECK_CONCURRENCY,
@@ -130,14 +126,11 @@ async def load_home() -> HomeResponse:
     persisted, sources = store.load()
     if persisted is not None:
         # Instant cold start: serve the stale snapshot immediately, heal
-        # it in the background. Sources restored so group resolution for
-        # the persisted rows works without any provider call. The index
-        # beside sources_cache is repopulated from the persisted rows so
-        # the seam answers instantly too (spec #364).
-        home_cache.set(_HOME_KEY, persisted)
-        if sources is not None:
-            sources_cache.set(_SOURCES_KEY, sources)
-        _populate_group_index(persisted)
+        # it in the background. Rows, resolution map and index are
+        # installed by the ONE apply step (ADR-0010), so the persisted
+        # sources work for group resolution without any provider call and
+        # the index answers the seam instantly too (spec #364).
+        catalog_state().apply_snapshot(persisted, sources)
         asyncio.create_task(_build_home())
         return persisted
     return await _build_home()
@@ -316,9 +309,12 @@ def _cache_home(
 
     The single place a successful home build lands: computes the
     personalized rows (spec #252) and the «Нові серії» row (spec #267
-    T3, from the playback store's watched groups), caches the snapshot
-    and the group resolution map, and persists both to the versioned
-    snapshot file (ticket #269) so the next cold start serves instantly.
+    T3, from the playback store's watched groups), then hands the rows
+    and the freshly built resolution map to the ONE apply step
+    (ADR-0010), which installs them, drops the snapshot-anchored deep
+    pools, carries live search registrations forward, and persists both
+    to the versioned snapshot file (ticket #269) so the next cold start
+    serves instantly.
     """
     rows = _with_recommendation_rows(
         build_home_rows(
@@ -331,53 +327,9 @@ def _cache_home(
         )
     )
     resp = HomeResponse(rows=rows)
-    home_cache.set(_HOME_KEY, resp)
-    # A new snapshot invalidates the deep-row pools (spec #305): they
-    # are anchored to the snapshot's page-1 items, so a rebuild must
-    # not serve a pool deduped against the previous snapshot.
-    row_deep_cache.clear()
     sources = _build_sources_map(newest, popular, type_lists)
-    sources_cache.set(_SOURCES_KEY, sources)
-    # Index beside sources_cache: built at _cache_home alongside the
-    # sources map; repopulated on persisted cold start; merged
-    # incrementally in register_search_groups — single mutation site
-    # so map and index cannot diverge.
-    #
-    _populate_group_index(resp)
-    _snapshot_store().save(resp, sources)
+    catalog_state().apply_snapshot(resp, sources, persist=True)
     return resp
-
-
-def _populate_group_index(home: HomeResponse) -> None:
-    """(Re)build the group index from a HomeResponse's rows.
-
-    Replaces the index WHOLE, so every key a search registered — an entry
-    with no home card — is dropped by this call. That is the documented
-    contract (``register_search_groups``: a registered key "expires with
-    the next snapshot refresh"), but the drop used to be invisible, which
-    is why issue #420 (a search result 404-ing at ``/Items/{id}`` seconds
-    after it resolved) took a journal reconstruction to explain.
-
-    Instrumented HERE rather than at either caller on purpose: the two
-    callers are ``_cache_home`` (a finished rebuild) and ``load_home``'s
-    persisted cold-start path, and the persisted path runs FIRST — an
-    instrument that only watched the rebuild reported nothing at all when
-    the 404 was reproduced live on 2026-09-12.
-    """
-    entries: dict[str, GroupIndexEntry] = {}
-    for row in home.rows:
-        for it in row.items:
-            keys = it.member_keys or [it.group_key]
-            for k in keys:
-                if k not in entries:
-                    entries[k] = GroupIndexEntry(home_item=it, row_type=row.type)
-    dropped = sum(1 for e in group_index_entries().values() if e.home_item is None)
-    if dropped:
-        log.info(
-            "group index replaced: dropped %d search-registered key(s) (issue #420 window)",
-            dropped,
-        )
-    _set_group_index(entries)
 
 
 def get_home() -> HomeResponse | None:

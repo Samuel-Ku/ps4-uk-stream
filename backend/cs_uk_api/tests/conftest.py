@@ -73,6 +73,11 @@ def _reset_global_state() -> None:
     WATCHDOG.reset()
     for store in _SHARED_STORES:
         store.clear()  # type: ignore[attr-defined]
+    # The catalog snapshot owner (ADR-0010): a FRESH state each test, so no
+    # index entry or search registration survives into the next one. The
+    # state is constructed, not cleared — the owned value is what replaced
+    # the old private ``_clear_group_index()`` test escape hatch.
+    _stores.install_catalog_state(_stores.CatalogState())
     # Tests mutate PROVIDERS directly (clear/add stubs) with save/restore
     # attempts that are NOT order-safe: a test that clears without
     # restoring (e.g. test_gated_filter) makes every later snapshot an

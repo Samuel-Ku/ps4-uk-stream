@@ -67,7 +67,7 @@ def isolate() -> Iterator[None]:
         catalog_state.deep_page_cache,
     ):
         cache.clear()
-    catalog_state._clear_group_index()
+    catalog_state.install_catalog_state(catalog_state.CatalogState())
     saved_profiles = dict(catalog_state.get_profiles())
     catalog_api.install_profiles({})
     catalog_state.clear_playback()
@@ -79,7 +79,7 @@ def isolate() -> Iterator[None]:
         PROVIDERS.clear()
         PROVIDERS.update(saved)
         catalog_api.install_profiles(saved_profiles)
-        catalog_state._clear_group_index()
+        catalog_state.install_catalog_state(catalog_state.CatalogState())
         health.TRACKER.reset()
 
 
@@ -733,7 +733,7 @@ async def test_index_repopulated_on_persisted_cold_start(monkeypatch: pytest.Mon
         # Simulate process restart: clear in-memory caches+index, then cold start via persisted file
         catalog_state.home_cache.clear()
         catalog_state.sources_cache.clear()
-        catalog_state._clear_group_index()
+        catalog_state.install_catalog_state(catalog_state.CatalogState())
         loaded = await load_home()
         assert loaded is not None
         assert catalog_api.card_for_group(gk) is not None
@@ -742,4 +742,4 @@ async def test_index_repopulated_on_persisted_cold_start(monkeypatch: pytest.Mon
         install_snapshot_store(prev)
         catalog_state.home_cache.clear()
         catalog_state.sources_cache.clear()
-        catalog_state._clear_group_index()
+        catalog_state.install_catalog_state(catalog_state.CatalogState())
