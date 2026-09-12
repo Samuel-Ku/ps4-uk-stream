@@ -201,8 +201,10 @@ class CatalogState:
         ``sources`` is None for a persisted snapshot written before the
         resolution map was persisted: the rows and the index are installed
         and the map is left alone (the pre-#269 cold-start shape).
-        ``persist`` writes the versioned snapshot file — a rebuild only,
-        since the cold start is reading it.
+        ``persist`` writes the versioned snapshot file from the SNAPSHOT's
+        own map, never the merged one — a rebuild only, since the cold
+        start is reading it, and a registration is search-TTL state that
+        must not outlive its promise on disk.
         """
         merged: dict[str, dict[str, SearchResult]] | None = None
         if sources is not None:
@@ -219,8 +221,15 @@ class CatalogState:
             sources_cache.set(_SOURCES_KEY, merged)
         self._replace_index(entries)
         row_deep_cache.clear()
-        if persist:
-            _snapshot_store().save(home, merged or {})
+        if persist and sources is not None:
+            # Persist the SNAPSHOT's map, never the merged one (2026-09-12
+            # audit, finding 2): the file is the next cold start's
+            # snapshot, while a search registration is search-TTL state —
+            # writing it would resurrect an expired promise after a
+            # restart and grow the file with a session's searches. The
+            # None branch means a legacy snapshot with no map at all:
+            # write nothing rather than an empty map over a good file.
+            _snapshot_store().save(home, dict(sources))
 
     # --------------------------------------------- search registration (#106)
 
