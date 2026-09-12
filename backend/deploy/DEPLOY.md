@@ -166,6 +166,12 @@ deployment); each skipped candidate is reported with its reason. Point it
 at another host with `CS_UK_API_URL` / `CS_UK_ENGINE_URL`; the script
 header lists the rest of the knobs.
 
+The last run against the operator host, with its numbers, is recorded in
+`docs/test-artifacts/openclaw-home-smoke-2026-09-12.md`; re-running this
+command on a fresh host is what a new entry there should record. The
+directory index (`docs/test-artifacts/README.md`) lists every proof and
+flags which files are test fixtures rather than notes.
+
 On the PS4, add a Switchfin server at `http://<host-ip>:8003` (any
 username/password completes the accept-any handshake).
 
