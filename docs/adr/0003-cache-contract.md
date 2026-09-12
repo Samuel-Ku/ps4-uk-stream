@@ -6,6 +6,8 @@ The backend caches listing and metadata responses in per-endpoint in-memory TTL 
 
 Accepted (2026-08-02, after grilling session Q27–Q33).
 
+**Amended by [ADR-0010](0010-catalog-snapshot-ownership.md) (2026-09-12).** The invalidation clause below — "TTL-only… no event-driven invalidation" — describes provider responses and endpoint caches. The catalog snapshot additionally has two sanctioned invalidations (the profile warm and the LLM taste refresh), owned centrally, because the home rows are derived from the active profile. Separately, the "no persisted schema" wording in the title and decision was already exceeded by the persisted home snapshot (ticket #269) and viewer state (spec #323); that exception is recorded in CONTEXT.md §Versioning. Every other decision here — key format, per-endpoint TTLs, scope, un-cached endpoints, the deterministic-404 negative cache — stands unchanged.
+
 ## Context
 
 The v2 design spec never defined a cache contract. An implementation grew organically: `TtlCache` (a ~35-line in-memory dict guarded by a `threading.Lock`) instantiated four times in `main.py` plus once in `poster_proxy.py`, with three environment-tunable TTLs (`CS_UK_CACHE_SEARCH` / `_CONTENT` / `_POSTER`). `docs/status.md` advertises this as "TTL cache (5m search / 30m content / 1h posters)", which undercounts it — `/api/browse` and the Russian-content blocklist are also cached, and posters have a second 7-day disk layer on *both* sides of the LAN (issue #54).
