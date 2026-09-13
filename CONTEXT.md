@@ -543,8 +543,9 @@ client re-lists views on every cold launch.
 
 The last successful home build (rows + the group resolution map) is
 mirrored to a single versioned JSON file
-(`{"v": 1, "rows": [...], "sources": {...}}`) next to the resume
-file, written atomically (temp + rename) after every successful build.
+(`{"version": 1, "data": {"rows": [...], "sources": {...}}}`) next
+to the resume file, written atomically (temp + rename) after every
+successful build.
 On a cold start `load_home` serves the persisted snapshot **at ANY
 age** — stale is accepted, dead-poster risk on a very old file is
 accepted — while a background task rebuilds and overwrites it. A
