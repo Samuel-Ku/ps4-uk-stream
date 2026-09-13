@@ -374,10 +374,11 @@ Deployment assumption that drives most of it: **one host, one uvicorn process, L
 
 Playback positions are NOT a cache: they are persisted domain state —
 the deliberate exception to the in-memory invariant below (ADR-0003
-note). One versioned JSON file, `{"v": 1, "items": {item_id:
-{"position_ticks", "runtime_ticks"?, "updated_at"}}}`, written
-atomically (temp + rename), flushed immediately on a Stopped report and
-debounced on Progress heartbeats, flushed again on shutdown.
+note). One versioned JSON file, `{"version": 1, "data": {"items":
+{item_id: {"position_ticks", "runtime_ticks"?, "updated_at"}},
+"queries": [...], "finished": {...}}}`, written atomically (temp +
+rename), flushed immediately on a Stopped report and debounced on
+Progress heartbeats, flushed again on shutdown.
 
 | Aspect | Value |
 | --- | --- |
@@ -396,7 +397,8 @@ Favorites and played marks — tapped on Switchfin's detail screen (heart)
 and card context menu (mark played/unplayed) — are persisted domain
 state like the resume store, deliberately in a SEPARATE versioned file
 so the two specs' version bumps never collide. One JSON file,
-`{"v": 1, "favorites": [...], "played": [...]}`, written atomically
+`{"version": 1, "data": {"favorites": [...], "played": [...],
+"dub_memory": {series_key: translation_label}}}`, written atomically
 (temp + rename) synchronously on every toggle, so the UserDataResult
 response always reflects durable state.
 
@@ -634,7 +636,7 @@ Rules:
 
 A schema change is a code change is a restart is an empty cache — so a version prefix could never differ from the one that wrote the entry. The poster disk caches satisfy the invariant by storing opaque image bytes under a content-addressed key. **Persisting any domain object (offline catalog, warm-start snapshot, disk-backed `content:` layer) breaks this invariant and makes a version token mandatory** — ADR-0003 must be revisited first. The viewer-state persistence (spec #323) is the first such value: it persists through `versioned_store.py` with a version token + atomic writes (see [`docs/architecture.md`](docs/architecture.md) §6).
 
-The resume state file is exactly that exception: it persists a domain schema, so it carries a **mandatory version token** (`v` field, see above) and a mismatched file is ignored (warn + empty) — the remedy ADR-0003's consequences section prescribes. See the ADR note.
+The resume state file is exactly that exception: it persists a domain schema, so it carries a **mandatory version token** (the envelope's `version`, see above) and a mismatched file is ignored (warn + empty) — the remedy ADR-0003's consequences section prescribes. See the ADR note.
 
 ### Stampede protection
 
