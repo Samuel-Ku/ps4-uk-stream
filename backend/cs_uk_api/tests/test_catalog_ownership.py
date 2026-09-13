@@ -54,6 +54,25 @@ def _group(*sources: SearchResult) -> SearchGroup:
     )
 
 
+def _group_at(key: str, *sources: SearchResult) -> SearchGroup:
+    """A search group pinned to an explicit key (the merge's own decision).
+
+    ``_group`` derives the key from its first source; this pins it, so a
+    test can hand the owner a search whose sources are ONE provider while
+    the snapshot carries the same key under a DIFFERENT one — the shape
+    the registration narrowing is about.
+    """
+    first = sources[0]
+    return SearchGroup(
+        group_key=key,
+        title=first.title,
+        year=first.year,
+        form=first.form,
+        sources=list(sources),
+        member_keys=[key],
+    )
+
+
 def _clock() -> tuple[dict[str, float], Callable[[], float]]:
     """A controllable clock (no auto-advance: the test moves time)."""
     state = {"t": 1000.0}
@@ -178,6 +197,86 @@ def test_a_snapshot_row_is_not_demoted_by_a_carried_registration() -> None:
     assert entry is not None
     assert entry.home_item is not None
     assert entry.row_type is not None
+
+
+def test_a_carried_registration_never_resurrects_a_dropped_snapshot_provider() -> None:
+    """The registration owns the SEARCH's providers, not the map's whole entry.
+
+    A snapshot row supplies p1 for a key and a search returns only p2 for
+    it. The registration must carry p2 alone: p1 belongs to the snapshot,
+    and a replacement that drops it has to actually drop it. Recording the
+    whole map entry made the search layer a storer of snapshot state — the
+    dropped provider came back as a trailing chip for the rest of the TTL,
+    and every later search of the key re-recorded it, so it never had to
+    age out. This is audit finding 4 of the 2026-09-12 review.
+    """
+    snap = _item("p1", "Снапшот", year=2019)
+    key = item_group_key(snap)
+    _cache_home({"p1": [snap]}, {}, {})
+    assert catalog_state.resolve_group(key) is not None
+
+    catalog_state.register_search_groups([_group_at(key, _item("p2", "Пошук", year=2019))])
+    # Both layers are visible while the snapshot that carried p1 is current.
+    assert set(catalog_state.resolve_group(key) or {}) == {"p1", "p2"}
+
+    # A replacement lands whose snapshot does not carry the key at all.
+    _cache_home({"p9": [_item("p9", "Інший", year=2020)]}, {}, {})
+
+    # Only the SEARCH's provider rides the registration forward.
+    assert set(catalog_state.resolve_group(key) or {}) == {"p2"}
+
+
+def test_a_carried_registration_serves_the_searchs_own_card() -> None:
+    """Whose card for a provider BOTH layers carry? The search's, once the snapshot is gone.
+
+    The map keeps the snapshot's card for a provider both layers carry —
+    the snapshot wins while it exists. The registration is the SEARCH
+    layer's state, though, so it must not carry that same card past the
+    snapshot that chose it: after a replacement drops the key, the card
+    that answers is the one the search returned, which is the result the
+    client actually saw and clicked. Otherwise a snapshot listing outlives
+    its own snapshot because a search happened to name the same provider.
+    """
+    snap = _item("p1", "Дюна", year=2021, n="snap")
+    key = item_group_key(snap)
+    _cache_home({"p1": [snap]}, {}, {})
+    search_card = _item("p1", "Дюна", year=2021, n="search")
+    catalog_state.register_search_groups([_group_at(key, search_card)])
+
+    # Snapshot precedence holds while the snapshot does.
+    live = catalog_state.group_resolution(key)
+    assert live is not None
+    assert live.source("p1") is not None
+    assert live.source("p1").id == snap.id
+
+    # A replacement lands that does not carry the key at all.
+    _cache_home({"p9": [_item("p9", "Інший", year=2020)]}, {}, {})
+
+    after = catalog_state.group_resolution(key)
+    assert after is not None
+    assert set(after.providers) == {"p1"}
+    assert after.source("p1") is not None
+    assert after.source("p1").id == search_card.id
+
+
+def test_a_carried_registration_keeps_an_earlier_searchs_providers() -> None:
+    """Narrowing must exclude the snapshot's providers, not an earlier search's.
+
+    Two searches hit the same key with different providers, inside the same
+    TTL (the second extends it), so BOTH promises are live and both
+    providers are search-owned. The registration carries both — it drops
+    only what the snapshot contributed, which is the fix's whole point and
+    the half a naive "record this search's union" implementation would
+    break (a later search would silently retire the earlier one's result).
+    """
+    film = _item("p1", "Фільм", year=2024)
+    key = item_group_key(film)
+    catalog_state.register_search_groups([_group_at(key, film)])
+    catalog_state.register_search_groups([_group_at(key, _item("p2", "Фільм", year=2024))])
+
+    _cache_home({"p9": [_item("p9", "Інший", year=2020)]}, {}, {})
+
+    assert set(catalog_state.resolve_group(key) or {}) == {"p1", "p2"}
 
 
 # ---------------------------------------------------------------------------

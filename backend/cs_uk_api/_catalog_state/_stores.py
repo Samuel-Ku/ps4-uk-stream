@@ -234,9 +234,13 @@ class CatalogState:
         now: Callable[[], float] = time.monotonic,
     ) -> None:
         self._index: dict[str, GroupIndexEntry] = {}
-        #: group key -> (expires_at, provider union) for keys a SEARCH
-        #: created. They outlive a snapshot replacement and expire on the
-        #: search TTL that created them, never on the snapshot's cycle.
+        #: group key -> (expires_at, the providers AND cards the SEARCH
+        #: layer owns for it). Deliberately NOT the resolution map's whole
+        #: entry: a snapshot provider — its card included — is the
+        #: snapshot's to replace, so a registration carries only what a
+        #: search contributed. They outlive a snapshot replacement and
+        #: expire on the search TTL that created them, never on the
+        #: snapshot's cycle.
         self._registrations: dict[str, tuple[float, dict[str, SearchResult]]] = {}
         self._search_ttl_s = (
             _config.SETTINGS.cache_search_s if search_ttl_s is None else search_ttl_s
@@ -380,11 +384,24 @@ class CatalogState:
         so the promise a search makes — your results stay actionable for
         as long as the results themselves are cached — survives a rebuild.
         Re-registering a key extends its TTL, never shortens it.
+
+        The record is the **search layer's own union** for the key — the
+        providers it returned AND their cards, plus those of a still-live
+        earlier registration — never the resolution map's whole entry.
+        Recording the whole entry (the pre-2026-09-13 shape) made the
+        search layer a storer of snapshot state: a provider the next
+        snapshot dropped rode the registration back as a trailing chip for
+        the rest of the TTL, and the snapshot's card could outlive the
+        snapshot that chose it whenever a search also returned that
+        provider. A snapshot provider is the snapshot's to replace, card
+        included; a search must not resurrect either (audit finding 4 of
+        the 2026-09-12 review).
         """
         if not groups:
             return
         existing = self.sources()
-        expires_at = self._now() + self._search_ttl_s
+        now = self._now()
+        expires_at = now + self._search_ttl_s
         changed = False
         for group in groups:
             union = provider_union(group.sources)
@@ -403,7 +420,15 @@ class CatalogState:
                 if key not in self._index:
                     self._index[key] = GroupIndexEntry(home_item=None, row_type=None)
                     changed = True
-                self._registrations[key] = (expires_at, dict(existing[key]))
+                # First-seen wins, and only search-owned entries are ever
+                # recorded, so no snapshot card can ride forward.
+                owned: dict[str, SearchResult] = {}
+                earlier = self._registrations.get(key)
+                if earlier is not None and earlier[0] >= now:
+                    owned.update(earlier[1])
+                for pid, card in union.items():
+                    owned.setdefault(pid, card)
+                self._registrations[key] = (expires_at, owned)
         if changed:
             # Re-set refreshes the whole map's TTL (ADR-0003): a search
             # extends the snapshot's life, never shortens it.
