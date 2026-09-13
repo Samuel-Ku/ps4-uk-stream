@@ -123,6 +123,25 @@ class GroupIndexEntry:
     row_type: str | None
 
 
+@dataclass(frozen=True)
+class Registration:
+    """One key a SEARCH registered, and the search layer's own union for it.
+
+    Named rather than a ``(expires_at, providers)`` tuple so the rule lives
+    in the type instead of in a comment beside it: ``providers`` holds only
+    what the search layer contributed — the cards the search returned, plus
+    those of a still-live earlier registration for the same key — never a
+    snapshot provider, and never the snapshot's card for a provider both
+    layers carry (ADR-0010, audit finding 4). ``apply_snapshot`` merges
+    ``providers`` into a replacement while ``expires_at`` is in the future.
+    """
+
+    #: Monotonic deadline — the search TTL that created (or last extended) it.
+    expires_at: float
+    #: The search layer's provider union, first-seen order, search cards.
+    providers: dict[str, SearchResult]
+
+
 class GroupOrigin(str, Enum):
     """Which layer of the catalog state carries a group key (ADR-0010)."""
 
@@ -234,14 +253,13 @@ class CatalogState:
         now: Callable[[], float] = time.monotonic,
     ) -> None:
         self._index: dict[str, GroupIndexEntry] = {}
-        #: group key -> (expires_at, the providers AND cards the SEARCH
-        #: layer owns for it). Deliberately NOT the resolution map's whole
-        #: entry: a snapshot provider — its card included — is the
-        #: snapshot's to replace, so a registration carries only what a
-        #: search contributed. They outlive a snapshot replacement and
-        #: expire on the search TTL that created them, never on the
-        #: snapshot's cycle.
-        self._registrations: dict[str, tuple[float, dict[str, SearchResult]]] = {}
+        #: group key -> the search layer's registration for it. Deliberately
+        #: NOT the resolution map's whole entry: a snapshot provider — its
+        #: card included — is the snapshot's to replace, so a registration
+        #: carries only what a search contributed, and it expires on the
+        #: search TTL that created it rather than the snapshot's cycle.
+        #: See ``Registration`` for what is and is not in there.
+        self._registrations: dict[str, Registration] = {}
         self._search_ttl_s = (
             _config.SETTINGS.cache_search_s if search_ttl_s is None else search_ttl_s
         )
@@ -424,11 +442,11 @@ class CatalogState:
                 # recorded, so no snapshot card can ride forward.
                 owned: dict[str, SearchResult] = {}
                 earlier = self._registrations.get(key)
-                if earlier is not None and earlier[0] >= now:
-                    owned.update(earlier[1])
+                if earlier is not None and earlier.expires_at >= now:
+                    owned.update(earlier.providers)
                 for pid, card in union.items():
                     owned.setdefault(pid, card)
-                self._registrations[key] = (expires_at, owned)
+                self._registrations[key] = Registration(expires_at=expires_at, providers=owned)
         if changed:
             # Re-set refreshes the whole map's TTL (ADR-0003): a search
             # extends the snapshot's life, never shortens it.
@@ -498,11 +516,11 @@ class CatalogState:
         """Registrations still inside their search TTL (expired ones drop)."""
         now = self._now()
         live: dict[str, dict[str, SearchResult]] = {}
-        for key, (expires_at, per_provider) in list(self._registrations.items()):
-            if expires_at < now:
+        for key, registration in list(self._registrations.items()):
+            if registration.expires_at < now:
                 del self._registrations[key]
                 continue
-            live[key] = per_provider
+            live[key] = registration.providers
         return live
 
     @staticmethod
