@@ -38,6 +38,8 @@ The catalog is shaped by **two independent axes**: the **form** of the content (
 
 `/api/providers` returns a list of `ProviderCapabilities` describing what each provider offers. Shape (decided: two independent sets, Variant A):
 
+(Implemented in code as the `ProviderInfo` wire model — `cs_uk_api/models.py` — the concept name and the type name are distinct on purpose.)
+
 ```text
 forms: frozenset[MediaForm]      # {"movie"}, {"series"}, or both
 styles: frozenset[MediaStyle]    # ∅ = no style-tagged content; or {"anime"} / {"cartoon"} / {all three}

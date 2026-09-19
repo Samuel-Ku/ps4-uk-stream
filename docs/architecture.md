@@ -27,9 +27,9 @@ intended shape, not something shipped here.
 
 ---
 
-## 1. Catalog seam — `cs_uk_api/catalog_state`
+## 1. Catalog seam — `cs_uk_api/_catalog_state`
 
-`catalog_state` is the single owner of the catalog's shared state and the
+`_catalog_state` is the single owner of the catalog's shared state and the
 accessors over it. Both surfaces — the native `/api/*` routes (`main.py`)
 and the Jellyfin facade (`jellyfin/router.py`) — read the same snapshot,
 the same resolution map, and the same caches; there is one cache-key
@@ -56,7 +56,7 @@ never construct or re-derive them (spec: "cache keys and dict shapes stop
 crossing the seam").
 
 **Future direction (spec T2–T4):** the facade currently imports ~9 typed
-accessors directly from `catalog_state`; the spec's target is a small
+accessors directly from `_catalog_state`; the spec's target is a small
 typed catalog interface module that narrows that surface further, with
 the back-compat aliases retired last.
 
@@ -118,11 +118,11 @@ was a test seeding fixture. Its two halves were already superseded:
 
 - The viewer state it pretended to own (played/resume memory) is owned
   by the disk-backed resume and user-state stores in
-  `catalog_state/_stores.py` (`ResumeStore` via `record_playback` /
+  `_catalog_state/_stores.py` (`ResumeStore` via `record_playback` /
   `clear_playback`; `UserStateStore` for favorites / played marks / dub
   memory, spec #247/#257/#276).
 - The content taste profiles always lived in the catalog stores
-  (`catalog_state._stores._profiles`, installed wholesale via the
+  (`_catalog_state._stores._profiles`, installed wholesale via the
   `install_profiles()` / read via `get_profiles()` accessors, spec
   #252).
 
@@ -139,14 +139,23 @@ The operator seam (T12):
   reference (`from . import config as _config; _config.SETTINGS.x`) —
   no module imports the value into its own binding. The single test patch
   point is `cs_uk_api.config.SETTINGS`.
-- **Store constructors:** stores are constructed with a settings argument
-  (re-instantiable, the snapshot-store pattern):
-  - `catalog_state.CatalogStores(settings)` — the six cache stores
-    (home/search/content/blocklist/gated/sources), TTLs from the snapshot;
-    module singleton `STORES` is the one production binding.
-  - `poster_proxy._cache` and `main._browse_cache` — TTLs from the
-    snapshot at construction.
-  - Tests re-instantiate stores from custom settings instead of import
+- **Store construction:** the persisted stores are constructed with a
+  settings-derived path and exposed as module singletons in
+  `_catalog_state/_stores.py` (`_resume_store`, `_user_state_store`,
+  `_snapshot_store_ref`), replaceable through the
+  `install_resume_store()` / `install_snapshot_store()` seams (the
+  snapshot-store pattern):
+  - The TTL caches (home/search/browse/content/blocklist/row-deep/
+    deep-page/gated/sources) are module-level `TtlCache` singletons in
+    `_catalog_state/_stores.py`, their TTLs bound to
+    `_config.SETTINGS.cache_*_s` at import.
+  - The catalog snapshot's owned derived state (ADR-0010) is a module
+    singleton `_CATALOG = CatalogState()` replaced through
+    `install_catalog_state()`; `now` is the injectable clock.
+  - `poster_proxy._cache` — TTL from the snapshot at construction.
+    (The old `main._browse_cache` moved into `_stores.browse_cache`.)
+  - Tests reset singletons directly (conftest's `_SHARED_STORES` plus
+    `install_catalog_state(CatalogState())`) instead of import
     tricks; no positional `Settings(...)` reconstruction remains in tests
     (`dataclasses.replace` everywhere).
 
