@@ -87,7 +87,7 @@ status: [`docs/provider-triage.md`](../docs/provider-triage.md).
   JSON → iframe (`ashdi` player) → inline `file:` payload. Series
   resolve via the episodes walk; **movies** whose episodes walk is
   empty fall back to the direct endpoint
-  `/api/player/<playerId>/<translationId>` (`DirectPlayerResponse`),
+  `/api/player/<playerId>/<translationId>`,
   mirroring the upstream Kotlin `loadMovieLinks` — so films return a
   real m3u8 instead of `not_found`. **Decision (#128): the direct
   endpoint stays** — it makes episode-less movies playable rather
