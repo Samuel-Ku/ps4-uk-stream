@@ -22,11 +22,18 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import cast
 
 from .. import config as _config
 from ..cache import TtlCache
-from ..models import HomeItem, HomeResponse, SearchGroup, SearchResult
+from ..models import (
+    BrowseResponse,
+    ContentResponse,
+    HomeItem,
+    HomeResponse,
+    SearchGroup,
+    SearchResponse,
+    SearchResult,
+)
 from ..recommend import ItemProfile
 from ..resume_store import ResumeStore
 from ..snapshot_store import SnapshotStore
@@ -37,27 +44,27 @@ log = logging.getLogger("cs_uk_api.catalog_state.stores")
 
 #: v3 (issue #70): the merged home view — «Новинки» + «Популярні зараз»
 #: + the five type rows — is a curated snapshot, refreshed every 30 min.
-home_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_home_s)
+home_cache: TtlCache[HomeResponse] = TtlCache(default_ttl_s=_config.SETTINGS.cache_home_s)
 
 #: Multi-provider merged search (ticket #106): the native ``/api/search``
 #: route and the Jellyfin facade share the SAME search cache (ADR-0003,
 #: same 5m TTL as browse), so a query searched from either surface never
 #: runs the provider fan-out twice. Key format and cache-key axes match
 #: the route's contract exactly (``search:{provider}:{q}:{form}:{style}``).
-search_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_search_s)
+search_cache: TtlCache[SearchResponse] = TtlCache(default_ttl_s=_config.SETTINGS.cache_search_s)
 
 #: The native browse route's per-page cache (ADR-0003 browse TTL): the
 #: one store ``main.py`` used to own outright (``_browse_cache``),
 #: re-homed beside its siblings by the 2026-09-08 architecture review
 #: (candidate 1) so no route module owns a store any more.
-browse_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_search_s)
+browse_cache: TtlCache[BrowseResponse] = TtlCache(default_ttl_s=_config.SETTINGS.cache_search_s)
 
 #: Content-detail + blocked-country caches (ADR-0003). Moved here from
 #: ``main.py`` so the Jellyfin facade's ticket #105 detail resolver reads
 #: the SAME stores the native ``/api/content`` route uses — one TTL, one
 #: cache key shape (``content:{provider}:{external}``), one clear().
-content_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_content_s)
-blocklist_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_content_s)
+content_cache: TtlCache[ContentResponse] = TtlCache(default_ttl_s=_config.SETTINGS.cache_content_s)
+blocklist_cache: TtlCache[bool] = TtlCache(default_ttl_s=_config.SETTINGS.cache_content_s)
 
 #: Deep-row extension caches (spec #305): the merged pool BEYOND a
 #: home row's snapshot (``row_deep_cache``, keyed per row kind) and the
@@ -67,15 +74,15 @@ blocklist_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_content_s)
 #: TtlCache machinery as the per-page browse cache, no new layer.
 #: Cleared with the home snapshot on rebuild (the pools are
 #: snapshot-anchored).
-row_deep_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_search_s)
-deep_page_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_search_s)
+row_deep_cache: TtlCache[list[HomeItem]] = TtlCache(default_ttl_s=_config.SETTINGS.cache_search_s)
+deep_page_cache: TtlCache[list[SearchResult]] = TtlCache(default_ttl_s=_config.SETTINGS.cache_search_s)
 
 #: Subscription-gate verdict store: ``content:{provider}:{external}`` →
 #: True (gated) / False (known-good). Written by the catalog sweep and
 #: read by the routes so a gated verdict survives across home rebuilds
 #: without re-resolving (TTL is deliberately longer than the home cache,
 #: see ``Settings.cache_gated_s``).
-gated_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_gated_s)
+gated_cache: TtlCache[bool] = TtlCache(default_ttl_s=_config.SETTINGS.cache_gated_s)
 
 #: v3 (issue #60): side cache keyed by group_key → {provider →
 #: SearchResult}. Populated from the raw SearchResult listings the home
@@ -86,7 +93,9 @@ gated_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_gated_s)
 #: ``/Items/{g2:...}`` resolves provider+external from it. ``g2:`` ids
 #: are deliberately NOT self-resolving; a cold cache yields 404
 #: ("item unavailable"), which Jellyfin clients tolerate.
-sources_cache: TtlCache = TtlCache(default_ttl_s=_config.SETTINGS.cache_home_s)
+sources_cache: TtlCache[dict[str, dict[str, SearchResult]]] = TtlCache(
+    default_ttl_s=_config.SETTINGS.cache_home_s
+)
 
 _HOME_KEY = "home:v1"
 _SOURCES_KEY = "home:sources:v1"
@@ -309,9 +318,7 @@ class CatalogState:
         and writes it through one interface instead of reaching for the
         cache's key itself.
         """
-        return cast(
-            dict[str, dict[str, SearchResult]], sources_cache.get(_SOURCES_KEY) or {}
-        )
+        return sources_cache.get(_SOURCES_KEY) or {}
 
     def snapshot_entries(self) -> tuple[SnapshotEntry, ...]:
         """The SNAPSHOT layer's distinct cards, in row-then-item order.

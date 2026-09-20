@@ -133,16 +133,16 @@ def _parse_genre_ids(genre_ids: str | None) -> set[str] | None:
     return {g for g in (x.strip() for x in genre_ids.split(",")) if g}
 
 
-def _user_data(item_id: str | None) -> UserDataResult | None:
+def _user_data(item_id: str) -> UserDataResult:
     """The UserDataResult for an item id (spec #257).
 
     Resolution wrapper (ticket #344): IsFavorite/Played come from the
     persisted user-state store and PlaybackPositionTicks from the
     playback store — read HERE; the wire shaping delegates to
-    ``dto.user_data``.
+    ``dto.user_data``. Every caller passes a concrete id (a path
+    param, a group key or a wire id), so the Optional the dto keeps
+    for its own generality never propagates past this wrapper.
     """
-    if item_id is None:
-        return None
     pos = playback_positions().get(item_id)
     return dto.user_data(
         item_id,

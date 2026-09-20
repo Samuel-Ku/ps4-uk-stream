@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import cast
 
 import httpx
 from fastapi import HTTPException
@@ -101,7 +100,7 @@ async def merged_search(
         cache_key += ":no-uakino"
     cached = search_cache.get(cache_key)
     if cached is not None:
-        return cast(SearchResponse, cached)
+        return cached
     if provider == "uakino":
         # Explicit uakino: 502 on a startup marker, bounded wait on
         # ready_event, 503 ``warming`` on timeout (issue #196).

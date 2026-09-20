@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import cast
 
 from fastapi import FastAPI, HTTPException, Query
 
@@ -74,7 +75,7 @@ def register(app: FastAPI) -> None:
         cache_key = f"browse:{provider}:{section}:{page}"
         cached = _browse_cache.get(cache_key)
         if cached is not None:
-            return cached  # type: ignore[return-value]
+            return cached
         results, has_next = await _upstream_guard(
             provider,
             p.browse(section, page, get_client()),
@@ -192,7 +193,9 @@ async def _content_by_id(content_id: str) -> ContentResponse:
         # Blocklisted (or otherwise deliberately unavailable) — the same
         # not_found the pre-T4 route answered.
         raise HTTPException(404, detail=ErrorResponse(error="not_found", message=content_id).model_dump())
-    return result.content  # type: ignore[return-value]
+    # The delegate's invariant: an OK verdict always carries the detail
+    # (("ok", resp) / (verdict, None) — see cached_provider_content).
+    return cast(ContentResponse, result.content)
 
 
 async def _content_by_group_key(group_key: str) -> GroupContentResponse:

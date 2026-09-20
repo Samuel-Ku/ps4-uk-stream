@@ -43,7 +43,7 @@ def register(router: APIRouter) -> None:
         the versioned user-state file.
         """
         set_favorite(item_id, True)
-        return _user_data(item_id)  # type: ignore[return-value]
+        return _user_data(item_id)
 
     @router.delete(
         "/Users/{user_id}/FavoriteItems/{item_id}",
@@ -54,7 +54,7 @@ def register(router: APIRouter) -> None:
     async def favorite_remove(user_id: str, item_id: str) -> UserDataResult:
         """Un-favorite an item (spec #257) — same response contract."""
         set_favorite(item_id, False)
-        return _user_data(item_id)  # type: ignore[return-value]
+        return _user_data(item_id)
 
     @router.post(
         "/Users/{user_id}/PlayedItems/{item_id}",
@@ -65,7 +65,7 @@ def register(router: APIRouter) -> None:
     async def played_add(user_id: str, item_id: str) -> UserDataResult:
         """Mark an item played (spec #257) — the context-menu affordance."""
         set_played(item_id, True)
-        return _user_data(item_id)  # type: ignore[return-value]
+        return _user_data(item_id)
 
     @router.delete(
         "/Users/{user_id}/PlayedItems/{item_id}",
@@ -76,4 +76,4 @@ def register(router: APIRouter) -> None:
     async def played_remove(user_id: str, item_id: str) -> UserDataResult:
         """Mark an item unplayed (spec #257) — same response contract."""
         set_played(item_id, False)
-        return _user_data(item_id)  # type: ignore[return-value]
+        return _user_data(item_id)

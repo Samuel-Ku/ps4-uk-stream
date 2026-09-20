@@ -115,12 +115,18 @@ The provider base is the typed vocabulary every adapter speaks:
   helpers typed to return it (`_type_from_url`, `_classify_from_tags`,
   the `_PATH_TYPE`/`_TAG_TYPE` tables) are per-adapter, not centralized
   in `base.py`: each HTML provider keeps its own (e.g. `bambooua.py`,
-  `cikavaideya.py`, `doramyworld.py`). Zero `# type: ignore[arg-type]`
-  sites remain in the tree — the former three (`extractors/regex.py`,
-  `providers/coaninet.py`, `providers/anitubeinua.py`) were closed by
-  typing the locals and returns (`StreamType`, `TranslationLevel`),
-  2026-09-20. Other ignore flavors remain elsewhere (11 sites across
-  5 files), so a blanket zero-ignore goal is still open.
+  `cikavaideya.py`, `doramyworld.py`). Zero `# type: ignore` sites remain
+  in production code — the former three `arg-type` sites
+  (`extractors/regex.py`, `providers/coaninet.py`,
+  `providers/anitubeinua.py`) were closed by typing the locals and
+  returns (`StreamType`, `TranslationLevel`), and the eleven
+  `return-value`/`attr-defined`/`assignment` sites were closed 2026-09-20
+  by parametrizing `TtlCache` (the cache-typed artifacts), narrowing
+  `_user_data` to its real contract, and an overload pair on
+  `dto.user_data`; the three `attr-defined` survivors in
+  `jellyfin/router.py`'s case-insensitive matcher are load-bearing (a
+  per-route cache smuggled onto Starlette route instances, which have no
+  `path_format` statically). The test suite pins its own ignores.
 - `ProviderError(code, message)` — the typed error vocabulary; `code` is
   a string value preserved on the wire (`"gated"`, `"not_found"`,
   `"parse_failed"`, `"upstream_unreachable"`, …), so a typo can't
