@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping, Sequence
-from typing import cast
 
 from .. import config as _config
 from ..health import TRACKER, record_verdict
@@ -120,7 +119,7 @@ async def load_home() -> HomeResponse:
     """
     cached = home_cache.get(_HOME_KEY)
     if cached is not None:
-        return cast(HomeResponse, cached)
+        return cached
 
     store = _snapshot_store()
     persisted, sources = store.load()
@@ -334,7 +333,7 @@ def _cache_home(
 
 def get_home() -> HomeResponse | None:
     """Cached home snapshot without triggering a build (None on cold cache)."""
-    return cast(HomeResponse, home_cache.get(_HOME_KEY))
+    return home_cache.get(_HOME_KEY)
 
 
 # ---------------------------------------------------------------------------
@@ -414,7 +413,7 @@ async def extend_row_pool(
         return None
     cached = row_deep_cache.get(_deep_key(row_type))
     if cached is not None:
-        return cast(list[HomeItem], cached)
+        return cached
     sources = _row_sources(row_type)
     if not sources:
         return None
@@ -442,7 +441,7 @@ async def extend_row_pool(
             TRACKER.record(pid, ok=True)
             deep_page_cache.set(cache_key, list(results))
         else:
-            results = cast(list[SearchResult], cached_page)
+            results = cached_page
         if form is not None:
             results = [r for r in results if r.form == form]
         if results:

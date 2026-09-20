@@ -20,7 +20,7 @@ log = logging.getLogger("cs_uk_api.poster")
 #: The poster cache store (ADR-0003), constructed from the ``SETTINGS``
 #: snapshot (Arch T12: stores read settings through the one ``config``
 #: binding — the poster policy reads below are lazy at call time).
-_cache = TtlCache(default_ttl_s=_config.SETTINGS.cache_poster_s)
+_cache: TtlCache[tuple[bytes, str]] = TtlCache(default_ttl_s=_config.SETTINGS.cache_poster_s)
 
 _MAX_HOPS = 5
 
@@ -186,7 +186,7 @@ async def fetch(u: str, http: httpx.AsyncClient) -> tuple[bytes, str] | None:
         return None
     cached = _cache.get(u)
     if cached is not None:
-        return cached  # type: ignore[return-value]
+        return cached
     if _config.SETTINGS.poster_cache_dir is not None:
         disk = await asyncio.to_thread(
             _disk_get, _config.SETTINGS.poster_cache_dir, u, _config.SETTINGS.poster_disk_ttl_s

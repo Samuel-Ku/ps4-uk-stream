@@ -142,10 +142,7 @@ async def run_once(
         plain_http_provider_ids(), day_offset, deep_every_n_days
     )
     injected = http is not None
-    if injected:
-        client: httpx.AsyncClient = http  # type: ignore[assignment]
-    else:
-        client = get_client()
+    client = http if http is not None else get_client()
 
     try:
         for provider_id in plain_http_provider_ids():

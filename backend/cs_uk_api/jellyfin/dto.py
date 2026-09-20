@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from typing import overload
 
 from ..models import (
     ContentResponse,
@@ -47,6 +48,28 @@ def poster_tag(poster_url: str) -> str:
     busts exactly when the upstream art changes and not otherwise.
     """
     return hashlib.sha256(poster_url.encode()).hexdigest()[:16]
+
+
+@overload
+def user_data(
+    item_id: None,
+    *,
+    favorite: bool,
+    played: bool,
+    position_ticks: int | None = None,
+    runtime_ticks: int | None = None,
+) -> None: ...
+
+
+@overload
+def user_data(
+    item_id: str,
+    *,
+    favorite: bool,
+    played: bool,
+    position_ticks: int | None = None,
+    runtime_ticks: int | None = None,
+) -> UserDataResult: ...
 
 
 def user_data(

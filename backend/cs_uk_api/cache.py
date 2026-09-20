@@ -44,9 +44,15 @@ from __future__ import annotations
 
 import time
 from threading import Lock
+from typing import Generic, TypeVar
+
+#: The value type one cache instance holds. Parametrizing a TtlCache
+#: (``TtlCache[BrowseResponse]``) makes ``get`` return the stored shape
+#: instead of ``object``, so readers don't need a ``cast`` per read.
+_V = TypeVar("_V")
 
 
-class TtlCache:
+class TtlCache(Generic[_V]):
     """A tiny in-memory TTL cache, no extra deps required.
 
     See module docstring for the wire-level contract (key format, TTL,
@@ -56,10 +62,10 @@ class TtlCache:
 
     def __init__(self, default_ttl_s: int) -> None:
         self._default_ttl_s = default_ttl_s
-        self._data: dict[str, tuple[float, object]] = {}
+        self._data: dict[str, tuple[float, _V]] = {}
         self._lock = Lock()
 
-    def get(self, key: str) -> object | None:
+    def get(self, key: str) -> _V | None:
         now = time.monotonic()
         with self._lock:
             entry = self._data.get(key)
@@ -71,7 +77,7 @@ class TtlCache:
                 return None
             return value
 
-    def set(self, key: str, value: object, ttl_s: int | None = None) -> None:
+    def set(self, key: str, value: _V, ttl_s: int | None = None) -> None:
         ttl = self._default_ttl_s if ttl_s is None else ttl_s
         expires_at = time.monotonic() + max(ttl, 0)
         with self._lock:

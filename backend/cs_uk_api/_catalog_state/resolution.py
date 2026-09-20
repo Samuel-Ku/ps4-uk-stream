@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Sequence
-from typing import cast
 
 import httpx
 from fastapi import HTTPException
@@ -273,7 +272,7 @@ def peek_group_content(group_key: str) -> ContentResponse | None:
     cached = content_cache.get(cache_key)
     if cached is None:
         return None
-    return cast(ContentResponse, cached)
+    return cached
 
 
 #: Single-flight guard for ``resolve_group_content`` (ticket #224): a
@@ -361,7 +360,7 @@ async def _resolve_group_content_once(
         return None
     cached = content_cache.get(cache_key)
     if cached is not None:
-        return cast(ContentResponse, cached)
+        return cached
     provider = PROVIDERS.get(provider_id)
     if provider is None:
         return None
@@ -445,7 +444,7 @@ async def cached_provider_content(
         return "gated", None
     cached = content_cache.get(cache_key)
     if cached is not None:
-        return "ok", cast(ContentResponse, cached)
+        return "ok", cached
     resp = await PROVIDERS[provider_id].content(external_id, get_client())
     if _config.SETTINGS.block_russian and is_blocked_country(resp.country):
         blocklist_cache.set(cache_key, True)

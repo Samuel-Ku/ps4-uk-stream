@@ -25,7 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Sequence
-from typing import Any, cast
+from typing import Any
 
 from .. import config as _config
 from ..home import build_genre_rows
@@ -202,7 +202,7 @@ def _llm_history_signal() -> list[dict[str, object]]:
     (profiles carry no title); a group outside the snapshot falls back
     to its group key.
     """
-    home = cast("HomeResponse | None", home_cache.get(_HOME_KEY))
+    home = home_cache.get(_HOME_KEY)
     title_by_key: dict[str, str] = {}
     if home is not None:
         title_by_key = {it.group_key: it.title for row in home.rows for it in row.items}

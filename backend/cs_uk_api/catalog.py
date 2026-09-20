@@ -192,8 +192,11 @@ class ContentVerdict(str, Enum):
 
 @dataclass(frozen=True)
 class ProviderContent:
-    """One provider-scoped content outcome: verdict plus the detail when
-    OK. The route answers its own 404s from the verdict."""
+    """One provider-scoped content outcome. The verdict fully
+    determines the detail: OK always carries it (the delegate's
+    ``("ok", resp)`` construction is its only source), the other two
+    never do — so callers raise from the verdict and read ``content``
+    without an Optional."""
 
     verdict: ContentVerdict
     content: ContentResponse | None = None
