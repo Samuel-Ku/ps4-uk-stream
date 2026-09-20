@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import hashlib
 
-from ..config import SETTINGS
+from .. import config as _config
 
 #: What the server tells the client it is. The official Jellyfin apps
 #: validate the server's product/version on connect and refuse anything
@@ -42,7 +42,9 @@ def _server_id() -> str:
     A restart keeps the same ServerId (clients pin it in their local
     database), while two different deployments differ.
     """
-    return hashlib.sha256(f"{SETTINGS.host}:{SETTINGS.port}".encode()).hexdigest()[:16]
+    return hashlib.sha256(
+        f"{_config.SETTINGS.host}:{_config.SETTINGS.port}".encode()
+    ).hexdigest()[:16]
 
 
 __all__ = ["_PRODUCT", "_VERSION", "_server_id", "_user_name_for"]

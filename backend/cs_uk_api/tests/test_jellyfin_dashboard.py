@@ -19,6 +19,7 @@ import pytest
 import respx
 from fastapi.testclient import TestClient
 
+from cs_uk_api import config as _config
 from cs_uk_api._catalog_state import (
     blocklist_cache,
     content_cache,
@@ -198,13 +199,14 @@ def test_items_counts_cold_snapshot_is_zero(client: TestClient) -> None:
 def _patch_poster_dir(
     monkeypatch: pytest.MonkeyPatch, poster_cache_dir: str | None
 ) -> None:
-    """Swap the Dashboard module's frozen SETTINGS for a copy with a new
-    poster dir — SETTINGS is frozen, so tests replace it wholesale, and
-    the storage route reads it from its own module now."""
+    """Swap the config SETTINGS binding the Dashboard reads through for
+    a copy with a new poster dir — SETTINGS is frozen, so tests replace
+    it wholesale at the single patch point (§5), and the storage route
+    reads it through the config module."""
     from dataclasses import replace
 
     monkeypatch.setattr(
-        jf_dashboard, "SETTINGS", replace(SETTINGS, poster_cache_dir=poster_cache_dir)
+        _config, "SETTINGS", replace(SETTINGS, poster_cache_dir=poster_cache_dir)
     )
 
 

@@ -10,8 +10,11 @@ reaching that module — the exact failure the 2026-09-20 audit found in
 ``llm.py``, which this guard's scan then showed was not the only one.
 
 The single test patch point is ``cs_uk_api.config.SETTINGS`` (§5).
-``llm.py`` was converted to module-reference reads in the pass that
-landed this guard; its tests patch ``_config`` like every other module's.
+Every production module now conforms: ``llm.py`` was converted with
+this guard, and the last three (``jellyfin/handshake.py``,
+``jellyfin/identity.py``, ``jellyfin/dashboard.py``) on 2026-09-20 —
+the allowlist below is empty, and the staleness test keeps any future
+entry honest.
 """
 
 from __future__ import annotations
@@ -33,20 +36,14 @@ _SETTINGS_NAME = re.compile(r"\bSETTINGS\b")
 #: ``SETTINGS = load_settings()`` binding everything else reads through.
 _OWNER = "config.py"
 
-#: Pre-existing value imports, recorded rather than fixed: converting
-#: them was out of scope for the pass that landed this guard, and each
-#: carries its own patch-point migration (``dashboard``'s test patches
-#: the module binding). They are the ONLY sanctioned exceptions — the
-#: gate below fails on any new one, and the staleness test keeps these
-#: entries honest until they are converted.
-_ALLOWED_VALUE_IMPORTS: dict[str, str] = {
-    "jellyfin/handshake.py": "pre-existing (3 usages); conversion is a separate pass",
-    "jellyfin/identity.py": "pre-existing (1 usage); conversion is a separate pass",
-    "jellyfin/dashboard.py": (
-        "pre-existing (1 usage); its test patches the module binding"
-        " (test_jellyfin_dashboard.py) and must migrate with it"
-    ),
-}
+#: Sanctioned value imports — EMPTY since 2026-09-20, when the last
+#: three pre-existing offenders (the jellyfin handshake/identity/
+#: dashboard trio) were converted to module-reference reads and their
+#: test patch sites migrated to the single patch point. The gate below
+#: fails on ANY value import outside ``config.py``; if an exception is
+#: ever sanctioned again, record it here with its reason — the
+#: staleness test keeps the entry honest until it is converted.
+_ALLOWED_VALUE_IMPORTS: dict[str, str] = {}
 
 
 def _violations_in(rel_path: str, text: str) -> list[str]:

@@ -18,9 +18,9 @@ import uuid
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
+from .. import config as _config
 from .. import row_kinds
 from ..catalog import refresh_snapshot
-from ..config import SETTINGS
 from ..models import HomeRow
 from . import dto
 from .auth import require_token
@@ -91,7 +91,7 @@ def register(router: APIRouter) -> None:
         login screen at all.
         """
         return SystemInfoPublic(
-            LocalAddress=f"{SETTINGS.host}:{SETTINGS.port}",
+            LocalAddress=f"{_config.SETTINGS.host}:{_config.SETTINGS.port}",
             ServerName=_PRODUCT,
             Version=_VERSION,
             ProductName=_PRODUCT,
@@ -116,7 +116,7 @@ def register(router: APIRouter) -> None:
         route: proves the ``require_token`` gate on a real endpoint.
         """
         return SystemInfoPublic(
-            LocalAddress=f"{SETTINGS.host}:{SETTINGS.port}",
+            LocalAddress=f"{_config.SETTINGS.host}:{_config.SETTINGS.port}",
             ServerName=_PRODUCT,
             Version=_VERSION,
             ProductName=_PRODUCT,
@@ -203,7 +203,7 @@ def register(router: APIRouter) -> None:
         client's "signed in as X" UI shows what the user typed; nothing is
         stored (sessions are no-ops, D8).
         """
-        token = SETTINGS.jellyfin_token
+        token = _config.SETTINGS.jellyfin_token
         server_id = _server_id()
         user = UserDto(
             Name=body.Username,
