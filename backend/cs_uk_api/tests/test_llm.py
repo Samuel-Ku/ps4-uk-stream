@@ -16,6 +16,7 @@ import httpx
 import pytest
 import respx
 
+from cs_uk_api import config as _config
 from cs_uk_api import llm as llm_mod
 from cs_uk_api.config import SETTINGS
 from cs_uk_api.llm import (
@@ -112,7 +113,7 @@ def test_llm_enabled_requires_all_knobs(monkeypatch) -> None:
     from dataclasses import replace
 
     disabled = replace(SETTINGS, llm_base_url=None, llm_key=None, llm_model=None)
-    monkeypatch.setattr(llm_mod, "SETTINGS", disabled)
+    monkeypatch.setattr(_config, "SETTINGS", disabled)
     assert llm_mod.llm_enabled() is False
 
     full = replace(
@@ -121,7 +122,7 @@ def test_llm_enabled_requires_all_knobs(monkeypatch) -> None:
         llm_key="k",
         llm_model="m",
     )
-    monkeypatch.setattr(llm_mod, "SETTINGS", full)
+    monkeypatch.setattr(_config, "SETTINGS", full)
     assert llm_mod.llm_enabled() is True
 
 
@@ -153,7 +154,7 @@ async def test_fetch_profile_returns_validated_profile(monkeypatch) -> None:
     from dataclasses import replace
 
     monkeypatch.setattr(
-        llm_mod, "SETTINGS", replace(SETTINGS, llm_base_url="x", llm_key="k", llm_model="m")
+        _config, "SETTINGS", replace(SETTINGS, llm_base_url="x", llm_key="k", llm_model="m")
     )
     client = _FakeClient(_extract_good_answer())
     p = await fetch_profile(
@@ -173,7 +174,7 @@ async def test_fetch_profile_returns_validated_profile(monkeypatch) -> None:
 async def test_fetch_profile_disabled_knobs_returns_none(monkeypatch) -> None:
     from dataclasses import replace
 
-    monkeypatch.setattr(llm_mod, "SETTINGS", replace(SETTINGS, llm_base_url=None))
+    monkeypatch.setattr(_config, "SETTINGS", replace(SETTINGS, llm_base_url=None))
     client = _FakeClient("unused")
     p = await fetch_profile(history=[], queries=[], genres=[], client=client)  # type: ignore[arg-type]
     assert p is None
@@ -185,7 +186,7 @@ async def test_fetch_profile_network_error_returns_none(monkeypatch) -> None:
     from dataclasses import replace
 
     monkeypatch.setattr(
-        llm_mod, "SETTINGS", replace(SETTINGS, llm_base_url="x", llm_key="k", llm_model="m")
+        _config, "SETTINGS", replace(SETTINGS, llm_base_url="x", llm_key="k", llm_model="m")
     )
     p = await fetch_profile(
         history=[], queries=[], genres=[],
@@ -199,7 +200,7 @@ async def test_fetch_profile_non_json_returns_none(monkeypatch) -> None:
     from dataclasses import replace
 
     monkeypatch.setattr(
-        llm_mod, "SETTINGS", replace(SETTINGS, llm_base_url="x", llm_key="k", llm_model="m")
+        _config, "SETTINGS", replace(SETTINGS, llm_base_url="x", llm_key="k", llm_model="m")
     )
     p = await fetch_profile(
         history=[], queries=[], genres=[],
@@ -213,7 +214,7 @@ async def test_fetch_profile_invalid_profile_returns_none(monkeypatch) -> None:
     from dataclasses import replace
 
     monkeypatch.setattr(
-        llm_mod, "SETTINGS", replace(SETTINGS, llm_base_url="x", llm_key="k", llm_model="m")
+        _config, "SETTINGS", replace(SETTINGS, llm_base_url="x", llm_key="k", llm_model="m")
     )
     p = await fetch_profile(
         history=[], queries=[], genres=[],
@@ -227,7 +228,7 @@ async def test_fetch_profile_fenced_json_parses(monkeypatch) -> None:
     from dataclasses import replace
 
     monkeypatch.setattr(
-        llm_mod, "SETTINGS", replace(SETTINGS, llm_base_url="x", llm_key="k", llm_model="m")
+        _config, "SETTINGS", replace(SETTINGS, llm_base_url="x", llm_key="k", llm_model="m")
     )
     fenced = f"```json\n{_extract_good_answer()}\n```"
     p = await fetch_profile(
@@ -243,7 +244,7 @@ async def test_httpx_client_hits_chat_completions(monkeypatch) -> None:
     from dataclasses import replace
 
     monkeypatch.setattr(
-        llm_mod, "SETTINGS", replace(SETTINGS, llm_base_url="x", llm_key="k", llm_model="m")
+        _config, "SETTINGS", replace(SETTINGS, llm_base_url="x", llm_key="k", llm_model="m")
     )
     with respx.mock() as mlock:
         route = mlock.post("https://api.example.test/v1/chat/completions").mock(
@@ -310,7 +311,7 @@ async def test_refresh_profile_installs_and_clears_home(monkeypatch) -> None:
     import cs_uk_api._catalog_state as cs
 
     monkeypatch.setattr(
-        llm_mod, "SETTINGS", replace(SETTINGS, llm_base_url="x", llm_key="k", llm_model="m")
+        _config, "SETTINGS", replace(SETTINGS, llm_base_url="x", llm_key="k", llm_model="m")
     )
     from cs_uk_api.models import HomeItem, HomeResponse, HomeRow
 
@@ -363,7 +364,7 @@ async def test_refresh_profile_failure_keeps_previous(monkeypatch) -> None:
     import cs_uk_api._catalog_state as cs
 
     monkeypatch.setattr(
-        llm_mod, "SETTINGS", replace(SETTINGS, llm_base_url="x", llm_key="k", llm_model="m")
+        _config, "SETTINGS", replace(SETTINGS, llm_base_url="x", llm_key="k", llm_model="m")
     )
     _seed_refresh_signals(cs)
     previous = TasteProfile(genre_weights={"драма": 1.5})
@@ -394,7 +395,7 @@ async def test_refresh_profile_disabled_knobs_returns_false(monkeypatch) -> None
     import cs_uk_api._catalog_state as cs
 
     monkeypatch.setattr(
-        llm_mod, "SETTINGS", replace(SETTINGS, llm_base_url=None, llm_key=None, llm_model=None)
+        _config, "SETTINGS", replace(SETTINGS, llm_base_url=None, llm_key=None, llm_model=None)
     )
     _seed_refresh_signals(cs)
     set_active_profile(None)
