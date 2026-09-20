@@ -35,7 +35,7 @@ from typing import Any, Protocol
 
 import httpx
 
-from .config import SETTINGS
+from . import config as _config
 from .models import RowIdea, TasteProfile
 
 log = logging.getLogger(__name__)
@@ -76,7 +76,8 @@ def set_active_profile(profile: TasteProfile | None) -> None:
 
 def llm_enabled() -> bool:
     """True when all three knobs are configured (the layer activates)."""
-    return bool(SETTINGS.llm_base_url and SETTINGS.llm_key and SETTINGS.llm_model)
+    settings = _config.SETTINGS
+    return bool(settings.llm_base_url and settings.llm_key and settings.llm_model)
 
 
 # ---------------------------------------------------------------- parser
@@ -254,9 +255,9 @@ async def fetch_profile(
     if not llm_enabled():
         return None
     client = client or HttpxLlmClient(
-        base_url=SETTINGS.llm_base_url or "",
-        api_key=SETTINGS.llm_key or "",
-        model=SETTINGS.llm_model or "",
+        base_url=_config.SETTINGS.llm_base_url or "",
+        api_key=_config.SETTINGS.llm_key or "",
+        model=_config.SETTINGS.llm_model or "",
     )
     # Provider titles are untrusted DATA — quoted as a JSON array, never
     # embedded raw as instructions.
