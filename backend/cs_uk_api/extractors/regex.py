@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 
+from ..models import StreamType
 from .base import BaseExtractor, ExtractResult
 
 # file:"..."  /  file: "..."  /  file: '...' (PlayerJS)
@@ -35,7 +36,7 @@ _TAG_RE = re.compile(
 _M3U8_RE = re.compile(r"\.m3u8(\?|$)", re.IGNORECASE)
 
 
-def _classify(url: str) -> str:
+def _classify(url: str) -> StreamType:
     if _M3U8_RE.search(url):
         return "m3u8"
     return "mp4"
@@ -51,5 +52,5 @@ class RegexExtractor(BaseExtractor):
             m = rx.search(html)
             if m:
                 url = m.group(1)
-                return ExtractResult(url=url, type=_classify(url))  # type: ignore[arg-type]
+                return ExtractResult(url=url, type=_classify(url))
         return None
