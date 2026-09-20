@@ -42,6 +42,7 @@ from ..models import (
     Section,
     StreamResponse,
     Translation,
+    TranslationLevel,
 )
 from ..wire_identity import split_wire_id
 from .base import BaseProvider, ProviderError, provider_stream_response
@@ -298,7 +299,7 @@ class CoaninetProvider(BaseProvider):
 
         # Per-episode translations only when at least one episode has
         # multiple voice types; otherwise stay at content level.
-        translations_level = "content"
+        translations_level: TranslationLevel = "content"
         if seasons and any(
             e.translations and len(e.translations) > 1
             for e in seasons[0].episodes
@@ -313,7 +314,7 @@ class CoaninetProvider(BaseProvider):
             poster=poster,
             translations=translations,
             seasons=seasons,
-            translations_level=translations_level,  # type: ignore[arg-type]
+            translations_level=translations_level,
             form=media_type,
             styles=frozenset(),
         )

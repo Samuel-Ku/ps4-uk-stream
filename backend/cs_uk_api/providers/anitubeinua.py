@@ -54,6 +54,7 @@ from ..models import (
     Section,
     StreamResponse,
     Translation,
+    TranslationLevel,
 )
 from ..wire_identity import episode_wire_id, parse_episode_tail
 from .base import BaseProvider, ProviderError, dle_has_next, provider_stream_response
@@ -593,7 +594,7 @@ class AnitubeinuaProvider(BaseProvider):
         # seasons. Defaults to no seasons if the AJAX call fails so
         # the response still has a valid (empty) translation list.
         seasons: list[Season] | None = None
-        translations_level: str = "content"
+        translations_level: TranslationLevel = "content"
         try:
             playlist = await self._load_playlist(external_id, http)
             seasons = _build_seasons(playlist, external_id, self.id)
@@ -619,7 +620,7 @@ class AnitubeinuaProvider(BaseProvider):
             form="series",
             styles=frozenset({"anime"}),
             seasons=seasons,
-            translations_level=translations_level,  # type: ignore[arg-type]
+            translations_level=translations_level,
         )
 
     async def stream(

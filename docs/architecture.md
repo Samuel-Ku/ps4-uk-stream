@@ -115,11 +115,12 @@ The provider base is the typed vocabulary every adapter speaks:
   helpers typed to return it (`_type_from_url`, `_classify_from_tags`,
   the `_PATH_TYPE`/`_TAG_TYPE` tables) are per-adapter, not centralized
   in `base.py`: each HTML provider keeps its own (e.g. `bambooua.py`,
-  `cikavaideya.py`, `doramyworld.py`). Three `# type: ignore[arg-type]`
-  sites remain in the tree (`extractors/regex.py`,
-  `providers/coaninet.py`, `providers/anitubeinua.py` — the latter two
-  on `translations_level=` payloads); contract #319's zero-ignore goal
-  was not fully reached.
+  `cikavaideya.py`, `doramyworld.py`). One `# type: ignore[arg-type]`
+  site remains in the tree (`extractors/regex.py`); contract #319's
+  zero-ignore goal was not fully reached. (The former
+  `providers/coaninet.py` / `providers/anitubeinua.py` sites — on
+  `translations_level=` payloads — were removed by annotating the
+  locals as `TranslationLevel`, 2026-09-20.)
 - `ProviderError(code, message)` — the typed error vocabulary; `code` is
   a string value preserved on the wire (`"gated"`, `"not_found"`,
   `"parse_failed"`, `"upstream_unreachable"`, …), so a typo can't
