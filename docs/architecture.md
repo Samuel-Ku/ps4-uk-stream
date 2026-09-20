@@ -19,11 +19,13 @@ Two wave tickets are the anchor for this document:
   (`cs_uk_api/row_kinds`) replaces the three private row-kind
   vocabularies (home title table, facade wire maps, deep-rows).
 
-The wave's spec also calls out two seams that are **not yet in this tree**
-(the wave's earlier interface tickets T1–T4 are closed but unmerged on
-`master`): a typed catalog interface module and a dedicated wire-identity
-module. Where a section says "future direction", that is the spec's
-intended shape, not something shipped here.
+The wave's spec also called out two seams beyond its own tickets: a
+typed catalog interface module and a dedicated wire-identity module.
+Both have since landed on `master` — `cs_uk_api/catalog.py` (spec #309
+step 2 / ticket #311, §1) and `cs_uk_api/wire_identity.py` (spec #340,
+since extended by the playable-id grammar #374 and the `g3:` IMDb
+identity #395, §2) — and this document describes them as shipped. The
+few genuine "future direction" notes left are named as such.
 
 ---
 
@@ -35,7 +37,7 @@ and the Jellyfin facade (`jellyfin/router.py`) — read the same snapshot,
 the same resolution map, and the same caches; there is one cache-key
 shape, one TTL, one `clear()` per store.
 
-Public accessors (the seams callers use, `__all__` + facade imports):
+Public accessors (the seams callers use, `_catalog_state.__all__`):
 
 | Accessor | Purpose |
 | --- | --- |
@@ -55,38 +57,50 @@ Cache-key formats (`search:{provider}:{q}:{form}:{styles}`, `content:…`,
 never construct or re-derive them (spec: "cache keys and dict shapes stop
 crossing the seam").
 
-**Future direction (spec T2–T4):** the facade currently imports ~9 typed
-accessors directly from `_catalog_state`; the spec's target is a small
-typed catalog interface module that narrows that surface further, with
-the back-compat aliases retired last.
+**Typed interface (landed, spec T2–T4 = ticket #311):** both surfaces
+now import the small typed interface module `cs_uk_api/catalog.py` —
+the native routes (`main.py`: `from . import catalog`) and the Jellyfin
+facade (`jellyfin/router.py`, a 12-member import list) alike. The
+module delegates to `_catalog_state` while keeping cache keys, dict
+shapes and first-seen ordering off the seam; `_catalog_state.__all__`
+above remains the implementation's full surface.
 
-## 2. Wire identity — `cs_uk_api/merge` + `providers/base.MOVIE_SUFFIX`
+## 2. Wire identity — `cs_uk_api/wire_identity`
 
-Group identity is stateless and versioned:
+One module owns every id grammar the codebase used to re-derive by hand
+(spec #340 moved it out of `merge.py` + `base.MOVIE_SUFFIX`; both
+re-export the primitives for the established import paths, the edge
+strictly one-way: merge → wire_identity):
 
-- `merge.group_key(alias, form, year)` — `g2:` + sha1 of the canonical
-  (alias|form|year) triple. `_KEY_VERSION = "g2"` in `merge.py` is the
-  version bump point; a normalization-rule change is a `g2:` → `g3:` bump,
-  never a migration.
-- `merge.group_key_from(title, form, year, item_id)` /
-  `merge.item_group_key(item)` — per-item stateless keys.
-- `merge.merge_results(items)` — the **single merge projection** (union
-  find, year-soft rule) that produces `MergeGroup`s; every caller
-  (search, home rows, sources map) feeds through it instead of
-  re-implementing merge rules.
+- `group_key(alias, form, year)` — `g2:` + sha1 of the canonical
+  (alias|form|year) triple. `GROUP_KEY_PREFIX = "g2:"` in
+  `wire_identity.py` is the version bump point; a normalization-rule
+  change is a `g2:` → `g3:` bump, never a migration.
+- `group_key_from(title, form, year, item_id)` / `item_group_key(item)`
+  — per-item stateless keys.
+- **Two live key forms:** `g2:` digest keys and `g3:` IMDb keys —
+  `group_key_from_imdb` emits `g3:<tt-number>` (spec #395), and when
+  any merged member asserts a validated IMDb id, that `g3:` tt-key IS
+  the canonical group key (one tt = one work, form-independent,
+  cross-language).
+- `merge.merge_results(items)` — the **single merge projection** (alias
+  union-find, year-soft rule, the g3 IMDb tier) that produces
+  `MergeGroup`s; every caller (search, home rows, sources map) feeds
+  through it instead of re-implementing merge rules. `merge.py` still
+  owns the matching/projection logic — only the id-grammar primitives
+  re-export through it.
 
-Movie wire ids end in the canonical sentinel `MOVIE_SUFFIX = ":__movie__"`
-(`providers/base.py`, contract step #319): the sentinel was previously
-defined in 8 provider files; now it is imported from `base` everywhere.
+Movie wire ids end in the canonical sentinel `MOVIE_SUFFIX =
+":__movie__"` (defined in `wire_identity.py`, re-exported by
+`providers/base.py`): the sentinel was previously defined in 8 provider
+files, then imported from `base`, and now lives beside the rest of the
+grammar.
 
-Episode wire ids carry `:s{season}e{episode}` tails; the resume rail's
-reverse lookup (`group_key_for_external`) understands both the episode
-wire id and the uakino/animeon fallback shapes (ticket #234).
-
-**Future direction (spec T1):** the spec moves the group-key prefix, the
-episode-tail grammar and the movie suffix into one wire-identity module so
-a version bump edits one file. In this tree the grammar lives in `merge.py`
-plus `base.MOVIE_SUFFIX`.
+Episode wire ids carry `:s{season}e{episode}` tails; the episode-tail
+grammar and the playable-id composition (`parse_playable_id`, spec
+#374) are owned here too. The resume rail's reverse lookup
+(`group_key_for_external`) understands both the episode wire id and the
+uakino/animeon fallback shapes (ticket #234).
 
 ## 3. Provider vocabulary — `cs_uk_api/providers/base`
 
@@ -97,10 +111,15 @@ The provider base is the typed vocabulary every adapter speaks:
   and `ContentResponse` carry `form` + `styles`; `Section` declares its
   filter axes.
 - `MediaTypeStr = Literal["movie", "series", "anime", "cartoon", "dorama"]`
-  (`base.py`) — the internal classification value. Classification helpers
-  (`_type_from_url`, `_classify_*`, `_PATH_TYPE`/`_TAG_TYPE` tables) are
-  typed to return it; no `# type: ignore[arg-type]` remains (contract
-  #319).
+  (`base.py`) — the internal classification value. The classification
+  helpers typed to return it (`_type_from_url`, `_classify_from_tags`,
+  the `_PATH_TYPE`/`_TAG_TYPE` tables) are per-adapter, not centralized
+  in `base.py`: each HTML provider keeps its own (e.g. `bambooua.py`,
+  `cikavaideya.py`, `doramyworld.py`). Three `# type: ignore[arg-type]`
+  sites remain in the tree (`extractors/regex.py`,
+  `providers/coaninet.py`, `providers/anitubeinua.py` — the latter two
+  on `translations_level=` payloads); contract #319's zero-ignore goal
+  was not fully reached.
 - `ProviderError(code, message)` — the typed error vocabulary; `code` is
   a string value preserved on the wire (`"gated"`, `"not_found"`,
   `"parse_failed"`, `"upstream_unreachable"`, …), so a typo can't
@@ -185,9 +204,10 @@ Markdown report (`sweep_episode_rail.write_report`, Store T3 #326) —
 the previously non-atomic `open(path, "w")` write now goes through
 `atomic_write_text`. (The profile-store adapter named here when the
 section was written was removed with its module — §4.) The user-state /
-snapshot / drift-baseline stores
-named in the spec belong to the unmerged round-1 interface work and are
-not in this tree yet (their versioned adapters land with it).
+snapshot / drift-baseline stores named in the spec landed with the
+round-1 interface work: `user_state.py`, `snapshot_store.py`,
+`resume_store.py` and `drift/baseline.py` all persist through
+`VersionedFileStore`.
 
 ## 7. Provider probing — `cs_uk_api/probe`
 
@@ -200,8 +220,8 @@ Probe T1 #327):
   provider has).
 - **Wire-id splitting** — `split_wire_id(composite)`: `provider:external`
   → `(provider, external)`, splitting on the FIRST colon so episode wire
-  ids (`uakino:6268:e1`) survive intact. The canonical copy: the 8th
-  in-tree implementation of the same split lives here now.
+  ids (`uakino:6268:e1`) survive intact. The canonical copy moved to
+  `wire_identity.py` (spec #340); `probe` re-exports it.
 - **Verdict normalization** — `probe_error_verdict(exc)` /
   `is_probe_failure(verdict)`: `gated` is a policy outcome, NOT a
   failure (ADR-0002 decided in one place); `unavailable`/`error` are
@@ -287,7 +307,12 @@ route), so `extendable` is consumed in production, not merely pinned.
 Future flag changes are single-line edits to the table entry, consumed
 everywhere.
 
-## Verification status (2026-08-15)
+## Verification status (frozen 2026-08-15)
+
+Frozen as of the deepening wave's delivery — the numbers below were true
+on their date and are deliberately NOT maintained (current gate numbers
+live in the PR history and the ADRs). The section stays as the wave's
+acceptance record.
 
 - **Backend suite (fixture-only, no live I/O):** `pytest` **1095 passed**;
   `ruff check cs_uk_api` clean; `mypy cs_uk_api` strict-clean (59 files).
