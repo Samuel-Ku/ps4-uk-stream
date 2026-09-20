@@ -1,25 +1,38 @@
 """Typed catalog interface (spec #309 step 2 / ticket #311).
 
-The small typed seam the routes will import instead of reaching into
+The small typed seam the routes import instead of reaching into
 ``_catalog_state`` internals: cache keys, dict shapes and first-seen
 ordering stop crossing the seam (US1/US2). This module only DELEGATES to
-``_catalog_state`` — the expand phase: every accessor preserves the
-delegate's exact semantics, so existing callers keep working unchanged
-(US11) and the step-3 migration moves them onto this surface without
-behavior risk.
-
-Accessor groups (~9):
+``_catalog_state`` — every accessor preserves the delegate's exact
+semantics, so callers moved onto this surface without behavior change
+(US11). The groups below mirror the module's section banners; new
+accessors join the banner they belong to.
 
   - snapshot: ``snapshot()`` (read) / ``refresh_snapshot()`` (build)
   - item resolution: ``resolve_item()`` — typed verdict, never a bare
-    ``ContentResponse | None`` on the seam
+    ``ContentResponse | None`` on the seam — plus the cache-only
+    ``peek_group_content()``, ``is_hard_unavailable()`` and the played-id
+    reverse lookup ``episode_group_key()``
+  - provider-scoped content (native): ``provider_content()`` — the
+    content-by-id path with a typed OK/GATED/BLOCKED verdict
+  - group resolution (spec #364/ADR-0010): ``group_resolution()`` — the
+    one typed lookup per ``g2:`` key, carrying its ``origin`` — and the
+    deliberately separate ``snapshot_entries()`` iteration surface
+    (snapshot cards only)
+  - deep rows (spec #305): ``extend_row_pool()``
   - search: ``search()`` — the group-registration step folded in (US3),
     so a searched card can never 404 via a missed manual call
+  - listing hygiene + uakino lifecycle: ``filter_gated_items()``,
+    ``await_uakino_ready()``, ``GATE_CHECK_TIMEOUT_S``
   - playback: ``playback_positions()`` / ``recent_playback()`` — typed
     entries (no more ``dict[str, tuple[int, int | None]]`` on the seam);
-    ``record_position()``; ``recent_history()``
-  - viewer state: favorites/played + dub memory
-  - profiles: ``profiles()`` (get) / ``refresh_profile()`` (install)
+    ``record_position()``; ``recent_history()``; ``flush_playback()``
+  - viewer state: favorites/played + dub memory (spec #257/#276)
+  - viewer-state derivations (#347): ``playback_translations()``,
+    ``ordered_translation_candidates()``, ``record_dub_choice()``,
+    ``playback_episode_pair()``
+  - profiles: ``profiles()`` (read) / ``install_profiles()`` (the seed
+    seam) / ``refresh_profile()`` (LLM warm) / ``recommendation_stats()``
 
 Cache-key construction is deliberately absent here — it stays inside
 ``_catalog_state`` (the implementation), per the ticket's AC.
