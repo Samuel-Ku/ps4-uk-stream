@@ -50,7 +50,7 @@ import uuid
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response
 
-from ..config import SETTINGS
+from .. import config as _config
 from .auth import require_token
 from .identity import _server_id, _user_name_for
 from .models import (
@@ -101,7 +101,7 @@ def _storage_report() -> SystemStorageDto:
     every other named folder is the honest empty row (no other on-disk
     state exists). ``Libraries`` is empty — the catalog is virtual.
     """
-    poster_dir = SETTINGS.poster_cache_dir
+    poster_dir = _config.SETTINGS.poster_cache_dir
     empty = FolderStorageDto(Path="")
     return SystemStorageDto(
         ProgramDataFolder=empty,
