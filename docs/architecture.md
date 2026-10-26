@@ -45,11 +45,13 @@ Public accessors (the seams callers use, `_catalog_state.__all__`):
 | `get_home()` | Cached snapshot without triggering a build |
 | `merged_search()` | Multi-provider search fan-out + merge + gating (native and facade share it) |
 | `resolve_group(group_key)` | `g2:` key → `{provider: SearchResult}` map |
-| `resolve_group_content(group_key)` | `g2:` key → one provider's `ContentResponse` (single-flight) |
-| `peek_group_content(group_key)` | Cache-only read, never fetches |
+| `resolve_group_content(group_key)` | `g2:` key → the group's content detail, walking its members (single-flight) |
+| `peek_group_content(group_key)` | Cache-only read, never fetches — the page the walk landed on |
+| `group_content_member(group_key)` | Cache-only: WHICH member's page answered (the play seam's lead) |
+| `member_attempts(sources, …)` | The member walk's order, cap and refusal taxonomy (Q45/Q47) |
 | `register_search_groups(groups)` | Fold search results into the resolution map |
 | `group_key_for_external(composite)` | `provider:external` → `g2:` key (resume rail) |
-| `is_hard_unavailable(group_key)` | Gated/blocked/unknown verdict for the detail route |
+| `is_hard_unavailable(group_key)` | Gated/blocked/unknown verdict for the detail route, read along the walk's order |
 | `filter_gated_items(...)` | Subscription-gate sweep (drops promo-clip-only cards) |
 
 Cache-key formats (`search:{provider}:{q}:{form}:{styles}`, `content:…`,

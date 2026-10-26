@@ -5,8 +5,9 @@ every byte-serving route:
 
   - :func:`resolve_stream` — THE seam every playback surface crosses:
     the two playable id families (a ``g2:`` movie key → the group's
-    first-seen provider, and on a walkable refusal the group's other
-    members after it; a provider-scoped episode wire id → its prefix),
+    member whose content page answered, and on a walkable refusal the
+    group's other members after it; a provider-scoped episode wire id →
+    its prefix),
     ``provider.stream()``, the health recording, the play attestation
     (one outcome per playback request, keyed by the ``surface`` its
     caller declares) and the None-means-404 posture (D2: never a 5xx for
@@ -32,7 +33,6 @@ public no-token posture of the byte routes) is unchanged.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
 from functools import partial
 from urllib.parse import quote
 
@@ -40,16 +40,22 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
 
+#: Re-exported for the tests that assert the cap from this seam: the
+#: value itself has ONE owner (``_catalog_state.resolution``, Q45/Q47).
+from ..catalog import MAX_MEMBER_ATTEMPTS as MAX_MEMBER_ATTEMPTS  # noqa: PLC0414
 from ..catalog import (
+    WALKABLE_VERDICT_CODES,
     episode_group_key,
+    group_content_member,
     group_resolution,
+    member_attempts,
     peek_group_content,
     record_dub_choice,
     resolve_item,
 )
-from ..health import ITEM_VERDICT_CODES, LANE_VERDICT_CODES, TRACKER, record_verdict
+from ..health import ITEM_VERDICT_CODES, TRACKER, record_verdict
 from ..http_client import get_client
-from ..models import PlaySurface, SearchResult, StreamResponse
+from ..models import PlaySurface, StreamResponse
 from ..play_attestation import PLAY_ATTESTATION
 from ..providers import PROVIDERS
 from ..providers.base import ProviderError
@@ -66,9 +72,10 @@ def provider_for_item(item_id: str) -> str | None:
 
     The attribution rule the seam and the attestation share: a
     provider-scoped episode wire id names its prefix; a ``gN:`` group key
-    names the group's first-seen provider (the one
-    :func:`resolve_stream` tries first; a member after it may end up
-    serving). None for a malformed id or a cold group — the attestation
+    names the group's first-seen provider (the one the group's chip strip
+    shows first; :func:`resolve_stream` may try the member whose content
+    page answered before it, and a member after it may end up serving).
+    None for a malformed id or a cold group — the attestation
     then counts the fault under ``play_attestation.UNKNOWN_PROVIDER``
     rather than guessing.
     """
@@ -97,54 +104,6 @@ def _refuse(
     """
     if surface is not None:
         PLAY_ATTESTATION.refused(provider_id, item_id, code, surface)
-
-
-#: Refusals that mean "ask the group's next member": a lane fault (the
-#: member could not answer) or ``not_found`` (it answered with no
-#: playable file). Derived from the health taxonomy rather than copied,
-#: so a new lane code becomes walkable the moment it lands in
-#: ``LANE_VERDICT_CODES`` — the classification keeps its one owner and
-#: the walk cannot drift away from it. Deliberately NOT walkable:
-#: ``gated`` (the title is deliberately unavailable; another member's
-#: answer is not a repair for what the client asked) and the translation
-#: verdicts (``invalid_translation`` / ``translation_missing`` — the
-#: client picked that track, and the group's other members are not more
-#: likely to carry it). A codeless crash (``None``) IS walkable: it is
-#: recorded as a lane fault, so the walk treats it like one.
-WALKABLE_VERDICT_CODES = frozenset(LANE_VERDICT_CODES | {"not_found"})
-
-#: How many of a group's members one play press may walk. Upstream
-#: etiquette, the #305 lesson applied to playback: a work carried by
-#: eight providers must not spend eight upstream calls — each up to the
-#: client timeout — to answer one request. The walk follows the group's
-#: first-seen order (the order the detail page lists, so the member the
-#: viewer sees first is the one tried first) and stops here.
-MAX_MEMBER_ATTEMPTS = 3
-
-
-def _member_attempts(sources: Sequence[SearchResult]) -> tuple[tuple[str, str], ...]:
-    """A group's members as ``(provider, bare external id)`` attempts.
-
-    First-seen order, so the walk degrades from the member the viewer saw
-    toward the rest of the union; at most one attempt per provider, and
-    never more than ``MAX_MEMBER_ATTEMPTS``. A card whose bare id is
-    empty, or whose provider is no longer registered, cannot be asked at
-    all and is dropped — the remaining attempts (or the final refusal)
-    still record this request's outcome.
-    """
-    attempts: list[tuple[str, str]] = []
-    asked: set[str] = set()
-    for result in sources:
-        if result.provider in asked or result.provider not in PROVIDERS:
-            continue
-        external_id = result.id.partition(":")[2]
-        if not external_id:
-            continue
-        asked.add(result.provider)
-        attempts.append((result.provider, external_id))
-        if len(attempts) == MAX_MEMBER_ATTEMPTS:
-            break
-    return tuple(attempts)
 
 
 async def _attempt_stream(
@@ -220,10 +179,13 @@ async def resolve_stream(
     voice, or the picked dub id, spec #276), same shared ``httpx``
     client:
 
-      - a movie's ``g2:`` group key → the group's first-seen provider
-        (the same provider the detail page shows first), whose BARE
-        external id is what stream() consumes; if it refuses, the walk
-        continues through the group's other members (below). Playability
+      - a movie's ``g2:`` group key → the group's members in first-seen
+        order, LED by the member whose content page answered
+        (``group_content_member``: content resolution walks the group
+        too, so the page may have come from a member other than the
+        first; Q47), each called with its BARE external id; if a member
+        refuses, the walk continues through the group's other members
+        (below). Playability
         is decided on the content's FORM — ``content.form == "movie"`` —
         the same verdict detail renders as ``Type="Movie"``, NOT the
         card's style literal (``SearchResult.type`` can say ``"anime"``
@@ -280,7 +242,17 @@ async def resolve_stream(
         if res is None or not res.sources:
             _refuse(None, item_id, "not_found", surface)
             return None
-        attempts = _member_attempts(res.sources)
+        # The member whose content page answered leads the walk: the page
+        # may have been served by a member other than the first (content
+        # resolution walks the group too, Q47), and THAT member is the one
+        # whose translation ids the client is holding, and the one whose
+        # detail page we just proved alive — asking the members after it
+        # first would spend an upstream call on a member already known
+        # dead, and would hand a picked dub's id to members that never
+        # listed it (a translation verdict ends the walk).
+        attempts = member_attempts(
+            res.sources, lead=group_content_member(group_key)
+        )
         if not attempts:
             # Members exist on record but none can be asked (no usable
             # ids, or every one names a retired provider): the same
