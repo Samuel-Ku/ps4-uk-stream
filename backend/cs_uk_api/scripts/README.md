@@ -1,7 +1,7 @@
 # Backend scripts
 
 Operational scripts living next to the API package
-(`backend/cs_uk_api/scripts/`). Both run from the `backend/` directory
+(`backend/cs_uk_api/scripts/`). All run from the `backend/` directory
 with the venv active; exit code 0 means OK.
 
 ## `gate.sh <provider> [query] | gate.sh --all`
@@ -41,3 +41,19 @@ endpoint, printing `OK`/`FAIL` lines.
 
 See `docs/research/uakino-bypass-2026-08-02.md` for the investigation
 behind the browser-session architecture.
+
+## `doc_drift_guard.py [--root PATH] [--verbose]`
+
+Every backticked reference in the living docs must resolve against the
+tracked codebase: nothing used to fail when code moved and a doc kept
+naming the dead symbol as load-bearing fact. The guard reports each
+unresolved span with file and line; its allowlist holds *documented*
+non-existence only, one reason per entry.
+
+- `--root` defaults to the repo root; `--verbose` also prints the
+  allowlist with its reasons. Also enforced by
+  `cs_uk_api/tests/test_doc_drift_guard.py`, so the release gate runs it
+  on every push.
+- A cited commit SHA is checked against the object database, so a
+  SHALLOW checkout cannot verify it — the gate fetches full history
+  (`fetch-depth: 0`) rather than allowlisting the commits the docs cite.
