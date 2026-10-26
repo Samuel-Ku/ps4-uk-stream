@@ -243,6 +243,154 @@ async def test_run_reports_ok_and_failed_providers(tmp_path) -> None:
     assert "uakino" not in report.providers
 
 
+class _TransportFailProvider(_OkProvider):
+    """The adapters' canonical transport failure: ``ProviderError(
+    "unreachable", str(error))`` raised ``from`` an httpx exception.
+
+    httpx's transport exceptions stringify to ``''`` (ConnectTimeout,
+    ReadTimeout, ReadError, RemoteProtocolError), so this arrives at the
+    probe with an EMPTY message — the shape that left three vhosts on one
+    blackholing origin reading as an undecidable ``unreachable: ``.
+
+    ``message=`` overrides the adapter's own string, for the edge where
+    the adapter passed ``""`` while the cause still had text to show.
+    """
+
+    id = "p3"
+    name = "P3"
+
+    def __init__(self, cause: httpx.HTTPError, *, message: str | None = None) -> None:
+        self._cause = cause
+        self._message = str(cause) if message is None else message
+
+    async def browse(self, section: str, page: int, http: object) -> tuple[list[SearchResult], bool]:
+        error = ProviderError("unreachable", self._message)
+        raise error from self._cause
+
+
+class _MessageFailProvider(_OkProvider):
+    """A verdict the adapter DID write a message for is kept verbatim,
+    even when the raise carries a transport cause of its own."""
+
+    id = "p4"
+    name = "P4"
+
+    async def browse(self, section: str, page: int, http: object) -> tuple[list[SearchResult], bool]:
+        cause = httpx.ReadTimeout("")
+        raise ProviderError("upstream_unreachable", "status 503") from cause
+
+
+@pytest.mark.parametrize(
+    "cause_type",
+    [
+        httpx.ConnectTimeout,
+        httpx.ReadTimeout,
+        httpx.ReadError,
+        httpx.RemoteProtocolError,
+    ],
+    ids=["ConnectTimeout", "ReadTimeout", "ReadError", "RemoteProtocolError"],
+)
+@pytest.mark.asyncio
+async def test_a_transport_failure_names_its_cause(
+    tmp_path, cause_type: type[httpx.HTTPError]
+) -> None:
+    """An empty verdict message falls back to the cause's class name.
+
+    Every httpx transport exception the adapters can wrap has an empty
+    ``str``; the class name is the only signal that separates a connect
+    blackhole from a read timeout, both in the sweep output and in the
+    filed issue. Regression for kinotron / cikavaideya / simpsonsuatv
+    (three vhosts on one origin, 91.240.20.12) reporting ``unreachable: ``
+    with nothing after the colon.
+    """
+    cause = cause_type("")
+    assert str(cause) == ""  # the premise: only the class name distinguishes it
+    _seed(_TransportFailProvider(cause))
+    report = await run_once(
+        day_offset=0,
+        store=BaselineStore(tmp_path / "state.json"),
+        gateway=_RecorderGateway(),
+        report_path=tmp_path / "report.json",
+        skip_issues=True,
+        http=_FakeHttp(),
+    )
+
+    assert report.failed == ["p3"]  # still a failure — only the text changed
+    expected = f"unreachable: {cause_type.__name__}"
+    assert report.providers["p3"]["listing"]["error"] == expected
+    assert report.providers["p3"]["reason"] == f"probe failed: {expected}"
+
+
+@pytest.mark.asyncio
+async def test_a_cause_with_text_is_preserved_in_the_report(tmp_path) -> None:
+    """A blank adapter message must not reduce a cause that says why:
+    the cause's own text reaches the report (the class is only the
+    fallback when that text is empty)."""
+    _seed(_TransportFailProvider(httpx.ConnectError("connection refused"), message=""))
+    report = await run_once(
+        day_offset=0,
+        store=BaselineStore(tmp_path / "state.json"),
+        gateway=_RecorderGateway(),
+        report_path=tmp_path / "report.json",
+        skip_issues=True,
+        http=_FakeHttp(),
+    )
+
+    assert report.providers["p3"]["listing"]["error"] == "unreachable: connection refused"
+
+
+@pytest.mark.asyncio
+async def test_a_transport_cause_reaches_the_filed_issue_body(tmp_path) -> None:
+    """The cause class is the evidence an operator reads in the filed
+    issue, not only a report detail: the second consecutive failure files
+    the sweep issue, and its body carries
+    ``error=unreachable: ReadTimeout`` rather than the blank tail this
+    formatter replaced."""
+    gateway = _RecorderGateway()
+    store = BaselineStore(tmp_path / "state.json")
+    _seed(_TransportFailProvider(httpx.ReadTimeout("")))
+
+    first = await run_once(
+        day_offset=0,
+        store=store,
+        gateway=gateway,
+        report_path=None,
+        http=_FakeHttp(),
+    )
+    assert first.failed == ["p3"]
+    assert gateway.opened == []  # the first failure logs only
+
+    second = await run_once(
+        day_offset=1,
+        store=store,
+        gateway=gateway,
+        report_path=None,
+        http=_FakeHttp(),
+    )
+    assert second.failed == ["p3"]
+    assert gateway.opened == [("p3", "sweep")]
+    body = gateway.opened_bodies[0]
+    assert "error=unreachable: ReadTimeout)." in body
+    assert "error=unreachable: )." not in body  # the shape this formatter replaced
+
+
+@pytest.mark.asyncio
+async def test_an_adapter_message_is_never_replaced(tmp_path) -> None:
+    """The fallback only fires on an empty message; a real one is kept
+    even when the raise carries a transport cause of its own."""
+    _seed(_MessageFailProvider())
+    report = await run_once(
+        day_offset=0,
+        store=BaselineStore(tmp_path / "state.json"),
+        gateway=_RecorderGateway(),
+        report_path=tmp_path / "report.json",
+        skip_issues=True,
+        http=_FakeHttp(),
+    )
+
+    assert report.providers["p4"]["listing"]["error"] == "upstream_unreachable: status 503"
+
+
 @pytest.mark.asyncio
 async def test_run_writes_report_file(tmp_path) -> None:
     _seed(_OkProvider())

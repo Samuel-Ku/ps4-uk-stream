@@ -64,6 +64,29 @@ class DeepProbeResult:
     head_status: int | None = None
 
 
+def failure_text(error: ProviderError) -> str:
+    """The report line for a provider failure: ``code: detail``.
+
+    httpx's transport exceptions stringify to ``''`` — ``ReadTimeout``,
+    ``ConnectTimeout``, ``ReadError`` and ``RemoteProtocolError`` all do —
+    so the adapters' canonical ``ProviderError("unreachable", str(e))``
+    rendered as ``unreachable: `` and the sweep could not say whether the
+    upstream had gone slow (read timeout) or stopped accepting
+    connections (connect timeout). When the message is empty (including
+    whitespace-only), fall back to the cause: its own text when it has
+    any, else its class name. With no cause either, the detail is
+    ``unknown`` — this line never ends in an ambiguous empty tail.
+    """
+    detail = error.message
+    if not detail.strip():
+        cause = error.__cause__
+        if cause is not None:
+            detail = str(cause).strip() or type(cause).__name__
+        else:
+            detail = "unknown"
+    return f"{error.code}: {detail}"
+
+
 def listing_section(provider: BaseProvider) -> tuple[str, str] | None:
     """The (section_id, kind) the listing probe should use.
 
@@ -101,7 +124,7 @@ async def probe_listing(
         result.cards = list(cards)
         result.ok = True
     except ProviderError as e:
-        result.error = f"{e.code}: {e.message}"
+        result.error = failure_text(e)
     except Exception as e:  # noqa: BLE001 — a probe never crashes the sweep
         result.error = f"{type(e).__name__}: {e}"
     return result
@@ -139,7 +162,7 @@ async def probe_deep(
             result.ok = True  # gated is a deliberate state, not drift
             result.error = "gated"
         else:
-            result.error = f"{e.code}: {e.message}"
+            result.error = failure_text(e)
     except Exception as e:  # noqa: BLE001 — a probe never crashes the sweep
         result.error = f"{type(e).__name__}: {e}"
     return result

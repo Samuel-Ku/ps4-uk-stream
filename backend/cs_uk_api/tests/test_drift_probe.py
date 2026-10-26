@@ -13,10 +13,12 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
 import pytest
 
 from cs_uk_api.drift.probe import (
     EXCLUDED_PROVIDER_IDS,
+    failure_text,
     listing_section,
     probe_deep,
     probe_listing,
@@ -155,6 +157,51 @@ async def test_listing_probe_unexpected_error_recorded() -> None:
 
     assert not result.ok
     assert "ValueError" in (result.error or "")
+
+
+def test_failure_text_labels_a_blank_message_without_a_cause() -> None:
+    """No cause and an empty/whitespace message must not render
+    ``unreachable: `` — the ambiguous shape the formatter exists to
+    prevent."""
+    assert failure_text(ProviderError("unreachable", "")) == "unreachable: unknown"
+    assert failure_text(ProviderError("unreachable", " \t ")) == "unreachable: unknown"
+
+
+def test_failure_text_treats_whitespace_as_empty_for_the_cause_fallback() -> None:
+    """A whitespace-only message is empty for reporting, so an empty-text
+    cause falls back to its class instead of leaving a blank tail."""
+    error = ProviderError("unreachable", " \t ")
+    error.__cause__ = RuntimeError("")
+    assert failure_text(error) == "unreachable: RuntimeError"
+
+
+def test_failure_text_preserves_cause_text_when_the_message_is_blank() -> None:
+    """The cause's own text is kept when the adapter wrote no message."""
+    error = ProviderError("unreachable", " \t ")
+    error.__cause__ = RuntimeError("boom")
+    assert failure_text(error) == "unreachable: boom"
+
+
+@pytest.mark.parametrize(
+    "cause_type",
+    [
+        httpx.ConnectTimeout,
+        httpx.ReadTimeout,
+        httpx.ReadError,
+        httpx.RemoteProtocolError,
+    ],
+    ids=["ConnectTimeout", "ReadTimeout", "ReadError", "RemoteProtocolError"],
+)
+def test_failure_text_names_every_transport_cause(
+    cause_type: type[httpx.HTTPError],
+) -> None:
+    """All four httpx transport exceptions stringify to ``''``, so the
+    formatter must name each class rather than emit a blank tail."""
+    cause = cause_type("")
+    assert str(cause) == ""  # the premise: only the class name distinguishes it
+    error = ProviderError("unreachable", "")
+    error.__cause__ = cause
+    assert failure_text(error) == f"unreachable: {cause_type.__name__}"
 
 
 def test_listing_section_prefers_newest() -> None:
