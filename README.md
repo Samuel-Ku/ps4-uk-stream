@@ -125,8 +125,8 @@ every 6 days, verdicts each against a self-calibrating baseline (a
 healthy pass updates the expected card-count band and form/style
 distribution, so catalog growth never false-positives), and files a
 GitHub issue on the second consecutive failure — one issue per
-provider, recovery comments and closes it. uakino is never probed
-(its health is the API's browser-session heartbeat).
+provider and fault, recovery comments and closes it. uakino is never
+probed (its health is the API's browser-session heartbeat).
 
 A provider that is SERVING but has moved (a smaller listing, a form
 or style it dropped for good) does not keep an issue open forever: its
@@ -138,6 +138,21 @@ under the hard floor) never converge — they close when it really
 recovers. Without the convergence rule a persisted band from an older
 shape failed every sweep, and since the baseline only follows a
 HEALTHY pass, nothing could ever break that loop (#382/#383).
+
+The sweep also judges the PLAYBACK axis, which no probe can reach. It reads
+`/api/health`'s `playback` counters — the API's own record of what it served
+and what the client said played — and applies the same rule on an issue of
+its own: a provider that SERVED streams the client never played logs on the
+first faulting sweep and files on the second consecutive one. The verdict is
+a WINDOW between sweeps, since those counters are process-lifetime totals: a
+clean window means streams were served and at least one played, so a lane
+being actively watched is never accused, and a sweep with no plays at all is
+neither a fault nor a recovery. Lanes the probes exclude (uakino, the torrent
+engine) are judged here too, because this verdict comes from the API's own
+records and costs no probe. A listing that recovers never closes a playback
+issue, and vice versa. `CS_UK_DRIFT_HEALTH` (default
+`http://127.0.0.1:8003/api/health`) names the surface; an unreachable API is
+"not read", never a fault.
 
 Install the timer pair beside the service unit:
 
@@ -187,6 +202,10 @@ read `ok` while every play request against one title is refused
 ```bash
 curl -s http://127.0.0.1:8003/api/health   # .playback = the axis above
 ```
+
+The drift monitor reads this axis nightly and files an issue of its own when
+a provider serves streams the client never plays (see §Upstream drift
+monitor above): the fault a listing probe and a HEAD cannot see.
 
 **Torrent lane (English content, spec #374):** stand the BitPlay engine up
 with `backend/deploy/docker-compose.bitplay.yml`; operate it via

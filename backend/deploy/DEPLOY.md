@@ -83,6 +83,7 @@ Notes:
 | `UAKINO_CHROMIUM` | Chromium binary for the uakino browser session (default `/usr/bin/chromium`) |
 | `CS_UK_LLM_BASE_URL` / `CS_UK_LLM_KEY` / `CS_UK_LLM_MODEL` | optional LLM taste-profile layer (all three set to activate; never commit the key) |
 | `CS_UK_DRIFT_STATE` / `CS_UK_DRIFT_REPORT` | relocate the drift baseline/report files (default `~/.cache/cs-uk-api/drift-{state,report}.json`) |
+| `CS_UK_DRIFT_HEALTH` | the API's health surface the drift monitor reads for its playback axis (default `http://127.0.0.1:8003/api/health`, i.e. this host's `cs-uk-api.service`; unreachable = not read, never a fault) |
 
 ## 3. Install and enable
 
