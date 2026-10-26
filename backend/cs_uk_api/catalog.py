@@ -172,6 +172,40 @@ def is_hard_unavailable(group_key: str) -> bool:
     return _catalog_state.is_hard_unavailable(group_key)
 
 
+def group_content_member(group_key: str) -> str | None:
+    """The member whose page IS this group's content, or None (cache-only).
+
+    The play seam asks it FIRST for the stream: it is the member whose
+    detail page answered — and whose translation ids the client holds.
+    """
+    return _catalog_state.group_content_member(group_key)
+
+
+def member_attempts(
+    sources: Sequence[SearchResult],
+    *,
+    lead: str | None = None,
+    registered_only: bool = True,
+) -> tuple[tuple[str, str], ...]:
+    """A group's members as ``(provider, bare external id)`` attempts.
+
+    ONE owner for the member walk both stages run (Q45/Q47): first-seen
+    order, at most one attempt per provider, capped at
+    ``MAX_MEMBER_ATTEMPTS``, and ``lead`` moving the member that answered
+    to the front.
+    """
+    return _catalog_state.member_attempts(
+        sources, lead=lead, registered_only=registered_only
+    )
+
+
+#: The walk's refusal taxonomy and its cap, re-exported so the facade's own
+#: seam (``jellyfin.delivery``) reads the same owner content resolution does
+#: — a member walk defined twice is a member walk that drifts.
+MAX_MEMBER_ATTEMPTS: int = _catalog_state.MAX_MEMBER_ATTEMPTS
+WALKABLE_VERDICT_CODES: frozenset[str] = _catalog_state.WALKABLE_VERDICT_CODES
+
+
 def episode_group_key(item_id: str) -> str | None:
     """The merged group key behind a played item id (spec #252).
 

@@ -8,12 +8,13 @@ that re-verification read: it must NEVER trigger a provider fetch (a
 cold group answers None without touching PROVIDERS/HTTP).
 
 Seams under test:
-- unit: cache hit returns the first-seen provider's ContentResponse.
+- unit: cache hit returns the resolved member's ContentResponse.
 - unit: cold cache -> None without a fetch (PROVIDERS is empty here; a
   fetch would raise, so None proves the peek is read-only).
 - unit: unknown group / gated / blocklisted -> None.
-- unit: first-seen provider wins (content cached only for a later
-  provider is invisible).
+- unit: the peek reads the WALK's own order (Q47) — the page of the
+  member that answered, and nothing past the member holding a
+  deliberate verdict; ``group_content_member`` names that member.
 - #224: concurrent resolve_group_content calls for the SAME group key
   share ONE upstream resolution — the app fires detail + seasons +
   playback for one item in the same tick (run8 re-hit animeon 4x in
@@ -128,16 +129,39 @@ def test_peek_blocklisted_returns_none() -> None:
     assert catalog_state.peek_group_content("g2:abc") is None
 
 
-def test_peek_prefers_first_seen_provider() -> None:
-    # Content is cached only for the SECOND provider — the peek follows
-    # the same first-seen resolution as resolve_group_content, so it must
-    # not see it.
+def test_peek_reads_the_page_that_answered() -> None:
+    """Q47: the walk may land on a member other than the first.
+
+    Content resolution walks the group, so the page a LATER member served
+    IS this group's content — the peek reads that same answer instead of
+    reporting the dead first member's absence. The first member's page
+    still wins once it has one, because that is where the walk stops.
+    """
     _seed_sources("g2:abc", _result("p1", "ext1"), _result("p2", "ext2"))
     content_cache.set("content:p2:ext2", _content("p2", "ext2"))
-    assert catalog_state.peek_group_content("g2:abc") is None
-    # ... and it IS visible once the first-seen provider is cached.
+    got = catalog_state.peek_group_content("g2:abc")
+    assert got is not None and got.id == "p2:ext2"
+    assert catalog_state.group_content_member("g2:abc") == "p2"
+
     content_cache.set("content:p1:ext1", _content("p1", "ext1"))
-    assert catalog_state.peek_group_content("g2:abc") is not None
+    got = catalog_state.peek_group_content("g2:abc")
+    assert got is not None and got.id == "p1:ext1"
+    assert catalog_state.group_content_member("g2:abc") == "p1"
+
+
+def test_peek_never_looks_past_the_walk_s_stop() -> None:
+    """A deliberate verdict ends the walk, so a page behind it is NOT the
+    group's content — the peek has to agree with the walk it mirrors."""
+    _seed_sources(
+        "g2:abc",
+        _result("p1", "ext1"),
+        _result("p2", "ext2"),
+        _result("p3", "ext3"),
+    )
+    content_cache.set("content:p3:ext3", _content("p3", "ext3"))
+    gated_cache.set("content:p2:ext2", True)
+    assert catalog_state.peek_group_content("g2:abc") is None
+    assert catalog_state.group_content_member("g2:abc") is None
 
 
 class _SlowResolver(BaseProvider):

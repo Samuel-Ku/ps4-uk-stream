@@ -14,6 +14,11 @@ press actually crosses:
   - ``not_found`` on the first member walks too (the dead-file case), and
     it moves only the playback axis (ADR-0002: a verdict is not lane
     health) — while the lane fault in the test above does reach the lane;
+  - a dead DETAIL page on the first member walks as well (Q47: content
+    resolution walks the group), and the play then leads with the member
+    whose page answered instead of asking the dead one for bytes;
+  - a ``gated`` DETAIL page ends the walk there — the same deliberate
+    verdict, one stage earlier;
   - ``gated`` does NOT walk: 404 with the second member never called, so a
     deliberate unavailability costs the group no upstream calls;
   - every member refusing is still a 404, never a 5xx (D2), with every
@@ -39,6 +44,7 @@ from cs_uk_api._catalog_state import (
     home_cache,
     reset_catalog_state,
 )
+from cs_uk_api._catalog_state import resolution as resolution_mod
 from cs_uk_api.config import SETTINGS
 from cs_uk_api.health import TRACKER
 from cs_uk_api.jellyfin import delivery
@@ -84,6 +90,9 @@ class _MemberStub(BaseProvider):
         #: raise, or None for "not scripted" (a not_found, so a test that
         #: forgot to script a member fails loudly instead of serving).
         self.outcome: StreamResponse | ProviderError | None = None
+        #: What ``content()`` does instead of answering: the code whose
+        #: ProviderError this member's DETAIL page dies with (Q47).
+        self.content_failure: str | None = None
 
     async def search(self, query: str, http: Any) -> list[SearchResult]:
         return [self.card]
@@ -98,11 +107,16 @@ class _MemberStub(BaseProvider):
     async def content(self, external_id: str, http: Any) -> ContentResponse:
         """The metadata page — what decides playability (form == movie).
 
-        Kept working on every member: the fault this file is about is the
-        VIDEO failing while the title itself resolves, which is also why
-        ``resolve_group_content`` (first-seen member only) still answers.
+        Working by default: the fault most of this file is about is the
+        VIDEO failing while the title itself resolves. A member can also be
+        scripted with a DEAD page (``content_failure``), which is the whole
+        point of the walk reaching into content resolution (Q47).
         """
         self.content_calls.append(external_id)
+        if self.content_failure is not None:
+            raise ProviderError(
+                self.content_failure, f"{self.content_failure} page for {self.id}"
+            )
         return ContentResponse(
             id=f"{self.id}:{external_id}",
             form="movie",
@@ -133,6 +147,11 @@ def _serves(member: _MemberStub) -> None:
 
 def _fails(member: _MemberStub, code: str) -> None:
     member.outcome = ProviderError(code, f"{code} for {member.id}")
+
+
+def _dead_page(member: _MemberStub, code: str) -> None:
+    """Script the member's DETAIL page to die with ``code`` (Q47)."""
+    member.content_failure = code
 
 
 def _group(*members: _MemberStub) -> str:
@@ -175,8 +194,14 @@ def playback() -> dict[str, Any]:
 
 
 @pytest.fixture(autouse=True)
-def _isolate() -> Iterator[None]:
-    """Only the members of the group exist — no real provider is browsed."""
+def _isolate(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Only the members of the group exist — no real provider is browsed.
+
+    The B23 content retry delay is zeroed: a member with a dead DETAIL page
+    now costs the walk a retry pair, and these tests are about WHICH member
+    answers, never about how long the upstream took.
+    """
+    monkeypatch.setattr(resolution_mod, "CONTENT_RETRY_DELAY_S", 0.0)
     saved = dict(PROVIDERS)
     PROVIDERS.clear()
     for cache in (home_cache, content_cache, blocklist_cache):
@@ -258,6 +283,66 @@ def test_not_found_walks_but_moves_only_the_playback_axis() -> None:
 
     assert playback()["providers"]["p1"]["refused_codes"] == {"not_found": 1}
     assert TRACKER.last_error_at("p1") is None
+
+
+def test_a_dead_detail_page_still_resolves_and_plays() -> None:
+    """Q47: the fault one stage earlier, repaired by the same walk.
+
+    The first member's DETAIL page is dead, so the group's content is
+    served by the second member (``resolve_group_content`` walks the group
+    too) — and the play then leads with THAT member, whose translations the
+    client is holding, instead of spending an upstream call on the member
+    whose page could not even be read.
+    """
+    p1 = _MemberStub("p1", "dune-1")
+    p2 = _MemberStub("p2", "dune-2")
+    _dead_page(p1, "not_found")
+    _serves(p2)
+    group_key = _group(p1, p2)
+
+    detail = client.get(f"/Items/{group_key}", headers={"X-Emby-Token": TOKEN})
+
+    assert detail.status_code == 200  # the title renders, one stage repaired
+    assert p1.content_calls == ["dune-1", "dune-1"]  # its own B23 retry pair
+    assert p2.content_calls == ["dune-2"]  # THIS page is what answered
+
+    r = _play(group_key)
+
+    assert r.status_code == 302
+    assert r.headers["location"] == f"{_CDN}/p2-dune-2.mp4"  # the SECOND member's bytes
+    assert p1.stream_calls == []  # never asked again for bytes it never described
+    assert p2.stream_calls == ["dune-2"]
+    # The already-answered page is what later views read: the dead member is
+    # not re-probed (its B23 pair would cost every view a retry delay).
+    assert p1.content_calls == ["dune-1", "dune-1"]
+
+    axis = playback()
+    assert axis["providers"]["p2"]["served"] == 1
+    assert "p1" not in axis["providers"]  # no play request ever reached it
+    assert TRACKER.last_error_at("p1") is None  # dead page = item verdict
+
+
+def test_a_gated_detail_page_does_not_walk() -> None:
+    """The deliberate verdict, one stage earlier.
+
+    ``gated`` says the title is not for this client — another member's page
+    is not a repair for that — so the walk stops where it met the verdict:
+    the second member's page is never fetched, and ``is_hard_unavailable``
+    (read along the same order) still answers 404 rather than degrading to
+    a card answer.
+    """
+    p1 = _MemberStub("p1", "dune-1")
+    p2 = _MemberStub("p2", "dune-2")
+    _dead_page(p1, "gated")
+    _serves(p2)
+    group_key = _group(p1, p2)
+
+    r = client.get(f"/Items/{group_key}", headers={"X-Emby-Token": TOKEN})
+
+    assert r.status_code == 404
+    assert p1.content_calls == ["dune-1"]  # a verdict is not retried
+    assert p2.content_calls == []
+    assert p2.stream_calls == []
 
 
 def test_gated_does_not_walk() -> None:

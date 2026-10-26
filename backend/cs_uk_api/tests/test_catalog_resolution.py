@@ -3,14 +3,18 @@
 Covers ``cs_uk_api._catalog_state.resolution`` directly: ``g2:``
 resolution from the sources map, the episode-tail reverse lookup
 (exact + numeric fallback), search-group registration folding into the
-map, the subscription-gate sweep verdicts, and the hard-unavailable
-verdict. The wire-level behaviour is pinned in test_gated_filter /
-test_group_content_peek / test_jellyfin_detail; these tests exercise
-the internal module's own contracts.
+map, the subscription-gate sweep verdicts, the hard-unavailable
+verdict, and the member walk content resolution shares with the play
+seam (Q47 — a dead first member is not the title's verdict). The
+wire-level behaviour is pinned in test_gated_filter /
+test_group_content_peek / test_jellyfin_member_fallback /
+test_jellyfin_detail; these tests exercise the internal module's own
+contracts.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from typing import Any, cast
 
@@ -253,3 +257,253 @@ async def test_stripped_details_not_cached_and_next_resolve_heals(
     # fresh upstream probe the second resolve was allowed to make.
     assert _FlakyThenReal.calls == 3
     assert catalog_state.content_cache.get("content:flaky-stub:tt1160419") is not None
+
+
+# --- the member walk (Q47) --------------------------------------------
+#
+# A ``g2:`` key is carried by several providers, so ONE member's dead
+# detail page is not the title's verdict — the same walk the play seam
+# runs, applied to content resolution.
+
+
+class _Member(BaseProvider):
+    """One group member with a scripted detail page.
+
+    ``failure`` is the ProviderError code its ``content()`` raises instead
+    of answering; ``None`` serves a movie page named after the member, so
+    a test can tell which member's page it got.
+    """
+
+    name = "Member"
+    types = ("movie",)
+
+    def __init__(self, pid: str, external: str, *, failure: str | None = None) -> None:
+        self.id = pid
+        self.name = pid.upper()
+        self.external = external
+        self.card = _item(pid, external, "Дюна")
+        self.failure = failure
+        self.content_calls: list[str] = []
+
+    async def search(self, query, http):  # type: ignore[no-untyped-def]
+        return []
+
+    async def content(self, external_id, http):  # type: ignore[no-untyped-def]
+        self.content_calls.append(external_id)
+        if self.failure is not None:
+            raise ProviderError(code=self.failure, message=f"{self.failure} for {self.id}")
+        return ContentResponse(
+            id=f"{self.id}:{external_id}",
+            form="movie",
+            title=f"{self.id} page",
+            year=2021,
+            translations=[Translation(id="uk", label="Дубляж")],
+        )
+
+    async def stream(self, content_id, translation, http):  # type: ignore[no-untyped-def]
+        raise NotImplementedError
+
+
+def _seed_members(group_key: str, *members: _Member) -> None:
+    """Register the members and seed their shared group, in this order."""
+    for member in members:
+        PROVIDERS[member.id] = member
+    _seed_sources({group_key: {m.id: m.card for m in members}})
+
+
+async def test_group_content_walks_past_a_dead_detail_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The user-visible point of the walk: a title whose FIRST member's
+    detail page is dead still resolves from another member.
+
+    ``not_found`` is a dead page, not the title's verdict (ADR-0002), so
+    the walk asks the next member — and the page is cached under the key
+    of the member that ANSWERED, so the native ``/api/content`` route and
+    the next facade call share it."""
+    monkeypatch.setattr(resolution, "CONTENT_RETRY_DELAY_S", 0.0)
+    p1 = _Member("p1", "dune-1", failure="not_found")
+    p2 = _Member("p2", "dune-2")
+    _seed_members("g2:dune", p1, p2)
+
+    content = await resolution.resolve_group_content("g2:dune")
+
+    assert content is not None and content.id == "p2:dune-2"
+    assert content.group_key == "g2:dune"
+    assert p1.content_calls == ["dune-1", "dune-1"]  # its own B23 pair
+    assert p2.content_calls == ["dune-2"]  # each member with its OWN bare id
+    assert catalog_state.content_cache.get("content:p2:dune-2") is not None
+    assert catalog_state.content_cache.get("content:p1:dune-1") is None
+    # The seam that tells the play walk who answered.
+    assert catalog_state.group_content_member("g2:dune") == "p2"
+    assert catalog_state.peek_group_content("g2:dune") is not None
+    # ADR-0002: a dead page is item-class (not lane health); the member
+    # that served is the only health sample this request makes.
+    assert TRACKER.last_error_at("p1") is None
+    assert TRACKER.status("p2") is STATUS_OK
+
+    # The walked-to answer is what the next resolve reads — no refetch of
+    # either member (both pages are now answered for).
+    p1.content_calls.clear()
+    p2.content_calls.clear()
+    again = await resolution.resolve_group_content("g2:dune")
+    assert again is not None and again.id == "p2:dune-2"
+    assert p1.content_calls == [] and p2.content_calls == []
+
+
+async def test_group_content_lane_fault_also_walks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lane fault is a member problem, so it walks too — and it IS lane
+    health, on the member that faulted."""
+    monkeypatch.setattr(resolution, "CONTENT_RETRY_DELAY_S", 0.0)
+    p1 = _Member("p1", "dune-1", failure="upstream_unreachable")
+    p2 = _Member("p2", "dune-2")
+    _seed_members("g2:dune", p1, p2)
+
+    assert await resolution.resolve_group_content("g2:dune") is not None
+    assert TRACKER.last_error_at("p1") is not None
+
+
+async def test_group_content_does_not_walk_past_a_deliberate_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``gated`` answers the CLIENT's request: another member's page is not
+    a repair for it, so the walk stops and the next member is never asked
+    (the same rule the play seam follows)."""
+    monkeypatch.setattr(resolution, "CONTENT_RETRY_DELAY_S", 0.0)
+    p1 = _Member("p1", "dune-1", failure="gated")
+    p2 = _Member("p2", "dune-2")
+    _seed_members("g2:dune", p1, p2)
+
+    assert await resolution.resolve_group_content("g2:dune") is None
+    assert p2.content_calls == []
+    # One attempt, not a retry pair: a deliberate verdict does not change
+    # a second later, and the verdict is cached for the next call.
+    assert p1.content_calls == ["dune-1"]
+    assert catalog_state.gated_cache.get("content:p1:dune-1") is True
+    assert TRACKER.last_error_at("p1") is None
+
+
+async def test_group_content_is_none_when_every_member_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(resolution, "CONTENT_RETRY_DELAY_S", 0.0)
+    p1 = _Member("p1", "dune-1", failure="not_found")
+    p2 = _Member("p2", "dune-2", failure="not_found")
+    _seed_members("g2:dune", p1, p2)
+
+    assert await resolution.resolve_group_content("g2:dune") is None
+    assert p1.content_calls and p2.content_calls
+
+
+async def test_group_content_walk_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Upstream etiquette: a work carried by many providers does not spend
+    one request on all of them (``MAX_MEMBER_ATTEMPTS``, the play seam's
+    cap — one vocabulary, so the two walks cannot diverge)."""
+    monkeypatch.setattr(resolution, "CONTENT_RETRY_DELAY_S", 0.0)
+    members = [
+        _Member(f"p{i}", f"dune-{i}", failure="not_found") for i in range(1, 5)
+    ]
+    _seed_members("g2:dune", *members)
+
+    assert await resolution.resolve_group_content("g2:dune") is None
+
+    cap = resolution.MAX_MEMBER_ATTEMPTS
+    asked = [bool(m.content_calls) for m in members]
+    assert asked == [True] * cap + [False] * (len(members) - cap)
+    assert resolution.WALKABLE_VERDICT_CODES >= {"not_found", "unreachable"}
+    assert "gated" not in resolution.WALKABLE_VERDICT_CODES
+
+
+async def test_group_content_concurrent_callers_share_one_walk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#224 under the walk: the app fires detail + seasons + episodes +
+    playback in one tick, so concurrent callers share ONE leader walk —
+    including its decision to move past the dead member."""
+    monkeypatch.setattr(resolution, "CONTENT_RETRY_DELAY_S", 0.0)
+    p1 = _Member("p1", "dune-1", failure="not_found")
+    p2 = _Member("p2", "dune-2")
+    _seed_members("g2:dune", p1, p2)
+
+    async def _resolve() -> ContentResponse | None:
+        return await resolution.resolve_group_content("g2:dune")
+
+    marks = [asyncio.create_task(_resolve()) for _ in range(4)]
+    answers = await asyncio.gather(*marks)
+
+    assert all(a is not None and a.id == "p2:dune-2" for a in answers)
+    assert len(p1.content_calls) == 2  # ONE walk's B23 pair, not four
+    assert p2.content_calls == ["dune-2"]
+
+
+def test_hard_unavailable_reads_the_walks_order() -> None:
+    """A deliberate verdict held by a LATER member still answers: the first
+    member's page being dead is not a licence to degrade a gated title into
+    a card answer (#224's rule, walked)."""
+    p1 = _Member("p1", "dune-1", failure="not_found")
+    p2 = _Member("p2", "dune-2")
+    _seed_members("g2:dune", p1, p2)
+    assert is_hard_unavailable("g2:dune") is False
+
+    # The first member has no page and no verdict; the second holds the
+    # deliberate one the walk would stop on.
+    catalog_state.gated_cache.set("content:p2:dune-2", True)
+    assert is_hard_unavailable("g2:dune") is True
+
+    # Once a member's page IS resolved, the group is available — even if a
+    # member after it holds a verdict the walk never reaches.
+    catalog_state.gated_cache.clear()
+    catalog_state.content_cache.set(
+        "content:p1:dune-1",
+        ContentResponse(
+            id="p1:dune-1",
+            form="movie",
+            title="P1",
+            translations=[Translation(id="uk", label="Дубляж")],
+        ),
+    )
+    catalog_state.gated_cache.set("content:p2:dune-2", True)
+    assert is_hard_unavailable("g2:dune") is False
+
+
+def test_member_attempts_lead_moves_the_serving_member_first() -> None:
+    """The play seam's lead (Q47): first-seen order, with the member whose
+    page answered pulled to the front and every other rule untouched."""
+    p1 = _Member("p1", "dune-1")
+    p2 = _Member("p2", "dune-2")
+    p3 = _Member("p3", "dune-3")
+    _seed_members("g2:dune", p1, p2, p3)
+    sources = (p1.card, p2.card, p3.card)
+
+    assert resolution.member_attempts(sources) == (
+        ("p1", "dune-1"),
+        ("p2", "dune-2"),
+        ("p3", "dune-3"),
+    )
+    assert resolution.member_attempts(sources, lead="p2") == (
+        ("p2", "dune-2"),
+        ("p1", "dune-1"),
+        ("p3", "dune-3"),
+    )
+    # A lead the group does not carry is a no-op, not an emptier walk.
+    assert resolution.member_attempts(sources, lead="gone") == (
+        ("p1", "dune-1"),
+        ("p2", "dune-2"),
+        ("p3", "dune-3"),
+    )
+
+
+def test_member_attempts_drops_unregistered_only_when_asked() -> None:
+    """The play seam needs the provider object; content resolution does
+    not (a cached page answers without it) — one rule, two callers."""
+    p1 = _Member("p1", "dune-1")
+    _seed_members("g2:dune", p1)
+    sources = (p1.card, _item("retired", "x", "Дюна"))
+
+    assert resolution.member_attempts(sources) == (("p1", "dune-1"),)
+    assert resolution.member_attempts(sources, registered_only=False) == (
+        ("p1", "dune-1"),
+        ("retired", "x"),
+    )

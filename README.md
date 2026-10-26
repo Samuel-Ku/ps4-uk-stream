@@ -195,6 +195,11 @@ page chips list them) and the log names who served. `gated`, and a
 client's own bad translation pick, do not walk — another member cannot
 repair the client's own answer.
 
+The same walk reaches the title's own PAGE: a title whose first member's
+detail page is dead still opens and still plays, and the play then leads
+with the member whose page answered (its translation ids are the ones the
+client is holding). Both stages share one refusal taxonomy and one cap.
+
 It is separate from `/api/providers`' lane status on purpose — a lane can
 read `ok` while every play request against one title is refused
 (ADR-0002) — and both facts are on the wire together:
