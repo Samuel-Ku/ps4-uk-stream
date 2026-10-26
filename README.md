@@ -162,6 +162,13 @@ reported stopping before the position advanced, i.e. bytes were served
 and did not play (the resume store discards those reports by design,
 #214, which is why this state had no owner).
 
+A group key is carried by several providers, so a refusal there is not
+yet the title's verdict: the first member's lane fault or `not_found`
+walks to the group's next member (up to three, in the order the detail
+page chips list them) and the log names who served. `gated`, and a
+client's own bad translation pick, do not walk — another member cannot
+repair the client's own answer.
+
 It is separate from `/api/providers`' lane status on purpose — a lane can
 read `ok` while every play request against one title is refused
 (ADR-0002) — and both facts are on the wire together:
