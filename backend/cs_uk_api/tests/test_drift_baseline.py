@@ -260,6 +260,79 @@ def test_legacy_bare_payload_degrades_to_fresh_recalibration(
     assert caplog.text.strip() != ""  # the degradation is visible
 
 
+# ------------------------------------------------------------ verdict kinds
+
+
+def test_shape_and_broken_failures_are_distinguishable() -> None:
+    """The split the convergence rule hangs on.
+
+    ``shape`` = the listing answered healthily and only the calibrated
+    band disagrees — a provider that may simply have MOVED, so a
+    persistent streak of these is adoptable. ``broken`` = no usable data
+    at all (probe error, zero items, missing fields, under the hard
+    floor) — nothing to calibrate against, so it keeps failing until the
+    provider really recovers.
+    """
+    # shape: under the calibrated low, and a significant form leaving.
+    assert verdict_for(_listing([_card(i) for i in range(4)]), _sig(low=10)).kind == "shape"
+    assert (
+        verdict_for(
+            _listing([_card(i) for i in range(10)]),
+            _sig(forms={"movie": 0.5, "series": 0.5}),
+        ).kind
+        == "shape"
+    )
+    # broken: nothing usable to have an opinion about the shape of.
+    assert verdict_for(_listing([], ok=False, error="timeout: slow"), _sig()).kind == "broken"
+    assert verdict_for(_listing([]), _sig()).kind == "broken"
+    assert verdict_for(_listing([_card(1, title="")]), _sig()).kind == "broken"
+    assert verdict_for(_listing([_card(1)]), None).kind == "broken"
+    # ok: healthy, on a first calibration and against a matching band.
+    assert verdict_for(_listing([_card(i) for i in range(10)]), None).kind == "ok"
+    matching = [_card(i, form="movie") for i in range(6)] + [
+        _card(100 + i, form="series") for i in range(4)
+    ]
+    assert verdict_for(_listing(matching), _sig()).kind == "ok"
+
+
+def test_shape_streak_persists_across_store_instances(tmp_path) -> None:
+    """The convergence clock is STATE, not a run-local variable: the
+    nightly timer is a fresh process every night."""
+    path = tmp_path / "state.json"
+    store = BaselineStore(path)
+    state = store.get("p1")
+    state.consecutive_failures = 2
+    state.shape_streak = 2
+    store.save()
+
+    reloaded = BaselineStore(path).get("p1")
+    assert reloaded.shape_streak == 2
+    assert reloaded.consecutive_failures == 2
+
+
+def test_a_state_file_without_a_streak_reads_as_zero_streak(tmp_path) -> None:
+    """A state file written before the convergence rule must degrade to
+    "no shape failure seen yet" — not trip the clock or the store."""
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "data": {
+                    "p1": {
+                        "consecutive_failures": 2,
+                        "signature": {"count_low": 3, "count_high": 30, "fields_ok": True},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    state = BaselineStore(path).get("p1")
+    assert state.shape_streak == 0
+    assert state.consecutive_failures == 2  # the old field still reads
+
+
 def test_save_never_raises_on_unwritable_location(tmp_path) -> None:
     """spec #363: save() must not raise — the nightly run logs and moves
     on even when the state directory cannot be written."""

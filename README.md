@@ -128,6 +128,17 @@ GitHub issue on the second consecutive failure — one issue per
 provider, recovery comments and closes it. uakino is never probed
 (its health is the API's browser-session heartbeat).
 
+A provider that is SERVING but has moved (a smaller listing, a form
+or style it dropped for good) does not keep an issue open forever: its
+failures are `shape` failures, and after three consecutive ones the
+new shape becomes the baseline and the issue closes as an accepted
+change (not as a recovery). Failures that mean the provider serves
+nothing usable (`broken`: probe error, zero items, missing fields,
+under the hard floor) never converge — they close when it really
+recovers. Without the convergence rule a persisted band from an older
+shape failed every sweep, and since the baseline only follows a
+HEALTHY pass, nothing could ever break that loop (#382/#383).
+
 Install the timer pair beside the service unit:
 
 ```bash
