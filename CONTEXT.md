@@ -298,10 +298,10 @@ waiting for user-visible errors:
 - **Verdict + issue flow** (``drift/monitor.py``, ``drift/issues.py``):
   consecutive-failure counters persist in the state file; the FIRST
   failure logs only, the SECOND consecutive failure files a GitHub
-  issue (one per provider, deduped by title pattern — ``gh issue
-  create/list`` with the operator's auth), repeated failures reuse the
-  open issue, and a healthy pass comments + closes it. The issue
-  gateway is an injectable boundary so tests never spawn `gh`.
+  issue (one per provider AND FAULT, deduped by title pattern — ``gh
+  issue create/list`` with the operator's auth), repeated failures
+  reuse the open issue, and a healthy pass comments + closes it. The
+  issue gateway is an injectable boundary so tests never spawn `gh`.
 - **Convergence: a moved shape is adopted, not nagged (#382/#383).** A
   verdict carries a KIND, because only one of the two failure kinds can
   be outlived by the provider. ``shape`` = the listing answered
@@ -321,9 +321,37 @@ waiting for user-visible errors:
   written before this rule reads as zero) and reset by any ``broken``
   sweep, so an unstable provider cannot recalibrate away a real fault
   on two out of three sweeps.
+- **Playback axis** (``drift/attestation.py``; gateway fault
+  ``playback``): the half of the question no probe can answer — the
+  provider answers every probe (its listing parses, the deep probe's
+  HEAD is 2xx) while the client reports the bytes never played. The
+  sweep reads the API's ``/api/health`` ``playback`` counters — the one
+  thing it takes over the wire, leaving the API process and its memory
+  untouched — and judges a WINDOW between sweeps, because those
+  counters are process-lifetime totals: ``clean`` (streams were served
+  and at least one played; a stream STILL PLAYING reports no stop, so
+  an actively watched lane is never accused), ``no-progress`` (every
+  served stream stopped at zero — the fault), ``no-evidence`` (nothing
+  was played, or the counters went BACK because the API restarted, or
+  a first observation). No evidence neither accuses nor acquits: the
+  streak and any open issue stand, so a low-traffic lane still
+  converges instead of being acquitted by silence. The prober's rule
+  applies unchanged — first fault logs only, the second consecutive
+  one files — on its OWN issue, because the axes have independent
+  lifecycles: a listing that recovers must not close a playback issue,
+  nor the reverse. It runs OUTSIDE the probe loop on purpose, so the
+  lanes the probes exclude (uakino, ``ENGINE_TRACKER_ID``) are judged
+  too — their exclusion is about not warming a second browser session,
+  and these verdicts spend no probe — while the ``unknown`` bucket is
+  not, having no lane to file against. Reference counters ride in
+  ``ProviderState.last_play`` (a state file written before the axis
+  reads as a first observation), and ``CS_UK_DRIFT_HEALTH`` names the
+  surface: unreachable means not read, never a fault.
 - **Report/state**: machine-readable JSON per run
-  (``~/.cache/cs-uk-api/drift-report.json``) plus a per-provider
-  human summary line; baseline/counters in
+  (``~/.cache/cs-uk-api/drift-report.json``) — the probe axis under
+  ``providers``, the playback axis under ``playback``, and
+  ``attestation_error`` naming why the latter was not read — plus a
+  per-provider human summary line on each axis; counters in
   ``~/.cache/cs-uk-api/drift-state.json``. Both gitignored runtime
   state, overridable via ``CS_UK_DRIFT_REPORT`` / ``CS_UK_DRIFT_STATE``.
 - **Scheduling**: ``backend/deploy/cs-uk-api-drift.{service,timer}``
@@ -781,3 +809,4 @@ different questions:
 - **Q43 — The recorded code is the one the caller was handed.** The native surface answers a lane fault with the canonical 502 envelope, so that refusal is recorded as `upstream_unreachable` while the provider's own code stays on the lane axis (`record_verdict`). Item verdicts pass through unchanged (`gated` stays `gated`).
 - **Q44 — `no-progress` is witnessed by the stop report alone.** A `PlaybackStopInfo` under one second (10 000 000 ticks) counts as never having played; start and heartbeat reports never do, because a start legitimately begins at zero. `record_playback` (the resume store, #214) ignores zero positions by design — there is nothing to resume to — so before this axis existed, the very report that witnessed "served but never played" was the report the store discarded.
 - **Q45 — A `gN:` key is played by walking its members (2026-10-26).** A group is carried by several providers, so the first member's refusal is not yet the title's verdict. `resolve_stream` asks the next member when the refusal is one the group can repair — a lane fault or `not_found`; the set is DERIVED from `health.LANE_VERDICT_CODES` plus `not_found`, so a new lane code becomes walkable the moment it is classified, and the walk cannot drift from the taxonomy. It stops when the refusal is not repairable by another member: `gated` is the client's own verdict and `invalid_translation` / `translation_missing` are the client's own track choice — a walk would spend an upstream call to answer a question the client already answered. Order is `sources`' first-seen order (the chips' order, so the walk degrades from the member the viewer saw), each member is tried once and asked with its own BARE external id, and the walk stops at `MAX_MEMBER_ATTEMPTS` (3) — upstream etiquette (#305's lesson applied to playback): a title carried by eight providers must not spend one play press on eight upstream calls. Each attempt records its own outcome on both axes, so the surface answers "served, by whom, after how many refusals" while ADR-0002 holds: a lane fault still moves lane health, `not_found` still does not, and the member that served is that member's success. Not walked, and deliberately: CONTENT resolution still asks the first-seen member only (`resolve_group_content` is provider-independent metadata, and its verdict is the form that decides playability), and an episode wire id has exactly one member by construction (episodes are not reverse-lookupable, D2).
+- **Q46 — The playback axis is judged from the API's own records, over the wire, on its own issue (2026-10-26).** The drift monitor's probes answer "does the provider still answer" and are structurally blind to "did the bytes play": a provider whose every stream is served and choked on by the player keeps a parsing listing, a HEAD-200 deep probe, and a green probe verdict. So the sweep reads `/api/health`'s playback attestation (Q41) and files on the prober's own rule — first fault logs only, second consecutive files, recovery closes. Three consequences are deliberate. (1) The judgement is a WINDOW between sweeps, because those counters are process-lifetime totals: the reference rides in `ProviderState.last_play`, counters that went backwards mean the API restarted, and neither is a fault. (2) No evidence neither accuses nor acquits — a sweep with no plays leaves the streak and any open issue alone, which is what lets a low-traffic lane reach a verdict instead of being acquitted by silence. (3) The axes file SEPARATE issues (`fault` in the gateway boundary, `issue_title`): their lifecycles are independent, so a listing that recovers must not close a playback issue, and one provider may legitimately carry both. The rule is "every served stream failed to play", not "a stream did" — one dead title among working ones, and a stream that is still playing, both read as healthy. The axis runs outside the probe loop, so the lanes the probes exclude (uakino, the torrent engine) are judged too; their exclusion is about not warming a second browser session, and this verdict comes from the API's records rather than from a probe.

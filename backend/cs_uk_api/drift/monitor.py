@@ -12,13 +12,21 @@ Ties the pieces together for one nightly run:
      rule (ticket #288), and close the issue when the baseline
      converged on a moved shape — said in the closing comment, so an
      accepted change is never reported as a recovery.
-  5. Write the machine-readable report; exit non-zero when any
-     provider failed.
+  5. Judge the PLAYBACK axis from the API's health surface: a provider
+     that SERVED streams the client never played files its own issue
+     (``drift/attestation.py``) on the same second-consecutive-sweep
+     rule. This is the half of the question no probe can answer — the
+     bytes are served, so every listing and every HEAD is green while
+     nothing plays — and it runs outside the probe loop, so a lane the
+     monitor never probes (uakino, the torrent engine) is judged too.
+  6. Write the machine-readable report; exit non-zero when any
+     provider failed on either axis.
 
 Deliberately standalone: it imports the provider adapters and its own
 drift modules only — never the API app — so a run cannot touch the
-server's state. uakino is never probed (its health is the API's
-browser-session heartbeat).
+server's state. What it needs from the API it reads over the wire, from
+``/api/health`` (the playback axis). uakino is never probed (its health
+is the API's browser-session heartbeat).
 """
 
 from __future__ import annotations
@@ -37,6 +45,15 @@ import cs_uk_api.providers._registry  # noqa: F401  (bootstraps the provider reg
 from ..http_client import close_client, get_client
 from ..providers import PROVIDERS
 from ..versioned_store import atomic_write_text
+from .attestation import (
+    DEFAULT_HEALTH_URL,
+    UNKNOWN_PROVIDER_KEY,
+    PlaySnapshot,
+    PlayVerdict,
+    fetch_play_attestation,
+    play_verdict,
+    zero_progress_items,
+)
 from .baseline import (
     SHAPE_RECALIBRATE_AFTER,
     BaselineStore,
@@ -44,7 +61,7 @@ from .baseline import (
     update_signature,
     verdict_for,
 )
-from .issues import ISSUE_TITLE, GhIssueGateway, IssueGateway
+from .issues import DriftFault, GhIssueGateway, IssueGateway
 from .probe import (
     EXCLUDED_PROVIDER_IDS,
     DeepProbeResult,
@@ -107,10 +124,19 @@ class ProviderRun:
 
 @dataclass
 class MonitorReport:
-    """The machine-readable report of one run."""
+    """The machine-readable report of one run.
+
+    ``providers`` is the probe axis (the providers this run swept) and
+    ``playback`` the playback axis, keyed by every lane the health surface
+    reported — not only the swept ones, because that axis is not probing.
+    ``attestation_error`` names why the playback axis was not read, so an
+    empty ``playback`` says which of the two things it means.
+    """
 
     run_at: str
     providers: dict[str, dict[str, Any]] = field(default_factory=dict)
+    playback: dict[str, dict[str, Any]] = field(default_factory=dict)
+    attestation_error: str | None = None
     failed: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
 
@@ -118,6 +144,8 @@ class MonitorReport:
         return {
             "run_at": self.run_at,
             "providers": self.providers,
+            "playback": self.playback,
+            "attestation_error": self.attestation_error,
             "failed": self.failed,
             "skipped": self.skipped,
         }
@@ -137,6 +165,8 @@ async def run_once(
     report_path: str | os.PathLike[str] | None = None,
     skip_issues: bool = False,
     http: httpx.AsyncClient | None = None,
+    play: PlaySnapshot | None = None,
+    health_url: str | None = DEFAULT_HEALTH_URL,
 ) -> MonitorReport:
     """One full monitor run; returns the report.
 
@@ -145,8 +175,14 @@ async def run_once(
     ``gateway`` are injectable for tests; ``report_path`` defaults to
     the runtime state file (skipped when None — tests write their own
     or assert the returned report). ``http`` injects the httpx client
-    the deep probe's HEAD rides on (tests pass a fake; the default is
-    the shared real client).
+    the deep probe's HEAD and the health read ride on (tests pass a
+    fake; the default is the shared real client).
+
+    ``health_url`` is the API's health surface, read for the playback
+    axis; ``play`` injects that snapshot directly (tests) and skips the
+    read. Pass ``health_url=None`` to judge no playback at all — the CLI
+    always passes one — and the report then says so instead of claiming a
+    clean sweep nothing looked at.
     """
     store = store if store is not None else BaselineStore(DEFAULT_STATE_PATH)
     gateway = gateway if gateway is not None else GhIssueGateway()
@@ -157,6 +193,7 @@ async def run_once(
     )
     injected = http is not None
     client = http if http is not None else get_client()
+    play_snapshot, attestation_error = await _read_playback(play, health_url, client)
 
     try:
         for provider_id in plain_http_provider_ids():
@@ -243,6 +280,18 @@ async def run_once(
             if not verdict_ok:
                 report.failed.append(provider_id)
 
+        # The playback axis, after the probe loop: it judges the lanes the
+        # health surface reported, which is not the set the probes cover.
+        if play_snapshot is not None:
+            playback, play_failed = _sweep_playback(
+                play_snapshot, store, gateway, skip_issues=skip_issues
+            )
+            report.playback = playback
+            for provider_id in play_failed:
+                if provider_id not in report.failed:
+                    report.failed.append(provider_id)
+        report.attestation_error = attestation_error
+
         store.save()
         if report_path is not None:
             atomic_write_text(
@@ -254,6 +303,75 @@ async def run_once(
         # injected test client belongs to the caller.
         if not injected:
             await close_client()
+
+
+async def _read_playback(
+    injected: PlaySnapshot | None, health_url: str | None, http: httpx.AsyncClient
+) -> tuple[PlaySnapshot | None, str | None]:
+    """The playback axis's input: an injected snapshot, or the health surface.
+
+    ``health_url=None`` means the caller configured no surface, which is
+    reported as such rather than passed off as a sweep with nothing to say:
+    an axis nobody read must not look like an axis that found nothing.
+    """
+    if injected is not None:
+        return injected, None
+    if health_url is None:
+        return None, "no health URL configured"
+    return await fetch_play_attestation(health_url, http)
+
+
+def _sweep_playback(
+    snapshot: PlaySnapshot,
+    store: BaselineStore,
+    gateway: IssueGateway,
+    *,
+    skip_issues: bool,
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """Verdict every lane the health surface reported, on the playback axis.
+
+    Deliberately outside the probe loop: this axis is not probing, so lanes
+    the monitor never probes — uakino (``EXCLUDED_PROVIDER_IDS``) and the
+    torrent engine (``ENGINE_TRACKER_ID``) — are judged here as well. Their
+    exclusion is about not warming a second browser session; these verdicts
+    come from the API's own playback records, so no probe is spent on them.
+
+    Returns the report's ``playback`` section and the lanes that failed this
+    sweep. A fault fails the sweep whether or not it has reached the filing
+    threshold, exactly as a probe failure does; when it has, the lane's own
+    issue is filed or reused (``drift/issues.py``, fault ``playback``).
+    """
+    section: dict[str, dict[str, Any]] = {}
+    failed: list[str] = []
+    for provider_id, counters in sorted(snapshot.providers.items()):
+        if provider_id == UNKNOWN_PROVIDER_KEY:
+            # Malformed ids and cold group keys share this bucket: it names no
+            # lane, so there is nothing to file an issue against.
+            continue
+        state = store.get(provider_id)
+        verdict = play_verdict(state.last_play, counters)
+        if verdict.kind == "no-progress":
+            state.play_failures += 1
+            failed.append(provider_id)
+            if not skip_issues:
+                _maybe_file_play_issue(provider_id, state, verdict, snapshot, gateway)
+        elif verdict.kind == "clean":
+            state.play_failures = 0
+            if not skip_issues:
+                _maybe_close_play_recovered(provider_id, gateway)
+        # "no-evidence" neither accuses nor acquits: the streak and any open
+        # issue stand until a sweep with traffic says otherwise. The counters
+        # are recorded either way, so the next sweep compares against a fresh
+        # reference (a restart included).
+        state.last_play = counters
+        section[provider_id] = {
+            "verdict": verdict.kind,
+            "reason": verdict.reason,
+            "served_delta": verdict.served_delta,
+            "no_progress_delta": verdict.no_progress_delta,
+            "consecutive_failures": state.play_failures,
+        }
+    return section, failed
 
 
 def _maybe_file_issue(
@@ -286,7 +404,14 @@ def _maybe_file_issue(
         "Filed automatically by the drift monitor (spec #285). The next "
         "healthy sweep will comment and close this issue."
     )
-    existing = gateway.find_open(provider_id)
+    try:
+        existing = gateway.find_open(provider_id)
+    except RuntimeError as e:
+        # A tracker outage must not crash the sweep or lose the report (this
+        # module's contract), and it must not file a duplicate either — the
+        # close path already reads a failed lookup this way.
+        log.error("drift: could not look up the drift issue for %s: %s", provider_id, e)
+        return
     if existing is not None:
         log.warning("drift: %s already has open issue #%s — reusing", provider_id, existing)
         return
@@ -295,6 +420,91 @@ def _maybe_file_issue(
         log.warning("drift: filed issue #%s for %s", number, provider_id)
     except RuntimeError as e:
         log.error("drift: failed to file issue for %s: %s", provider_id, e)
+
+
+def _maybe_file_play_issue(
+    provider_id: str,
+    state: ProviderState,
+    verdict: PlayVerdict,
+    snapshot: PlaySnapshot,
+    gateway: IssueGateway,
+) -> None:
+    """File (or reuse) the playback issue on the SECOND consecutive fault.
+
+    The prober's rule on the other axis: the first faulting sweep logs only
+    (ticket #288's AC), repeated faults reuse the open issue, and the issue is
+    the PLAYBACK one — its own title, so a listing that recovers cannot close
+    it and a provider's playback fault is never mistaken for its sweep's.
+    """
+    if state.play_failures < 2:
+        log.warning(
+            "drift: %s served streams the client never played "
+            "(consecutive=%d) — no issue yet",
+            provider_id,
+            state.play_failures,
+        )
+        return
+    try:
+        existing = gateway.find_open(provider_id, "playback")
+    except RuntimeError as e:
+        log.error(
+            "drift: could not look up the playback issue for %s: %s", provider_id, e
+        )
+        return
+    if existing is not None:
+        log.warning(
+            "drift: %s already has open playback issue #%s — reusing",
+            provider_id,
+            existing,
+        )
+        return
+    try:
+        number = gateway.open(
+            provider_id,
+            _play_issue_body(provider_id, state, verdict, snapshot),
+            "playback",
+        )
+        log.warning("drift: filed playback issue #%s for %s", number, provider_id)
+    except RuntimeError as e:
+        log.error("drift: failed to file the playback issue for %s: %s", provider_id, e)
+
+
+def _play_issue_body(
+    provider_id: str,
+    state: ProviderState,
+    verdict: PlayVerdict,
+    snapshot: PlaySnapshot,
+) -> str:
+    """The playback issue's body: what was observed, and what it rules out.
+
+    Written for whoever opens it cold. The counts are the window's own (the
+    sweeps since the previous observation), and the ids come from the health
+    surface's bounded tail — which the body says, rather than implying they
+    are exactly this window's.
+    """
+    items = zero_progress_items(snapshot, provider_id)
+    ids_line = (
+        "\n\nLatest zero-progress items on the health surface's tail "
+        "(bounded, not necessarily this window): " + ", ".join(f"`{i}`" for i in items) + "."
+        if items
+        else ""
+    )
+    return (
+        f"Playback attestation for provider `{provider_id}`: "
+        f"{state.play_failures} consecutive sweeps in which it SERVED streams "
+        "the client never played.\n\n"
+        f"Latest sweep: {verdict.reason}.\n\n"
+        "This is the fault no probe can see: every stream resolution was "
+        "answered with a playable URL, so the listing and the rotating deep "
+        "probe are green while the client reports the position never "
+        "advancing (`no-progress` on `/api/health`'s `playback` axis). Look at "
+        "the delivery path for these items — the upstream URL, its headers, or "
+        "its container/codec — not at the provider's listing."
+        f"{ids_line}\n\n"
+        "Filed automatically by the drift monitor (spec #285). The next sweep "
+        "in which clients play this provider's streams again will comment and "
+        "close this issue."
+    )
 
 
 def _maybe_close_recovered(provider_id: str, gateway: IssueGateway) -> None:
@@ -332,24 +542,47 @@ def _maybe_close_recalibrated(
     )
 
 
+def _maybe_close_play_recovered(provider_id: str, gateway: IssueGateway) -> None:
+    """On a sweep whose plays happened again, comment and close the issue."""
+    _maybe_close_issue(
+        provider_id,
+        gateway,
+        fault="playback",
+        comment=(
+            "Playback attested again — the client played this provider's "
+            "streams since the last sweep. Closing this drift issue."
+        ),
+        close="Recovered: the client plays this provider's streams again.",
+    )
+
+
 def _maybe_close_issue(
-    provider_id: str, gateway: IssueGateway, *, comment: str, close: str
+    provider_id: str,
+    gateway: IssueGateway,
+    *,
+    fault: DriftFault = "sweep",
+    comment: str,
+    close: str,
 ) -> None:
-    """Comment and close the provider's open issue, if it has one."""
+    """Comment and close the provider's open issue for this fault, if any."""
     try:
-        existing = gateway.find_open(provider_id)
+        existing = gateway.find_open(provider_id, fault)
     except RuntimeError as e:
-        log.error("drift: could not look up open issue for %s: %s", provider_id, e)
+        log.error(
+            "drift: could not look up the %s issue for %s: %s", fault, provider_id, e
+        )
         return
     if existing is None:
         return
     try:
         gateway.comment(provider_id, existing, comment)
         gateway.close(provider_id, existing, close)
-        log.info("drift: closed issue #%s for %s", existing, provider_id)
+        log.info("drift: closed %s issue #%s for %s", fault, existing, provider_id)
     except RuntimeError as e:
-        log.error("drift: could not close issue #%s for %s: %s", existing, provider_id, e)
-
-
-def issue_title(provider_id: str) -> str:
-    return ISSUE_TITLE.format(provider_id=provider_id)
+        log.error(
+            "drift: could not close %s issue #%s for %s: %s",
+            fault,
+            existing,
+            provider_id,
+            e,
+        )

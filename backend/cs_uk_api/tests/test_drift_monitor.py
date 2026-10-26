@@ -5,15 +5,27 @@ gateway and stub providers: first failure logs only (no issue), the
 second consecutive failure files (deduped — repeated failures reuse the
 open issue), a healthy pass resets the counter and closes a previously
 open issue, and the report + exit status reflect every provider.
+
+The playback axis (``drift/attestation.py``) is pinned the same way at the
+after the probe-axis tests: the same two-consecutive-sweep rule, its own
+issue, and no interference in either direction (a recovered listing does not
+close a playback issue, and a play fault does not fail a probed listing).
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
+import httpx
 import pytest
 
+from cs_uk_api.drift.attestation import (
+    UNKNOWN_PROVIDER_KEY,
+    PlayCounters,
+    PlaySnapshot,
+)
 from cs_uk_api.drift.baseline import BaselineStore
+from cs_uk_api.drift.issues import DriftFault
 from cs_uk_api.drift.monitor import MonitorReport, run_once
 from cs_uk_api.models import SearchResult, StreamResponse
 from cs_uk_api.providers import PROVIDERS
@@ -21,38 +33,53 @@ from cs_uk_api.providers.base import BaseProvider, ProviderError
 
 
 class _RecorderGateway:
-    """Per-provider issue-tracker recorder. Stateful per provider:
-    ``find_open`` returns None until that provider's issue is filed,
-    then its number — so dedupe and recovery are exercised per
-    provider, exactly as the real tracker behaves. ``close`` retires
-    the issue from the OPEN set, again like the real tracker (whose
-    ``find_open`` filters ``--state open``): a settled issue is not
-    re-closed on every later healthy sweep."""
+    """Per-provider issue-tracker recorder. Stateful per (provider, fault):
+    ``find_open`` returns None until that provider's issue ON THAT AXIS is
+    filed, then its number — so dedupe and recovery are exercised per
+    provider and per fault, exactly as the real tracker behaves (its titles
+    differ per fault, so one axis's issue is never the other's). ``close``
+    retires the issue by NUMBER from the OPEN set, again like the real
+    tracker (whose ``find_open`` filters ``--state open``): a settled issue is
+    not re-closed on every later healthy sweep.
+
+    An issue of one axis is never another axis's issue, which is what lets a
+    test assert that closing one leaves the other open.
+    """
+
+    #: One issue number per fault, so the fake can tell them apart.
+    NUMBERS: ClassVar[dict[DriftFault, str]] = {"sweep": "42", "playback": "43"}
 
     def __init__(self, open_issue: str | None = None) -> None:
-        # ``open_issue``: when given, EVERY provider answers it as a
+        # ``open_issue``: when given, EVERY provider and fault answers it as a
         # pre-existing open issue (for the reuse-path tests).
         self._pre_existing = open_issue
-        self._filed: dict[str, str] = {}
-        self.opened: list[str] = []
+        self._filed: dict[tuple[str, DriftFault], str] = {}
+        self.opened: list[tuple[str, DriftFault]] = []
         self.commented: list[tuple[str, str]] = []
         self.closed: list[tuple[str, str]] = []
-        self.find_calls: list[str] = []
+        self.find_calls: list[tuple[str, DriftFault]] = []
         #: The bodies, so a closing statement can be pinned as what it
         #: claims to be (recovery vs an accepted shape change).
         self.comment_bodies: list[str] = []
         self.close_comments: list[str] = []
+        #: The filing bodies, so a test can pin the evidence an issue carries.
+        self.opened_bodies: list[str] = []
 
-    def find_open(self, provider_id: str) -> str | None:
-        self.find_calls.append(provider_id)
+    def find_open(
+        self, provider_id: str, fault: DriftFault = "sweep"
+    ) -> str | None:
+        self.find_calls.append((provider_id, fault))
         if self._pre_existing is not None:
             return self._pre_existing
-        return self._filed.get(provider_id)
+        return self._filed.get((provider_id, fault))
 
-    def open(self, provider_id: str, body: str) -> str:
-        self.opened.append(provider_id)
-        self._filed[provider_id] = "42"
-        return self._filed[provider_id]
+    def open(
+        self, provider_id: str, body: str, fault: DriftFault = "sweep"
+    ) -> str:
+        self.opened.append((provider_id, fault))
+        self.opened_bodies.append(body)
+        self._filed[(provider_id, fault)] = self.NUMBERS[fault]
+        return self.NUMBERS[fault]
 
     def comment(self, provider_id: str, issue_number: str, body: str) -> None:
         self.commented.append((provider_id, issue_number))
@@ -61,15 +88,41 @@ class _RecorderGateway:
     def close(self, provider_id: str, issue_number: str, comment: str) -> None:
         self.closed.append((provider_id, issue_number))
         self.close_comments.append(comment)
-        self._filed.pop(provider_id, None)
+        for key, number in list(self._filed.items()):
+            if number == issue_number:
+                del self._filed[key]
 
 
 class _FakeHttp:
-    """Minimal httpx-like client: HEAD answers 200 so deep probes pass."""
+    """Minimal httpx-like client: HEAD answers 200 so deep probes pass, and
+    GET answers the API's health surface.
+
+    The surface answers an EMPTY playback section unless a test hands it
+    counters, which is "the API is up and nobody played" — so no test needs a
+    network for the playback axis, and a test that does not care about it
+    still gets the honest "nothing to say" rather than an unreadable-surface
+    warning.
+    """
+
+    def __init__(self, playback: dict[str, dict[str, int]] | None = None) -> None:
+        self.playback = playback if playback is not None else {}
+        self.get_urls: list[str] = []
 
     async def head(self, url: str) -> Any:
         class _R:
             status_code = 200
+
+        return _R()
+
+    async def get(self, url: str) -> Any:
+        self.get_urls.append(url)
+        payload = {"playback": {"providers": self.playback, "recent": []}}
+
+        class _R:
+            status_code = 200
+
+            def json(self) -> Any:
+                return payload
 
         return _R()
 
@@ -209,6 +262,10 @@ async def test_run_writes_report_file(tmp_path) -> None:
     raw = json.loads(report_path.read_text(encoding="utf-8"))
     assert "p2" in raw["providers"]
     assert "run_at" in raw
+    # Both axes are in the artefact, and the playback one says whether it was
+    # read at all — an empty section is never the operator's only signal.
+    assert "playback" in raw
+    assert "attestation_error" in raw
     leftovers = [f.name for f in tmp_path.iterdir() if ".tmp" in f.name]
     assert leftovers == []
 
@@ -244,7 +301,7 @@ async def test_second_consecutive_failure_files_issue(tmp_path) -> None:
     assert gateway.opened == []
 
     await run_once(day_offset=1, store=store, gateway=gateway, report_path=None, http=_FakeHttp())
-    assert gateway.opened == ["p1"]
+    assert gateway.opened == [("p1", "sweep")]
 
 
 @pytest.mark.asyncio
@@ -260,13 +317,13 @@ async def test_repeated_failures_reuse_open_issue(tmp_path) -> None:
     # issue is already open.
     await run_once(day_offset=0, store=store, gateway=gateway, report_path=None, http=_FakeHttp())
     await run_once(day_offset=1, store=store, gateway=gateway, report_path=None, http=_FakeHttp())
-    assert gateway.opened == ["p1"]
+    assert gateway.opened == [("p1", "sweep")]
 
     await run_once(day_offset=2, store=store, gateway=gateway, report_path=None, http=_FakeHttp())
-    assert gateway.opened == ["p1"]  # no second open
+    assert gateway.opened == [("p1", "sweep")]  # no second open
     # find_open was consulted on the filing run AND the reuse run (the
     # first failing run is below the threshold and never looks).
-    assert gateway.find_calls.count("p1") >= 2
+    assert gateway.find_calls.count(("p1", "sweep")) >= 2
 
 
 @pytest.mark.asyncio
@@ -280,7 +337,7 @@ async def test_recovery_resets_counter_and_closes_issue(tmp_path) -> None:
     _seed(_FailProvider())
     await run_once(day_offset=0, store=store, gateway=gateway, report_path=None, http=_FakeHttp())
     await run_once(day_offset=1, store=store, gateway=gateway, report_path=None, http=_FakeHttp())
-    assert gateway.opened == ["p1"]
+    assert gateway.opened == [("p1", "sweep")]
 
     # Now p1 is healthy — recovery path finds the open issue and closes.
     _seed(_OkP1Provider())
@@ -393,7 +450,7 @@ async def test_a_moved_shape_converges_and_closes_its_issue(tmp_path) -> None:
 
     third = await _sweep(store, gateway, day=2)
     assert third.failed == ["p1"]
-    assert gateway.opened == ["p1"]  # second consecutive failure files
+    assert gateway.opened == [("p1", "sweep")]  # second consecutive failure files
 
     fourth = await _sweep(store, gateway, day=3)
     assert fourth.failed == []  # CONVERGED — no longer a failure
@@ -415,7 +472,7 @@ async def test_a_moved_shape_converges_and_closes_its_issue(tmp_path) -> None:
     fifth = await _sweep(store, gateway, day=4)
     assert fifth.failed == []
     assert fifth.providers["p1"]["recalibrated"] is False
-    assert gateway.opened == ["p1"]
+    assert gateway.opened == [("p1", "sweep")]
     assert gateway.closed == [("p1", "42")]
 
 
@@ -432,7 +489,7 @@ async def test_a_broken_provider_never_recalibrates(tmp_path) -> None:
 
     assert [r.failed for r in reports] == [["p1"]] * 5
     assert all(r.providers["p1"]["recalibrated"] is False for r in reports)
-    assert gateway.opened == ["p1"]  # filed once, then reused
+    assert gateway.opened == [("p1", "sweep")]  # filed once, then reused
     assert gateway.closed == []
     assert store.get("p1").consecutive_failures == 5
 
@@ -465,3 +522,339 @@ async def test_a_broken_sweep_resets_the_convergence_clock(tmp_path) -> None:
     settled = await _sweep(store, gateway, day=6)  # shape 3, consecutive this time
     assert settled.providers["p1"]["recalibrated"] is True
     assert gateway.closed == [("p1", "42")]
+
+
+# ------------------------------------------------------- playback axis
+#
+# The axis the probe cannot see: the provider's listing (and its deep probe)
+# answer, so every probe verdict is green, while the client reports the bytes
+# never played. It runs on the SAME rule — first fault logs only, second
+# consecutive one files — and carries its own issue, so the two axes never
+# close each other's.
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_reads_the_playback_axis_from_the_health_url(tmp_path) -> None:
+    """The wiring itself: with a URL configured, a sweep READS the surface —
+    the nightly unit needs no injected snapshot, and the reads are the window
+    (each sweep re-reads the counters it will compare against next time)."""
+    _seed(_OkProvider())
+    gateway = _RecorderGateway()
+    store = BaselineStore(tmp_path / "state.json")
+    http = _FakeHttp(playback={"p2": {"served": 5, "no_progress": 5}})
+    url = "http://api.test/api/health"
+
+    for day in range(3):
+        http = _FakeHttp(
+            playback={"p2": {"served": 5 + day * 6, "no_progress": 5 + day * 6}}
+        )
+        report = await run_once(
+            day_offset=day,
+            store=store,
+            gateway=gateway,
+            report_path=None,
+            http=http,
+            health_url=url,
+        )
+        assert http.get_urls == [url]
+
+    assert report.playback["p2"]["verdict"] == "no-progress"
+    assert report.attestation_error is None
+    assert gateway.opened == [("p2", "playback")]
+
+
+@pytest.mark.asyncio
+async def test_no_health_url_is_reported_and_judges_nothing(tmp_path) -> None:
+    """An axis nobody read must not look like an axis that found nothing: the
+    report names it, and no lane is accused or acquitted."""
+    _seed(_OkProvider())
+    store = BaselineStore(tmp_path / "state.json")
+
+    report = await run_once(
+        day_offset=0,
+        store=store,
+        gateway=_RecorderGateway(),
+        report_path=None,
+        http=_FakeHttp(),
+        health_url=None,
+    )
+
+    assert report.playback == {}
+    assert report.attestation_error == "no health URL configured"
+    assert report.failed == []
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_surface_is_no_evidence_not_a_fault(tmp_path) -> None:
+    """The API being down is not the provider failing: the sweep reports the
+    unread surface and judges nothing."""
+
+    class _DeadHttp(_FakeHttp):
+        async def get(self, url: str) -> Any:
+            raise httpx.ConnectError("connection refused")
+
+    _seed(_OkProvider())
+    report = await run_once(
+        day_offset=0,
+        store=BaselineStore(tmp_path / "state.json"),
+        gateway=_RecorderGateway(),
+        report_path=None,
+        http=_DeadHttp(),
+        health_url="http://api.test/api/health",
+    )
+
+    assert report.playback == {}
+    assert report.attestation_error is not None
+    assert "ConnectError" in report.attestation_error
+    assert report.failed == []
+    assert report.providers["p2"]["ok"] is True
+
+
+def _play(served: int, no_progress: int, *, provider: str = "p2") -> PlaySnapshot:
+    """A health-surface snapshot with one lane's counters."""
+    return PlaySnapshot(
+        providers={provider: PlayCounters(served=served, no_progress=no_progress)}
+    )
+
+
+async def _play_sweep(
+    store: BaselineStore, gateway: Any, *, day: int, play: PlaySnapshot
+) -> MonitorReport:
+    """One nightly run judging an injected playback snapshot."""
+    return await run_once(
+        day_offset=day,
+        store=store,
+        gateway=gateway,
+        report_path=None,
+        http=_FakeHttp(),
+        play=play,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_playback_axis_files_on_the_second_consecutive_fault(tmp_path) -> None:
+    """Served but never played: the first faulting sweep logs only, the
+    second consecutive one files — and the probe verdict stays HEALTHY,
+    because this fault is not the listing's."""
+    _seed(_OkProvider())
+    gateway = _RecorderGateway()
+    store = BaselineStore(tmp_path / "state.json")
+
+    # The first sweep only establishes the reference window.
+    calibration = await _play_sweep(store, gateway, day=0, play=_play(5, 5))
+    assert calibration.playback["p2"]["verdict"] == "no-evidence"
+
+    first = await _play_sweep(store, gateway, day=1, play=_play(11, 11))
+    assert gateway.opened == []
+    assert first.providers["p2"]["ok"] is True  # the probe axis is unbothered
+    assert first.playback["p2"]["verdict"] == "no-progress"
+    assert first.playback["p2"]["consecutive_failures"] == 1
+    assert first.failed == ["p2"]  # a fault fails the sweep, issue or no issue
+
+    second = await _play_sweep(store, gateway, day=2, play=_play(18, 18))
+    assert gateway.opened == [("p2", "playback")]
+    assert second.providers["p2"]["ok"] is True
+    assert store.get("p2").play_failures == 2
+    # The body carries the window's evidence, not a bare claim.
+    assert "7 reports for 7 served" in gateway.opened_bodies[0]
+    assert "consecutive sweeps" in gateway.opened_bodies[0]
+
+
+@pytest.mark.asyncio
+async def test_plays_happening_again_close_the_playback_issue(tmp_path) -> None:
+    """A window whose streams DID play resets the counter and closes."""
+    _seed(_OkProvider())
+    gateway = _RecorderGateway()
+    store = BaselineStore(tmp_path / "state.json")
+
+    for day, counters in enumerate([(5, 5), (11, 11), (18, 18)]):
+        await _play_sweep(store, gateway, day=day, play=_play(*counters))
+    assert gateway.opened == [("p2", "playback")]
+
+    recovered = await _play_sweep(store, gateway, day=3, play=_play(25, 18))
+
+    assert recovered.playback["p2"]["verdict"] == "clean"
+    assert recovered.failed == []
+    assert store.get("p2").play_failures == 0
+    assert gateway.closed == [("p2", "43")]
+    assert "plays this provider's streams again" in gateway.close_comments[-1]
+
+
+@pytest.mark.asyncio
+async def test_a_sweep_with_no_traffic_leaves_the_streak_alone(tmp_path) -> None:
+    """A night nobody played tells the axis nothing: it is neither the second
+    consecutive fault nor a recovery, so neither an issue nor a close. The
+    streak counts OBSERVING sweeps, which is what makes a low-traffic lane
+    able to reach a verdict at all."""
+    _seed(_OkProvider())
+    gateway = _RecorderGateway()
+    store = BaselineStore(tmp_path / "state.json")
+
+    await _play_sweep(store, gateway, day=0, play=_play(5, 5))
+    await _play_sweep(store, gateway, day=1, play=_play(11, 11))  # fault 1
+
+    # Same counters as last sweep: nobody played at all.
+    quiet = await _play_sweep(store, gateway, day=2, play=_play(11, 11))
+    assert quiet.playback["p2"]["verdict"] == "no-evidence"
+    assert quiet.failed == []
+    assert store.get("p2").play_failures == 1  # neither bumped nor reset
+    assert gateway.opened == []
+
+    # The next night WITH traffic that still never plays is the second fault.
+    await _play_sweep(store, gateway, day=3, play=_play(18, 18))
+    assert gateway.opened == [("p2", "playback")]
+
+
+@pytest.mark.asyncio
+async def test_a_close_is_not_repeated_every_later_quiet_sweep(tmp_path) -> None:
+    """An open issue is closed once: the tracker retires it, and the monitor
+    must not keep commenting on a settled lane (the probe axis's rule)."""
+    _seed(_OkProvider())
+    gateway = _RecorderGateway()
+    store = BaselineStore(tmp_path / "state.json")
+
+    for day, counters in enumerate([(5, 5), (11, 11), (18, 18), (25, 18)]):
+        await _play_sweep(store, gateway, day=day, play=_play(*counters))
+    assert gateway.closed == [("p2", "43")]
+
+    await _play_sweep(store, gateway, day=4, play=_play(32, 18))
+    assert gateway.closed == [("p2", "43")]
+
+
+@pytest.mark.asyncio
+async def test_the_playback_axis_judges_lanes_the_probes_never_cover(tmp_path) -> None:
+    """The axis is not probing, so the lanes the probes exclude are judged
+    here — uakino (``EXCLUDED_PROVIDER_IDS``) and the torrent engine. Their
+    exclusion is about not warming a second browser session; these verdicts
+    come from the API's own playback records, and the plays of a torrent
+    lane failing is exactly the fault no listing probe can reach."""
+    _seed(_OkProvider())
+    gateway = _RecorderGateway()
+    store = BaselineStore(tmp_path / "state.json")
+    engine = "yts:engine"
+
+    # A first observation cannot accuse: the reference counters are stored.
+    first = await _play_sweep(store, gateway, day=0, play=_play(4, 4, provider=engine))
+    assert first.playback[engine]["verdict"] == "no-evidence"
+    assert engine not in first.providers  # never probed, judged all the same
+
+    await _play_sweep(store, gateway, day=1, play=_play(9, 9, provider=engine))
+    assert gateway.opened == []  # first fault logs only
+    final = await _play_sweep(store, gateway, day=2, play=_play(15, 15, provider=engine))
+
+    assert gateway.opened == [(engine, "playback")]
+    assert final.failed == [engine]
+    assert engine not in final.providers
+
+
+@pytest.mark.asyncio
+async def test_the_unknown_bucket_is_never_judged(tmp_path) -> None:
+    """Ids that name no lane (malformed ids, cold group keys) share one
+    bucket: nothing to file against, so no verdict and no issue."""
+    _seed(_OkProvider())
+    gateway = _RecorderGateway()
+    store = BaselineStore(tmp_path / "state.json")
+
+
+    def _snapshot(unknown: tuple[int, int], p2: tuple[int, int]) -> PlaySnapshot:
+        return PlaySnapshot(
+            providers={
+                UNKNOWN_PROVIDER_KEY: PlayCounters(*unknown),
+                "p2": PlayCounters(*p2),
+            }
+        )
+
+    first = await _play_sweep(store, gateway, day=0, play=_snapshot((9, 9), (1, 0)))
+    assert UNKNOWN_PROVIDER_KEY not in first.playback
+
+    # The unknown bucket's window WOULD fault (9 more served, all at zero);
+    # the lane beside it has genuinely played, so neither fails the sweep.
+    second = await _play_sweep(store, gateway, day=1, play=_snapshot((18, 18), (3, 0)))
+
+    assert UNKNOWN_PROVIDER_KEY not in second.playback
+    assert second.playback["p2"]["verdict"] == "clean"
+    assert second.failed == []
+
+
+@pytest.mark.asyncio
+async def test_no_issues_skips_playback_tracker_calls(tmp_path) -> None:
+    """--no-issues judges the axis without touching the tracker, exactly as
+    it does for the probe axis."""
+    _seed(_OkProvider())
+    gateway = _RecorderGateway()
+    store = BaselineStore(tmp_path / "state.json")
+
+    for day in range(3):
+        await run_once(
+            day_offset=day,
+            store=store,
+            gateway=gateway,
+            report_path=None,
+            skip_issues=True,
+            http=_FakeHttp(),
+            play=_play(5 + day * 6, 5 + day * 6),
+        )
+
+    assert gateway.opened == []
+    assert gateway.find_calls == []
+    assert store.get("p2").play_failures == 2  # the report still carries it
+
+
+@pytest.mark.asyncio
+async def test_a_tracker_outage_cannot_crash_the_sweep_on_either_axis(tmp_path) -> None:
+    """The monitor's contract: a tracker outage is logged, never fatal — the
+    report and the state still land. The lookup is the call that can fail."""
+
+    class _DeadGateway(_RecorderGateway):
+        def find_open(
+            self, provider_id: str, fault: DriftFault = "sweep"
+        ) -> str | None:
+            raise RuntimeError("gh: authentication failed")
+
+    _seed(_FailProvider())
+    store = BaselineStore(tmp_path / "state.json")
+    gateway = _DeadGateway()
+
+    # Two sweep-axis failures (the second would file) plus two play faults.
+    for day in (0, 1):
+        report = await run_once(
+            day_offset=day,
+            store=store,
+            gateway=gateway,
+            report_path=None,
+            http=_FakeHttp(),
+            play=_play(5 + day * 6, 5 + day * 6, provider="p1"),
+        )
+
+    assert report.providers["p1"]["ok"] is False
+    assert gateway.opened == []
+    assert store.get("p1").play_failures >= 1
+
+
+@pytest.mark.asyncio
+async def test_each_axis_closes_only_its_own_issue(tmp_path) -> None:
+    """The invariant the second fault kind exists for: a listing that
+    recovers must NOT close a playback issue (the streams still do not
+    play), and playback recovering must not close a listing issue."""
+    gateway = _RecorderGateway()
+    store = BaselineStore(tmp_path / "state.json")
+
+    # p1's listing is broken AND its streams never play.
+    _seed(_FailProvider())
+    await _play_sweep(store, gateway, day=0, play=_play(5, 5, provider="p1"))
+    await _play_sweep(store, gateway, day=1, play=_play(11, 11, provider="p1"))
+    await _play_sweep(store, gateway, day=2, play=_play(18, 18, provider="p1"))
+    assert gateway.opened == [("p1", "sweep"), ("p1", "playback")]
+
+    # The listing recovers while the streams still never play.
+    _seed(_OkP1Provider())
+    listing_back = await _play_sweep(store, gateway, day=3, play=_play(24, 24, provider="p1"))
+
+    assert listing_back.providers["p1"]["ok"] is True
+    assert gateway.closed == [("p1", "42")]  # the SWEEP issue only
+    assert gateway.find_open("p1", "playback") == "43"  # still open
+    assert listing_back.failed == ["p1"]  # the playback fault still fails it
+
+    # Now the streams play again: the playback issue closes too.
+    await _play_sweep(store, gateway, day=4, play=_play(31, 24, provider="p1"))
+    assert gateway.closed == [("p1", "42"), ("p1", "43")]

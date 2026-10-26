@@ -22,7 +22,10 @@ converge by counting; they close when the provider really recovers.
 
 Consecutive-failure counters persist in a small state file so the
 issue-filing rule (two consecutive failures, ticket #288) survives
-process restarts. Since spec #363 the file carries the shared
+process restarts. Each provider's record also holds the playback axis's
+counter and the playback counters last observed (``drift/attestation.py``),
+for the same reason that axis needs a window between sweeps: the numbers
+the previous sweep saw exist nowhere else. Since spec #363 the file carries the shared
 ``{"version": 1, "data": ...}`` envelope written atomically by
 ``versioned_store`` — a corrupt, mismatched, or legacy bare-payload
 file degrades to a fresh store (a first run calibrates instead of
@@ -39,6 +42,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ..versioned_store import VersionedFileStore
+from .attestation import PlayCounters
 from .probe import ListingProbeResult
 
 #: Hard floor: a listing with fewer cards than this is drift, whatever
@@ -124,29 +128,49 @@ class ProviderState:
     ``consecutive_failures`` drives the issue-filing rule; ``shape_streak``
     counts only the SHAPE failures in a row, so a broken sweep in between
     resets the convergence clock rather than letting an unstable provider
-    silently recalibrate.
+    silently recalibrate. ``play_failures`` is the playback axis's own
+    counter (``drift/attestation.py``) and is deliberately SEPARATE from
+    ``consecutive_failures``: the axes have independent lifecycles, one issue
+    each, and a listing that recovers must not reset a playback streak (nor
+    the reverse).
     """
 
     consecutive_failures: int = 0
     shape_streak: int = 0
     signature: Signature | None = None
+    #: Consecutive sweeps in which this provider SERVED streams the client
+    #: never played. Counted over the sweeps that had traffic: a sweep with
+    #: nothing played leaves it untouched (see ``play_verdict``).
+    play_failures: int = 0
+    #: The playback counters observed at the last sweep. The health surface
+    #: exposes process-lifetime totals, so this reference is what makes the
+    #: next sweep's verdict a window rather than a lifetime. Absent in state
+    #: files written before the playback axis: that is a first observation.
+    last_play: PlayCounters | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "consecutive_failures": self.consecutive_failures,
             "shape_streak": self.shape_streak,
             "signature": self.signature.to_dict() if self.signature else None,
+            "play_failures": self.play_failures,
+            "last_play": self.last_play.to_dict() if self.last_play else None,
         }
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> ProviderState:
         sig_raw = raw.get("signature")
+        play_raw = raw.get("last_play")
         return cls(
             consecutive_failures=int(raw.get("consecutive_failures", 0)),
             # Absent in state files written before the convergence rule: a
             # zero streak is exactly "no shape failure observed yet".
             shape_streak=int(raw.get("shape_streak", 0)),
             signature=Signature.from_dict(sig_raw) if sig_raw else None,
+            # Absent in state files written before the playback axis: zero
+            # failures and no reference counters, i.e. "nothing observed yet".
+            play_failures=int(raw.get("play_failures", 0)),
+            last_play=PlayCounters.from_dict(play_raw) if play_raw else None,
         )
 
 
