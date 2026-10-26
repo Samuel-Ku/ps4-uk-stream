@@ -128,16 +128,21 @@ async def resolve_stream(
 
     A group key is carried by several providers, so one member's refusal
     is not yet this title's verdict: the walk asks the next member when
-    the verdict is walkable (``WALKABLE_VERDICT_CODES`` — a lane fault or
-    ``not_found``), which is what makes the group key a resilient play
-    surface rather than a single point of failure. Each attempt records
-    its own outcome, so the attestation answers "served, by whom, after
-    how many refusals" — while the served member's success is the only
-    thing that reaches lane health (a walk that ends in refusal has
-    recorded every lane fault on the way, ADR-0002 intact). A walkable
-    refusal that is not walkable ends the walk: ``gated`` and the
-    translation verdicts answer the client's own request, and asking the
-    group again is not a repair for them.
+    the verdict is walkable (``WALKABLE_VERDICT_CODES`` — a lane fault,
+    ``not_found``, or a translation verdict), which is what makes the
+    group key a resilient play surface rather than a single point of
+    failure. A translation verdict is walkable for the same reason as the
+    rest: a dub is per-MEMBER knowledge, so the member whose page listed
+    the track the client pinned (spec #276) is a different member from the
+    one that lacks it — the walk hands the SAME pinned id to the members
+    after it, and the client gets the track it picked rather than a 404
+    for a title that plays. Each attempt records its own outcome, so the
+    attestation answers "served, by whom, after how many refusals" —
+    while the served member's success is the only thing that reaches lane
+    health (a walk that ends in refusal has recorded every lane fault on
+    the way, ADR-0002 intact). A refusal that is not walkable ends the
+    walk: ``gated`` is the client's own verdict about the title, and
+    asking the group again is not a repair for it.
 
     ``surface`` names the route family asking (see ``models.PlaySurface``)
     and is what makes this a *playback* request for
@@ -169,8 +174,10 @@ async def resolve_stream(
         # whose translation ids the client is holding, and the one whose
         # detail page we just proved alive — asking the members after it
         # first would spend an upstream call on a member already known
-        # dead, and would hand a picked dub's id to members that never
-        # listed it (a translation verdict ends the walk).
+        # dead. Leading with it is not the same as ENDING on it: when it
+        # turns out not to carry the pinned dub, the walk goes on (a track
+        # is per-member knowledge), and the members after it are asked with
+        # the very id the client picked.
         attempts = member_attempts(
             res.sources, lead=group_content_member(group_key)
         )
@@ -211,9 +218,12 @@ async def resolve_stream(
                 )
             return outcome.stream
         if outcome.code is not None and outcome.code not in WALKABLE_VERDICT_CODES:
-            # gated / the client's own translation verdicts: the walk ends
-            # here rather than spending another member's upstream call on
-            # an answer the group cannot change.
+            # ``gated``: the walk ends here rather than spending another
+            # member's upstream call on an answer the group cannot change.
+            # A translation verdict does NOT end it — the member that
+            # carries the pinned dub may be the next one, which is why
+            # those codes are in the walkable set
+            # (``_catalog_state.resolution``).
             return None
     return None
 

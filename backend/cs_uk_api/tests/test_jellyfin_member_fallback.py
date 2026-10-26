@@ -3,8 +3,9 @@
 A ``g2:`` movie key is carried by several providers (that is what makes it
 a *group*), so the first member failing is not yet the client's answer.
 The seam walks to the group's next member when the refusal is one the
-group can repair — a lane fault, or ``not_found`` — and stops when it is
-not.
+group can repair — a lane fault, ``not_found``, or a translation verdict
+("this member does not carry the track the client pinned") — and stops
+when it is not.
 
 Pinned through ``GET /Videos/{gk}/stream``, the route the client's play
 press actually crosses:
@@ -21,6 +22,14 @@ press actually crosses:
     verdict, one stage earlier;
   - ``gated`` does NOT walk: 404 with the second member never called, so a
     deliberate unavailability costs the group no upstream calls;
+  - a STALE pinned dub the current lead does not carry walks: the pick
+    came from an earlier member's page, so the member that still HAS the
+    track serves it, asked with the very id the client picked;
+  - the same walk covers the gate's ``invalid_translation``: a lead that
+    rejects the pick before ``stream()`` is skipped, and the next member
+    that allows it serves;
+  - no member carrying the pinned dub is still a 404 (D2), every member
+    asked once and no lane health moved (the verdict is the item's);
   - every member refusing is still a 404, never a 5xx (D2), with every
     attempt on the playback axis;
   - the walk is capped (``MAX_MEMBER_ATTEMPTS``): a fourth member is never
@@ -85,7 +94,20 @@ class _MemberStub(BaseProvider):
             url=f"https://{pid}.example/{external}",
         )
         self.stream_calls: list[str] = []
+        #: The translation each ``stream()`` call carried: what the walk
+        #: hands member after member when the client pinned a dub.
+        self.translation_calls: list[str | None] = []
         self.content_calls: list[str] = []
+        #: The dubs this member's detail page advertises. The default is
+        #: the one every pre-Q48 test assumed; a stale-pick test gives its
+        #: members different sets.
+        self.content_translations: list[Translation] = [
+            Translation(id="uk", label="Дубляж")
+        ]
+        #: What the episode-translation gate returns for this member.
+        #: None means "not applicable" (the base-class behavior); a list
+        #: makes ``play_request`` validate the pinned id before stream().
+        self.allowed_translations: list[str] | None = None
         #: What ``stream()`` does: a stream to serve, a ProviderError to
         #: raise, or None for "not scripted" (a not_found, so a test that
         #: forgot to script a member fails loudly instead of serving).
@@ -124,13 +146,20 @@ class _MemberStub(BaseProvider):
             year=2021,
             description="Епічна науково-фантастична стрічка.",
             poster=_POSTER,
-            translations=[Translation(id="uk", label="Дубляж")],
+            translations=list(self.content_translations),
         )
+
+    async def episode_translations(
+        self, content_id: str, http: Any
+    ) -> list[str] | None:
+        """The member's own track gate; None (the default) is inert."""
+        return self.allowed_translations
 
     async def stream(
         self, content_id: str, translation: str | None, http: Any
     ) -> StreamResponse:
         self.stream_calls.append(content_id)
+        self.translation_calls.append(translation)
         if isinstance(self.outcome, ProviderError):
             raise self.outcome
         if self.outcome is None:
@@ -365,6 +394,116 @@ def test_gated_does_not_walk() -> None:
     axis = playback()
     assert axis["providers"]["p1"]["refused_codes"] == {"gated": 1}
     assert "p2" not in axis["providers"]
+
+
+def test_a_stale_pinned_dub_walks_to_the_member_that_still_has_it() -> None:
+    """A stale pick from another member's page, repaired by the group.
+
+    The pick came from p2's page before the content cache re-resolved the
+    group from p1, whose page lists only the original track. p1's stream
+    therefore refuses the stale id with ``translation_missing``; the walk
+    asks p2 with that SAME id and p2 — the member that still has the dub
+    — serves it, instead of the client getting a 404 for a title that
+    plays.
+    """
+    p1 = _MemberStub("p1", "dune-1")
+    p2 = _MemberStub("p2", "dune-2")
+    p1.content_translations = [Translation(id="en", label="Original")]
+    p2.content_translations = [Translation(id="uk", label="Дубляж")]
+    _fails(p1, "translation_missing")
+    _serves(p2)
+    group_key = _group(p1, p2)
+
+    r = client.get(
+        f"/Videos/{group_key}/stream",
+        params={"mediaSourceId": f"{group_key}::uk"},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 302
+    assert r.headers["location"] == f"{_CDN}/p2-dune-2.mp4"
+    # The member whose page answered is asked first, and the pick rides the
+    # walk unchanged — a member is never handed a rewritten track id.
+    assert p1.stream_calls == ["dune-1"]
+    assert p2.stream_calls == ["dune-2"]
+    assert p1.translation_calls == ["uk"]
+    assert p2.translation_calls == ["uk"]
+    # The lead's page no longer advertises the stale pick; the member that
+    # served still does.
+    assert [t.id for t in p1.content_translations] == ["en"]
+    assert [t.id for t in p2.content_translations] == ["uk"]
+    axis = playback()
+    assert axis["providers"]["p1"]["refused_codes"] == {"translation_missing": 1}
+    assert axis["providers"]["p2"]["served"] == 1
+    # ADR-0002: a track this member lacks is the ITEM's verdict — the lane
+    # is not healthier for it, and not sicker either.
+    assert TRACKER.last_error_at("p1") is None
+
+
+def test_the_lead_gate_rejecting_the_pick_walks_to_a_member_that_allows_it() -> None:
+    """``invalid_translation`` is the same stale pick, one step earlier.
+
+    The episode-translation gate refuses before ``stream()`` is called,
+    so walking past it must not look like a lane fault and must not hand
+    the same member's stream a call. The next member's gate allows the
+    pinned id and serves it.
+    """
+    p1 = _MemberStub("p1", "dune-1")
+    p2 = _MemberStub("p2", "dune-2")
+    p1.content_translations = [Translation(id="en", label="Original")]
+    p2.content_translations = [Translation(id="uk", label="Дубляж")]
+    p1.allowed_translations = ["en"]
+    p2.allowed_translations = ["uk"]
+    _serves(p2)
+    group_key = _group(p1, p2)
+
+    r = client.get(
+        f"/Videos/{group_key}/stream",
+        params={"mediaSourceId": f"{group_key}::uk"},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 302
+    assert r.headers["location"] == f"{_CDN}/p2-dune-2.mp4"
+    assert p1.stream_calls == []  # the gate refused before stream()
+    assert p1.translation_calls == []
+    assert p2.stream_calls == ["dune-2"]
+    assert p2.translation_calls == ["uk"]
+    axis = playback()
+    assert axis["providers"]["p1"]["refused_codes"] == {"invalid_translation": 1}
+    assert axis["providers"]["p2"]["served"] == 1
+    assert TRACKER.last_error_at("p1") is None
+
+
+def test_no_member_carrying_the_pinned_dub_is_still_a_404() -> None:
+    """The walk proves the pick is unavailable, then refuses it (D2).
+
+    A truly bogus pick is the same 404 it always was — but now only after
+    every member was asked, so the answer is the group's rather than the
+    first member's; and the extra attempts cost no lane health.
+    """
+    p1 = _MemberStub("p1", "dune-1")
+    p2 = _MemberStub("p2", "dune-2")
+    _fails(p1, "translation_missing")
+    _fails(p2, "translation_missing")
+    group_key = _group(p1, p2)
+
+    r = client.get(
+        f"/Videos/{group_key}/stream",
+        params={"mediaSourceId": f"{group_key}::bogus"},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 404  # never a 5xx for an unplayable track (D2)
+    assert p1.stream_calls == ["dune-1"]
+    assert p2.stream_calls == ["dune-2"]
+    assert p1.translation_calls == ["bogus"]
+    assert p2.translation_calls == ["bogus"]
+    axis = playback()
+    assert axis["providers"]["p1"]["refused_codes"] == {"translation_missing": 1}
+    assert axis["providers"]["p2"]["refused_codes"] == {"translation_missing": 1}
+    assert TRACKER.last_error_at("p1") is None
+    assert TRACKER.last_error_at("p2") is None
 
 
 def test_every_member_refusing_is_still_a_404() -> None:

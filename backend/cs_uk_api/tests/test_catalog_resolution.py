@@ -30,7 +30,7 @@ from cs_uk_api._catalog_state.resolution import (
     register_search_groups,
     resolve_group,
 )
-from cs_uk_api.health import STATUS_OK, TRACKER
+from cs_uk_api.health import ITEM_VERDICT_CODES, STATUS_OK, TRACKER
 from cs_uk_api.models import (
     ContentResponse,
     SearchGroup,
@@ -413,6 +413,17 @@ async def test_group_content_walk_is_capped(monkeypatch: pytest.MonkeyPatch) -> 
     asked = [bool(m.content_calls) for m in members]
     assert asked == [True] * cap + [False] * (len(members) - cap)
     assert resolution.WALKABLE_VERDICT_CODES >= {"not_found", "unreachable"}
+    assert "gated" not in resolution.WALKABLE_VERDICT_CODES
+
+
+def test_the_pinned_track_verdicts_walk_and_the_deliberate_one_does_not() -> None:
+    """A track is per-MEMBER knowledge, so the client's own track verdicts
+    are repairable by the group: the member that carries the pinned dub is
+    the one asked for it (Q48). The codes stay the taxonomy's item
+    verdicts — walking past them changes WHO is asked, never lane health
+    (ADR-0002) — while ``gated`` remains the walk's stop."""
+    assert resolution.TRANSLATION_VERDICT_CODES <= resolution.WALKABLE_VERDICT_CODES
+    assert resolution.TRANSLATION_VERDICT_CODES <= ITEM_VERDICT_CODES
     assert "gated" not in resolution.WALKABLE_VERDICT_CODES
 
 

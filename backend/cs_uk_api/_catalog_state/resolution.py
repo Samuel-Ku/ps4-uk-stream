@@ -260,19 +260,36 @@ def group_key_for_external(composite: str) -> str | None:
 # vocabulary lives HERE, next to the group map both of them read, and
 # neither stage can drift away from the other (Q45/Q47).
 
+#: The client's own TRACK verdicts: the dub it picked is not on THIS
+#: member — ``invalid_translation`` from the episode-translation gate
+#: (``play_request``), ``translation_missing`` from a provider that has no
+#: such voice (uakino, animeon). Both are item verdicts in the health
+#: taxonomy (``ITEM_VERDICT_CODES``), and both are per-MEMBER knowledge by
+#: construction: every member of a group lists its OWN dubs, so "this
+#: member does not carry that track" says nothing about the title.
+#: The set is a literal rather than derived from the taxonomy, because
+#: only these two codes mean "wrong member, same title": a third
+#: translation verdict belongs HERE as well.
+TRANSLATION_VERDICT_CODES = frozenset({"invalid_translation", "translation_missing"})
+
 #: Refusals that mean "ask the group's next member": a lane fault (the
-#: member could not answer) or ``not_found`` (it answered with no
-#: playable file). Derived from the health taxonomy rather than copied,
-#: so a new lane code becomes walkable the moment it lands in
+#: member could not answer), ``not_found`` (it answered with no playable
+#: file), or a translation verdict (this member does not carry the track
+#: the client pinned — ``TRANSLATION_VERDICT_CODES``). The last one is a
+#: walk for the same reason as the others: the pick is per-member
+#: knowledge, so the member that HAS the pinned dub is asked with the very
+#: id the client picked instead of the client getting a 404 for a title
+#: that plays. Derived from the health taxonomy rather than copied, so a
+#: new lane code becomes walkable the moment it lands in
 #: ``LANE_VERDICT_CODES`` — the classification keeps its one owner and
 #: the walk cannot drift away from it. Deliberately NOT walkable:
-#: ``gated`` (the title is deliberately unavailable; another member's
-#: answer is not a repair for what the client asked) and the translation
-#: verdicts (``invalid_translation`` / ``translation_missing`` — the
-#: client picked that track, and the group's other members are not more
-#: likely to carry it). A codeless crash (``None``) IS walkable: it is
-#: recorded as a lane fault, so the walk treats it like one.
-WALKABLE_VERDICT_CODES = frozenset(LANE_VERDICT_CODES | {"not_found"})
+#: ``gated`` — the title is deliberately unavailable, and another member's
+#: answer is not a repair for what the client asked. A codeless crash
+#: (``None``) IS walkable: it is recorded as a lane fault, so the walk
+#: treats it like one.
+WALKABLE_VERDICT_CODES = frozenset(
+    LANE_VERDICT_CODES | TRANSLATION_VERDICT_CODES | {"not_found"}
+)
 
 #: How many of a group's members one request may walk. Upstream
 #: etiquette, the #305 lesson applied to both seams: a work carried by
@@ -443,9 +460,11 @@ async def resolve_group_content(group_key: str) -> ContentResponse | None:
     ``WALKABLE_VERDICT_CODES``: a lane fault, ``not_found`` — exactly the
     discipline the play seam follows, so a title whose first member's
     detail page is dead still resolves (and still plays) from another
-    member. A deliberate verdict (``gated``) or the client's own
-    translation verdicts end the walk: asking the group again is not a
-    repair for what the client asked. At most ``MAX_MEMBER_ATTEMPTS``
+    member. A deliberate verdict (``gated``) ends the walk: asking the
+    group again is not a repair for what the client asked. The walkable
+    set also carries the translation verdicts, which only the PLAY seam
+    can meet: a content fetch answers about a TITLE, never about a track,
+    so a page never refuses in that vocabulary. At most ``MAX_MEMBER_ATTEMPTS``
     members are asked, and one already resolved (by any member the walk
     would reach) answers without any upstream call at all. The response
     comes from the SAME ``content_cache`` / ``blocklist_cache`` stores the
