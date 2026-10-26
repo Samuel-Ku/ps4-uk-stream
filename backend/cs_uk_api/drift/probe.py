@@ -28,6 +28,7 @@ from typing import Any
 
 import httpx
 
+from ..models import ContentResponse
 from ..providers.base import BaseProvider, ProviderError
 
 #: uakino is never probed (spec #285, user story 9): the API's
@@ -112,21 +113,21 @@ async def probe_deep(
     """Deep probe of one card: content() → stream() → HEAD stream URL.
 
     ``first_card`` is the adapter's SearchResult from the listing probe
-    (its ``id`` carries the provider-scoped external id). A gated
-    verdict (ProviderError ``gated``) is NOT a failure — it is the
-    provider's deliberate "for subscribers" state, same semantics as
-    the API (ADR-0002). Any other raise or a HEAD that is not 2xx/3xx
-    marks the provider failed.
+    (its ``id`` carries the provider-scoped external id). The stream
+    step uses the first playable episode id from ``content()`` — the
+    API's own contract (``:s1e1`` for series, ``:__movie__`` for
+    films) — not the bare search-result id, which is not playable for
+    series and for some movie adapters. A gated verdict (ProviderError
+    ``gated``) is NOT a failure — it is the provider's deliberate "for
+    subscribers" state, same semantics as the API (ADR-0002). Any
+    other raise or a HEAD that is not 2xx/3xx marks the provider failed.
     """
     result = DeepProbeResult(provider_id=provider.id, ok=False)
     try:
-        # The SAME bare external id the API's ``/api/stream/{id}`` and
-        # facade ``_resolve_stream`` hand to stream() — never the
-        # provider-scoped ContentResponse.id (that has the ``p:``
-        # prefix and would 404 on every provider).
         external_id = _external_id(first_card)
-        await provider.content(external_id, http)
-        stream = await provider.stream(external_id, None, http)
+        content = await provider.content(external_id, http)
+        playable_id = _playable_id(provider, content, external_id)
+        stream = await provider.stream(playable_id, None, http)
         head = await http.head(stream.url)
         result.stream_url = stream.url
         result.head_status = head.status_code
@@ -152,6 +153,23 @@ def _external_id(card: Any) -> str:
     """
     _, _, external = str(card.id).partition(":")
     return external or str(card.id)
+
+
+def _playable_id(
+    provider: BaseProvider, content: ContentResponse, external_id: str
+) -> str:
+    """The id a real client would pass to ``stream()``.
+
+    Content pages emit episode rows whose ids already carry the
+    playable tail: ``:s1e1`` for series, ``:__movie__`` for films, and
+    a full episode URL for simpsonsuatv. Prefer the first episode's
+    wire id (strip the provider prefix) and fall back to the bare
+    external id only when the page exposes no episodes at all.
+    """
+    for season in content.seasons or []:
+        if season.episodes:
+            return str(season.episodes[0].id).removeprefix(f"{provider.id}:")
+    return external_id
 
 
 def rotate_deep_providers(

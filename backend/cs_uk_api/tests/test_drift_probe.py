@@ -22,7 +22,14 @@ from cs_uk_api.drift.probe import (
     probe_listing,
     rotate_deep_providers,
 )
-from cs_uk_api.models import SearchResult, StreamResponse
+from cs_uk_api.models import (
+    ContentResponse,
+    Episode,
+    SearchResult,
+    Season,
+    StreamResponse,
+    Translation,
+)
 from cs_uk_api.providers.base import BaseProvider, ProviderError
 
 
@@ -50,12 +57,15 @@ class _Stub(BaseProvider):
         stream_ok: bool = True,
         stream_status: int = 200,
         gated: bool = False,
+        episode_id: str | None = None,
     ) -> None:
         self._cards = cards or [_card("p1", 1), _card("p1", 2)]
         self._browse_error = browse_error
         self._stream_ok = stream_ok
         self._stream_status = stream_status
         self._gated = gated
+        self._episode_id = episode_id
+        self.stream_ids: list[str] = []
         self.sections = ()
 
     async def search(self, query: str, http: Any) -> list[SearchResult]:
@@ -69,18 +79,28 @@ class _Stub(BaseProvider):
         return list(self._cards), False
 
     async def content(self, external_id: str, http: Any) -> Any:
-        from cs_uk_api.models import ContentResponse, Translation
-
         if self._gated:
             raise ProviderError("gated", "for subscribers")
+        seasons = (
+            [
+                Season(
+                    number=1,
+                    episodes=[Episode(number=1, id=self._episode_id, title="E1")],
+                )
+            ]
+            if self._episode_id is not None
+            else None
+        )
         return ContentResponse(
             id=f"p1:{external_id}",
             form="movie",  # type: ignore[arg-type]
             title="Title",
             translations=[Translation(id="uk", label="Дубляж")],
+            seasons=seasons,
         )
 
     async def stream(self, content_id: str, translation: str | None, http: Any) -> StreamResponse:
+        self.stream_ids.append(content_id)
         if not self._stream_ok:
             raise ProviderError("not_found", "no stream")
         return StreamResponse(url="https://cdn.example.test/v.mp4", type="mp4", headers={})
@@ -180,6 +200,49 @@ async def test_deep_probe_content_stream_head_ok() -> None:
     assert result.stream_url == "https://cdn.example.test/v.mp4"
     assert result.head_status == 200
     assert http.head_calls == ["https://cdn.example.test/v.mp4"]
+
+
+@pytest.mark.asyncio
+async def test_deep_probe_uses_series_episode_id_from_content() -> None:
+    """Series must stream the first episode id (``:s1e1``), not the
+    unplayable bare search-result id (serialno/anitubeinua regression)."""
+    stub = _Stub(episode_id="p1:ext-1:s1e1")
+    result = await probe_deep(stub, _HeadClient(status=200), _card("p1", 1, form="series"))
+
+    assert result.ok
+    assert stub.stream_ids == ["ext-1:s1e1"]
+
+
+@pytest.mark.asyncio
+async def test_deep_probe_uses_movie_sentinel_from_content() -> None:
+    """A film's content page emits the ``:__movie__`` playable id
+    (doramyworld regression)."""
+    stub = _Stub(episode_id="p1:ext-1:__movie__")
+    result = await probe_deep(stub, _HeadClient(status=200), _card("p1", 1))
+
+    assert result.ok
+    assert stub.stream_ids == ["ext-1:__movie__"]
+
+
+@pytest.mark.asyncio
+async def test_deep_probe_preserves_full_url_episode_id() -> None:
+    """simpsonsuatv episode ids are full URLs; the provider prefix is
+    stripped, the URL is not."""
+    stub = _Stub(episode_id="p1:https://example.test/show/ep.html")
+    result = await probe_deep(stub, _HeadClient(status=200), _card("p1", 1, form="series"))
+
+    assert result.ok
+    assert stub.stream_ids == ["https://example.test/show/ep.html"]
+
+
+@pytest.mark.asyncio
+async def test_deep_probe_falls_back_to_bare_id_without_episodes() -> None:
+    """No episode rows: keep the previous bare-id behaviour."""
+    stub = _Stub()
+    result = await probe_deep(stub, _HeadClient(status=200), _card("p1", 1))
+
+    assert result.ok
+    assert stub.stream_ids == ["ext-1"]
 
 
 @pytest.mark.asyncio

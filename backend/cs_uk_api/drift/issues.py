@@ -14,6 +14,7 @@ operator's own auth), matching the repo's existing issue workflow.
 
 from __future__ import annotations
 
+import json
 import subprocess
 from typing import Protocol
 
@@ -57,7 +58,14 @@ class GhIssueGateway:
         return out.stdout.strip()
 
     def find_open(self, provider_id: str) -> str | None:
-        """The number of the open drift issue for this provider, or None."""
+        """The number of the open drift issue for this provider, or None.
+
+        GitHub's search parser returns no rows for the
+        ``title:"..." in:title`` combination (observed live on the
+        drift issues), while the phrase form ``in:title "..."`` finds
+        them. Filter by exact title as well: a near-match must never
+        be mistaken for this provider's issue.
+        """
         title = ISSUE_TITLE.format(provider_id=provider_id)
         out = self._run(
             [
@@ -66,17 +74,18 @@ class GhIssueGateway:
                 "--state",
                 "open",
                 "--search",
-                f'title:"{title}" in:title',
+                f'in:title "{title}"',
                 "--json",
-                "number",
+                "number,title",
                 "--limit",
-                "1",
+                "20",
             ]
         )
-        import json
-
         rows = json.loads(out)
-        return str(rows[0]["number"]) if rows else None
+        for row in rows:
+            if row.get("title") == title:
+                return str(row["number"])
+        return None
 
     def open(self, provider_id: str, body: str) -> str:
         """File a drift issue; returns its number."""
