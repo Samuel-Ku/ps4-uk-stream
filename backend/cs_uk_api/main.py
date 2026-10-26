@@ -32,6 +32,7 @@ from .models import (
     SearchResponse,
 )
 from .native import content as native_content
+from .native import teleport as native_teleport
 from .play_attestation import PLAY_ATTESTATION
 from .poster_proxy import fetch as fetch_poster
 from .providers import PROVIDERS
@@ -52,6 +53,10 @@ app.include_router(jellyfin_router)
 # content conversation (browse / content / stream) lives beside its
 # facade siblings under native/, registered on the app directly.
 native_content.register(app)
+# Semantic Source Teleport (spec #443): a native alignment conversation;
+# deliberately separate from the Jellyfin facade so stock clients are
+# unaffected and the fork opts in by calling /api/teleport/align.
+native_teleport.register(app)
 
 
 @app.middleware("http")

@@ -50,6 +50,23 @@ process, no auth). Tunable knobs: `CS_UK_CACHE_SEARCH`,
 `UAKINO_CHROMIUM`, `CS_UK_ROW_MAX_PAGES` — see `CONTEXT.md` §Cache
 contract.
 
+**Semantic Source Teleport (spec #443, native route)** — `POST
+/api/teleport/align` needs `ffmpeg` and Chromaprint's `fpcalc` on the
+host:
+
+```bash
+sudo apt install ffmpeg libchromaprint-tools   # Debian/Ubuntu
+sudo pacman -S ffmpeg chromaprint              # Arch
+```
+
+If either binary is missing (or the route is disabled with
+`CS_UK_TELEPORT_ENABLED=0`) it answers `503 teleport_unavailable`;
+the rest of the API is unaffected. The route accepts decoded-audio
+uploads and keeps the same LAN-only, unauthenticated posture as the
+native API — do not expose it to a WAN. The opt-in
+`test_aligner_recovers_generated_delay_with_real_tools` check runs
+when both tools are on `PATH` and is skipped otherwise.
+
 **Continue watching («Продовжити перегляд»)** persists playback
 positions in one versioned JSON file, by default
 `~/.cache/cs-uk-api/playback.json` (next to the poster disk cache).

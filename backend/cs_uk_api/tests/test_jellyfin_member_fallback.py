@@ -286,7 +286,8 @@ def test_the_served_member_and_the_walk_are_logged(
     _serves(p2)
     group_key = _group(p1, p2)
 
-    with caplog.at_level(logging.INFO, logger="cs_uk_api.jellyfin.delivery"):
+    # The walk now logs from the shared playback seam (spec #443).
+    with caplog.at_level(logging.INFO, logger="cs_uk_api.playback"):
         assert _play(group_key).status_code == 302
 
     assert any(
