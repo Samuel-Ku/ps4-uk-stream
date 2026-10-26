@@ -458,6 +458,11 @@ class ChromaprintAligner:
             "11025",
             "-channels",
             "1",
+            # fpcalc defaults to the first 120 s only. The candidate
+            # window is ~10 minutes, so without this the reference at
+            # position-300..position+315 is simply not searched.
+            "-length",
+            "0",
             str(path),
         ]
         code, stdout, _stderr = await _run_command(

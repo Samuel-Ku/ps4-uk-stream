@@ -544,11 +544,15 @@ def _write_wav(path: Path, payload: bytes, *, rate: int = 11025) -> None:
     reason="teleport integration needs ffmpeg and fpcalc; install the package named in README",
 )
 def test_aligner_recovers_generated_delay_with_real_tools(tmp_path: Path) -> None:
-    """Exercise the real ffmpeg/fpcalc path with a known 20 s insertion."""
+    """Exercise the real ffmpeg/fpcalc path with a known 20 s insertion.
+
+    The 200 s source keeps the reference after fpcalc's 120 s default
+    cut-off, so a missing ``-length 0`` cannot pass this test.
+    """
     rate = 11025
     rng = random.Random(42)
     noise = b"".join(
-        struct.pack("<h", rng.randint(-12000, 12000)) for _ in range(rate * 60)
+        struct.pack("<h", rng.randint(-12000, 12000)) for _ in range(rate * 200)
     )
     silence = b"\x00\x00" * (rate * 20)
     candidate_path = tmp_path / "candidate.wav"
@@ -561,7 +565,7 @@ def test_aligner_recovers_generated_delay_with_real_tools(tmp_path: Path) -> Non
         aligner.align(
             reference_wav=reference_path.read_bytes(),
             candidate=StreamResponse(url=str(candidate_path), type="mp4", headers={}),
-            position_seconds=60.0,
+            position_seconds=200.0,
         )
     )
 
