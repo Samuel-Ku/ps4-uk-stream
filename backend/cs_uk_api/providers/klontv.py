@@ -14,6 +14,8 @@ after the section prefix (e.g. `films/11719-duna-chastyna-druga`).
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import re
 from typing import Any, cast
@@ -294,13 +296,58 @@ def _parse_card(card: Tag, provider_id: str) -> SearchResult | None:
     )
 
 
+def _decode_ashdi_file_value(raw: str) -> str | None:
+    """Decode ashdi.vip's obfuscated ``#2`` file payload.
+
+    Since 2026-10 the PlayerJS options carry
+    ``file:"#2<base64>"`` instead of a plain URL/playlist string. The
+    base64 is salted with ``//`` + base64(``klon_<24 hex>``) decoy
+    tokens, and a decoy can be split by another decoy. Strip them
+    iteratively: removing an inner token joins the fragments of the
+    outer one, which then becomes removable too. The remaining base64
+    is the real URL (movie) or playlist JSON (series).
+    """
+    data = raw[2:].replace("\\/", "/")
+    while True:
+        removed = False
+        for match in re.finditer(r"//a2xvbl8", data):
+            start = match.start() + 2
+            for end in range(4, min(len(data) - start, 160) + 1, 4):
+                encoded = data[start : start + end]
+                try:
+                    token = base64.b64decode(
+                        encoded + "=" * (-len(encoded) % 4), validate=True
+                    ).decode("utf-8")
+                except (binascii.Error, UnicodeDecodeError):
+                    continue
+                if re.fullmatch(r"klon_[0-9a-f]{24}", token):
+                    data = data[: match.start()] + data[start + end :]
+                    removed = True
+                    break
+            if removed:
+                break
+        if not removed:
+            break
+    try:
+        return base64.b64decode(data, validate=True).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError):
+        return None
+
+
 def _file_url(play_html: str) -> str | None:
-    """Extract the `file: '...'` value from the PlayerJS inline
-    script on the ashdi.vip player page. Works for both shapes:
-    `file:'https://.../index.m3u8'` (movie) and
-    `file:'[{...playlist...}]'` (series)."""
-    m = re.search(r"file\s*:\s*'([^']+)'", play_html)
-    return m.group(1) if m else None
+    """Extract and decode the PlayerJS ``file`` value from an
+    ashdi.vip player page.
+
+    Supports the legacy single-quoted plain payload
+    (``file:'https://.../index.m3u8'`` for movies,
+    ``file:'[{...playlist...}]'`` for series) and the current
+    double-quoted ``file:"#2<obfuscated>"`` shape.
+    """
+    m = re.search(r"file\s*:\s*(['\"])(.*?)\1", play_html, re.DOTALL)
+    if m is None:
+        return None
+    raw = m.group(2)
+    return _decode_ashdi_file_value(raw) if raw.startswith("#2") else raw
 
 
 class KlonTVProvider(BaseProvider):

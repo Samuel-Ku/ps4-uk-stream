@@ -7,7 +7,7 @@ import httpx
 import pytest
 import respx
 
-from cs_uk_api.providers.klontv import KlonTVProvider
+from cs_uk_api.providers.klontv import KlonTVProvider, _file_url
 
 FIX = pathlib.Path(__file__).parent / "fixtures" / "klontv"
 
@@ -514,6 +514,51 @@ async def test_klontv_stream_series_unmatched_translation_falls_back():
                 "series/8431-duna:s1e1", "Невідомий дубляж", http
             )
     assert s.url == "https://ashdi.vip/vod/bamboo-s1e1.m3u8"
+
+
+def test_klontv_file_url_decodes_obfuscated_movie_payload():
+    """The 2026-10 ashdi.vip player serves an obfuscated
+    ``file:"#2..."`` payload instead of a plain URL. The decoder must
+    strip the inserted ``//`` + base64(``klon_...``) decoys and return
+    the real m3u8 URL."""
+    html = r'''
+    <script>
+    player = new Playerjs({
+        id:"videoplayer298079",
+        file:"#2aHR0cHM6Ly9hc2hkaS52aXAvdmlkZW8yNi8zL25ldy95b3UuY2FuLmNvdW50Lm9uLm1lLjIwMDAuYmRyZW11eC4xMDgwcC5kdHNoZC5tYS4\/\/a2xvbl8z\/\/a2xvbl83M2M0ODNjZjhiNzJhNjY1OTBlZTQ4YmI=MzQ1ZWUwODVmNTZjNzI0NmMxOTczMDU=1LjFjbG92ZXJkdWJfMjk4MDc5L2hscy9EYStYam4\/\/a2xvbl8wNDU3YmI5YzdlMzRlNGUzMDQ4NDkwZDA=2UmtlMWRoQTcrQmc9PS9pbmRleC5tM3U4",
+    });
+    </script>
+    '''
+    assert _file_url(html) == (
+        "https://ashdi.vip/video26/3/new/you.can.count.on.me.2000.bdremux.1080p.dtshd.ma.5.1cloverdub_298079"
+        "/hls/Da+Xjn6Rke1dhA7+Bg==/index.m3u8"
+    )
+
+
+def test_klontv_file_url_decodes_nested_obfuscation_tokens():
+    """A decoy token can be split by another decoy. The decoder must
+    strip the inner token first, join the outer decoy's fragments, then
+    strip it and leave the real playlist JSON intact."""
+    from base64 import b64encode
+
+    playlist = (
+        '[{"title":"Дуб","folder":[{"title":"Сезон 1","folder":['
+        '{"title":"Серія 1","file":"https://ashdi.vip/vod/1.m3u8"}]}]}]'
+    )
+    encoded = b64encode(playlist.encode()).decode()
+    outer = b64encode(b"klon_0123456789abcdef01234567").decode()
+    inner = b64encode(b"klon_89abcdef0123456789abcdef").decode()
+    split = len(outer) // 2
+    obfuscated = (
+        encoded[:10]
+        + "//"
+        + outer[:split]
+        + "//"
+        + inner
+        + outer[split:]
+        + encoded[10:]
+    )
+    assert _file_url(f'<script>file:"#2{obfuscated}"</script>') == playlist
 
 
 def test_klontv_select_episode_url_honors_translation():
