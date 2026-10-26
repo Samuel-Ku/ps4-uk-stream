@@ -3,11 +3,13 @@
 The resolution half of the catalog state: a ``g2:`` group key resolves
 to its ``{provider: SearchResult}`` map, a played
 episode's wire id resolves to its merged group, and a group key resolves
-to ONE provider's content detail — all through the same content /
-blocklist / gated stores the native routes use. Also home here: the
-subscription-gate sweep (``filter_gated_items``), the uakino readiness
-gate, and the search-group registration that folds searched cards into
-the shared resolution map (ticket #106).
+to ONE MEMBER's content detail — walking the group's other members when
+that member refuses in a way the group can repair (the same walk the
+play seam runs, Q45/Q47) — all through the same content / blocklist /
+gated stores the native routes use. Also home here: the subscription-gate
+sweep (``filter_gated_items``), the uakino readiness gate, and the
+search-group registration that folds searched cards into the shared
+resolution map (ticket #106).
 
 Depends only on ``_stores`` (the caches/keys) and the shared service
 modules — never on the snapshot / warm / search modules, so the package
@@ -18,14 +20,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 import httpx
 from fastapi import HTTPException
 
 from .. import config as _config
 from ..country import is_blocked_country
-from ..health import TRACKER, record_verdict
+from ..health import LANE_VERDICT_CODES, TRACKER, record_verdict
 from ..http_client import get_client
 from ..merge import group_key_from
 from ..models import (
@@ -37,7 +39,7 @@ from ..models import (
     SearchResult,
 )
 from ..providers import PROVIDERS
-from ..providers.base import ProviderError
+from ..providers.base import BaseProvider, ProviderError
 from ..uakino_browser import get_session
 from ..wire_identity import is_group_key, split_episode_tail
 from ._stores import (
@@ -248,59 +250,213 @@ def group_key_for_external(composite: str) -> str | None:
     return None
 
 
+# ------------------------------------------------------------- member walk
+#
+# A group key is carried by SEVERAL providers, and one member's refusal is
+# not the title's verdict: the walk asks the group's next member when the
+# refusal is one the group can repair. Two seams run it — the play seam
+# (``jellyfin.delivery.resolve_stream``, for the bytes) and content
+# resolution (``resolve_group_content``, for the title's own page) — so the
+# vocabulary lives HERE, next to the group map both of them read, and
+# neither stage can drift away from the other (Q45/Q47).
+
+#: Refusals that mean "ask the group's next member": a lane fault (the
+#: member could not answer) or ``not_found`` (it answered with no
+#: playable file). Derived from the health taxonomy rather than copied,
+#: so a new lane code becomes walkable the moment it lands in
+#: ``LANE_VERDICT_CODES`` — the classification keeps its one owner and
+#: the walk cannot drift away from it. Deliberately NOT walkable:
+#: ``gated`` (the title is deliberately unavailable; another member's
+#: answer is not a repair for what the client asked) and the translation
+#: verdicts (``invalid_translation`` / ``translation_missing`` — the
+#: client picked that track, and the group's other members are not more
+#: likely to carry it). A codeless crash (``None``) IS walkable: it is
+#: recorded as a lane fault, so the walk treats it like one.
+WALKABLE_VERDICT_CODES = frozenset(LANE_VERDICT_CODES | {"not_found"})
+
+#: How many of a group's members one request may walk. Upstream
+#: etiquette, the #305 lesson applied to both seams: a work carried by
+#: eight providers must not spend eight upstream calls — each up to the
+#: client timeout — to answer one request. The walk follows the group's
+#: first-seen order (the order the detail page lists, so the member the
+#: viewer sees first is the one tried first) and stops here.
+MAX_MEMBER_ATTEMPTS = 3
+
+
+def member_attempts(
+    sources: Sequence[SearchResult],
+    *,
+    lead: str | None = None,
+    registered_only: bool = True,
+) -> tuple[tuple[str, str], ...]:
+    """A group's members as ``(provider, bare external id)`` attempts.
+
+    First-seen order, so the walk degrades from the member the viewer saw
+    toward the rest of the union; at most one attempt per provider, never
+    more than ``MAX_MEMBER_ATTEMPTS``, and a card whose bare id is empty is
+    dropped — the remaining attempts (or the final refusal) still record
+    this request's outcome.
+
+    ``lead`` moves one member to the FRONT when the group carries it: the
+    member whose content page answered (``group_content_member``), so the
+    play seam asks the member whose detail page it just read — and whose
+    translation ids the client is holding — before it spends an upstream
+    call on a member it already knows is dead.
+
+    ``registered_only`` (the play seam's rule) drops a member whose provider
+    is no longer registered: ``stream()`` needs the provider object itself.
+    Content resolution and the cache-only readers pass False — a member's
+    page may still be CACHED, and a cached page answers without the provider
+    — and the content walk skips a member it cannot fetch, asking the next.
+    """
+    attempts: list[tuple[str, str]] = []
+    asked: set[str] = set()
+    for result in sources:
+        if result.provider in asked:
+            continue
+        if registered_only and result.provider not in PROVIDERS:
+            continue
+        external_id = result.id.partition(":")[2]
+        if not external_id:
+            continue
+        asked.add(result.provider)
+        attempts.append((result.provider, external_id))
+        if len(attempts) == MAX_MEMBER_ATTEMPTS:
+            break
+    if lead is None:
+        return tuple(attempts)
+    leading = [a for a in attempts if a[0] == lead]
+    if not leading:
+        return tuple(attempts)
+    return tuple(leading + [a for a in attempts if a[0] != lead])
+
+
+def _member_attempts_of(
+    per_provider: Mapping[str, SearchResult] | None, *, lead: str | None = None
+) -> tuple[tuple[str, str], ...]:
+    """``member_attempts`` over an already-resolved group map (() when None).
+
+    The CONTENT side's view of the group: unregistered members stay in (a
+    cached page of theirs still answers), which is why the walk's fetch step
+    checks for a provider before calling one.
+    """
+    if not per_provider:
+        return ()
+    return member_attempts(
+        tuple(per_provider.values()), lead=lead, registered_only=False
+    )
+
+
+def _member_cached(cache_key: str) -> tuple[str, ContentResponse | None]:
+    """Cache-only verdict for one member's content key.
+
+    ``("hit", page)`` — this member's page is already resolved;
+    ``("gated", None)`` / ``("blocked", None)`` — a DELIBERATE verdict
+    (subscription gate / Russian content), the one answer the walk stops
+    on rather than repairing with another member; ``("miss", None)`` —
+    nothing known yet, a fetch may answer. Both deliberate kinds mean "not
+    for this client", so their order among themselves is immaterial.
+    """
+    if gated_cache.get(cache_key) is True:
+        return "gated", None
+    if blocklist_cache.get(cache_key) is not None:
+        return "blocked", None
+    cached = content_cache.get(cache_key)
+    if cached is not None:
+        return "hit", cached
+    return "miss", None
+
+
+def _cached_group_page(group_key: str) -> tuple[str, ContentResponse] | None:
+    """``(member, page)`` already resolved for a group, or None.
+
+    The cache-only twin of the walk's per-member ladder, read in the walk's
+    OWN order (same attempts, same cap, same deliberate verdicts) so it can
+    never disagree with what ``resolve_group_content`` answered: the first
+    member holding a page wins, a member holding a deliberate verdict
+    answers nothing (the walk would have stopped there), and a cold group
+    answers None. Never fetches.
+    """
+    for provider_id, external_id in _member_attempts_of(resolve_group(group_key)):
+        kind, cached = _member_cached(f"content:{provider_id}:{external_id}")
+        if kind == "hit" and cached is not None:
+            return provider_id, cached
+        if kind != "miss":
+            return None
+    return None
+
+
 def peek_group_content(group_key: str) -> ContentResponse | None:
     """Cache-only group content read (ticket #216).
 
-    Returns the first-seen provider's ContentResponse when it is already
-    cached — never fetches. The view-card Type is a cheap
-    URL/section-guess while the content page is the truth, and the
-    facade re-verifies a card against this peek; a cold group answers
-    None exactly like ``resolve_group_content`` would on its first
-    cache-miss, so callers degrade identically ("keep the card's own
-    guess") without paying a fetch.
+    Returns the member page already resolved for the group — never
+    fetches. The view-card Type is a cheap URL/section-guess while the
+    content page is the truth, and the facade re-verifies a card against
+    this peek; a cold group answers None exactly like
+    ``resolve_group_content`` would on its first cache-miss, so callers
+    degrade identically ("keep the card's own guess") without paying a
+    fetch.
+
+    Q47: the member that answered is read the way the WALK landed — a
+    group whose first member's page is dead reads the page of the member
+    that served it, not the dead one's absence.
     """
-    per_provider = resolve_group(group_key)
-    if per_provider is None:
-        return None
-    provider_id, item = next(iter(per_provider.items()))
-    _, _, external_id = item.id.partition(":")
-    cache_key = f"content:{provider_id}:{external_id}"
-    if gated_cache.get(cache_key) is True:
-        return None
-    if blocklist_cache.get(cache_key) is not None:
-        return None
-    cached = content_cache.get(cache_key)
-    if cached is None:
-        return None
-    return cached
+    pair = _cached_group_page(group_key)
+    return None if pair is None else pair[1]
+
+
+def group_content_member(group_key: str) -> str | None:
+    """The member whose page IS this group's content, or None.
+
+    The play seam's read of the walk's outcome (Q47): the member whose
+    detail page answered is asked for the stream FIRST. It is the member
+    whose translations (and translation IDS) the client is holding — the
+    facade built the play request from that page — so asking it before a
+    member whose page we could not even read is both the cheaper and the
+    correcter order.
+    """
+    pair = _cached_group_page(group_key)
+    return None if pair is None else pair[0]
 
 
 #: Single-flight guard for ``resolve_group_content`` (ticket #224): a
-#: per-cache-key task so concurrent facade calls for the SAME item — the
+#: per-GROUP-KEY task so concurrent facade calls for the SAME item — the
 #: app fires detail + seasons + episodes + playback in one tick — share
 #: ONE upstream resolution and its verdict instead of N parallel
 #: re-resolves (run8 re-hit animeon 4x in ~2s during a 502 storm; run7's
 #: cold walk ballooned to 59 fetches across two retry rounds). The map
-#: is bounded: each entry is removed once its task finishes.
+#: is bounded: each entry is removed once its task finishes. Keyed by the
+#: group, not by a member's cache key: the walk may end on a member other
+#: than the first, and two callers asking for one group must share the
+#: whole walk (Q47).
 _resolve_inflight: dict[str, asyncio.Task[ContentResponse | None]] = {}
 
 
 async def resolve_group_content(group_key: str) -> ContentResponse | None:
-    """Resolve a ``g2:`` group key to ONE provider's content detail.
+    """Resolve a ``g2:`` group key to ONE member's content detail.
 
     The facade's ticket #105 detail path: a ``g2:`` key maps to the same
     ``{provider: SearchResult}`` map the native ``/api/home`` populates;
-    the first-seen provider (same order the home row's chip strip shows)
-    is asked for its ContentResponse. The response comes from the SAME
-    ``content_cache`` / ``blocklist_cache`` stores the native
-    ``/api/content`` route uses — one TTL, one cache-key shape, one
-    ``clear()`` — so a detail view and a native content call never cache
-    two different shapes of the same title.
+    the group's members are asked in first-seen order (the order the home
+    row's chip strip shows, so the member the viewer saw first is tried
+    first) and the walk continues past a member the GROUP can repair —
+    ``WALKABLE_VERDICT_CODES``: a lane fault, ``not_found`` — exactly the
+    discipline the play seam follows, so a title whose first member's
+    detail page is dead still resolves (and still plays) from another
+    member. A deliberate verdict (``gated``) or the client's own
+    translation verdicts end the walk: asking the group again is not a
+    repair for what the client asked. At most ``MAX_MEMBER_ATTEMPTS``
+    members are asked, and one already resolved (by any member the walk
+    would reach) answers without any upstream call at all. The response
+    comes from the SAME ``content_cache`` / ``blocklist_cache`` stores the
+    native ``/api/content`` route uses — one TTL, one cache-key shape per
+    MEMBER, one ``clear()`` — so a detail view and a native content call
+    never cache two different shapes of the same title.
 
     Returns ``None`` when the key is absent (cold cache, D2's "item
-    unavailable" 404) or the provider's ``content()`` raises (the facade
-    degrades to 404; it never surfaces a 502 like a native route would —
-    Jellyfin clients treat both as "skip this item").
+    unavailable" 404) or every walked member's ``content()`` raises (the
+    facade degrades to 404; it never surfaces a 502 like a native route
+    would — Jellyfin clients treat both as "skip this item").
 
     Single-flight (#224): concurrent callers for the same key wait for
     the first resolution and share its verdict (success OR failure) — a
@@ -310,69 +466,79 @@ async def resolve_group_content(group_key: str) -> ContentResponse | None:
     per_provider = resolve_group(group_key)
     if per_provider is None:
         return None
-    # First-seen provider; the SearchResult's composite id
-    # (``provider:external``) is split back to the bare external id the
-    # provider's content() expects (animeon rejects composite ids).
-    provider_id, item = next(iter(per_provider.items()))
-    _, _, external_id = item.id.partition(":")
-    cache_key = f"content:{provider_id}:{external_id}"
-    # Single-flight (#224): if a resolution for this key is already
-    # in flight, share ITS verdict (success or failure) instead of
+    attempts = _member_attempts_of(per_provider)
+    if not attempts:
+        return None
+    # Single-flight (#224): if a resolution for this group is already in
+    # flight, share ITS verdict (success or failure) instead of
     # re-storming the upstream in parallel — the app fires detail +
     # seasons + episodes + playback for one item in the same tick, and
     # duplicate walks are what stretched run7's cold resolution and
     # multiplied run8's 502s. The map entry is created synchronously
     # (no await between the get and the set), so two callers in the
     # same event-loop tick can never both become leader.
-    existing = _resolve_inflight.get(cache_key)
+    existing = _resolve_inflight.get(group_key)
     if existing is not None:
         return await existing
-    task = asyncio.create_task(
-        _resolve_group_content_once(
-            cache_key, group_key, provider_id, external_id,
-        )
-    )
-    _resolve_inflight[cache_key] = task
+    task = asyncio.create_task(_resolve_group_content_once(group_key, attempts))
+    _resolve_inflight[group_key] = task
     try:
         return await task
     finally:
         # Drop the guard once the burst is over (bounded memory); a
         # later, genuinely new request starts a fresh resolution.
-        if _resolve_inflight.get(cache_key) is task:
-            _resolve_inflight.pop(cache_key, None)
+        if _resolve_inflight.get(group_key) is task:
+            _resolve_inflight.pop(group_key, None)
 
 
 async def _resolve_group_content_once(
-    cache_key: str,
     group_key: str,
-    provider_id: str,
-    external_id: str,
+    attempts: tuple[tuple[str, str], ...],
 ) -> ContentResponse | None:
-    """One leader resolution for ``cache_key`` (single-flight, #224).
+    """One leader resolution for ``group_key`` (single-flight, #224).
 
-    Re-checks the caches under the guard: a previous burst may have
-    landed a verdict between the caller's first check and the task
-    starting. Mirrors the body of the pre-#224 ``resolve_group_content``.
+    Walks the group's members in order. Re-checks the caches under the
+    guard per member: a previous burst may have landed a verdict between
+    the caller's first check and the task starting. The page is cached
+    under the SERVING member's key (the native route's key shape), and a
+    walk that had to move on says so in the log, because the axis counts
+    requests, not which member answered.
+
+    An already-resolved page answers first, whichever member holds it —
+    the walk THEN does not spend a first member's B23 retry pair (2 calls
+    plus the retry delay) on every view of a title it has already
+    resolved from further down the group. Only a group no member has
+    answered yet is walked upstream, in first-seen order.
     """
-    if gated_cache.get(cache_key) is True:
-        return None
-    if blocklist_cache.get(cache_key) is not None:
-        return None
-    cached = content_cache.get(cache_key)
-    if cached is not None:
-        return cached
-    provider = PROVIDERS.get(provider_id)
-    if provider is None:
-        return None
+    answered = _cached_group_page(group_key)
+    if answered is not None:
+        return answered[1]
     http = get_client()
-    resp = None
-    last_err: Exception | None = None
-    for attempt in (1, 2):
-        try:
-            resp = await provider.content(external_id, http)
-            break
-        except ProviderError as e:
-            if e.code == "gated":
+    for position, (provider_id, external_id) in enumerate(attempts):
+        cache_key = f"content:{provider_id}:{external_id}"
+        kind, cached = _member_cached(cache_key)
+        if kind == "hit":
+            return cached
+        if kind != "miss":
+            # gated / blocklisted: the walk's own stopping rule — a
+            # deliberate verdict about the CLIENT's request (ADR-0002)
+            # and never a health sample, the #139 backstop.
+            return None
+        provider = PROVIDERS.get(provider_id)
+        if provider is None:
+            # On record but unaskable (no provider object left): nothing to
+            # fetch, so the walk moves on like any other unreachable member.
+            log.warning(
+                "group content member unavailable key=%s provider=%s — next member",
+                group_key,
+                provider_id,
+            )
+            continue
+        resp, code = await _fetch_member_content(
+            provider_id, provider, external_id, http, group_key
+        )
+        if resp is None:
+            if code == "gated":
                 # ADR-0002: a gated verdict never moves the health
                 # tracker. Cache it so every later group-key call
                 # short-circuits — the load_home sweep normally
@@ -380,7 +546,58 @@ async def _resolve_group_content_once(
                 # detail call must not record a health-down here either
                 # (#139).
                 gated_cache.set(cache_key, True)
+            if code is not None and code not in WALKABLE_VERDICT_CODES:
                 return None
+            log.warning(
+                "group content member refused key=%s provider=%s err=%s — next member",
+                group_key,
+                provider_id,
+                code,
+            )
+            continue
+        TRACKER.record(provider_id, ok=True)
+        if _config.SETTINGS.block_russian and is_blocked_country(resp.country):
+            blocklist_cache.set(cache_key, True)
+            log.info("blocked Russian content id=%s country=%s", cache_key, resp.country)
+            return None
+        resp.group_key = group_key
+        content_cache.set(cache_key, resp)
+        if position:
+            log.info(
+                "group content member fallback key=%s served_by=%s after=%d refusal(s)",
+                group_key,
+                provider_id,
+                position,
+            )
+        return resp
+    log.warning(
+        "group content failed key=%s members=%d all refused", group_key, len(attempts)
+    )
+    return None
+
+
+async def _fetch_member_content(
+    provider_id: str,
+    provider: BaseProvider,
+    external_id: str,
+    http: httpx.AsyncClient,
+    group_key: str,
+) -> tuple[ContentResponse | None, str | None]:
+    """One member's content page, with the B23 retry pair.
+
+    Returns the served page, or the verdict that refused it (``None`` for
+    a codeless crash, recorded as the lane fault it is) for the walker to
+    judge — the same split the play seam's per-member attempt makes. A
+    ``gated`` verdict is NOT retried: a deliberate answer does not change
+    between two attempts a second apart, and the walker caches it.
+    """
+    last_err: Exception | None = None
+    for attempt in (1, 2):
+        try:
+            return await provider.content(external_id, http), None
+        except ProviderError as e:
+            if e.code == "gated":
+                return None, e.code
             last_err = e
         except Exception as e:  # noqa: BLE001
             last_err = e
@@ -391,30 +608,20 @@ async def _resolve_group_content_once(
             # 404 a valid item. The health tracker only sees the verdict.
             log.warning(
                 "group content failed provider=%s key=%s attempt 1/2 err=%s — retrying",
-                provider_id, group_key, last_err,
+                provider_id,
+                group_key,
+                last_err,
             )
             await asyncio.sleep(CONTENT_RETRY_DELAY_S)
-    if resp is None:
-        log.warning(
-            "group content failed provider=%s key=%s both attempts err=%s",
-            provider_id, group_key, last_err,
-        )
-        # The shared item-vs-lane classification (ADR-0002, #373): a
-        # deterministic item verdict (``not_found`` on a dead torrent or
-        # bogus id) is a client-side outcome, not lane health — five dead
-        # titles must not flip the provider down. ``gated`` never gets
-        # here (the early-return above caches the verdict); generic
-        # (non-ProviderError) failures record as lane faults.
-        record_verdict(provider_id, last_err.code if isinstance(last_err, ProviderError) else None)
-        return None
-    TRACKER.record(provider_id, ok=True)
-    if _config.SETTINGS.block_russian and is_blocked_country(resp.country):
-        blocklist_cache.set(cache_key, True)
-        log.info("blocked Russian content id=%s country=%s", cache_key, resp.country)
-        return None
-    resp.group_key = group_key
-    content_cache.set(cache_key, resp)
-    return resp
+    # The shared item-vs-lane classification (ADR-0002, #373): a
+    # deterministic item verdict (``not_found`` on a dead torrent or
+    # bogus id) is a client-side outcome, not lane health — five dead
+    # titles must not flip the provider down. ``gated`` never gets
+    # here (returned above, unretried); generic (non-ProviderError)
+    # failures record as lane faults.
+    code = last_err.code if isinstance(last_err, ProviderError) else None
+    record_verdict(provider_id, code)
+    return None, code
 
 
 async def cached_provider_content(
@@ -463,16 +670,24 @@ def is_hard_unavailable(group_key: str) -> bool:
     degraded card answer (a known card whose live resolution failed
     should still render) and the D2 404 — a gated/blocked verdict must
     NEVER be masked by the degradation.
+
+    Q47: read along the WALK's own order, so the verdict a later member
+    holds still answers — a group that gated from its second member, while
+    the first member's page was merely dead, is a 404 and not a degraded
+    card answer.
     """
     per_provider = resolve_group(group_key)
     if per_provider is None:
         return True  # unknown group — the cold-cache 404 stands
-    provider_id, item = next(iter(per_provider.items()))
-    _, _, external_id = item.id.partition(":")
-    cache_key = f"content:{provider_id}:{external_id}"
-    if gated_cache.get(cache_key) is True:
-        return True
-    return blocklist_cache.get(cache_key) is not None
+    for provider_id, external_id in _member_attempts_of(per_provider):
+        kind, _ = _member_cached(f"content:{provider_id}:{external_id}")
+        if kind == "hit":
+            # A member's page IS resolved: the group is available, whatever
+            # a member after it (never reached by the walk) holds.
+            return False
+        if kind != "miss":
+            return True  # the deliberate verdict the walk would stop on
+    return False
 
 
 def should_skip_uakino_in_fanout() -> bool:
