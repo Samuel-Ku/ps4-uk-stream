@@ -9,11 +9,18 @@ consecutive failures, writes a machine-readable report, and exits
 non-zero when any provider failed. uakino is never probed (its health
 is the API's browser-session heartbeat).
 
+It also reads the API's ``/api/health`` for the playback axis: a
+provider that SERVED streams the client never played files its own
+issue on the same second-consecutive-sweep rule, because that fault is
+invisible to every probe (the bytes are served, the listing is green).
+That surface is the only thing it reads over the wire; the API process
+and its memory stay untouched.
+
 Usage:
     python -m cs_uk_api.scripts.drift_monitor [--state PATH] [--report PATH]
-        [--deep-every N] [--no-issues] [--day-offset N]
+        [--health-url URL] [--deep-every N] [--no-issues] [--day-offset N]
 
-Exit code 0 = all providers healthy (or issue filing skipped),
+Exit code 0 = all providers healthy on both axes (or issue filing skipped),
 1 = at least one provider failed the sweep.
 
 Scheduling: ``backend/deploy/cs-uk-api-drift.{service,timer}`` (ticket
@@ -30,6 +37,7 @@ import os
 import sys
 from datetime import datetime
 
+from ..drift.attestation import DEFAULT_HEALTH_URL
 from ..drift.monitor import DEFAULT_REPORT_PATH, DEFAULT_STATE_PATH, run_once
 
 logging.basicConfig(
@@ -51,6 +59,14 @@ async def main() -> int:
         "--report",
         default=os.environ.get("CS_UK_DRIFT_REPORT", DEFAULT_REPORT_PATH),
         help="path of the machine-readable report file",
+    )
+    parser.add_argument(
+        "--health-url",
+        default=os.environ.get("CS_UK_DRIFT_HEALTH", DEFAULT_HEALTH_URL),
+        help=(
+            "URL of the API's health surface, whose playback axis this sweep "
+            f"judges (default {DEFAULT_HEALTH_URL})"
+        ),
     )
     parser.add_argument(
         "--deep-every",
@@ -81,6 +97,7 @@ async def main() -> int:
         gateway=GhIssueGateway(),
         report_path=args.report,
         skip_issues=args.no_issues,
+        health_url=args.health_url,
     )
 
     # Human summary line per provider + a failed/skipped rollup.
@@ -100,6 +117,17 @@ async def main() -> int:
             f"fails={run['consecutive_failures']}{deep_txt} "
             f"({run['reason']})"
         )
+    # The playback axis covers lanes the probes do not, so it gets its own
+    # lines rather than being folded into the sweep's.
+    for pid, play in sorted(report.playback.items()):
+        mark = "PLAY" if play["verdict"] == "no-progress" else "play"
+        print(
+            f"{mark} {pid:<16} playback={play['verdict']:<11} "
+            f"served={play['served_delta']:<4} zero={play['no_progress_delta']:<4} "
+            f"fails={play['consecutive_failures']} ({play['reason']})"
+        )
+    if report.attestation_error is not None:
+        print(f"playback attestation: NOT READ ({report.attestation_error})")
     print(f"report: {args.report}")
     if report.failed:
         print(f"FAILED providers: {', '.join(report.failed)}")

@@ -17,6 +17,7 @@ import logging
 
 import pytest
 
+from cs_uk_api.drift.attestation import PlayCounters
 from cs_uk_api.drift.baseline import (
     BaselineStore,
     Signature,
@@ -341,3 +342,70 @@ def test_save_never_raises_on_unwritable_location(tmp_path) -> None:
     store = BaselineStore(blocker / "child" / "state.json")
     store.get("p1").consecutive_failures = 1
     store.save()  # must not raise
+
+
+# --------------------------------------------- playback axis in the state
+#
+# The playback axis's streak and its reference counters ride in the same
+# per-provider record, because the window a verdict needs exists nowhere
+# else: the surface reports process-lifetime totals.
+
+
+def test_playback_state_persists_across_store_instances(tmp_path) -> None:
+    path = tmp_path / "state.json"
+    store = BaselineStore(path)
+    state = store.get("p1")
+    state.play_failures = 2
+    state.last_play = PlayCounters(served=40, no_progress=39)
+    store.save()
+
+    reloaded = BaselineStore(path).get("p1")
+
+    assert reloaded.play_failures == 2
+    assert reloaded.last_play == PlayCounters(served=40, no_progress=39)
+
+
+def test_a_state_file_written_before_the_playback_axis_is_a_first_observation(
+    tmp_path,
+) -> None:
+    """The axis's keys are newer than the file: an older record must read as
+    "nothing observed yet" — no reference window and no streak — rather than
+    as a fault, and the rest of the record must survive intact."""
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "data": {
+                    "p1": {
+                        "consecutive_failures": 3,
+                        "shape_streak": 0,
+                        "signature": None,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = BaselineStore(path).get("p1")
+
+    assert state.consecutive_failures == 3
+    assert state.play_failures == 0
+    assert state.last_play is None
+
+
+def test_unreadable_playback_counters_degrade_to_a_fresh_store(tmp_path) -> None:
+    """A corrupt counter must NOT be read as zero plays — that would acquit a
+    lane whose streams never play — so it takes the store's fresh-start
+    ladder like any other shape mismatch."""
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps({"version": 1, "data": {"p1": {"last_play": "lots"}}}),
+        encoding="utf-8",
+    )
+
+    state = BaselineStore(path).get("p1")
+
+    assert state.play_failures == 0
+    assert state.last_play is None

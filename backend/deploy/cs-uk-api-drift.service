@@ -29,6 +29,11 @@ ExecStart="/home/rorschach/UA flims/ps4-uk-stream/backend/.venv/bin/python" -m c
 # with gh auth (the operator's own).
 # Environment=CS_UK_DRIFT_STATE=/home/rorschach/.cache/cs-uk-api/drift-state.json
 # Environment=CS_UK_DRIFT_REPORT=/home/rorschach/.cache/cs-uk-api/drift-report.json
+# The playback axis is read from the API's health surface on THIS host
+# (default http://127.0.0.1:8003/api/health, where cs-uk-api.service
+# binds). Unreachable = not read = nobody accused; point this at the
+# API's LAN address only if the two units ever run on different hosts.
+# Environment=CS_UK_DRIFT_HEALTH=http://127.0.0.1:8003/api/health
 
 [Install]
 WantedBy=multi-user.target
