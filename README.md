@@ -151,6 +151,25 @@ state; override with `CS_UK_DRIFT_REPORT` / `CS_UK_DRIFT_STATE`). The
 script exits non-zero when any provider failed — visible in
 `journalctl -u cs-uk-api-drift`.
 
+**Play attestation (the playback axis of `/api/health`)** — what the
+server did with every playback request. A catalog full of titles that
+refuse to play used to look exactly like a healthy server: the refusal
+existed only as a log line. Each request is now recorded as served, as
+refused (with the verdict that refused it — `gated`, `not_found`, a dead
+upstream — and the surface that asked: `playbackinfo`, `stream`,
+`download`, `segment`, the native route), or as `no-progress`: the client
+reported stopping before the position advanced, i.e. bytes were served
+and did not play (the resume store discards those reports by design,
+#214, which is why this state had no owner).
+
+It is separate from `/api/providers`' lane status on purpose — a lane can
+read `ok` while every play request against one title is refused
+(ADR-0002) — and both facts are on the wire together:
+
+```bash
+curl -s http://127.0.0.1:8003/api/health   # .playback = the axis above
+```
+
 **Torrent lane (English content, spec #374):** stand the BitPlay engine up
 with `backend/deploy/docker-compose.bitplay.yml`; operate it via
 [docs/torrent-lane.md](docs/torrent-lane.md).

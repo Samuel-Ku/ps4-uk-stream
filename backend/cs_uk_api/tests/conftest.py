@@ -34,6 +34,7 @@ import pytest
 from cs_uk_api import llm
 from cs_uk_api._catalog_state import _stores
 from cs_uk_api.health import TRACKER
+from cs_uk_api.play_attestation import PLAY_ATTESTATION
 from cs_uk_api.poster_proxy import _cache as _poster_cache
 from cs_uk_api.providers import (
     PROVIDERS,
@@ -69,12 +70,14 @@ def _reset_global_state() -> None:
     """Reset all process-wide state before each test (ticket #330).
 
     pytest-randomly shuffles test order; without this reset, a test that
-    records a gated/blocklisted verdict, a health sample, a profile, a
-    favorite, a playback position, or a watchdog tick silently breaks a
-    later test using the same keys (observed: 3-12 failures varying by
-    seed, green under ``-p no:randomly``).
+    records a gated/blocklisted verdict, a health sample, a play
+    attestation outcome, a profile, a favorite, a playback position, or a
+    watchdog tick silently breaks a later test using the same keys
+    (observed: 3-12 failures varying by seed, green under
+    ``-p no:randomly``).
     """
     TRACKER.reset()
+    PLAY_ATTESTATION.reset()
     WATCHDOG.reset()
     for store in _SHARED_STORES:
         store.clear()  # type: ignore[attr-defined]
