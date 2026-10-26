@@ -31,11 +31,14 @@
 #   CS_UK_PLAY_ATTEMPTS candidates tried         (default 3)
 #
 # The play flow tries up to CS_UK_PLAY_ATTEMPTS search hits and passes on
-# the first that yields a MediaSource. That is deliberate: a title can be
+# the first that plays end to end: detail, PlaybackInfo, a 302 to the
+# engine, 64 KiB of bytes and a seek. That is deliberate: a title can be
 # listed by the lane and still carry no torrents (the #413/#415 class —
-# yts.gg details payloads with an empty torrent map), which is an upstream
-# gap, not a broken deployment. The gate fails only when NO candidate
-# plays, which is what a dead lane or a misconfigured engine looks like.
+# yts.gg details payloads with an empty torrent map), or its swarm can be
+# dead while the metadata still resolves — both are upstream gaps, not a
+# broken deployment. A candidate whose stream stalls is skipped and the
+# next one is tried. The gate fails only when NO candidate plays, which is
+# what a dead lane or a misconfigured engine looks like.
 #
 # Only curl + python3 are required — both are already deployment prerequisites.
 set -uo pipefail
@@ -164,11 +167,14 @@ for p in json.load(open('$TMP/sections.json')):
 }
 
 PLAY_PATH=""    # set by candidate_play on success
+PLAY_LOC=""     # engine redirect that served the candidate
+PLAY_FIRST=""   # 64 KiB read result for the candidate
+PLAY_SEEK=""    # seek read result for the candidate
 PLAY_REASON=""  # why the last candidate was skipped
 
-candidate_play() { # group key -> 0 when it produced a MediaSource
-  local gk="$1" code name
-  PLAY_PATH=""; PLAY_REASON=""
+candidate_play() { # group key -> 0 when its stream bytes and seek work
+  local gk="$1" code name loc first seek want=65536 path
+  PLAY_PATH=""; PLAY_LOC=""; PLAY_FIRST=""; PLAY_SEEK=""; PLAY_REASON=""
 
   # The client opens the item before playing; this also registers the group
   # in the resolution map the play flow reads (a key that was never resolved
@@ -188,12 +194,35 @@ candidate_play() { # group key -> 0 when it produced a MediaSource
     PLAY_REASON="PlaybackInfo -> $code $(json_get "$TMP/pi.json" 'd.get("detail") or ""')"
     return 1
   fi
-  PLAY_PATH=$(json_get "$TMP/pi.json" '(d.get("MediaSources") or [{}])[0].get("Path","")')
-  if [ -z "$PLAY_PATH" ]; then
+  path=$(json_get "$TMP/pi.json" '(d.get("MediaSources") or [{}])[0].get("Path","")')
+  if [ -z "$path" ]; then
     PLAY_REASON="PlaybackInfo 200 with no MediaSources[].Path"
     return 1
   fi
-  return 0
+
+  # The facade never proxies the media: it hands the player the engine URL.
+  loc=$(curl -s -m "$TIMEOUT" "${AUTH[@]}" -o /dev/null -w '%{redirect_url}' "$API$path")
+  case "$loc" in
+    "$ENGINE"/*) ;;
+    "")          PLAY_REASON="stream returned no redirect (expected $ENGINE/...)"; return 1 ;;
+    *)           PLAY_REASON="stream redirected somewhere unexpected: $loc"; return 1 ;;
+  esac
+
+  # Bytes must actually flow — a 302 to a dead swarm is not a working lane.
+  first=$(curl -sL -m "$TIMEOUT" -r 0-$((want-1)) -o /dev/null -w '%{http_code} %{size_download}' "$loc")
+  case "$first" in
+    "206 $want"|"200 $want") ;;
+    *) PLAY_REASON="bounded read failed ($first; want 206/200 with $want bytes)"; return 1 ;;
+  esac
+
+  seek=$(curl -sL -m "$TIMEOUT" -r 1048576-2097151 -D "$TMP/seek.h" -o /dev/null \
+    -w '%{http_code} %{size_download}' "$loc")
+  if [ "$seek" = "206 1048576" ] && grep -qi '^content-range: bytes 1048576-' "$TMP/seek.h"; then
+    PLAY_PATH="$path"; PLAY_LOC="$loc"; PLAY_FIRST="$first"; PLAY_SEEK="$seek"
+    return 0
+  fi
+  PLAY_REASON="seek failed ($seek; want 206 with 1048576 bytes)"
+  return 1
 }
 
 flow_play() {
@@ -232,39 +261,14 @@ print('\n'.join(g3[:n]))
     curl -s -m "$TIMEOUT" "${AUTH[@]}" -o /dev/null "$API/api/search?q=$q&provider=yts"
     if candidate_play "$gk"; then
       ok "playable group $gk -> $PLAY_PATH"
+      ok "stream -> 302 to the engine ($PLAY_LOC)"
+      ok "first 64 KiB through the redirect chain ($PLAY_FIRST)"
+      ok "seek works ($PLAY_SEEK, Content-Range honoured)"
       break
     fi
     skip "$gk: $PLAY_REASON"
   done
   [ -n "$PLAY_PATH" ] || { bad "no candidate played '$TITLE' — lane or engine is down"; return 1; }
-
-  # The facade never proxies the media: it hands the player the engine URL.
-  local loc
-  loc=$(curl -s -m "$TIMEOUT" "${AUTH[@]}" -o /dev/null -w '%{redirect_url}' "$API$PLAY_PATH")
-  case "$loc" in
-    "$ENGINE"/*) ok "stream -> 302 to the engine ($loc)" ;;
-    "")          bad "stream returned no redirect (expected $ENGINE/...)"; return 1 ;;
-    *)           bad "stream redirected somewhere unexpected: $loc"; return 1 ;;
-  esac
-
-  # Bytes must actually flow — a 302 to a dead swarm is not a working lane.
-  local first want=65536
-  first=$(curl -sL -m "$TIMEOUT" -r 0-$((want-1)) -o /dev/null -w '%{http_code} %{size_download}' "$loc")
-  case "$first" in
-    "206 $want"|"200 $want") ok "first 64 KiB through the redirect chain ($first)" ;;
-    *) bad "bounded read failed ($first; want 206/200 with $want bytes)"; return 1 ;;
-  esac
-
-  local seek
-  seek=$(curl -sL -m "$TIMEOUT" -r 1048576-2097151 -D "$TMP/seek.h" -o /dev/null \
-    -w '%{http_code} %{size_download}' "$loc")
-  if [ "$seek" = "206 1048576" ] && grep -qi '^content-range: bytes 1048576-' "$TMP/seek.h"; then
-    ok "seek works ($seek, Content-Range honoured)"
-  else
-    bad "seek failed ($seek; want 206 with 1048576 bytes)"
-    return 1
-  fi
-
   return 0
 }
 

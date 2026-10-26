@@ -168,11 +168,13 @@ backend/deploy/smoke.sh; echo $?     # 0 = every flow passed, 1 = broken, 2 = us
 
 It writes nothing into the repo and purges no cache — safe to run against
 a stack someone is using. The play flow tries up to three search hits and
-passes on the first that yields a MediaSource, because a title can be
-listed by the lane yet carry no torrents (an upstream gap, not a broken
-deployment); each skipped candidate is reported with its reason. Point it
-at another host with `CS_UK_API_URL` / `CS_UK_ENGINE_URL`; the script
-header lists the rest of the knobs.
+passes on the first that plays end to end: detail, PlaybackInfo, the
+engine redirect, 64 KiB of bytes and a seek. A title can be listed by the
+lane yet carry no torrents (an upstream gap, not a broken deployment),
+and a torrent with metadata can still have a dead swarm; both make the
+candidate a skip with its reason and let the next one run. Point it at
+another host with `CS_UK_API_URL` / `CS_UK_ENGINE_URL`; the script header
+lists the rest of the knobs.
 
 The last run against the operator host, with its numbers, is recorded in
 `docs/test-artifacts/openclaw-home-smoke-2026-09-12.md`; re-running this
