@@ -1,16 +1,17 @@
 """Stream delivery (the D7 conversation): resolution, byte paths, download.
 
-ONE owner for what happens after the client presses play — the seam and
-every byte-serving route:
+ONE owner for what happens after the client presses play — the facade's
+resolution and every byte-serving route:
 
-  - :func:`resolve_stream` — THE seam every playback surface crosses:
+  - :func:`resolve_stream` — the facade's playable-id resolver and member
+    walk, layered over :func:`cs_uk_api.play_request.attempt_play`, the
+    shared play-request seam native ``/api/stream`` also crosses. It owns
     the two playable id families (a ``g2:`` movie key → the group's
     first-seen provider, and on a walkable refusal the group's other
     members after it; a provider-scoped episode wire id → its prefix),
-    ``provider.stream()``, the health recording, the play attestation
-    (one outcome per playback request, keyed by the ``surface`` its
-    caller declares) and the None-means-404 posture (D2: never a 5xx for
-    unplayable ids).
+    the group walk, and the None-means-404 posture (D2: never a 5xx for
+    unplayable ids). The provider call, translation gate, health recording
+    and play attestation live in the shared seam.
   - the delivery routes: ``/Videos/{id}/stream`` (302 vs byte proxy),
     ``/Videos|/Stream/{id}/vtt`` (the #378 subtitle 302),
     ``/Items/{id}/Download`` (spec #280: same bytes + a
@@ -36,7 +37,6 @@ from collections.abc import Sequence
 from functools import partial
 from urllib.parse import quote
 
-import httpx
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
 
@@ -47,13 +47,11 @@ from ..catalog import (
     record_dub_choice,
     resolve_item,
 )
-from ..health import ITEM_VERDICT_CODES, LANE_VERDICT_CODES, TRACKER, record_verdict
+from ..health import LANE_VERDICT_CODES
 from ..http_client import get_client
 from ..models import PlaySurface, SearchResult, StreamResponse
-from ..play_attestation import PLAY_ATTESTATION
+from ..play_request import attempt_play, attest_refusal, playable_target
 from ..providers import PROVIDERS
-from ..providers.base import ProviderError
-from ..torrent_engine import ENGINE_TRACKER_ID
 from ..wire_identity import is_group_key, split_season_key
 from .dto import safe_filename
 from .hls_proxy import proxy_download, proxy_stream, segment_target, serve_segment
@@ -73,30 +71,13 @@ def provider_for_item(item_id: str) -> str | None:
     rather than guessing.
     """
     if not is_group_key(item_id):
-        provider_id, _, external_id = item_id.partition(":")
-        return provider_id if provider_id in PROVIDERS and external_id else None
+        target = playable_target(item_id)
+        return target[0] if target is not None else None
     group_key, _ = split_season_key(item_id)
     res = group_resolution(group_key)
     if res is None or not res.sources:
         return None
     return res.sources[0].provider
-
-
-def _refuse(
-    provider_id: str | None,
-    item_id: str,
-    code: str | None,
-    surface: PlaySurface | None,
-) -> None:
-    """Attest one refusal, when this request was a playback request.
-
-    ``surface is None`` means the caller is not a playback surface — the
-    subtitle route crosses the same seam to find a track. Its refusal is
-    real (the client still gets the standing 404), but it is not a play
-    request, so it is not counted on the playback axis.
-    """
-    if surface is not None:
-        PLAY_ATTESTATION.refused(provider_id, item_id, code, surface)
 
 
 #: Refusals that mean "ask the group's next member": a lane fault (the
@@ -147,65 +128,6 @@ def _member_attempts(sources: Sequence[SearchResult]) -> tuple[tuple[str, str], 
     return tuple(attempts)
 
 
-async def _attempt_stream(
-    provider_id: str,
-    external_id: str,
-    translation_id: str | None,
-    http: httpx.AsyncClient,
-    item_id: str,
-    surface: PlaySurface | None,
-) -> tuple[StreamResponse | None, str | None]:
-    """One member's attempt: the upstream call and both outcome axes.
-
-    Records the HEALTH verdict (``ITEM_VERDICT_CODES`` are the client-side
-    semantics ADR-0002 keeps out of the tracker — the #373 note — and
-    engine-path faults attribute to the engine's own entry, spec #394)
-    and the play ATTESTATION, exactly as the single-member path always
-    did. The verdict *code* rides back because the caller needs it: it
-    decides whether the group has another member worth asking. ``None``
-    means served — or refused by a codeless crash, which the caller walks
-    because that is the lane fault it was recorded as.
-    """
-    provider = PROVIDERS[provider_id]
-    try:
-        stream = await provider.stream(external_id, translation_id, http)
-    except ProviderError as e:
-        if e.code in ITEM_VERDICT_CODES:
-            # Deterministic item/client-level verdicts (ADR-0002: 404
-            # codes are client-side semantics, NOT upstream health — the
-            # #373 error-surface note): never flip the tracker — five
-            # dead-title clicks must not starve a whole lane's rows.
-            # gated = deliberately unavailable; not_found = no playable
-            # file / dead torrent; invalid_translation /
-            # translation_missing = client semantics.
-            log.info(
-                "jellyfin playback item verdict=%s provider=%s id=%s",
-                e.code,
-                provider_id,
-                item_id,
-            )
-            _refuse(provider_id, item_id, e.code, surface)
-            return None, e.code
-        log.warning(
-            "jellyfin playback stream failed provider=%s id=%s err=%s", provider_id, item_id, e
-        )
-        attributed = ENGINE_TRACKER_ID if e.engine_path else provider_id
-        record_verdict(attributed, e.code)
-        _refuse(attributed, item_id, e.code, surface)
-        return None, e.code
-    except Exception as e:  # noqa: BLE001
-        log.warning(
-            "jellyfin playback stream failed provider=%s id=%s err=%s", provider_id, item_id, e
-        )
-        record_verdict(provider_id, None)
-        _refuse(provider_id, item_id, None, surface)
-        return None, None
-    TRACKER.record(provider_id, ok=True)
-    if surface is not None:
-        PLAY_ATTESTATION.served(provider_id)
-    return stream, None
-
-
 async def resolve_stream(
     item_id: str,
     translation_id: str | None = None,
@@ -215,10 +137,11 @@ async def resolve_stream(
     """The upstream ``StreamResponse`` behind a playable item id, or None.
 
     Resolves the two playable id families (D2/D3) to their provider, then
-    runs ``provider.stream()`` exactly as the native ``/api/stream/{id}``
-    route does — same bare external ids, ``translation`` (None = default
-    voice, or the picked dub id, spec #276), same shared ``httpx``
-    client:
+    asks :func:`cs_uk_api.play_request.attempt_play` per member — the
+    same seam native ``/api/stream/{id}`` crosses, with the same bare
+    external ids, ``translation`` (None = default voice, or the picked
+    dub id, spec #276) and shared ``httpx`` client. This function owns
+    only the id families and the member walk:
 
       - a movie's ``g2:`` group key → the group's first-seen provider
         (the same provider the detail page shows first), whose BARE
@@ -237,11 +160,12 @@ async def resolve_stream(
 
     Unplayable ids (a series/season item — a show is not a playable
     thing, the client plays episodes, D3 — a season suffix, a cold group
-    key, a blocked title, an unknown provider prefix) yield None. Rather
-    than a middle-man tuple hop, the resolution and the stream call live
-    in the same module: this IS the seam the routes cross, so a refusal
-    degrades to None → 404, the facade's standing "never 5xx" posture
-    (D2), and the provider+health recording stays colocated with it.
+    key, a blocked title, an unknown provider prefix) yield None. A
+    refusal degrades to None → 404, the facade's standing "never 5xx"
+    posture (D2). The provider call, translation gate, health recording
+    and attestation are delegated to
+    :func:`cs_uk_api.play_request.attempt_play`; this resolver owns only
+    the id families and the group walk.
 
     A group key is carried by several providers, so one member's refusal
     is not yet this title's verdict: the walk asks the next member when
@@ -252,7 +176,7 @@ async def resolve_stream(
     how many refusals" — while the served member's success is the only
     thing that reaches lane health (a walk that ends in refusal has
     recorded every lane fault on the way, ADR-0002 intact). A walkable
-    refusal ends the walk when it is not walkable: ``gated`` and the
+    refusal that is not walkable ends the walk: ``gated`` and the
     translation verdicts answer the client's own request, and asking the
     group again is not a repair for them.
 
@@ -270,40 +194,45 @@ async def resolve_stream(
         # Series/season keys and cold groups: not playable on their own.
         group_key, season_number = split_season_key(item_id)
         if season_number is not None:
-            _refuse(provider_for_item(group_key), item_id, "not_found", surface)
+            attest_refusal(provider_for_item(group_key), item_id, "not_found", surface)
             return None
         content = (await resolve_item(group_key)).content
         if content is None or content.form != "movie":
-            _refuse(provider_for_item(group_key), item_id, "not_found", surface)
+            attest_refusal(provider_for_item(group_key), item_id, "not_found", surface)
             return None
         res = group_resolution(group_key)
         if res is None or not res.sources:
-            _refuse(None, item_id, "not_found", surface)
+            attest_refusal(None, item_id, "not_found", surface)
             return None
         attempts = _member_attempts(res.sources)
         if not attempts:
             # Members exist on record but none can be asked (no usable
             # ids, or every one names a retired provider): the same
             # no-playable-source verdict a cold group gets.
-            _refuse(None, item_id, "not_found", surface)
+            attest_refusal(None, item_id, "not_found", surface)
             return None
     else:
         # Provider-scoped episode wire id — split the prefix and hand the
         # suffix straight to stream(), exactly like /api/stream/{id}.
         # Episodes are not reverse-lookupable (D2), so an episode has
         # exactly one member and no walk.
-        provider_id, _, external_id = item_id.partition(":")
-        if provider_id not in PROVIDERS or not external_id:
-            _refuse(None, item_id, "not_found", surface)
+        target = playable_target(item_id)
+        if target is None:
+            attest_refusal(None, item_id, "not_found", surface)
             return None
-        attempts = ((provider_id, external_id),)
+        attempts = (target,)
 
     http = get_client()
     for position, (provider_id, external_id) in enumerate(attempts):
-        stream, code = await _attempt_stream(
-            provider_id, external_id, translation_id, http, item_id, surface
+        outcome = await attempt_play(
+            provider_id,
+            external_id,
+            translation_id,
+            http,
+            item_id=item_id,
+            surface=surface,
         )
-        if stream is not None:
+        if outcome.stream is not None:
             if position:
                 log.info(
                     "jellyfin playback member fallback id=%s served_by=%s after=%d refusal(s)",
@@ -311,8 +240,8 @@ async def resolve_stream(
                     provider_id,
                     position,
                 )
-            return stream
-        if code is not None and code not in WALKABLE_VERDICT_CODES:
+            return outcome.stream
+        if outcome.code is not None and outcome.code not in WALKABLE_VERDICT_CODES:
             # gated / the client's own translation verdicts: the walk ends
             # here rather than spending another member's upstream call on
             # an answer the group cannot change.
@@ -431,7 +360,7 @@ async def item_vtt(item_id: str) -> Response:
     the session ⇒ 404 ``item_unavailable``, the standing posture.
     """
     # No ``surface``: subtitles cross the seam to find a track, they are
-    # not a play request (``_refuse``).
+    # not a play request (``play_request.attest_refusal``).
     stream = await resolve_stream(item_id)
     if stream is None or stream.subtitle_url is None:
         raise HTTPException(status_code=404, detail="item_unavailable")

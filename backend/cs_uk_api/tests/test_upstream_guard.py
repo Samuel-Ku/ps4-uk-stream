@@ -166,16 +166,15 @@ async def test_upstream_guard_returns_default_when_exc_handler_returns() -> None
 
 
 # ---------------------------------------------------------------------------
-# exc_handler with a real ProviderError (mirrors stream's actual handler)
+# exc_handler with a real ProviderError (stream-shaped 400/404 translation)
 # ---------------------------------------------------------------------------
 
 
 def _stream_provider_error(e: Exception) -> None:
-    """Mirror of cs_uk_api.main._stream_provider_error: a real-world
-    handler that inspects ``ProviderError.code`` and either raises a
-    client-side response (400/404) or returns to fall through to the
-    record+502 path. Used to exercise the production contract end-to-end
-    at the helper's surface."""
+    """A stream-shaped handler: inspect ``ProviderError.code`` and either
+    raise a client-side response (400/404) or return to fall through to
+    the record+502 path. Used to exercise ``upstream_guard``'s production
+    contract end-to-end at the helper's surface."""
     if not isinstance(e, ProviderError):
         return
     if e.code == "invalid_translation":

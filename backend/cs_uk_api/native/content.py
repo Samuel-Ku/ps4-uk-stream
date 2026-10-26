@@ -2,14 +2,13 @@
 
 ONE owner for the routes that turn an id into a playable answer:
 ``/api/browse``, the ``/api/content/{id}`` discriminator and its three
-lookup legs, and ``/api/stream/{id}`` with the translation-validation
-gate. The stream route attests its outcome (served / refused with the
-verdict) to :mod:`cs_uk_api.play_attestation` the same way the facade's
-seam does, so the native surface is not a blind spot. Moved verbatim
-from ``main.py`` (PR #411 proved the split pattern
-on the facade; this is the native surface's turn). ``main.py`` keeps
-assembly: app wiring, middleware, health/providers/sections/search/
-home/poster.
+lookup legs, and ``/api/stream/{id}``. Playback crosses the shared
+:mod:`cs_uk_api.play_request` seam — the same provider call, translation
+gate and outcome recording the Jellyfin facade uses — and this module
+only renders the native envelopes (ADR-0002: 400/404/502). Moved
+verbatim from ``main.py`` (PR #411 proved the split pattern on the
+facade; this is the native surface's turn). ``main.py`` keeps assembly:
+app wiring, middleware, health/providers/sections/search/home/poster.
 
 Import direction: this module -> catalog (the typed seam),
 service (error vocabulary), providers — never main.
@@ -39,8 +38,14 @@ from ..models import (
     GroupSourceContentResponse,
     StreamResponse,
 )
-from ..play_attestation import PLAY_ATTESTATION
+from ..play_request import (
+    PlayAttempt,
+    attempt_play,
+    attest_refusal,
+    playable_target,
+)
 from ..providers import PROVIDERS
+from ..providers.base import ProviderError
 from ..service import (
     content_provider_error as _content_provider_error,
 )
@@ -48,7 +53,6 @@ from ..service import (
     inject_sources_into_unavailable_error as _inject_sources_into_unavailable_error,
 )
 from ..service import split_content_id as _split_content_id
-from ..service import stream_provider_error as _stream_provider_error
 from ..service import upstream_guard as _upstream_guard
 from ..wire_identity import is_group_key
 
@@ -130,24 +134,14 @@ def register(app: FastAPI) -> None:
 
     @app.get("/api/stream/{content_id:path}")
     async def stream(content_id: str, translation: str | None = None) -> StreamResponse:
-        """Native playback route, attested like the facade's.
+        """Native playback route over the shared play-request seam.
 
-        The work is :func:`_stream`; this wrapper is where the play
-        attestation records the outcome, so EVERY refusal path — a
-        malformed id, an unknown translation, the upstream guard's 502 —
-        lands on the playback axis with the code the caller was given, and
-        a success records ``served``. The wire surface (paths, status
-        codes, envelopes) is unchanged.
+        The wire surface (paths, status codes, envelopes) is unchanged;
+        the provider call, translation gate and outcome recording now
+        live in :func:`play_request.attempt_play`, so this route only
+        renders the native envelope.
         """
-        try:
-            resp = await _stream(content_id, translation)
-        except HTTPException as e:
-            PLAY_ATTESTATION.refused(
-                _stream_provider(content_id), content_id, _http_error_code(e), "native"
-            )
-            raise
-        PLAY_ATTESTATION.served(_stream_provider(content_id))
-        return resp
+        return await _stream(content_id, translation)
 
 
 # ---------------------------------------------------------------------------
@@ -156,61 +150,83 @@ def register(app: FastAPI) -> None:
 
 
 async def _stream(content_id: str, translation: str | None) -> StreamResponse:
-    """The native stream conversation behind the attested route.
+    """The native stream conversation over the shared play-request seam.
 
-    Moved verbatim out of the route body so the attestation wraps the
-    whole thing in one place instead of guarding each refusal site.
+    The native surface keeps only what is genuinely native: its envelope
+    (ADR-0002) and the uakino readiness gate. Parsing, translation
+    validation, the provider call and both recording axes live in
+    :func:`play_request.attempt_play`.
     """
-    provider_id, rest = _split_content_id(content_id)
-    if provider_id not in PROVIDERS or not rest:
-        raise HTTPException(404, detail=ErrorResponse(error="not_found", message=content_id).model_dump())
+    target = playable_target(content_id)
+    if target is None:
+        attest_refusal(None, content_id, "not_found", "native")
+        raise HTTPException(
+            404,
+            detail=ErrorResponse(error="not_found", message=content_id).model_dump(),
+        )
+    provider_id, external_id = target
     if provider_id == "uakino":
-        await _await_uakino_ready()
-    provider = PROVIDERS[provider_id]
-    http = get_client()
-    # Episode-level translation validation (issue #9): if the provider
-    # reports a known per-episode translation list, reject unknown values
-    # before we even hit the network for the stream URL.
-    if translation is not None:
         try:
-            allowed = await provider.episode_translations(rest, http)
-        except Exception:
-            log.warning(
-                "episode_translations(%s) failed; accepting any translation",
-                provider_id,
-                exc_info=True,
-            )
-            allowed = None
-        if allowed is not None and translation not in allowed:
-            raise HTTPException(
-                400,
-                detail=ErrorResponse(
-                    error="invalid_translation",
-                    message=f"{translation} not in {allowed}",
-                ).model_dump(),
-            )
-    return await _upstream_guard(
+            await _await_uakino_ready()
+        except HTTPException as e:
+            attest_refusal(provider_id, content_id, _http_error_code(e), "native")
+            raise
+    attempt = await attempt_play(
         provider_id,
-        provider.stream(rest, translation, http),
-        f"stream id={content_id}",
-        exc_handler=_stream_provider_error,
-        # Deterministic item-level verdicts (dead torrent, bad external
-        # id) must not poison lane health — the envelope stays the
-        # canonical 502 (ADR-0002 spirit: verdicts ≠ infra faults).
-        record_skip_codes=frozenset({"not_found"}),
+        external_id,
+        translation,
+        get_client(),
+        item_id=content_id,
+        surface="native",
+        refusal_code=_native_refusal_code,
     )
+    if attempt.stream is not None:
+        return attempt.stream
+    status, detail = _native_refusal(attempt)
+    raise HTTPException(status, detail=detail.model_dump())
 
 
-def _stream_provider(content_id: str) -> str | None:
-    """The provider a native stream id names, or None when it names none.
+#: The provider verdicts the native surface passes through unchanged.
+#: Everything else becomes the canonical 502 ``upstream_unreachable``
+#: envelope (ADR-0002) — including item verdicts like ``not_found``,
+#: whose envelope has always been the 502 on this surface.
+_NATIVE_PASSTHROUGH_CODES = frozenset(
+    {"invalid_translation", "translation_missing", "gated"}
+)
 
-    The native twin of ``delivery.provider_for_item``: a provider-scoped
-    id names its prefix, anything else (an unknown prefix, an empty
-    suffix) names nothing and the attestation counts the fault under
-    ``play_attestation.UNKNOWN_PROVIDER``.
+
+def _native_refusal_code(code: str | None) -> str:
+    """The refusal code native will hand its client for ``code``."""
+    return code if code in _NATIVE_PASSTHROUGH_CODES else "upstream_unreachable"
+
+
+def _native_refusal(attempt: PlayAttempt) -> tuple[int, ErrorResponse]:
+    """Render a refused shared attempt as the native envelope.
+
+    The same mapping decides both the status and the attested code, so
+    the playback axis records exactly what the client saw.
     """
-    provider_id, rest = _split_content_id(content_id)
-    return provider_id if provider_id in PROVIDERS and rest else None
+    reported = _native_refusal_code(attempt.code)
+    if reported == "invalid_translation":
+        status = 400
+    elif reported in {"translation_missing", "gated"}:
+        status = 404
+    else:
+        status = 502
+    return status, ErrorResponse(error=reported, message=_native_message(attempt, reported))
+
+
+def _native_message(attempt: PlayAttempt, reported: str) -> str:
+    """The native envelope's message for a refused attempt.
+
+    Passthrough verdicts carry the provider's own message (no code
+    prefix); the canonical 502 keeps the historic ``str(error)`` form,
+    which includes the provider code.
+    """
+    error = attempt.error
+    if isinstance(error, ProviderError) and error.code == reported:
+        return error.message
+    return str(error) if error is not None else ""
 
 
 def _http_error_code(e: HTTPException) -> str | None:

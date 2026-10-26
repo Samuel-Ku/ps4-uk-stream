@@ -1,10 +1,11 @@
-"""Service-layer helpers shared by the native routes (and, later, the
-Jellyfin facade): the upstream-guard pattern and error translation.
+"""Service-layer helpers shared by the native catalog routes.
 
-Extracted from the route module (main.py) so ADR-0002's failure
-semantics — "record health, translate client-visible errors, never let a
-gated/invalid-translation error move the tracker" — live in one testable
-place instead of being hand-rolled at every call site.
+Extracted from the route module (main.py) so ADR-0002's content-side
+failure semantics — "record health, translate client-visible errors,
+never let a gated verdict move the tracker" — live in one testable place
+instead of being hand-rolled at every call site. Playback's provider
+call, translation gate and verdict policy live in
+:mod:`cs_uk_api.play_request`.
 """
 
 from __future__ import annotations
@@ -109,18 +110,6 @@ def content_provider_error(e: Exception) -> None:
         raise HTTPException(404, detail=ErrorResponse(error=e.code, message=e.message).model_dump()) from e
 
 
-def stream_provider_error(e: Exception) -> None:
-    """Translation-level validation errors are client-side semantics, not
-    upstream-health signals — they must not move the needle. A gated
-    stream is a deliberate "no playable file" verdict → 404."""
-    if not isinstance(e, ProviderError):
-        return
-    if e.code == "invalid_translation":
-        raise HTTPException(400, detail=ErrorResponse(error=e.code, message=e.message).model_dump()) from e
-    if e.code in ("translation_missing", "gated"):
-        raise HTTPException(404, detail=ErrorResponse(error=e.code, message=e.message).model_dump()) from e
-
-
 def inject_sources_into_unavailable_error(
     exc: HTTPException, sources: list[SearchResult]
 ) -> None:
@@ -145,6 +134,5 @@ __all__ = [
     "content_provider_error",
     "inject_sources_into_unavailable_error",
     "split_content_id",
-    "stream_provider_error",
     "upstream_guard",
 ]
