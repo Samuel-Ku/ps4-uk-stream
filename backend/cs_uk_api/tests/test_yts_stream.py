@@ -114,8 +114,9 @@ async def test_stream_without_engine_anywhere_is_loud_unreachable(
 ):
     """No injected engine AND no settings url ⇒ typed ``unreachable``
     ("torrent engine not configured") BEFORE any upstream traffic."""
-    import cs_uk_api.config as config_mod
     from dataclasses import replace as dc_replace
+
+    import cs_uk_api.config as config_mod
 
     monkeypatch.setattr(
         config_mod, "SETTINGS", dc_replace(config_mod.SETTINGS, torrent_engine_url=None)
@@ -518,8 +519,9 @@ def test_facade_empty_headers_redirects_straight_to_engine():
     headers — Switchfin plays straight from the engine URL (spec #374
     StreamResponse mapping). Episode-wire-id resolution needs no catalog
     machinery; stream routes are public (no token)."""
-    from fastapi.testclient import TestClient
     from urllib.parse import quote as _quote
+
+    from fastapi.testclient import TestClient
 
     from cs_uk_api.main import app
 

@@ -12,8 +12,9 @@ from collections.abc import Iterator
 
 import pytest
 
+from cs_uk_api import _catalog_state as catalog_state
 from cs_uk_api import catalog as catalog_api
-from cs_uk_api import _catalog_state as catalog_state, health
+from cs_uk_api import health
 from cs_uk_api.merge import item_group_key
 from cs_uk_api.models import ContentResponse, Episode, SearchResult, Season, Translation
 from cs_uk_api.providers import PROVIDERS
