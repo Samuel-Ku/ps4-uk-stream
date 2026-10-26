@@ -2,6 +2,10 @@
 
 ## Agent skills
 
+### Remote hosts
+
+`openclaw-home` is a deployment mirror, not an authoring workspace. Checkout path, git identity and verification contract: `docs/agents/remote-hosts.md`.
+
 ### Issue tracker
 
 Issues live in GitHub Issues (via the `gh` CLI). External PRs are not a triage surface. See `docs/agents/issue-tracker.md`.

@@ -2,8 +2,12 @@
 
 Step-by-step reproduction of the backend deployment (spec #298, ticket #304).
 Follow this on a clean Linux host to stand up the backend without tribal
-knowledge. The dev host's values are quoted inline as the reference; **every
-host-specific value is in a table in §2** — edit those before enabling.
+knowledge. The current deployment host's values are quoted inline as the
+reference; **every host-specific value is in a table in §2** — edit those
+before enabling.
+
+Current host contract (checkout path, git identity, runtime-only venv):
+[`docs/agents/remote-hosts.md`](../../docs/agents/remote-hosts.md).
 
 The three systemd units shipped beside this file are the whole deployment:
 
@@ -43,21 +47,24 @@ pillow). The dev extras (`pytest`, `ruff`, `mypy`, `respx`) are optional
 
 ## 2. Host-specific values to edit (do this BEFORE enabling)
 
-All three units carry dev-host paths. Edit each file in
-`backend/deploy/` after cloning (or copy then edit in place):
+The units in `backend/deploy/` ship with the original operator's paths.
+Edit each file after cloning (or copy then edit in place). The reference
+values below are the current `openclaw-home` deployment; see
+[`docs/agents/remote-hosts.md`](../../docs/agents/remote-hosts.md) for the
+full host contract.
 
-| Unit | Value | Dev host (reference) | Change to |
-| ---- | ----- | -------------------- | --------- |
-| all | `User=` | `rorschach` | the operator user on the new host |
-| all | `WorkingDirectory=` | `/home/rorschach/UA flims/ps4-uk-stream/backend` | repo path on the new host |
-| `cs-uk-api.service` | `ExecStart=` venv/uvicorn path | `/home/rorschach/UA flims/ps4-uk-stream/backend/.venv/bin/uvicorn` | the venv's `bin/uvicorn` on the new host |
-| `cs-uk-api-drift.service` | `ExecStart=` venv/python path | `/home/rorschach/UA flims/ps4-uk-stream/backend/.venv/bin/python` | the venv's `bin/python` on the new host |
+| Unit | Value | openclaw-home (reference) | Change to |
+| ---- | ----- | ------------------------- | --------- |
+| all | `User=` | `semen` | the operator user on the new host |
+| all | `WorkingDirectory=` | `/home/semen/ps4-uk-stream/backend` | repo path on the new host |
+| `cs-uk-api.service` | `ExecStart=` venv/uvicorn path | `/home/semen/ps4-uk-stream/backend/.venv/bin/uvicorn` | the venv's `bin/uvicorn` on the new host |
+| `cs-uk-api-drift.service` | `ExecStart=` venv/python path | `/home/semen/ps4-uk-stream/backend/.venv/bin/python` | the venv's `bin/python` on the new host |
 | `cs-uk-api.service` | `--port` | `8003` | **keep 8003** (see §4) — do not move back to 8000 |
 
 Notes:
 
-- Paths with spaces must stay quoted (systemd splits `ExecStart=` on
-  whitespace) — the dev path contains `UA flims/`.
+- Quote any path that contains spaces (systemd splits `ExecStart=` on
+  whitespace).
 - The units are LAN-only by design (ADR-0003: one host, one uvicorn
   process, no auth) — `--host 0.0.0.0` and the Jellyfin facade is
   accept-any. Do not expose them to a non-LAN interface.
@@ -252,8 +259,8 @@ first-boot start and the observable handle. The backend unit is a plain
 contract), ordered after the engine with `Wants` (not `Requires` — the
 facade boots and reports `yts:engine: down` rather than wedging when the
 engine fails). The units ship with the original operator's paths as
-defaults — edit `User=`/`WorkingDirectory=` to the host, and uncomment
-the `Environment=` knobs the host needs (`CS_UK_TORRENT_ENGINE_URL` for
+defaults — edit `User=`/`WorkingDirectory=`/`ExecStart=` to the host, and
+uncomment the `Environment=` knobs the host needs (`CS_UK_TORRENT_ENGINE_URL` for
 the torrent lane; `UAKINO_CHROMIUM` for the uakino browser session — a
 host without a system chromium shows uakino `down` without it).
 
@@ -265,20 +272,19 @@ install as USER units — systemd runs them under the user's manager and
 
 ```bash
 mkdir -p ~/.config/systemd/user
-# swap the install target AND point the paths at this host — user units
-cannot carry User= (the manager is already the user), cannot reference
-system units (docker.service — the user manager just can't see it), and
-the shipped defaults belong to the original operator's host:
+# swap the install target and strip root-only directives — user units
+cannot carry User= (the manager is already the user) and cannot reference
+system units (docker.service — the user manager just can't see it):
 sed -e 's/WantedBy=multi-user.target/WantedBy=default.target/' \
     -e 's|^User=.*||' \
     -e '/^After=docker.service/d' -e '/^Requires=docker.service/d' \
-    -e 's|/home/rorschach/UA flims|'"$HOME"'|g' \
     backend/deploy/cs-uk-engine.service > ~/.config/systemd/user/cs-uk-engine.service
 sed -e 's/WantedBy=multi-user.target/WantedBy=default.target/' \
     -e 's|^User=.*||' \
-    -e 's|/home/rorschach/UA flims|'"$HOME"'|g' \
     backend/deploy/cs-uk-api.service > ~/.config/systemd/user/cs-uk-api.service
-# ...then uncomment the Environment= knobs the host needs in the copies.
+# ...then edit WorkingDirectory= and ExecStart= in both copies to this
+# host's paths (openclaw-home values: docs/agents/remote-hosts.md), and
+# uncomment the Environment= knobs the host needs.
 systemctl --user daemon-reload
 loginctl enable-linger          # one-time; without it units stop at logout
 systemctl --user enable --now cs-uk-engine.service cs-uk-api.service
