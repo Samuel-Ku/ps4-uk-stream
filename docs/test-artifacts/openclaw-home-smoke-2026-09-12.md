@@ -175,3 +175,59 @@ observable; it now fires only for a registration that genuinely ages out at
 the search TTL. Unit-level A/B on identical state (`resolve_group` for the
 same key): old whole-replace → `None` (the 404), apply step → the provider
 union.
+
+## Re-run 2026-10-26 — dead-swarm failover at `e6c223d`
+
+**Commit:** `e6c223d` (`fix(deploy): fail over when a smoke candidate's
+stream stalls`) · **Status:** failover **PROVEN LIVE**, exit `0`.
+
+The host was already on `f44a7a2` (the translation-walk deploy) when the
+default `Dune` smoke run exposed the gap this re-run closes: the first
+candidate, `g3:tt35969257`, returned a `MediaSource` but its swarm sent no
+bytes, and the stream check ran only **after** the candidate loop. The run
+ended `7 passed, 1 failed` at `bounded read failed (000 0; want 206/200
+with 65536 bytes)`, even though `g3:tt15239678` ("Dune: Part Two") played
+end to end in a diagnostic pass.
+
+`e6c223d` moves the redirect/bytes/seek checks into `candidate_play`, so a
+stalled candidate is a `SKIP` with its reason and the loop advances. The
+host required no service restart: the commit changes only `smoke.sh` and
+`DEPLOY.md`. The API had been restarted onto `f44a7a2` earlier.
+
+The engine advertises its **LAN** URL (`http://192.168.2.223:3347`); the
+run set `CS_UK_ENGINE_URL` to that address because the script's default
+`127.0.0.1:3347` does not match the redirect this host hands LAN clients.
+The host script's SHA-256 matched the tested local copy
+(`6a9bec5d6f5bd9d34e1aa6693c8e7bf34afc7c34e3b9aa11169460444664400b`),
+and `bash -n backend/deploy/smoke.sh` passed before the run.
+
+```bash
+ssh openclaw-home
+cd ~/ps4-uk-stream
+git fetch origin && git merge --ff-only origin/master
+CS_UK_ENGINE_URL=http://192.168.2.223:3347 backend/deploy/smoke.sh; echo $?
+```
+
+| Flow | Observation |
+|---|---|
+| handshake | `200`, token issued (`ServerId=8e825b6f9a93a6ec`) |
+| views | `200`, **17 views** |
+| browse | `GET /api/browse?provider=uakino&section=filmy` → `200`, **40 cards** |
+| search `Dune` | 3 candidates: `g3:tt35969257`, `g3:tt15239678`, `g3:tt0287839` |
+| candidate 1 — `g3:tt35969257` | detail `200`, but the engine bounded read timed out with `000 0`; reported `SKIP ... bounded read failed (000 0; want 206/200 with 65536 bytes)` |
+| candidate 2 — `g3:tt15239678` ("Dune: Part Two") | detail `200`; PlaybackInfo `200`; stream `302` to `http://192.168.2.223:3347/api/v1/torrent/c2f364ba7f59b22a1845b16fd8a1fc1783568f8b/stream/0`; first 64 KiB `206 65536`; seek `206 1048576` with `Content-Range` honoured |
+
+The default `Dune` run finished `9 passed, 0 failed, 1 skipped`, exit `0`.
+The skipped candidate is the same metadata-resolves-but-no-bytes case that
+previously failed the whole run; the next candidate served 64 KiB and
+honoured the seek. The per-candidate timeout remains the script's normal
+`CS_UK_TIMEOUT` (60s by default).
+
+CI for the same commit also passed:
+[run 40398084720](https://github.com/Samuel-Ku/ps4-uk-stream/actions/runs/40398084720)
+(`gates (py3.11)` and `gates (py3.13)`, both green).
+
+Use `--skip-lane` on a host without the engine. For a different host,
+set `CS_UK_API_URL` and `CS_UK_ENGINE_URL` to the addresses the facade
+actually advertises; the redirect check compares the stream location
+against `CS_UK_ENGINE_URL`.
