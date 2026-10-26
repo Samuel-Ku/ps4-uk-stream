@@ -280,6 +280,48 @@ def test_candidate_from_a_different_work_is_rejected(
     assert response.json()["detail"]["error"] == "candidate_mismatch"
 
 
+def _series_content(
+    title: str, *, group_key: str, year: int | None = 2011
+) -> ContentResponse:
+    return ContentResponse(
+        id="show",
+        form="series",
+        title=title,
+        year=year,
+        group_key=group_key,
+        translations=[Translation(id="uk", label="Українська")],
+        seasons=[
+            Season(
+                number=1,
+                episodes=[
+                    Episode(number=1, id="show:e1", title="Серія 1"),
+                    Episode(number=2, id="show:e2", title="Серія 2"),
+                ],
+            )
+        ],
+    )
+
+
+def _cold_providers(
+    monkeypatch: pytest.MonkeyPatch, contents: dict[str, ContentResponse]
+) -> None:
+    """Register p1/p2 without touching the group map (a cold process)."""
+    p1 = _Provider()
+    p2 = _Provider()
+    p2.id = "p2"
+    p2.name = "Provider Two"
+    monkeypatch.setitem(PROVIDERS, "p1", p1)
+    monkeypatch.setitem(PROVIDERS, "p2", p2)
+
+    async def content(provider_id: str, external_id: str) -> ProviderContent:
+        return ProviderContent(
+            verdict=ContentVerdict.OK, content=contents[provider_id]
+        )
+
+    monkeypatch.setattr(teleport_route.catalog, "provider_content", content)
+    monkeypatch.setattr(teleport_route, "ALIGNER", _FakeAligner())
+
+
 def _episode_content(provider_id: str) -> ProviderContent:
     return ProviderContent(
         verdict=ContentVerdict.OK,
@@ -304,6 +346,88 @@ def _episode_content(provider_id: str) -> ProviderContent:
             ],
         ),
     )
+
+
+def test_cold_group_map_resolves_a_valid_pair_from_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _cold_providers(
+        monkeypatch,
+        {
+            "p1": _series_content("Show", group_key="g2:show"),
+            "p2": _series_content("Show", group_key="g2:show"),
+        },
+    )
+    response = _post(TestClient(app))
+    assert response.status_code == 200
+    assert response.json()["status"] == "matched"
+
+
+def test_cold_group_map_accepts_alias_variants_of_the_same_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The merged map spans alias variants; the per-item stateless keys
+    # differ, so the fallback must use the merge rule, not key equality.
+    _cold_providers(
+        monkeypatch,
+        {
+            "p1": _series_content("Show / Шоу", group_key="g2:show"),
+            "p2": _series_content("Шоу", group_key="g2:shou"),
+        },
+    )
+    response = _post(TestClient(app))
+    assert response.status_code == 200
+    assert response.json()["status"] == "matched"
+
+
+def test_cold_group_map_rejects_a_different_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _cold_providers(
+        monkeypatch,
+        {
+            "p1": _series_content("Show", group_key="g2:show"),
+            "p2": _series_content("Other", group_key="g2:other"),
+        },
+    )
+    response = _post(TestClient(app))
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"] == "candidate_mismatch"
+
+
+def test_cold_group_map_rejects_a_different_episode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _cold_providers(
+        monkeypatch,
+        {
+            "p1": _series_content("Show", group_key="g2:show"),
+            "p2": _series_content("Show", group_key="g2:show"),
+        },
+    )
+    response = _post(TestClient(app), candidate_id="p2:show:s1e2")
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"] == "candidate_mismatch"
+
+
+def test_cold_group_map_content_failure_is_502(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _cold_providers(
+        monkeypatch,
+        {
+            "p1": _series_content("Show", group_key="g2:show"),
+            "p2": _series_content("Show", group_key="g2:show"),
+        },
+    )
+
+    async def failing_content(provider_id: str, external_id: str) -> ProviderContent:
+        raise ProviderError("upstream_unreachable", "content down")
+
+    monkeypatch.setattr(teleport_route.catalog, "provider_content", failing_content)
+    response = _post(TestClient(app))
+    assert response.status_code == 502
+    assert response.json()["detail"]["error"] == "candidate_unavailable"
 
 
 def test_bare_episode_tails_validate_by_number(

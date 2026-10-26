@@ -23,7 +23,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from .. import catalog
 from .. import config as _config
 from ..health import ITEM_VERDICT_CODES
-from ..models import ErrorResponse
+from ..models import ContentResponse, ErrorResponse
 from ..playback import resolve_playable_target, resolve_stream
 from ..providers import PROVIDERS
 from ..providers.base import ProviderError
@@ -40,7 +40,12 @@ from ..teleport import (
     TeleportStream,
     TeleportUnavailable,
 )
-from ..wire_identity import parse_episode_tail, split_episode_tail
+from ..wire_identity import (
+    effective_year,
+    parse_episode_tail,
+    split_episode_tail,
+    title_aliases,
+)
 
 log = logging.getLogger(__name__)
 
@@ -148,6 +153,68 @@ async def _same_episode(item_id: str, candidate_id: str) -> bool:
     return current is not None and current == candidate
 
 
+async def _episode_content(item_id: str) -> ContentResponse | None:
+    """The content page behind a provider-scoped series episode id.
+
+    The reverse group lookup is populated by a home snapshot or a search.
+    A cold process has neither, so this resolves the id through the same
+    cached content path the detail surface uses. None means the id is not
+    a resolvable series episode (or its content is unavailable).
+    """
+    split = split_episode_tail(item_id)
+    if split is None:
+        return None
+    composite, _tail = split
+    provider_id, _, external_id = composite.partition(":")
+    if provider_id not in PROVIDERS or not external_id:
+        return None
+    result = await catalog.provider_content(provider_id, external_id)
+    content = result.content
+    if content is None or content.form != "series":
+        return None
+    return content
+
+
+def _same_content_work(
+    current: ContentResponse, candidate: ContentResponse
+) -> bool:
+    """Whether two series content pages describe the same work.
+
+    The stateless per-item group key is the common answer, but a merged
+    group can span alias variants whose own keys differ. Fall back to the
+    merge rule in that case: one shared normalized title alias and a
+    compatible year. Both forms are already known to be series.
+    """
+    if current.group_key and current.group_key == candidate.group_key:
+        return True
+    if not set(title_aliases(current.title)).intersection(
+        title_aliases(candidate.title)
+    ):
+        return False
+    current_year = effective_year(current.title, current.year)
+    candidate_year = effective_year(candidate.title, candidate.year)
+    return (
+        current_year is None
+        or candidate_year is None
+        or current_year == candidate_year
+    )
+
+
+async def _same_work_from_content(
+    item_id: str, candidate_id: str
+) -> bool | None:
+    """Resolve a pair's work identity without the group map.
+
+    None means either id is not a resolvable series episode; False means
+    both are series episodes of different works.
+    """
+    current = await _episode_content(item_id)
+    candidate = await _episode_content(candidate_id)
+    if current is None or candidate is None:
+        return None
+    return _same_content_work(current, candidate)
+
+
 def _provider_label(provider_id: str) -> str:
     provider = PROVIDERS.get(provider_id)
     name = getattr(provider, "name", None) if provider is not None else None
@@ -194,12 +261,33 @@ def register(app: FastAPI) -> None:
 
         current_group = catalog.episode_group_key(item_id)
         candidate_group = catalog.episode_group_key(candidate_id)
-        if current_group is None or candidate_group is None:
-            raise _error(400, "invalid_request", "both ids must be series episodes")
-        if current_group != candidate_group:
-            raise _error(400, "candidate_mismatch", "candidate is a different work")
         try:
+            if current_group is None or candidate_group is None:
+                # A cold process has no snapshot/search registrations, so
+                # the reverse lookup knows neither prefix. Resolve the two
+                # content pages directly instead of making a valid pair
+                # depend on a prior search; the cached read also feeds the
+                # bare-episode season lookup below.
+                same_work = await _same_work_from_content(item_id, candidate_id)
+                if same_work is None:
+                    raise _error(
+                        400,
+                        "invalid_request",
+                        "both ids must be series episodes",
+                    )
+                if not same_work:
+                    raise _error(
+                        400,
+                        "candidate_mismatch",
+                        "candidate is a different work",
+                    )
+            elif current_group != candidate_group:
+                raise _error(
+                    400, "candidate_mismatch", "candidate is a different work"
+                )
             same_episode = await _same_episode(item_id, candidate_id)
+        except HTTPException:
+            raise
         except ProviderError as exc:
             log.warning(
                 "teleport candidate validation failed item=%s candidate=%s code=%s",
