@@ -34,7 +34,15 @@ jobs:
       run:
         working-directory: backend
     steps:
+      # FULL history, not the depth-1 default: the doc-drift guard
+      # (cs_uk_api/tests/test_doc_drift_guard.py) resolves the commit SHAs
+      # the living docs cite against the object database, and a shallow
+      # clone cannot see them — the gate would redden on an environment
+      # fact with no code change, which is what this workflow exists to
+      # stop.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       # UV_PYTHON pins the matrix interpreter for the whole job. Pinned to the
       # exact tag: setup-uv publishes no floating v10 major (its highest float
