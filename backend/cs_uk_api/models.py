@@ -282,6 +282,70 @@ class ProviderInfo(BaseModel):
     last_error_at: str | None = None
 
 
+# ---------------------------------------------------------------------------
+# Play attestation (the health surface's playback axis)
+# ---------------------------------------------------------------------------
+
+#: The surface that asked for a stream, so a refusal can be read in flow
+#: order: ``playbackinfo`` = the pre-play probe (a refusal here means the
+#: client gave up BEFORE asking for bytes), ``stream`` = the facade's byte
+#: route, ``segment`` = one rewritten HLS reference, ``download`` = the
+#: original-quality download, ``native`` = the native ``/api/stream/{id}``
+#: route.
+PlaySurface = Literal["playbackinfo", "stream", "segment", "download", "native"]
+
+#: The two ways a playback request produces no video.
+PlayOutcome = Literal["refused", "no-progress"]
+
+
+class PlayFault(BaseModel):
+    """One playback request that produced no video.
+
+    ``refused`` is the server's answer (``code`` is the refusal's verdict
+    in the health vocabulary, ``None`` for a non-``ProviderError`` crash;
+    ``surface`` says which route asked). ``no-progress`` is the client's
+    report — a stop before the position ever advanced — where both
+    ``code`` and ``surface`` stay ``None``: the server served bytes, and
+    the bytes did not play.
+    """
+
+    at: str
+    outcome: PlayOutcome
+    provider: str
+    item_id: str
+    code: str | None = None
+    surface: PlaySurface | None = None
+
+
+class PlayProviderAttestation(BaseModel):
+    """What one provider was asked for, and what it answered.
+
+    ``refused_codes`` is the refusals' verdict breakdown — item-level
+    codes (``gated`` / ``not_found`` / ``invalid_translation`` /
+    ``translation_missing``) appear HERE and never in lane health
+    (ADR-0002): a dead title is a client-side verdict, not a sick lane,
+    but it is exactly what this axis exists to count.
+    """
+
+    served: int = 0
+    refused: int = 0
+    refused_codes: dict[str, int] = Field(default_factory=dict)
+    no_progress: int = 0
+
+
+class PlayAttestation(BaseModel):
+    """The playback axis of ``/api/health``: did play requests get video?
+
+    Separate from the per-provider ``status`` map on purpose. ``status``
+    answers "is this lane sick?" (upstream operations); this answers "what
+    did the server do with the play requests it was sent". ``recent`` is a
+    bounded tail, oldest first, carrying the ids the aggregates do not.
+    """
+
+    providers: dict[str, PlayProviderAttestation] = Field(default_factory=dict)
+    recent: list[PlayFault] = Field(default_factory=list)
+
+
 class Section(BaseModel):
     id: str
     title: str

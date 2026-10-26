@@ -32,6 +32,7 @@ from .models import (
     SearchResponse,
 )
 from .native import content as native_content
+from .play_attestation import PLAY_ATTESTATION
 from .poster_proxy import fetch as fetch_poster
 from .providers import PROVIDERS
 from .providers.base import BaseProvider
@@ -98,6 +99,13 @@ async def health() -> dict[str, object]:
     signal — never a legit steady state), and the watchdog's reset
     counter/last-reset time so an external supervisor can decide to
     restart the process.
+
+    ``playback`` is the other axis of the same question, kept separate on
+    purpose: ``providers`` says whether a LANE is sick (upstream
+    operations), ``playback`` says what the server did with the play
+    requests it was sent — served, refused (with the verdict that refused
+    it) or reported by the client as never having played. Item-level
+    refusals appear there and only there (ADR-0002).
     """
     statuses = {
         p.id: _provider_status(p.id)
@@ -109,6 +117,7 @@ async def health() -> dict[str, object]:
         statuses[ENGINE_TRACKER_ID] = _provider_status(ENGINE_TRACKER_ID)
     return {
         "providers": statuses,
+        "playback": PLAY_ATTESTATION.snapshot().model_dump(),
         "all_down": watchdog_mod.WATCHDOG.all_relevant_down(),
         "watchdog": {
             "reset_count": watchdog_mod.WATCHDOG.reset_count,

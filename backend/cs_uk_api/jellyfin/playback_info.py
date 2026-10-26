@@ -161,8 +161,11 @@ async def playback_info(
 
     translations, remembered = await playback_translations(item_id)
     if len(translations) <= 1:
-        # Single-translation path (D6, unchanged): one thin source.
-        stream = await _resolve_stream(item_id)
+        # Single-translation path (D6, unchanged): one thin source. This
+        # probe resolves the stream to decide whether there IS one, so its
+        # refusal is a play request that got nothing — attested as
+        # ``playbackinfo``, before any byte route is asked.
+        stream = await _resolve_stream(item_id, surface="playbackinfo")
         if stream is None:
             raise HTTPException(status_code=404, detail="item_unavailable")
         play_session_id = str(uuid.uuid4())

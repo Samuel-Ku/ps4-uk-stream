@@ -15,6 +15,12 @@ Parsing rule (#214/#248): ``ItemId`` + ``PositionTicks`` are what a
 resume shelf needs; ``RunTimeTicks`` rides along for later
 finished-item marking (spec #247). A malformed body is NOT an error —
 the report is advisory; every report answers 204.
+
+The stop report doubles as the play attestation's third signal: a
+``final`` report whose position never advanced is the client saying the
+server's bytes did not play (``play_attestation``). Server-side, that had
+no witness before — a stream that 302s happily and a stream the player
+chokes on looked identical.
 """
 
 from __future__ import annotations
@@ -24,12 +30,14 @@ import logging
 from fastapi import APIRouter, Depends, Request, Response
 
 from ..catalog import record_position
+from ..play_attestation import PLAY_ATTESTATION, ZERO_PROGRESS_TICKS
 from .auth import require_token
+from .delivery import provider_for_item
 
 log = logging.getLogger(__name__)
 
 
-async def record_playback_from(request: Request, *, flush: bool) -> None:
+async def record_playback_from(request: Request, *, flush: bool, final: bool = False) -> None:
     """Best-effort store of the client's playback report (#214/#248).
 
     The @jellyfin/sdk posts PlaybackStartInfo/ProgressInfo/StopInfo
@@ -38,6 +46,12 @@ async def record_playback_from(request: Request, *, flush: bool) -> None:
     finished items (spec #247). A malformed body is not an error — the
     report is advisory. ``flush=True`` (the Stopped path) persists the
     state file synchronously; heartbeat reports are debounced.
+
+    ``final=True`` is the Stopped path, and is also the only report that
+    can witness "served but never played": a position under
+    :data:`~cs_uk_api.play_attestation.ZERO_PROGRESS_TICKS` means the
+    client stopped without ever advancing. Start/Progress reports never
+    count — a start report legitimately begins at zero.
     """
     try:
         body = await request.json()
@@ -50,6 +64,8 @@ async def record_playback_from(request: Request, *, flush: bool) -> None:
         runtime = body.get("RunTimeTicks")
         runtime_ticks = int(runtime) if isinstance(runtime, (int, float)) else None
         record_position(item_id, int(position), runtime_ticks=runtime_ticks, flush=flush)
+        if final and int(position) < ZERO_PROGRESS_TICKS:
+            PLAY_ATTESTATION.no_progress(provider_for_item(item_id), item_id)
 
 
 async def sessions_playing(request: Request) -> Response:
@@ -79,7 +95,7 @@ async def sessions_stopped(request: Request) -> Response:
     Flushed to the state file immediately (#248), so the position
     survives a restart.
     """
-    await record_playback_from(request, flush=True)
+    await record_playback_from(request, flush=True, final=True)
     return Response(status_code=204)
 
 

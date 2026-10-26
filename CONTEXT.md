@@ -734,3 +734,30 @@ If any of these start biting in production, each can be added as a **non-breakin
 - **Cache contract** — TTL, key shape, invalidation. Reserved for a separate session.
 - **Provider lifecycle** — registration, hot-reload, retirement. Reserved for a separate session.
 - **Failure attribution on `/api/content` and `/api/stream`** — single-provider routes stay on their existing 502 semantics.
+
+## Play attestation (the health surface's playback axis)
+
+### Term: Play attestation
+
+**Play attestation** is the record of what the server did with every
+playback request: `served`, `refused` (with the verdict code that refused
+it and the surface that asked), or `no-progress` (the client reported
+stopping before the position ever advanced). It is owned by
+`cs_uk_api/play_attestation.py`, is in-memory and bounded (a restart is a
+clean slate, like the health tracker), and rides the `playback` key of
+`/api/health` as `{"providers": {…}, "recent": […]}`.
+
+It is deliberately NOT part of lane health — the two answers are
+different questions:
+
+| question | owner | wire |
+| --- | --- | --- |
+| Is this lane sick? (upstream operations) | `health.HealthTracker` | `/api/providers[].status`, `/api/health.providers` |
+| Did a play request get video? | `play_attestation.PlayAttestationTracker` | `/api/health.playback` |
+
+### Decisions
+
+- **Q41 — Two axes, and item verdicts live on the playback one (2026-10-26).** Item-level verdicts (`gated`, `not_found`, `invalid_translation`, `translation_missing`) are refused play requests worth counting, and they must still never move lane health (Q26.1, ADR-0002). One tracker would have to choose between those; two axes let the surface say "lane ok, twelve refusals on this title" — the state the backend could not express before this point. Recording a refusal never touches `HealthTracker`.
+- **Q42 — The seam declares the surface; a surface does not record itself.** The facade's `resolve_stream` holds the one recording point and takes `surface=`; a caller crossing the seam for something other than playback (the subtitle route, resolving to find a track) passes nothing and is not counted. The native `/api/stream/{id}` route attests AROUND its whole body, so every refusal path is counted without guarding each raise. A play press can record more than once (`playbackinfo`, then `stream`): the axis counts requests, and the surface tells them apart.
+- **Q43 — The recorded code is the one the caller was handed.** The native surface answers a lane fault with the canonical 502 envelope, so that refusal is recorded as `upstream_unreachable` while the provider's own code stays on the lane axis (`record_verdict`). Item verdicts pass through unchanged (`gated` stays `gated`).
+- **Q44 — `no-progress` is witnessed by the stop report alone.** A `PlaybackStopInfo` under one second (10 000 000 ticks) counts as never having played; start and heartbeat reports never do, because a start legitimately begins at zero. `record_playback` (the resume store, #214) ignores zero positions by design — there is nothing to resume to — so before this axis existed, the very report that witnessed "served but never played" was the report the store discarded.

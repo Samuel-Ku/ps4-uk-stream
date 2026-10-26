@@ -3,7 +3,10 @@
 ONE owner for the routes that turn an id into a playable answer:
 ``/api/browse``, the ``/api/content/{id}`` discriminator and its three
 lookup legs, and ``/api/stream/{id}`` with the translation-validation
-gate. Moved verbatim from ``main.py`` (PR #411 proved the split pattern
+gate. The stream route attests its outcome (served / refused with the
+verdict) to :mod:`cs_uk_api.play_attestation` the same way the facade's
+seam does, so the native surface is not a blind spot. Moved verbatim
+from ``main.py`` (PR #411 proved the split pattern
 on the facade; this is the native surface's turn). ``main.py`` keeps
 assembly: app wiring, middleware, health/providers/sections/search/
 home/poster.
@@ -36,6 +39,7 @@ from ..models import (
     GroupSourceContentResponse,
     StreamResponse,
 )
+from ..play_attestation import PLAY_ATTESTATION
 from ..providers import PROVIDERS
 from ..service import (
     content_provider_error as _content_provider_error,
@@ -126,50 +130,103 @@ def register(app: FastAPI) -> None:
 
     @app.get("/api/stream/{content_id:path}")
     async def stream(content_id: str, translation: str | None = None) -> StreamResponse:
-        provider_id, rest = _split_content_id(content_id)
-        if provider_id not in PROVIDERS or not rest:
-            raise HTTPException(404, detail=ErrorResponse(error="not_found", message=content_id).model_dump())
-        if provider_id == "uakino":
-            await _await_uakino_ready()
-        provider = PROVIDERS[provider_id]
-        http = get_client()
-        # Episode-level translation validation (issue #9): if the provider
-        # reports a known per-episode translation list, reject unknown values
-        # before we even hit the network for the stream URL.
-        if translation is not None:
-            try:
-                allowed = await provider.episode_translations(rest, http)
-            except Exception:
-                log.warning(
-                    "episode_translations(%s) failed; accepting any translation",
-                    provider_id,
-                    exc_info=True,
-                )
-                allowed = None
-            if allowed is not None and translation not in allowed:
-                raise HTTPException(
-                    400,
-                    detail=ErrorResponse(
-                        error="invalid_translation",
-                        message=f"{translation} not in {allowed}",
-                    ).model_dump(),
-                )
-        resp = await _upstream_guard(
-            provider_id,
-            provider.stream(rest, translation, http),
-            f"stream id={content_id}",
-            exc_handler=_stream_provider_error,
-            # Deterministic item-level verdicts (dead torrent, bad external
-            # id) must not poison lane health — the envelope stays the
-            # canonical 502 (ADR-0002 spirit: verdicts ≠ infra faults).
-            record_skip_codes=frozenset({"not_found"}),
-        )
+        """Native playback route, attested like the facade's.
+
+        The work is :func:`_stream`; this wrapper is where the play
+        attestation records the outcome, so EVERY refusal path — a
+        malformed id, an unknown translation, the upstream guard's 502 —
+        lands on the playback axis with the code the caller was given, and
+        a success records ``served``. The wire surface (paths, status
+        codes, envelopes) is unchanged.
+        """
+        try:
+            resp = await _stream(content_id, translation)
+        except HTTPException as e:
+            PLAY_ATTESTATION.refused(
+                _stream_provider(content_id), content_id, _http_error_code(e), "native"
+            )
+            raise
+        PLAY_ATTESTATION.served(_stream_provider(content_id))
         return resp
 
 
 # ---------------------------------------------------------------------------
 # The content legs (module-level: the discriminator above routes to them)
 # ---------------------------------------------------------------------------
+
+
+async def _stream(content_id: str, translation: str | None) -> StreamResponse:
+    """The native stream conversation behind the attested route.
+
+    Moved verbatim out of the route body so the attestation wraps the
+    whole thing in one place instead of guarding each refusal site.
+    """
+    provider_id, rest = _split_content_id(content_id)
+    if provider_id not in PROVIDERS or not rest:
+        raise HTTPException(404, detail=ErrorResponse(error="not_found", message=content_id).model_dump())
+    if provider_id == "uakino":
+        await _await_uakino_ready()
+    provider = PROVIDERS[provider_id]
+    http = get_client()
+    # Episode-level translation validation (issue #9): if the provider
+    # reports a known per-episode translation list, reject unknown values
+    # before we even hit the network for the stream URL.
+    if translation is not None:
+        try:
+            allowed = await provider.episode_translations(rest, http)
+        except Exception:
+            log.warning(
+                "episode_translations(%s) failed; accepting any translation",
+                provider_id,
+                exc_info=True,
+            )
+            allowed = None
+        if allowed is not None and translation not in allowed:
+            raise HTTPException(
+                400,
+                detail=ErrorResponse(
+                    error="invalid_translation",
+                    message=f"{translation} not in {allowed}",
+                ).model_dump(),
+            )
+    return await _upstream_guard(
+        provider_id,
+        provider.stream(rest, translation, http),
+        f"stream id={content_id}",
+        exc_handler=_stream_provider_error,
+        # Deterministic item-level verdicts (dead torrent, bad external
+        # id) must not poison lane health — the envelope stays the
+        # canonical 502 (ADR-0002 spirit: verdicts ≠ infra faults).
+        record_skip_codes=frozenset({"not_found"}),
+    )
+
+
+def _stream_provider(content_id: str) -> str | None:
+    """The provider a native stream id names, or None when it names none.
+
+    The native twin of ``delivery.provider_for_item``: a provider-scoped
+    id names its prefix, anything else (an unknown prefix, an empty
+    suffix) names nothing and the attestation counts the fault under
+    ``play_attestation.UNKNOWN_PROVIDER``.
+    """
+    provider_id, rest = _split_content_id(content_id)
+    return provider_id if provider_id in PROVIDERS and rest else None
+
+
+def _http_error_code(e: HTTPException) -> str | None:
+    """The refusal code the client was handed, out of the 4xx/5xx envelope.
+
+    The routes answer with ``ErrorResponse(...).model_dump()``, so the
+    code is the detail's ``error``; a bare-string detail (the facade's
+    ``item_unavailable`` posture, which the native surface does not use)
+    yields None rather than a guess.
+    """
+    detail = e.detail
+    if isinstance(detail, dict):
+        code = detail.get("error")
+        if isinstance(code, str):
+            return code
+    return None
 
 
 async def _content_by_id(content_id: str) -> ContentResponse:
