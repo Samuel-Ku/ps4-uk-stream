@@ -16,19 +16,44 @@ The decoder used here mirrors the upstream Kotlin's tortugaDecode.
 
 from __future__ import annotations
 
+import asyncio
 import pathlib
 
 import httpx
 import pytest
 import respx
 
-from cs_uk_api.providers.uaserialspro import UASerialsProProvider
+from cs_uk_api.providers import uaserialspro
+from cs_uk_api.providers.uaserialspro import UASerialsProProvider, _extract_imdb_id
 
 FIX = pathlib.Path(__file__).parent / "fixtures" / "uaserialspro"
 
 
 def _fixture(name: str) -> str:
     return (FIX / name).read_text(encoding="utf-8")
+
+
+#: The top-N enrichment fetches a card's detail page (spec #406). An
+#: anchorless body is the id-bare page shape: no ``short-rate-imdb``.
+_ANCHORLESS_DETAIL = "<html><body><div class='short-title'>x</div></body></html>"
+_IMDB_DETAIL = (
+    '<html><body><a class="short-rate-in short-rate-imdb" '
+    'href="https://imdb.com/title/tt1160419/"><span>8.0</span></a></body></html>'
+)
+
+
+def _mock_detail_fetches(router: respx.Router) -> None:
+    router.get(url__regex=r"^https://uaserials\.com/\d+-[a-z0-9-]+\.html$").respond(
+        200, text=_ANCHORLESS_DETAIL
+    )
+
+
+def _search_cards(count: int) -> str:
+    return "".join(
+        f'<a class="uas-card" href="/{1000 + i}-film-{i}.html">'
+        f'<span class="uas-card__title">Фільм {i}</span></a>'
+        for i in range(count)
+    )
 
 
 def test_provider_metadata():
@@ -59,6 +84,7 @@ async def test_search_parses_results():
         router.get(url__regex=r"^https://uaserials\.com/search/.+/$").respond(
             200, text=search_html
         )
+        _mock_detail_fetches(router)
         async with httpx.AsyncClient() as http:
             results = await UASerialsProProvider().search("Серіал", http)
     assert len(results) == 18
@@ -96,6 +122,7 @@ async def test_search_parses_mark_highlighted_titles_with_spaces():
         router.get(url__regex=r"^https://uaserials\.com/search/.+/$").respond(
             200, text=search_html
         )
+        _mock_detail_fetches(router)
         async with httpx.AsyncClient() as http:
             results = await UASerialsProProvider().search("бункер", http)
     by_id = {r.id: r.title for r in results}
@@ -112,6 +139,7 @@ async def test_search_classifies_films_as_movie():
         router.get(url__regex=r"^https://uaserials\.com/search/.+/$").respond(
             200, text=search_html
         )
+        _mock_detail_fetches(router)
         async with httpx.AsyncClient() as http:
             results = await UASerialsProProvider().search("anything", http)
     # Search results are not classified by section (no path prefix);
@@ -136,6 +164,129 @@ async def test_search_upstream_5xx_raises_upstream_unreachable():
             with pytest.raises(ProviderError) as exc_info:
                 await UASerialsProProvider().search("anything", http)
     assert exc_info.value.code == "upstream_unreachable"
+
+
+# ---------------------------------------------------------------------------
+# Spec #406: bounded search-time IMDb enrichment
+# ---------------------------------------------------------------------------
+
+def test_imdb_anchor_present_extracts_tt_id():
+    """The real captured «Дюна» detail page asserts its id in the rating
+    row's ``a.short-rate-imdb`` href — the stable structured element
+    (#404's tt1160419, live-verified 2026-10-26)."""
+    assert _extract_imdb_id(_fixture("content_dune.html")) == "tt1160419"
+
+
+def test_imdb_anchor_absent_on_search_listing():
+    """The #404 fact motivating enrichment: search listings carry ZERO
+    IMDb markup, so the id can only come from a detail fetch."""
+    search_html = _fixture("search.html")
+    assert "short-rate-imdb" not in search_html
+    assert _extract_imdb_id(search_html) is None
+
+
+def test_imdb_anchor_malformed_href_is_none():
+    page = '<a class="short-rate-imdb" href="https://imdb.com/title/not-a-tt/"></a>'
+    assert _extract_imdb_id(page) is None
+
+
+@pytest.mark.asyncio
+async def test_search_enriches_only_top_n_results():
+    """Six parsed cards → exactly FIVE detail fetches; the sixth result
+    participates idless (the bounded-load contract)."""
+    fetched: list[str] = []
+
+    def _detail(request: httpx.Request) -> httpx.Response:
+        fetched.append(str(request.url))
+        return httpx.Response(200, text=_ANCHORLESS_DETAIL)
+
+    with respx.mock(assert_all_called=True) as router:
+        router.get(url__regex=r"^https://uaserials\.com/search/.+/$").respond(
+            200, text=_search_cards(6)
+        )
+        router.get(url__regex=r"^https://uaserials\.com/\d+-[a-z0-9-]+\.html$").mock(
+            side_effect=_detail
+        )
+        async with httpx.AsyncClient() as http:
+            results = await UASerialsProProvider().search("anything", http)
+
+    assert len(results) == 6
+    assert len(fetched) == uaserialspro.IMDB_ENRICH_TOP_N == 5
+    assert not any("1005-film-5" in url for url in fetched)
+    assert all(r.imdb_id is None for r in results)
+
+
+@pytest.mark.asyncio
+async def test_search_imdb_cache_avoids_refetch():
+    """A second search within the TTL reuses cached ids: both answers
+    carry the id, with zero new detail fetches."""
+    with respx.mock(assert_all_called=True) as router:
+        router.get(url__regex=r"^https://uaserials\.com/search/.+/$").respond(
+            200, text=_search_cards(3)
+        )
+        detail_route = router.get(
+            url__regex=r"^https://uaserials\.com/\d+-[a-z0-9-]+\.html$"
+        ).respond(200, text=_IMDB_DETAIL)
+        provider = UASerialsProProvider()
+        async with httpx.AsyncClient() as http:
+            first = await provider.search("anything", http)
+            second = await provider.search("anything", http)
+    assert [r.imdb_id for r in first] == ["tt1160419"] * 3
+    assert [r.imdb_id for r in second] == ["tt1160419"] * 3
+    assert detail_route.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_search_imdb_failure_is_idless_and_silent():
+    """A failing detail page returns the item WITHOUT an id — no
+    exception escapes, and no lane health is recorded."""
+    from cs_uk_api.health import TRACKER
+
+    before = TRACKER.status("uaserialspro")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(url__regex=r"^https://uaserials\.com/search/.+/$").respond(
+            200, text=_search_cards(3)
+        )
+        detail_route = router.get(
+            url__regex=r"^https://uaserials\.com/\d+-[a-z0-9-]+\.html$"
+        ).respond(503, text="")
+        provider = UASerialsProProvider()
+        async with httpx.AsyncClient() as http:
+            results = await provider.search("anything", http)
+            await provider.search("anything", http)  # negative cache: no refetch
+    assert detail_route.call_count == 3
+    assert [r.id for r in results] == [
+        "uaserialspro:1000-film-0",
+        "uaserialspro:1001-film-1",
+        "uaserialspro:1002-film-2",
+    ]
+    assert all(r.imdb_id is None for r in results)
+    assert TRACKER.status("uaserialspro") == before
+
+
+@pytest.mark.asyncio
+async def test_search_imdb_enrichment_honors_overall_cap(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A hung detail upstream degrades to "no ids this search" at the
+    overall cap — search still answers, promptly."""
+    monkeypatch.setattr(uaserialspro, "IMDB_ENRICH_TIMEOUT_S", 0.05)
+
+    class _HungDetailClient:
+        async def get(self, url: str, **kwargs: object) -> httpx.Response:
+            if "/search/" in url:
+                return httpx.Response(200, text=_search_cards(3))
+            await asyncio.sleep(10)
+            raise AssertionError("unreachable: the cap must cancel the fetch")
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    results = await UASerialsProProvider().search(
+        "anything", _HungDetailClient()  # type: ignore[arg-type]
+    )
+    assert loop.time() - started < 1.0
+    assert len(results) == 3
+    assert all(r.imdb_id is None for r in results)
 
 
 @pytest.mark.asyncio

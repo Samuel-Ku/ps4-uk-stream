@@ -140,6 +140,58 @@ def test_singleton_with_imdb_is_g3() -> None:
     assert groups[0].key == group_key_from_imdb("tt8367814")
 
 
+@pytest.mark.asyncio
+async def test_enriched_uaserialspro_search_merges_with_yts_into_one_g3_group() -> None:
+    """Spec #406 flagship pin: the search-time enrichment puts
+    uaserialspro's detail-page tt on the card, so «Дюна» and yts's
+    «Dune» become ONE g3 group with both sources — while an idless,
+    unrelated Ukrainian card in the same search stays g2. The facade
+    arc for a g3 card is pinned end-to-end by
+    ``test_facade_floor_g3_card_end_to_end`` below."""
+    import pathlib
+
+    import httpx
+    import respx
+
+    from cs_uk_api.providers.uaserialspro import UASerialsProProvider
+
+    listing = (
+        '<a class="uas-card" href="/5427-dyuna-2021.html">'
+        '<span class="uas-card__title">Дюна</span></a>'
+    )
+    detail = (
+        pathlib.Path(__file__).parent
+        / "fixtures"
+        / "uaserialspro"
+        / "content_dune.html"
+    ).read_text(encoding="utf-8")
+    with respx.mock(assert_all_called=True) as router:
+        router.get(url__regex=r"^https://uaserials\.com/search/.+/$").respond(
+            200, text=listing
+        )
+        router.get("https://uaserials.com/5427-dyuna-2021.html").respond(
+            200, text=detail
+        )
+        async with httpx.AsyncClient() as http:
+            results = await UASerialsProProvider().search("Дюна", http)
+
+    assert [r.id for r in results] == ["uaserialspro:5427-dyuna-2021"]
+    assert [r.imdb_id for r in results] == ["tt1160419"]
+
+    en = item("yts", "Dune", year=2021, n="tt1160419", imdb="tt1160419")
+    other = item("uakino", "Інший фільм", year=2021, n="999")
+    groups = merge_results([results[0], en, other])
+
+    g3 = [g for g in groups if g.key.startswith("g3:")]
+    assert len(g3) == 1
+    assert g3[0].key == group_key_from_imdb("tt1160419")
+    assert {s.provider for s in g3[0].sources} == {"uaserialspro", "yts"}
+
+    idless = [g for g in groups if g.key.startswith("g2:")]
+    assert len(idless) == 1
+    assert [s.provider for s in idless[0].sources] == ["uakino"]
+
+
 def test_imdb_without_tt_prefix_is_rejected() -> None:
     """Only provider-asserted ``tt``-shaped ids enter the tier."""
     groups = merge_results([

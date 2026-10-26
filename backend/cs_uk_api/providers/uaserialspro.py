@@ -32,8 +32,11 @@ URL form: ``https://uaserials.com/<external_id>.html``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import time
+from collections import OrderedDict
 from typing import Any, cast
 from urllib.parse import quote, urljoin
 
@@ -54,6 +57,7 @@ from ..models import (
     Translation,
 )
 from ..wire_identity import (
+    IMDB_ID_RE,
     MOVIE_SUFFIX,
     episode_wire_id,
     is_movie_wire_id,
@@ -92,6 +96,24 @@ _EXTERNAL_ID_RE = re.compile(r"\d+-[a-z0-9-]+")
 # Upstream Kotlin regex for the `file: '...'` value on the Tortuga
 # player page. Matches single- or double-quoted strings.
 _FILE_RE = re.compile(r"""file\s*:\s*["']([^"']+?)["']""")
+
+# Spec #406: bounded search-time IMDb enrichment. Search listings carry
+# no IMDb markup, but each detail page asserts the id in its
+# `a.short-rate-imdb` rating anchor — so we detail-fetch the TOP N
+# results concurrently, under one overall cap, and decorate the
+# SearchResult before the merge core sees it.
+IMDB_ENRICH_TOP_N = 5
+IMDB_ENRICH_TIMEOUT_S = 3.0
+#: A verified id is stable upstream, so the positive TTL is a day. An
+#: id-bare or failed page caches a shorter negative so a search burst
+#: does not re-fetch it, while a page that gains an id recovers.
+IMDB_CACHE_TTL_S = 24 * 60 * 60.0
+IMDB_NEGATIVE_TTL_S = 60 * 60.0
+IMDB_CACHE_MAX = 256
+
+#: The anchor's href shape: `https://imdb.com/title/tt<digits>/`. Only
+#: the tt token is captured; `IMDB_ID_RE` is the one validator.
+_IMDB_HREF_RE = re.compile(r"imdb\.com/title/([^/?#\"']+)")
 
 
 #: The dubbing-studio label inside the ``{...}`` prefix of a series
@@ -179,6 +201,11 @@ def _section_url(section: str, page: int) -> str:
     return f"{base}page/{page}/"
 
 
+def _content_url(external_id: str) -> str:
+    """The one detail-page URL builder (content, stream, enrichment)."""
+    return f"{BASE_URL}/{external_id}.html"
+
+
 def _select_player_url(tabs: list[dict[str, Any]]) -> str | None:
     """Pick the "Плеєр" tab URL from the decrypted tabs list. Falls
     back to the first tab when "Плеєр" is missing (matches upstream)."""
@@ -206,6 +233,26 @@ def _title_text(el: Tag | None) -> str:
     if el is None:
         return ""
     return " ".join(el.get_text().split())
+
+
+def _extract_imdb_id(html: str) -> str | None:
+    """The provider-asserted IMDb id on one detail page (spec #406).
+
+    Anchor-scoped: the id lives in the rating row's
+    ``a.short-rate-imdb`` href and nowhere else we trust. A page
+    without the anchor, or with a malformed href, asserts no id.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    anchor = soup.select_one("a.short-rate-imdb")
+    if anchor is None:
+        return None
+    href = anchor.get("href")
+    if not isinstance(href, str):
+        return None
+    m = _IMDB_HREF_RE.search(href)
+    if m is None or not IMDB_ID_RE.fullmatch(m.group(1)):
+        return None
+    return m.group(1)
 
 
 def _parse_card(card: Tag, provider_id: str, media_type: MediaTypeStr) -> SearchResult | None:
@@ -297,6 +344,12 @@ class UASerialsProProvider(BaseProvider):
     #: Site + the Tortuga player gateway it embeds (ADR-0005).
     allowed_hosts = frozenset({"uaserials.com", "tortuga.tw"})
 
+    def __init__(self) -> None:
+        #: external id → (monotonic_ts, tt-id or None). ``None`` is the
+        #: short-TTL negative for a page that asserts no id (or failed),
+        #: so repeated searches do not re-fetch it (spec #406).
+        self._imdb_cache: OrderedDict[str, tuple[float, str | None]] = OrderedDict()
+
     async def search(self, query: str, http: httpx.AsyncClient) -> list[SearchResult]:
         # The site uses `/search/<query>/` for search. We quote the
         # query so non-ASCII Cyrillic and reserved characters survive.
@@ -313,7 +366,67 @@ class UASerialsProProvider(BaseProvider):
             parsed = _parse_search_card(a, self.id)
             if parsed is not None:
                 results.append(parsed)
+        await self._enrich_imdb(results, http)
         return results
+
+    async def _enrich_imdb(
+        self, results: list[SearchResult], http: httpx.AsyncClient
+    ) -> None:
+        """Attach detail-page IMDb ids to the top search results (#406).
+
+        Best-effort by contract: a failed fetch or an id-bare page
+        leaves the item WITHOUT an id, so it participates in the g2
+        tier exactly as before. Nothing here is a lane-health signal —
+        the listing call already recorded the lane's verdict.
+        """
+        now = time.monotonic()
+        pending: list[SearchResult] = []
+        for result in results[:IMDB_ENRICH_TOP_N]:
+            external_id = result.id.split(":", 1)[1]
+            cached = self._imdb_cache.get(external_id)
+            if cached is not None:
+                ts, imdb_id = cached
+                ttl = IMDB_CACHE_TTL_S if imdb_id is not None else IMDB_NEGATIVE_TTL_S
+                if now - ts < ttl:
+                    self._imdb_cache.move_to_end(external_id)
+                    result.imdb_id = imdb_id
+                    continue
+            pending.append(result)
+        if not pending:
+            return
+
+        async def fetch(result: SearchResult) -> None:
+            external_id = result.id.split(":", 1)[1]
+            try:
+                resp = await http.get(
+                    _content_url(external_id),
+                    headers={"User-Agent": USER_AGENT},
+                )
+                imdb_id = (
+                    _extract_imdb_id(resp.text) if resp.status_code == 200 else None
+                )
+            except Exception:  # noqa: BLE001 - best-effort enrichment only
+                self._remember_imdb(external_id, None)
+                return
+            self._remember_imdb(external_id, imdb_id)
+            result.imdb_id = imdb_id
+
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*(fetch(result) for result in pending)),
+                timeout=IMDB_ENRICH_TIMEOUT_S,
+            )
+        except Exception:  # noqa: BLE001 - a slow upstream must not fail search
+            # The cap cancelled the outstanding fetches: this search
+            # answers without the missing ids, and no negative is
+            # cached for them (a timeout is not a page verdict).
+            return
+
+    def _remember_imdb(self, external_id: str, imdb_id: str | None) -> None:
+        self._imdb_cache[external_id] = (time.monotonic(), imdb_id)
+        self._imdb_cache.move_to_end(external_id)
+        while len(self._imdb_cache) > IMDB_CACHE_MAX:
+            self._imdb_cache.popitem(last=False)
 
     async def browse(
         self, section: str, page: int, http: httpx.AsyncClient
@@ -343,7 +456,7 @@ class UASerialsProProvider(BaseProvider):
     ) -> ContentResponse:
         if not _EXTERNAL_ID_RE.fullmatch(external_id):
             raise ProviderError("not_found", f"bad external_id: {external_id!r}")
-        url = f"{BASE_URL}/{external_id}.html"
+        url = _content_url(external_id)
         try:
             resp = await http.get(url, headers={"User-Agent": USER_AGENT})
         except httpx.HTTPError as e:
@@ -526,7 +639,7 @@ class UASerialsProProvider(BaseProvider):
             ext_id, ep_suffix = content_id, ""
         if not _EXTERNAL_ID_RE.fullmatch(ext_id):
             raise ProviderError("not_found", f"bad external_id: {ext_id!r}")
-        url = f"{BASE_URL}/{ext_id}.html"
+        url = _content_url(ext_id)
         try:
             resp = await http.get(url, headers={"User-Agent": USER_AGENT})
         except httpx.HTTPError as e:
