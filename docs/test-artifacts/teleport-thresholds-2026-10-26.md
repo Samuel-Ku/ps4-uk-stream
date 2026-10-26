@@ -68,10 +68,13 @@ The control for the same work, kinotron `Цікава Ідея` → itself, was
 
 - The same-dub floor measured 0.9830; the different-dub ceiling measured
   0.7279. 0.80 sits in a 0.255-wide gap and does not need to move.
-- The hard negative is rejected by confidence, not margin: its margin
-  (0.1163) is above 0.05. Raising the margin would not make that case
-  safer without also risking legitimate same-dub pairs, whose observed
-  margins were 0.344–0.395. No measurement supports a change.
+- The hard negative is already rejected by confidence. Its margin
+  (0.1163) is above 0.05, so the margin gate alone would not reject it;
+  a higher margin (e.g. 0.15) could add a second gate, and the observed
+  same-dub margins (0.344–0.395) leave room. The confidence gate already
+  separates this sample, however, and no same-dub case was measured near
+  0.80. The constants are left unchanged rather than tuned to three
+  negatives.
 - The 0.60 ambiguous floor also behaved correctly: the serialno pair
   (0.5997) fell just below it to `no_match`; the uaflix pair (0.6075)
   rose just above it to `ambiguous`. Both forbid auto-switch, so the
