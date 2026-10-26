@@ -89,8 +89,8 @@ class ProviderError(Exception):
         #: Spec #394: True when the fault belongs to the torrent ENGINE
         #: (transport-level), so recorders retarget it to the
         #: ``yts:engine`` tracker entry instead of the lane provider.
-        #: Raised only via :meth:`with_engine_path` at the provider's
-        #: engine-boundary sites; default False keeps every other
+        #: Raised only via :meth:`with_engine_path` at the torrent
+        #: lane's engine-facing sites; default False keeps every other
         #: raiser untouched.
         self.engine_path: bool = False
 

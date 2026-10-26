@@ -88,11 +88,10 @@ class EnginePathError(TorrentEngineError):
     """Marker base for engine-TRANSPORT faults (spec #394).
 
     ``EngineUnavailable`` subclasses it: a transport death is the
-    engine's fault, so the provider layer retargets the health record
-    to :data:`ENGINE_TRACKER_ID`. ``EngineRejected`` (dead swarm —
-    metadata never arrived) deliberately does NOT: that is an ITEM
-    verdict (``not_found`` after the bounded fallback), never engine
-    health.
+    engine's fault, so the torrent lane retargets the health record to
+    :data:`ENGINE_TRACKER_ID`. ``EngineRejected`` (dead swarm — metadata
+    never arrived) deliberately does NOT: that is an ITEM verdict
+    (``not_found`` after the bounded fallback), never engine health.
     """
 
 
@@ -100,8 +99,9 @@ class EngineUnavailable(EnginePathError):
     """The engine itself is unreachable / broken (transport failure,
     auth misconfiguration, malformed response, unexpected status).
 
-    Route layers map this onto lane-level failure codes later
-    (`unreachable` per the failure-semantics taxonomy).
+    The torrent lane translates this into the tagged ``unreachable``
+    ProviderError the recording surfaces retarget to the engine's tracker
+    entry.
     """
 
 

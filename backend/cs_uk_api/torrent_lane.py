@@ -1,22 +1,23 @@
 """The torrent lane conversation (spec #374, tickets #377/#379/#378).
 
-ONE owner for the torrent lane's policy: popcorn ``torrents[]`` dicts →
-:class:`TorrentCandidate` parsing, the quality policy ordering, the
-bounded dead-swarm fallback window, the fork's magnet convention, and
-the #378 wire shape (``EngineStream`` → :class:`StreamResponse`, VTT
-subtitles riding verbatim). Pure functions over the
+ONE owner for the torrent lane's conversation: popcorn ``torrents[]``
+dicts → :class:`TorrentCandidate` parsing, the quality policy ordering,
+the bounded dead-swarm fallback window, the fork's magnet convention,
+the engine-fault translation, and the #378 wire shape
+(``EngineStream`` → :class:`StreamResponse`, VTT subtitles riding
+verbatim). A small async conversation over the
 :class:`~cs_uk_api.torrent_engine.TorrentEngine` seam — the adapter
 (:class:`~cs_uk_api.torrent_engine.BitPlayClient`, plus its CI
 :class:`~cs_uk_api.torrent_engine.FakeTorrentEngine`) stays on the far
 side of that seam; this module owns everything the PROVIDER has to
-decide before handing the engine a magnet.
+decide before and after handing the engine a magnet.
 
 Import direction: ``torrent_lane`` → ``torrent_engine`` (the seam) +
 ``models`` (the wire) + ``providers.base`` (the shared error
 vocabulary) — never the provider. The provider (yts) reads popcorn
-payloads, records candidates, and calls :func:`ensure_any_session`
-here; series-payload candidate parsing stays with the provider's
-popcorn dialect.
+payloads, records candidates, and calls :func:`play_torrent` here;
+series-payload candidate parsing stays with the provider's popcorn
+dialect.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from urllib.parse import quote
 from .models import StreamResponse
 from .providers.base import ProviderError
 from .torrent_engine import (
+    EnginePathError,
     EngineRejected,
     EngineStream,
     TorrentEngine,
@@ -102,7 +104,7 @@ def select_torrent(candidates: list[TorrentCandidate]) -> TorrentCandidate | Non
 
     ``min`` is stable, so equal (tier, seeds) keys keep upstream's first
     listing — the deterministic tiebreak, identical to the fallback
-    ordering in :func:`ensure_any_session`. ``None`` when nothing
+    ordering in :func:`play_torrent`. ``None`` when nothing
     usable.
     """
     if not candidates:
@@ -110,21 +112,32 @@ def select_torrent(candidates: list[TorrentCandidate]) -> TorrentCandidate | Non
     return min(candidates, key=_policy_key)
 
 
-async def ensure_any_session(
+async def play_torrent(
     engine: TorrentEngine,
     candidates: list[TorrentCandidate],
     *,
     file_hint: str | None,
-) -> EngineStream:
-    """Try policy-ordered candidates until one yields a live session.
+) -> StreamResponse:
+    """Try policy-ordered candidates until one yields a playable stream.
 
-    A dead-on-arrival verdict (:class:`EngineRejected` — metadata never
-    arrived in the add window) advances to the next candidate, bounded
-    by ``_MAX_SESSION_ATTEMPTS``; each attempt costs the add's metadata
-    window (:data:`ADD_TIMEOUT_S`), so the bound keeps the worst case
-    fast. Lane-level failures (:class:`EngineUnavailable`) propagate
-    immediately — the engine is down for every candidate, retrying
-    would only mask the cause.
+    The lane's engine-facing interface. It owns the whole conversation
+    after the provider has selected candidates:
+
+      - a dead-on-arrival verdict (:class:`EngineRejected` — metadata
+        never arrived in the add window) advances to the next candidate,
+        bounded by ``_MAX_SESSION_ATTEMPTS``; each attempt costs the
+        add's metadata window (:data:`ADD_TIMEOUT_S`), so the bound keeps
+        the worst case fast;
+      - an engine-path fault (:class:`EnginePathError`) aborts
+        immediately and becomes the tagged ``unreachable``
+        :class:`ProviderError` the recording surfaces retarget to the
+        ``yts:engine`` entry (spec #394) — the engine is down for every
+        candidate, retrying would only mask the cause;
+      - every candidate rejected is this item's ``not_found`` verdict,
+        never a lane fault.
+
+    The provider supplies candidates and the file hint; it never sees
+    the engine's exception vocabulary or its ``EngineStream``.
     """
     for candidate in sorted(candidates, key=_policy_key)[:_MAX_SESSION_ATTEMPTS]:
         identifier = (
@@ -133,13 +146,19 @@ async def ensure_any_session(
             else build_magnet(candidate.info_hash)
         )
         try:
-            return await engine.ensure_session(identifier, file_hint=file_hint)
+            result = await engine.ensure_session(identifier, file_hint=file_hint)
         except EngineRejected as e:
             log.warning(
                 "swarm %s rejected (%s); falling back to the next candidate",
                 candidate.info_hash[:8],
                 e,
             )
+        except EnginePathError as e:
+            raise ProviderError(
+                "unreachable", f"torrent engine unreachable: {e}"
+            ).with_engine_path() from e
+        else:
+            return torrent_stream_response(result)
     raise ProviderError("not_found", "no seeders or dead torrent")
 
 

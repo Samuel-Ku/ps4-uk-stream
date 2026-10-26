@@ -58,16 +58,14 @@ from ..models import (
     Translation,
 )
 from ..torrent_engine import (
-    EngineUnavailable,
     TorrentEngine,
     get_engine,
 )
 from ..torrent_lane import (
     TorrentCandidate,
-    ensure_any_session,
     parse_stream_content_id,
+    play_torrent,
     torrent_candidates,
-    torrent_stream_response,
 )
 from ..wire_identity import (
     IMDB_RE,
@@ -459,16 +457,7 @@ class YtsProvider(BaseProvider):
             entries = self._entries_for(imdb)
         if not entries:
             raise ProviderError("not_found", f"no torrents recorded for {imdb}")
-        try:
-            result = await ensure_any_session(engine, entries, file_hint=None)
-        except EngineUnavailable as e:
-            # engine_path=True (spec #394): the recorder retargets this
-            # fault to the yts:engine entry — a dead engine is the
-            # engine's fault, not the catalog lane's.
-            raise ProviderError(
-                "unreachable", f"torrent engine unreachable: {e}"
-            ).with_engine_path() from e
-        return torrent_stream_response(result)
+        return await play_torrent(engine, entries, file_hint=None)
 
     async def _stream_episode(
         self, imdb: str, season: int, engine: TorrentEngine, http: httpx.AsyncClient
@@ -485,15 +474,9 @@ class YtsProvider(BaseProvider):
             raise ProviderError(
                 "not_found", f"no torrents recorded for {imdb} season {season}"
             )
-        try:
-            result = await ensure_any_session(
-                engine, torrents, file_hint=_SEASON_HINT_FMT.format(season)
-            )
-        except EngineUnavailable as e:
-            raise ProviderError(
-                "unreachable", f"torrent engine unreachable: {e}"
-            ).with_engine_path() from e
-        return torrent_stream_response(result)
+        return await play_torrent(
+            engine, torrents, file_hint=_SEASON_HINT_FMT.format(season)
+        )
 
     async def _show(self, imdb: str, http: httpx.AsyncClient) -> dict[str, Any] | None:
         """Compat delegation: the Popcorn show conversation (fetch,

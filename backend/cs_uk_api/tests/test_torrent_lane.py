@@ -7,11 +7,19 @@ popcorn-dialect payload pins stay in test_yts.py.
 """
 import pytest
 
+from cs_uk_api.models import StreamResponse
 from cs_uk_api.providers.base import ProviderError
+from cs_uk_api.torrent_engine import (
+    EnginePathError,
+    EngineRejected,
+    EngineStream,
+    EngineUnavailable,
+)
 from cs_uk_api.torrent_lane import (
     TorrentCandidate,
     build_magnet,
     parse_stream_content_id,
+    play_torrent,
     select_torrent,
     torrent_candidates,
 )
@@ -153,3 +161,138 @@ def test_parse_stream_content_id_refuses_the_rest_loudly(cid: str):
     with pytest.raises(ProviderError) as exc:
         parse_stream_content_id(cid)
     assert exc.value.code == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# play_torrent — the lane's engine-facing interface
+# ---------------------------------------------------------------------------
+
+
+class _FutureEnginePathFault(EnginePathError):
+    """A future engine-transport subclass; the lane catches the marker."""
+
+
+class _OutcomeEngine:
+    """Scripted engine: each call raises the next exception or returns the
+    next stream, and records exactly what the lane handed it."""
+
+    def __init__(self, outcomes: list[EngineStream | Exception]) -> None:
+        self._outcomes = list(outcomes)
+        self.calls: list[tuple[str, str | None]] = []
+
+    async def ensure_session(
+        self, identifier: str, *, file_hint: str | None = None
+    ) -> EngineStream:
+        self.calls.append((identifier, file_hint))
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+@pytest.mark.asyncio
+async def test_play_torrent_returns_wire_shape_and_file_hint() -> None:
+    """The lane returns the wire response, not the engine session, and the
+    file hint rides every engine call."""
+    session = EngineStream(
+        url="http://bitplay.lan:3347/api/v1/torrent/abc/stream/5",
+        container="mp4",
+        seekable=False,
+        subtitle_url="http://bitplay.lan:3347/api/v1/torrent/abc/stream/6?format=vtt",
+    )
+    engine = _OutcomeEngine([session])
+
+    result = await play_torrent(
+        engine,
+        [_cand("1080p", "H1080", 5)],
+        file_hint="s01e",
+    )
+
+    assert result == StreamResponse(
+        url=session.url,
+        type="mp4",
+        headers={},
+        seekable=False,
+        subtitle_url=session.subtitle_url,
+    )
+    assert engine.calls == [(build_magnet("H1080"), "s01e")]
+
+
+@pytest.mark.asyncio
+async def test_play_torrent_falls_back_after_rejection_and_keeps_file_hint() -> None:
+    """A dead swarm advances to the next policy candidate with the same
+    season file hint; the second candidate serves the stream."""
+    session = EngineStream(url="http://lan/good", container="mp4")
+    engine = _OutcomeEngine([EngineRejected("metadata timeout"), session])
+
+    result = await play_torrent(
+        engine,
+        [_cand("1080p", "H1080", 5), _cand("720p", "H720", 50)],
+        file_hint="s02e",
+    )
+
+    assert result.url == session.url
+    assert engine.calls == [
+        (build_magnet("H1080"), "s02e"),
+        (build_magnet("H720"), "s02e"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_play_torrent_all_rejected_is_item_not_found() -> None:
+    """Exhausting the bounded fallback is the item's deterministic
+    ``not_found``, never an engine fault."""
+    engine = _OutcomeEngine(
+        [EngineRejected("metadata timeout"), EngineRejected("zero seeders")]
+    )
+
+    with pytest.raises(ProviderError) as exc:
+        await play_torrent(
+            engine,
+            [_cand("1080p", "H1080", 5), _cand("720p", "H720", 50)],
+            file_hint=None,
+        )
+
+    assert exc.value.code == "not_found"
+    assert exc.value.message == "no seeders or dead torrent"
+    assert exc.value.engine_path is False
+    assert len(engine.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_play_torrent_empty_candidates_is_defensive_not_found() -> None:
+    """The provider owns the specific no-torrents message; an empty list
+    still gets the lane's typed item verdict, without an engine call."""
+    engine = _OutcomeEngine([])
+
+    with pytest.raises(ProviderError) as exc:
+        await play_torrent(engine, [], file_hint=None)
+
+    assert exc.value.code == "not_found"
+    assert exc.value.message == "no seeders or dead torrent"
+    assert engine.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fault",
+    [EngineUnavailable("connection refused"), _FutureEnginePathFault("tls failure")],
+    ids=["engine-unavailable", "engine-path-marker"],
+)
+async def test_play_torrent_aborts_on_any_engine_path_fault(fault: Exception) -> None:
+    """Every EnginePathError, not just today's concrete subclass, aborts
+    the fallback and becomes the tagged ``unreachable`` ProviderError."""
+    engine = _OutcomeEngine([fault])
+
+    with pytest.raises(ProviderError) as exc:
+        await play_torrent(
+            engine,
+            [_cand("1080p", "H1080", 5), _cand("720p", "H720", 50)],
+            file_hint=None,
+        )
+
+    assert exc.value.code == "unreachable"
+    assert exc.value.message == f"torrent engine unreachable: {fault}"
+    assert exc.value.engine_path is True
+    assert exc.value.__cause__ is fault
+    assert engine.calls == [(build_magnet("H1080"), None)]
