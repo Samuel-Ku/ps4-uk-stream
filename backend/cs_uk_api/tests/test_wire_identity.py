@@ -130,6 +130,7 @@ def test_importing_wire_identity_does_not_pull_merge_transitively() -> None:
         cwd=backend_root,
         env={**os.environ, "PYTHONPATH": backend_root},
         timeout=60,
+        check=False,  # the assertions read returncode; non-zero IS the signal
     )
     assert result.returncode == 0, (
         "importing cs_uk_api.wire_identity pulled in cs_uk_api.merge:\n"

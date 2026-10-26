@@ -1,0 +1,77 @@
+# Release gate (README.md §Release gate) on every push and every PR.
+#
+# Why this exists: the suite, ruff and strict mypy were run by hand, so a
+# regression could sit on master until someone remembered to run them.
+#
+# Dependencies come from the tracked backend/uv.lock (`--frozen`, dev extra)
+# rather than from the `>=` floors in pyproject.toml: an unpinned linter is a
+# gate that reddens without a code change — which is how the five ruff
+# findings the preceding commit cleared appeared in the first place.
+#
+# Two interpreters, not one: 3.11 is the floor declared in pyproject.toml
+# (`requires-python = ">=3.11"`, mypy's `python_version = "3.11"`); 3.13 is
+# what the LAN host's venv runs. The hand-run gate only ever proved 3.13.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# A newer push to the same branch supersedes an in-flight run for it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    name: gates (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+
+      # UV_PYTHON pins the matrix interpreter for the whole job. Pinned to the
+      # exact tag: setup-uv publishes no floating v10 major (its highest float
+      # is v7.6), so `@v10` fails to resolve.
+      - uses: astral-sh/setup-uv@v10.3.2
+        with:
+          python-version: ${{ matrix.python-version }}
+          working-directory: backend
+          cache-dependency-glob: uv.lock
+
+      # Locked env = the shipped package (editable) + the dev extra (pytest,
+      # pytest-asyncio, pytest-randomly, respx, ruff, mypy). No `playwright
+      # install`: the corpus is fixtures-only — the real browser session is
+      # launched by cs_uk_api/uakino_browser.py, which no test drives.
+      - name: Install (frozen lockfile + dev extra)
+        run: uv sync --frozen --extra dev
+
+      # Guards the matrix: if uv ever resolves both jobs to one interpreter,
+      # fail here instead of quietly reporting one version twice.
+      - name: Interpreter under test
+        run: |
+          actual=$(.venv/bin/python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+          if [ "$actual" != "${{ matrix.python-version }}" ]; then
+            echo "::error::expected Python ${{ matrix.python-version }}, uv built $actual"
+            exit 1
+          fi
+          .venv/bin/python -V
+
+      - name: ruff
+        run: .venv/bin/ruff check cs_uk_api
+
+      # Strict via [tool.mypy] in pyproject; the tests are excluded there,
+      # which is why this targets the package only.
+      - name: mypy --strict
+        run: .venv/bin/mypy cs_uk_api
+
+      # Fixtures only: the corpus does no live I/O by design. The live smoke
+      # against real upstreams in README.md §Release gate stays a manual step.
+      - name: pytest
+        run: .venv/bin/pytest cs_uk_api/tests -q
