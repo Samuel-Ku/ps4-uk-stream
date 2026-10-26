@@ -302,6 +302,25 @@ waiting for user-visible errors:
   create/list`` with the operator's auth), repeated failures reuse the
   open issue, and a healthy pass comments + closes it. The issue
   gateway is an injectable boundary so tests never spawn `gh`.
+- **Convergence: a moved shape is adopted, not nagged (#382/#383).** A
+  verdict carries a KIND, because only one of the two failure kinds can
+  be outlived by the provider. ``shape`` = the listing answered
+  healthily (cards, fields, over the hard floor) and only the
+  calibrated band disagrees — count under the calibrated low, or a
+  significant form/style leaving; ``broken`` = no usable data (probe
+  error, zero items, missing fields, under the hard floor). The band
+  follows a provider only on a HEALTHY pass, so a persisted band from
+  an older shape used to fail a provider that was serving fine on every
+  sweep, forever, with no path back — the state #382/#383 were left in.
+  Now ``SHAPE_RECALIBRATE_AFTER`` (3) consecutive ``shape`` failures
+  make the new shape the baseline: the issue still files on the second
+  consecutive failure (ticket #288), then closes on the third as an
+  ACCEPTED CHANGE — the closing comment says so, never "recovered" —
+  and the run is no longer a failure. ``broken`` never converges by
+  counting. The streak is persisted (``shape_streak``; a state file
+  written before this rule reads as zero) and reset by any ``broken``
+  sweep, so an unstable provider cannot recalibrate away a real fault
+  on two out of three sweeps.
 - **Report/state**: machine-readable JSON per run
   (``~/.cache/cs-uk-api/drift-report.json``) plus a per-provider
   human summary line; baseline/counters in

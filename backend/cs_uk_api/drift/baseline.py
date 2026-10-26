@@ -9,6 +9,17 @@ zero items, missing required fields, or a distribution that left the
 calibrated band. Hard floors keep the thresholds honest: at least a
 few items and non-empty titles.
 
+A failing verdict says which of two things it saw, because only one of
+them can be outlived by the provider: a SHAPE failure is a probe that
+answered healthily (cards, fields, above the hard floor) but left the
+calibrated band — the provider is serving, its shape just moved — while
+a BROKEN failure is a provider that is not serving usable data at all.
+Shape failures converge: after ``SHAPE_RECALIBRATE_AFTER`` consecutive
+ones the new shape BECOMES the baseline (the band only ever updates on
+healthy passes, so without this a persisted band would keep failing a
+healthy provider forever — the #382/#383 shape). Broken failures do not
+converge by counting; they close when the provider really recovers.
+
 Consecutive-failure counters persist in a small state file so the
 issue-filing rule (two consecutive failures, ticket #288) survives
 process restarts. Since spec #363 the file carries the shared
@@ -25,7 +36,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from ..versioned_store import VersionedFileStore
 from .probe import ListingProbeResult
@@ -33,6 +44,18 @@ from .probe import ListingProbeResult
 #: Hard floor: a listing with fewer cards than this is drift, whatever
 #: the calibrated band says ("at least a few items", spec #285).
 MIN_CARDS = 2
+
+#: How many consecutive SHAPE failures make a new shape the provider's
+#: NORMAL — i.e. how the monitor converges instead of nagging forever.
+#: The band only updates on a healthy pass, so a persisted band from an
+#: older shape keeps failing a provider that is serving fine; filing
+#: happens on the second consecutive failure (ticket #288), and this
+#: third observation is what separates a persistent change (accept it)
+#: from a transient dip (which the counter already absorbs).
+SHAPE_RECALIBRATE_AFTER = 3
+
+#: The two failure kinds a verdict can report (see ``Verdict.kind``).
+DriftKind = Literal["ok", "shape", "broken"]
 
 
 @dataclass
@@ -78,22 +101,40 @@ class Signature:
 
 @dataclass
 class Verdict:
-    """One provider's drift verdict for a probe result."""
+    """One provider's drift verdict for a probe result.
+
+    ``kind`` is what makes convergence possible: ``shape`` means the
+    probe answered healthily and only the calibrated band disagrees
+    (the provider may simply have moved, so a persistent streak of
+    these is adopted as the new baseline), while ``broken`` means the
+    provider is not serving usable data (probe error, zero items,
+    missing fields, under the hard floor) — nothing to calibrate
+    against, so it keeps failing until the provider recovers.
+    """
 
     ok: bool
     reason: str = ""
+    kind: DriftKind = "ok"
 
 
 @dataclass
 class ProviderState:
-    """Persistent per-provider drift state (consecutive-failure counter)."""
+    """Persistent per-provider drift state (counters + baseline).
+
+    ``consecutive_failures`` drives the issue-filing rule; ``shape_streak``
+    counts only the SHAPE failures in a row, so a broken sweep in between
+    resets the convergence clock rather than letting an unstable provider
+    silently recalibrate.
+    """
 
     consecutive_failures: int = 0
+    shape_streak: int = 0
     signature: Signature | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "consecutive_failures": self.consecutive_failures,
+            "shape_streak": self.shape_streak,
             "signature": self.signature.to_dict() if self.signature else None,
         }
 
@@ -102,6 +143,9 @@ class ProviderState:
         sig_raw = raw.get("signature")
         return cls(
             consecutive_failures=int(raw.get("consecutive_failures", 0)),
+            # Absent in state files written before the convergence rule: a
+            # zero streak is exactly "no shape failure observed yet".
+            shape_streak=int(raw.get("shape_streak", 0)),
             signature=Signature.from_dict(sig_raw) if sig_raw else None,
         )
 
@@ -209,15 +253,24 @@ def verdict_for(
     → count under the hard floor → distribution left the calibrated band
     → count below the calibrated low (but above the hard floor). A None
     signature (first run) calibrates rather than trips.
+
+    The first four are ``broken`` (no usable data to calibrate
+    against); the last two are ``shape`` (a healthy listing that left
+    the calibrated band, which a persistent streak converges on — see
+    :data:`SHAPE_RECALIBRATE_AFTER`).
     """
     if not result.ok:
-        return Verdict(False, f"probe failed: {result.error or 'error'}")
+        return Verdict(False, f"probe failed: {result.error or 'error'}", kind="broken")
     if not result.cards:
-        return Verdict(False, "zero items")
+        return Verdict(False, "zero items", kind="broken")
     if not _fields_ok(result.cards):
-        return Verdict(False, "missing required fields (empty title or url)")
+        return Verdict(False, "missing required fields (empty title or url)", kind="broken")
     if len(result.cards) < MIN_CARDS:
-        return Verdict(False, f"only {len(result.cards)} items (hard floor {MIN_CARDS})")
+        return Verdict(
+            False,
+            f"only {len(result.cards)} items (hard floor {MIN_CARDS})",
+            kind="broken",
+        )
     if signature is None:
         return Verdict(True, "baseline (first calibration)")
     count = len(result.cards)
@@ -227,7 +280,11 @@ def verdict_for(
     # shrink does. The two-consecutive-failures rule (ticket #288)
     # absorbs transient dips before anything is filed.
     if count < signature.count_low:
-        return Verdict(False, f"count {count} below calibrated low {signature.count_low}")
+        return Verdict(
+            False,
+            f"count {count} below calibrated low {signature.count_low}",
+            kind="shape",
+        )
     form_frac = _distribution(result.cards, "form")
     for key, expected in signature.form_frac.items():
         if expected < _SIGNIFICANT_SHARE:
@@ -237,6 +294,7 @@ def verdict_for(
             return Verdict(
                 False,
                 f"form '{key}' left the band ({expected:.2f} → {actual:.2f})",
+                kind="shape",
             )
     # Style distribution, when the provider ever had style-tagged
     # content (anime/cartoon/dorama). A provider whose healthy passes
@@ -252,6 +310,7 @@ def verdict_for(
                 return Verdict(
                     False,
                     f"style '{key}' left the band ({expected:.2f} → {actual:.2f})",
+                    kind="shape",
                 )
     return Verdict(True, "ok")
 

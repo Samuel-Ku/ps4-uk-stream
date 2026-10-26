@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from cs_uk_api.drift.baseline import BaselineStore
-from cs_uk_api.drift.monitor import run_once
+from cs_uk_api.drift.monitor import MonitorReport, run_once
 from cs_uk_api.models import SearchResult, StreamResponse
 from cs_uk_api.providers import PROVIDERS
 from cs_uk_api.providers.base import BaseProvider, ProviderError
@@ -24,7 +24,10 @@ class _RecorderGateway:
     """Per-provider issue-tracker recorder. Stateful per provider:
     ``find_open`` returns None until that provider's issue is filed,
     then its number — so dedupe and recovery are exercised per
-    provider, exactly as the real tracker behaves."""
+    provider, exactly as the real tracker behaves. ``close`` retires
+    the issue from the OPEN set, again like the real tracker (whose
+    ``find_open`` filters ``--state open``): a settled issue is not
+    re-closed on every later healthy sweep."""
 
     def __init__(self, open_issue: str | None = None) -> None:
         # ``open_issue``: when given, EVERY provider answers it as a
@@ -35,6 +38,10 @@ class _RecorderGateway:
         self.commented: list[tuple[str, str]] = []
         self.closed: list[tuple[str, str]] = []
         self.find_calls: list[str] = []
+        #: The bodies, so a closing statement can be pinned as what it
+        #: claims to be (recovery vs an accepted shape change).
+        self.comment_bodies: list[str] = []
+        self.close_comments: list[str] = []
 
     def find_open(self, provider_id: str) -> str | None:
         self.find_calls.append(provider_id)
@@ -49,9 +56,12 @@ class _RecorderGateway:
 
     def comment(self, provider_id: str, issue_number: str, body: str) -> None:
         self.commented.append((provider_id, issue_number))
+        self.comment_bodies.append(body)
 
     def close(self, provider_id: str, issue_number: str, comment: str) -> None:
         self.closed.append((provider_id, issue_number))
+        self.close_comments.append(comment)
+        self._filed.pop(provider_id, None)
 
 
 class _FakeHttp:
@@ -322,3 +332,136 @@ async def test_failed_deep_probe_fails_provider(tmp_path) -> None:
 
     assert "p2" in report.failed
     assert "deep probe failed" in report.providers["p2"]["reason"]
+
+
+# ------------------------------------------------- convergence (moved shape)
+
+
+class _ListingProvider(_OkProvider):
+    """A healthy provider whose listing size is set per seed — the
+    harness for a provider that MOVED (its catalog really shrank)."""
+
+    id = "p1"
+    name = "P1"
+
+    def __init__(self, count: int) -> None:
+        self.count = count
+
+    async def search(self, query: str, http: object) -> list[SearchResult]:
+        return [_card("p1", i) for i in range(self.count)]
+
+    async def browse(
+        self, section: str, page: int, http: object
+    ) -> tuple[list[SearchResult], bool]:
+        return [_card("p1", i) for i in range(self.count)], False
+
+
+async def _sweep(store: BaselineStore, gateway: Any, *, day: int) -> MonitorReport:
+    """One nightly run against the fakes."""
+    return await run_once(
+        day_offset=day,
+        store=store,
+        gateway=gateway,
+        report_path=None,
+        http=_FakeHttp(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_moved_shape_converges_and_closes_its_issue(tmp_path) -> None:
+    """#382/#383: the provider serves fine, only the calibrated band
+    disagrees — and the band follows a provider on HEALTHY passes only,
+    so the stale band failed every sweep forever while the issue stayed
+    open. Three consecutive shape observations adopt the new shape:
+    filed once (the #288 rule), then closed as an accepted change."""
+    gateway = _RecorderGateway()
+    store = BaselineStore(tmp_path / "state.json")
+
+    # Sweep 1: 5 cards calibrate the baseline (count_low = 5).
+    _seed(_ListingProvider(5))
+    first = await _sweep(store, gateway, day=0)
+    assert first.providers["p1"]["ok"] is True
+    assert first.providers["p1"]["reason"] == "baseline (first calibration)"
+
+    # The provider shrinks to 3 cards: healthy, over the hard floor,
+    # under the calibrated low — a SHAPE failure on every sweep from
+    # here on, exactly the state the issues were left in.
+    _seed(_ListingProvider(3))
+    second = await _sweep(store, gateway, day=1)
+    assert second.failed == ["p1"]
+    assert gateway.opened == []  # first failure logs only (ticket #288)
+
+    third = await _sweep(store, gateway, day=2)
+    assert third.failed == ["p1"]
+    assert gateway.opened == ["p1"]  # second consecutive failure files
+
+    fourth = await _sweep(store, gateway, day=3)
+    assert fourth.failed == []  # CONVERGED — no longer a failure
+    assert fourth.providers["p1"]["ok"] is True
+    assert fourth.providers["p1"]["recalibrated"] is True
+    assert "recalibrated after 3 shape sweeps" in fourth.providers["p1"]["reason"]
+    assert gateway.closed == [("p1", "42")]
+    # An accepted change is stated as one — never as a recovery.
+    assert "accepted change" in gateway.comment_bodies[-1]
+    assert "Recalibrated" in gateway.close_comments[-1]
+    assert "Recovered" not in gateway.close_comments[-1]
+
+    state = store.get("p1")
+    assert state.signature is not None
+    assert state.signature.count_low == 3  # the baseline followed the provider
+    assert (state.consecutive_failures, state.shape_streak) == (0, 0)
+
+    # And the next sweep is plainly healthy: nothing filed, nothing closed.
+    fifth = await _sweep(store, gateway, day=4)
+    assert fifth.failed == []
+    assert fifth.providers["p1"]["recalibrated"] is False
+    assert gateway.opened == ["p1"]
+    assert gateway.closed == [("p1", "42")]
+
+
+@pytest.mark.asyncio
+async def test_a_broken_provider_never_recalibrates(tmp_path) -> None:
+    """Convergence is for shapes, not for silence: a provider serving
+    nothing keeps failing and keeps its issue open however many sweeps
+    pass — a count of zero is not a shape to adopt."""
+    gateway = _RecorderGateway()
+    store = BaselineStore(tmp_path / "state.json")
+    _seed(_FailProvider())
+
+    reports = [await _sweep(store, gateway, day=day) for day in range(5)]
+
+    assert [r.failed for r in reports] == [["p1"]] * 5
+    assert all(r.providers["p1"]["recalibrated"] is False for r in reports)
+    assert gateway.opened == ["p1"]  # filed once, then reused
+    assert gateway.closed == []
+    assert store.get("p1").consecutive_failures == 5
+
+
+@pytest.mark.asyncio
+async def test_a_broken_sweep_resets_the_convergence_clock(tmp_path) -> None:
+    """A provider alternating between a moved shape and silence must not
+    recalibrate: only CONSECUTIVE shape failures count, so a band that
+    would hide the next failure is never adopted on the strength of a
+    provider that has not settled."""
+    gateway = _RecorderGateway()
+    store = BaselineStore(tmp_path / "state.json")
+
+    _seed(_ListingProvider(5))
+    await _sweep(store, gateway, day=0)
+
+    _seed(_ListingProvider(3))
+    await _sweep(store, gateway, day=1)  # shape 1
+    await _sweep(store, gateway, day=2)  # shape 2 → issue filed
+    _seed(_FailProvider())
+    await _sweep(store, gateway, day=3)  # BROKEN resets the clock
+    _seed(_ListingProvider(3))
+    await _sweep(store, gateway, day=4)  # shape 1
+    unrecalibrated = await _sweep(store, gateway, day=5)  # shape 2 again
+
+    assert unrecalibrated.providers["p1"]["recalibrated"] is False
+    assert unrecalibrated.failed == ["p1"]
+    assert gateway.closed == []  # the issue stays open
+
+    settled = await _sweep(store, gateway, day=6)  # shape 3, consecutive this time
+    assert settled.providers["p1"]["recalibrated"] is True
+    assert gateway.closed == [("p1", "42")]
