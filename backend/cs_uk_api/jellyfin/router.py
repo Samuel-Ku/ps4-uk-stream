@@ -54,7 +54,7 @@ from ..models import (
     Season,
 )
 from ..recommend import similarity
-from ..wire_identity import is_group_key
+from ..wire_identity import is_group_key, split_season_key
 from . import dto
 from .auth import require_token
 from .dashboard import register as register_dashboard
@@ -82,7 +82,6 @@ from .resolution import (
     _parse_include_types,
     _poster_for,
     _resolve_view_row_type,
-    _split_season_suffix,
     _user_data,
     _view_id_for,
     _view_id_for_item,
@@ -793,7 +792,7 @@ async def _hierarchy(parent_id: str | None) -> BaseItemDtoQueryResult:
     """
     if parent_id is None:
         return BaseItemDtoQueryResult(Items=[], TotalRecordCount=0)
-    group_key, season_number = _split_season_suffix(parent_id)
+    group_key, season_number = split_season_key(parent_id)
 
     content = (await resolve_item(group_key)).content
     if content is None or content.seasons is None:
@@ -845,7 +844,7 @@ async def item_detail(item_id: str) -> BaseItemDto:
     # season hierarchy, so /Items/{id} answers 404 for them.
     if not is_group_key(item_id):
         raise HTTPException(status_code=404, detail="item_unavailable")
-    group_key, season_number = _split_season_suffix(item_id)
+    group_key, season_number = split_season_key(item_id)
     content = (await resolve_item(group_key)).content
     if content is None:
         # Ticket #224: a card that IS in the home snapshot but whose

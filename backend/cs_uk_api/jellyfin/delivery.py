@@ -54,7 +54,7 @@ from ..play_attestation import PLAY_ATTESTATION
 from ..providers import PROVIDERS
 from ..providers.base import ProviderError
 from ..torrent_engine import ENGINE_TRACKER_ID
-from ..wire_identity import is_group_key
+from ..wire_identity import is_group_key, split_season_key
 from .dto import safe_filename
 from .hls_proxy import proxy_download, proxy_stream, segment_target, serve_segment
 
@@ -75,7 +75,7 @@ def provider_for_item(item_id: str) -> str | None:
     if not is_group_key(item_id):
         provider_id, _, external_id = item_id.partition(":")
         return provider_id if provider_id in PROVIDERS and external_id else None
-    group_key, _ = _split_season_suffix(item_id)
+    group_key, _ = split_season_key(item_id)
     res = group_resolution(group_key)
     if res is None or not res.sources:
         return None
@@ -268,7 +268,7 @@ async def resolve_stream(
     """
     if is_group_key(item_id):
         # Series/season keys and cold groups: not playable on their own.
-        group_key, season_number = _split_season_suffix(item_id)
+        group_key, season_number = split_season_key(item_id)
         if season_number is not None:
             _refuse(provider_for_item(group_key), item_id, "not_found", surface)
             return None
@@ -318,23 +318,6 @@ async def resolve_stream(
             # an answer the group cannot change.
             return None
     return None
-
-
-def _split_season_suffix(parent_id: str) -> tuple[str, int | None]:
-    """(group_key, season_number) for a season id, else (as-is, None).
-
-    Season ids are ``<group_key>:S<n>`` (D2); the group key never
-    carries an ``:S<n>`` tail, so ``rpartition`` cleanly separates the
-    trailing season marker. A series/movie group key returns itself.
-    (Local copy of the router helper's composition: the season-rail
-    paths above are the ONLY consumers on this side of the seam.)
-    """
-    if not is_group_key(parent_id):
-        return parent_id, None
-    head, sep, tail = parent_id.rpartition(":")
-    if sep and tail.startswith("S") and tail[1:].isdigit():
-        return head, int(tail[1:])
-    return parent_id, None
 
 
 def decode_translation_source(source_id: str) -> tuple[str, str] | None:

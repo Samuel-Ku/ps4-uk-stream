@@ -8,6 +8,8 @@ hand:
   derivation it is built from;
 - the episode-tail grammar (``:s1e1`` / ``:e5`` / ``:eN:<blob>`` — how
   an episode wire id ends);
+- the season-key grammar (``<group_key>:S<n>`` — how a series' season
+  item id is built and split);
 - the movie-suffix sentinel (``:__movie__`` — the episode-slot id a
   movie's content page emits so ``stream()`` can tell a film from an
   episode);
@@ -256,6 +258,37 @@ def episode_wire_id(provider: str, external: str, season: int, episode: int) -> 
     grammar.
     """
     return f"{provider}:{external}:s{season}e{episode}"
+
+
+# ---------------------------------------------------------------------------
+# Season-key grammar — a series' season item id (Jellyfin D2)
+# ---------------------------------------------------------------------------
+
+
+def season_key(group_key: str, season_number: int) -> str:
+    """Build the season item id ``<group_key>:S<n>`` (Jellyfin D2).
+
+    The single builder for the Jellyfin season rail: callers pass a
+    merged group key, so a season id can never disagree with the group
+    it belongs to.
+    """
+    return f"{group_key}:S{season_number}"
+
+
+def split_season_key(item_id: str) -> tuple[str, int | None]:
+    """Split a season item id into ``(group_key, season | None)``.
+
+    ``g2:abc:S2`` → ``("g2:abc", 2)``. A group key without a season
+    suffix — a series or movie key, including a malformed ``:S`` tail —
+    returns ``(item_id, None)``. A non-group id (an episode wire id, a
+    view id) also passes through unchanged.
+    """
+    if not is_group_key(item_id):
+        return item_id, None
+    head, sep, tail = item_id.rpartition(":")
+    if sep and tail.startswith("S") and tail[1:].isdigit():
+        return head, int(tail[1:])
+    return item_id, None
 
 
 # ---------------------------------------------------------------------------

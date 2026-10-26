@@ -3,7 +3,7 @@
 ``dto.py`` is the serialization half ("never scans state — the caller
 resolves first"). THIS module is the other half: every cached-state
 lookup, the view-id / episode-wire-id grammar, the include-types and
-season-suffix parsers, and the person-page state walk. The router keeps
+genre-id parsers, and the person-page state walk. The router keeps
 routing and DTO assembly; resolution.py never routes and never
 serializes — it resolves state and wire ids into domain bits the caller
 assembles.
@@ -287,21 +287,6 @@ def _episode_wire_id(provider_id: str, episode_id: str) -> str:
     if episode_id.startswith(f"{provider_id}:"):
         return episode_id
     return f"{provider_id}:{episode_id}"
-
-
-def _split_season_suffix(parent_id: str) -> tuple[str, int | None]:
-    """(group_key, season_number) for a season id, else (as-is, None).
-
-    Season ids are ``<group_key>:S<n>`` (D2); the group key never
-    carries an ``:S<n>`` tail, so ``rpartition`` cleanly separates the
-    trailing season marker. A series/movie group key returns itself.
-    """
-    if not is_group_key(parent_id):
-        return parent_id, None
-    head, sep, tail = parent_id.rpartition(":")
-    if sep and tail.startswith("S") and tail[1:].isdigit():
-        return head, int(tail[1:])
-    return parent_id, None
 
 
 def person_filmography_pairs(

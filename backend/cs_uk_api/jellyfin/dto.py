@@ -7,7 +7,9 @@ search groups) into the Jellyfin wire DTOs. Every cache/snapshot LOOKUP
 ``_year_for_group``, ``_view_id_for_item``…) stays in the router — this
 module never scans state; the caller resolves first and passes the
 resolved values in. The same goes for id grammar (``_episode_wire_id``,
-view-id uuid5s): callers hand in finished wire ids.
+view-id uuid5s): callers hand in finished wire ids. The one id this
+module composes itself is the season key, through
+:func:`wire_identity.season_key` — its grammar lives there, not here.
 
 Wire-shape rules pinned here (see CONTEXT.md / the D-numbers): the
 ``ImageTags.Primary`` tag is present IFF a poster URL exists (D9) and is
@@ -31,6 +33,7 @@ from ..models import (
     Season,
 )
 from ..row_kinds import ROW_KINDS
+from ..wire_identity import season_key
 from .models import (
     BaseItemDto,
     ItemCounts,
@@ -306,7 +309,7 @@ def season_dto(group_key: str, season: Season, server_id: str, series_name: str)
     return BaseItemDto(
         Name=f"Сезон {season.number}",
         ServerId=server_id,
-        Id=f"{group_key}:S{season.number}",
+        Id=season_key(group_key, season.number),
         Type="Season",
         ParentId=group_key,
         SeriesId=group_key,
@@ -337,7 +340,7 @@ def episode_dto(
         ServerId=server_id,
         Id=wire_id,
         Type="Episode",
-        ParentId=f"{group_key}:S{season.number}",
+        ParentId=season_key(group_key, season.number),
         SeriesId=group_key,
         SeriesName=series_name,
         IndexNumber=episode.number,

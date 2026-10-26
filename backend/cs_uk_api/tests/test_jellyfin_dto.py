@@ -100,6 +100,7 @@ def test_season_dto_shapes_a_season_satellite() -> None:
     )
     item = dto.season_dto("g2:abc", season, "server-1", "Серіал")
     assert item.Type == "Season"
+    assert item.Id == "g2:abc:S1"
     assert item.ServerId == "server-1"
     assert item.SeriesName == "Серіал"
 

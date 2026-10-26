@@ -4,6 +4,7 @@ Pins the single home of the wire id grammars:
 
   - the group-key prefix (``g2:``) and its recognizer ``is_group_key``;
   - the episode-tail grammar (``:s1e1`` / ``:e5`` / ``:eN:<blob>``);
+  - the season-key grammar (``<group_key>:S<n>``);
   - the movie-suffix sentinel (``:__movie__``);
   - the ``provider:external`` composite split;
 
@@ -46,7 +47,9 @@ from cs_uk_api.wire_identity import (
     parse_playable_id,
     project_group,
     provider_union,
+    season_key,
     split_episode_tail,
+    split_season_key,
     strip_movie_suffix,
 )
 
@@ -159,6 +162,37 @@ def test_is_group_key_distinguishes_group_keys_from_other_ids() -> None:
     assert not is_group_key("cikavaideya:281-duelianty:__movie__")
     assert not is_group_key("p1:serial-1")
     assert not is_group_key("0123456789abcdef0123456789abcdef")
+
+
+# ---------------------------------------------------------------------------
+# Season-key grammar — a series' season item id (Jellyfin D2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_season_key_builds_and_splits_the_group_suffix() -> None:
+    """The builder and parser are inverses for every season number."""
+    key = group_key("дюна", "series", 2021)
+    for number in (1, 2, 10):
+        assert season_key(key, number) == f"{key}:S{number}"
+        assert split_season_key(season_key(key, number)) == (key, number)
+    # A plain group key is not a season: it passes through unchanged.
+    assert split_season_key(key) == (key, None)
+
+
+@pytest.mark.unit
+def test_split_season_key_rejects_non_season_ids() -> None:
+    """Only a group key with a trailing uppercase ``:S<digits>`` splits;
+    episode wire ids and malformed season spellings pass through."""
+    assert split_season_key("yts:tt1:s1e2") == ("yts:tt1:s1e2", None)
+    assert split_season_key("0123456789abcdef0123456789abcdef") == (
+        "0123456789abcdef0123456789abcdef",
+        None,
+    )
+    assert split_season_key("g2:abc:S") == ("g2:abc:S", None)
+    assert split_season_key("g2:abc:S2x") == ("g2:abc:S2x", None)
+    assert split_season_key("g2:abc:s2") == ("g2:abc:s2", None)
+    assert split_season_key("g2:abc:2") == ("g2:abc:2", None)
 
 
 # ---------------------------------------------------------------------------
