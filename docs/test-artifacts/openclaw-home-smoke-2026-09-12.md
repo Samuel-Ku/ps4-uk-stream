@@ -231,3 +231,60 @@ Use `--skip-lane` on a host without the engine. For a different host,
 set `CS_UK_API_URL` and `CS_UK_ENGINE_URL` to the addresses the facade
 actually advertises; the redirect check compares the stream location
 against `CS_UK_ENGINE_URL`.
+
+## Re-run 2026-10-27 — the gate verifies the redirect status at `ac66df9`
+
+**Commit:** `ac66df9` (`fix(deploy): require the smoke stream redirect to
+be a 302`) · **Status:** stricter gate **PROVEN LIVE**, exit `0`.
+
+`ac66df9` makes `candidate_play` read `%{http_code}` in the same curl call
+as `%{redirect_url}` and skip a candidate whose stream redirect is not
+exactly `302` — previously any 3xx pointing at the engine passed while the
+gate's own PASS line claimed "302 to the engine". It closes the 10-27
+smoke-test series: `75273fe` (failover regression) → `2fd0742` (the fake
+mirrors the 302) → `cf6045d` (all-stall failure) → `acf69f2` (#415
+detail-404 skip) → `ac66df9`.
+
+The host checkout was fast-forwarded `da82b40 → ac66df9` (22 files, the
+teleport work included); the **service was not restarted** for this run
+(`ActiveEnterTimestamp` 2026-10-26 20:32:31 UTC), so the stricter script
+was exercised against the live process — which is what the gate exists to
+check.
+
+The engine advertises its **LAN** URL (`http://192.168.2.223:3347`), so
+the run set `CS_UK_ENGINE_URL` to that address, as the 10-26 re-run
+recorded. A first run with the script's default `127.0.0.1:3347` skipped
+all three candidates at the redirect-target case (`stream redirected
+somewhere unexpected: http://192.168.2.223:3347/...`) — the known
+environment requirement, not the new check: the status check passed there
+too (the facade answered `302`), and the target comparison did the
+skipping exactly as before. The host script's SHA-256 matched the tested
+workstation copy
+(`d50341864d97583f6afa2e48f5b371a0f17ede74b3dc778e1c9a6182e6dfc981`).
+
+```bash
+ssh openclaw-home
+cd ~/ps4-uk-stream
+git fetch origin && git merge --ff-only origin/master
+CS_UK_ENGINE_URL=http://192.168.2.223:3347 backend/deploy/smoke.sh; echo $?
+```
+
+| Flow | Observation |
+|---|---|
+| handshake | `200`, token issued (`ServerId=8e825b6f9a93a6ec`) |
+| views | `200`, **17 views** |
+| browse | `GET /api/browse?provider=uakino&section=filmy` → `200`, **39 cards** |
+| search `Dune` | 3 candidates: `g3:tt35969257`, `g3:tt15239678`, `g3:tt0287839` |
+| candidate 1 — `g3:tt35969257` | skipped: `bounded read failed (000 0; want 206/200 with 65536 bytes)` (the failover case, unchanged) |
+| candidate 2 — `g3:tt15239678` ("Dune: Part Two") | detail `200`; PlaybackInfo `200`; stream **`302`** to `http://192.168.2.223:3347/api/v1/torrent/c2f364ba7f59b22a1845b16fd8a1fc1783568f8b/stream/0`, the status verified by the new check; first 64 KiB `206 65536`; seek `206 1048576` with `Content-Range` honoured |
+
+The default `Dune` run finished `9 passed, 0 failed, 1 skipped`, exit `0`.
+The check adds no new failure mode for a correct facade; its only
+302-shaped difference — a `stream -> <code>` skip on a different 3xx — is
+pinned offline by `test_non_302_stream_redirect_is_skipped` (and the
+other three behavioural cases landed in the same series), with the
+live run here proving the passing half.
+
+CI for the same commit also passed:
+[run 40493199199](https://github.com/Samuel-Ku/ps4-uk-stream/actions/runs/40493199199)
+(`gates (py3.11)` and `gates (py3.13)`, both green).

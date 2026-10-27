@@ -177,9 +177,9 @@ another host with `CS_UK_API_URL` / `CS_UK_ENGINE_URL`; the script header
 lists the rest of the knobs.
 
 The last runs against the operator host, with their numbers, are recorded
-in `docs/test-artifacts/openclaw-home-smoke-2026-09-12.md` (re-run
-2026-10-26); re-running this command on a fresh host is what a new entry
-there should record. The
+in `docs/test-artifacts/openclaw-home-smoke-2026-09-12.md` (re-runs
+2026-10-26, 2026-10-27); re-running this command on a fresh host is what a
+new entry there should record. The
 directory index (`docs/test-artifacts/README.md`) lists every proof and
 flags which files are test fixtures rather than notes.
 
