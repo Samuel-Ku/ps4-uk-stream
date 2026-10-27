@@ -413,11 +413,12 @@ class BitPlayClient:
         and asking the engine to stream a whole file (or a whole remux)
         twice would be the probe's own version of the stalled read.
 
-        Every probe logs one ``first-bytes probe`` line carrying the
-        measured seconds (``first_byte_s=``) and the window it ran under
-        (``budget_s=``) — #461's follow-up. The window's only reading so
-        far is the gate's 0.038 s; live plays are what turn it into a
-        distribution an operator can re-derive the window from
+        Every probe logs one ``first-bytes probe`` line per candidate,
+        carrying the measured seconds (``first_byte_s=``) and the
+        window it ran under (``budget_s=``) — #461's follow-up. The
+        window's only reading so far is the gate's 0.038 s; live plays
+        are what turn it into a distribution an operator can re-derive
+        the window from
         (``journalctl -u cs-uk-api | grep 'first-bytes probe'``).
         """
         start = time.monotonic()

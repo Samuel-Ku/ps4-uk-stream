@@ -184,7 +184,7 @@ order when playback breaks:
 | --- | --- | --- |
 | Catalog API down | `/api/providers` slides `yts` to `degraded` → `down` (with `last_error_at`); English titles vanish from search/browse while Ukrainian ones still work; drift sweep flags it | Listing calls fail through the usual upstream guard |
 | Engine down | `yts:engine` slides `degraded` → `down` on its own row (spec #394); catalog and search keep working; pressing play fails fast with the typed error `unreachable` (a typed 404 through the facade) | The engine's liveness has its own tracked entry — see «The `yts:engine` entry» below |
-| Zero seeders / dead torrent | Play fails with an item-level rejection (`not_found` class), bounded server-side: the engine gives up fetching metadata (`ADD_TIMEOUT_S` per candidate); other titles unaffected; **`yts:engine` stays healthy** | Swarm-level failure of THIS torrent, deliberately distinct from a dead lane AND from a dead engine |
+| Zero seeders / dead torrent | Play fails with an item-level rejection (`not_found` class), bounded server-side: the lane gives up on this title; other titles unaffected; **`yts:engine` stays healthy** | Swarm-level failure of THIS torrent, deliberately distinct from a dead lane AND from a dead engine |
 
 ### The `yts:engine` entry
 
@@ -270,11 +270,8 @@ this title's swarm.
 - **Remux cap semantics** — `BITPLAY_MAX_REMUX` (default 3) caps
   concurrent ffmpeg remux passes. Full ⇒ new remux requests get 503
   until a slot frees; native mp4/webm streams are NOT affected.
-- **First-byte samples (#461)** — every probe logs one line per
-  candidate with its measured timing, so the 5 s window is re-derived
-  from live plays instead of the gate's single 0.038 s reading. The
-  outcome names the shape — only `ok` samples answer the window
-  question:
+- **First-byte samples (#461)** — the outcome names the shape — only
+  `ok` samples answer the window question:
 
   ```bash
   journalctl -u cs-uk-api --since '7 days ago' | grep 'first-bytes probe'
