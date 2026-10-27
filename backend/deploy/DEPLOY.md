@@ -163,14 +163,15 @@ journalctl -u cs-uk-api.service -f
 
 ### Smoke test (one command, non-zero exit when anything breaks)
 
-`deploy/smoke.sh` drives the four flows a first user hits — handshake,
-views, browse, and a torrent-lane play (search → detail → PlaybackInfo →
-stream bytes → seek) — and is the fastest way to tell a working host from
-a broken one after an update or a restart:
+`deploy/smoke.sh` drives the flows a first user hits — handshake, views,
+browse, a torrent-lane play (search → detail → PlaybackInfo → stream
+bytes → seek), and teleport readiness (the align route live, and `ffmpeg`
++ `fpcalc` resolvable where the aligner runs) — and is the fastest way to
+tell a working host from a broken one after an update or a restart:
 
 ```bash
-backend/deploy/smoke.sh              # all four flows
-backend/deploy/smoke.sh --skip-lane  # host with no engine
+backend/deploy/smoke.sh              # every flow
+backend/deploy/smoke.sh --skip-lane  # host with no engine (play is skipped)
 backend/deploy/smoke.sh; echo $?     # 0 = every flow passed, 1 = broken, 2 = usage
 ```
 
@@ -183,6 +184,15 @@ and a torrent with metadata can still have a dead swarm; both make the
 candidate a skip with its reason and let the next one run. Point it at
 another host with `CS_UK_API_URL` / `CS_UK_ENGINE_URL`; the script header
 lists the rest of the knobs.
+
+The teleport flow posts a form request with no audio: a `400` proves the
+align route is mounted and enabled, while a route switched off by
+configuration answers its own `503` and is a skip that names the knob. It
+then resolves `ffmpeg` and `fpcalc` in the running unit's own `PATH` —
+the same `shutil.which()` the aligner uses — so the service-PATH drop-in
+gap that otherwise surfaces only as a silent `503` at align time fails
+the smoke instead; `CS_UK_TELEPORT_PATH` overrides the probed `PATH`, and
+the report says when the shell fallback was used.
 
 The last runs against the operator host, with their numbers, are recorded
 in `docs/test-artifacts/openclaw-home-smoke-2026-09-12.md` (re-runs

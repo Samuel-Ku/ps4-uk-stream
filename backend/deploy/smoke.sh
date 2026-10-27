@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Deployment smoke test — the four flows a first real user drives, against a
+# Deployment smoke test — the flows a first real user drives, against a
 # LIVE stack: the facade on :8003 and (for the play flow) the BitPlay engine.
 #
 #   1. handshake   POST /Users/AuthenticateByName  — accept-any login
 #   2. views       GET  /UserViews                 — the libraries listing
 #   3. browse      GET  /api/browse                — a live provider's page
 #   4. play        search → detail → PlaybackInfo → stream bytes + seek
+#   5. teleport    POST /api/teleport/align        — route live + host tools
 #
 # One command for the deploy checklist (DEPLOY.md §6) and for post-update
 # verification, instead of re-typing curl one-liners by hand. Exits 0 when
@@ -17,8 +18,8 @@
 # purged — unlike accept_373.sh, this runs against a stack someone is using.
 #
 # Usage:
-#   ./smoke.sh                 # all four flows
-#   ./smoke.sh --skip-lane     # handshake + views + browse (host with no engine)
+#   ./smoke.sh                 # every flow
+#   ./smoke.sh --skip-lane     # host with no engine (the play flow is skipped)
 #
 # Env:
 #   CS_UK_API_URL       facade base URL          (default http://127.0.0.1:8003)
@@ -29,6 +30,11 @@
 #   CS_UK_PLAY_TIMEOUT  PlaybackInfo seconds     (default 120; a cold swarm
 #                       blocks on metadata, so this one gets headroom)
 #   CS_UK_PLAY_ATTEMPTS candidates tried         (default 3)
+#   CS_UK_TELEPORT_PATH PATH the teleport readiness check resolves
+#                       ffmpeg/fpcalc with   (default: the running
+#                       cs-uk-api unit's own PATH, read from its main
+#                       process; the smoke's shell PATH is the last resort
+#                       and the report names it)
 #
 # The play flow tries up to CS_UK_PLAY_ATTEMPTS search hits and passes on
 # the first that plays end to end: detail, PlaybackInfo, a 302 to the
@@ -41,6 +47,8 @@
 # what a dead lane or a misconfigured engine looks like.
 #
 # Only curl + python3 are required — both are already deployment prerequisites.
+# The teleport flow additionally reads the running unit's environment through
+# systemctl + /proc when it can, and names the fallback when it cannot.
 set -uo pipefail
 # No `set -e` on purpose: a failing flow must be counted and reported, not
 # abort the run, so the later flows still get to speak in the same report.
@@ -81,6 +89,24 @@ set_token() {
 
 json_get() { # file 'expr' -> value (empty on any parse failure)
   python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print($2)" "$1" 2>/dev/null
+}
+
+teleport_service_path() { # -> the running cs-uk-api unit's PATH, or ""
+  # The aligner resolves ffmpeg/fpcalc with shutil.which() in the SERVICE's
+  # own environment, never the operator's shell — systemd's default service
+  # PATH excludes ~/.local/bin, which is exactly how a host that looks fine
+  # interactively still answers 503 (DEPLOY.md §9.5). Try the user manager
+  # first (the shipped no-root pattern), then the system manager.
+  local manager pid
+  for manager in --user ""; do
+    pid=$(systemctl $manager show cs-uk-api -p MainPID --value 2>/dev/null || true)
+    pid=${pid%%$'\n'*}
+    if [ -n "$pid" ] && [ "$pid" != "0" ] && [ -r "/proc/$pid/environ" ]; then
+      tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^PATH=//p' | head -n 1
+      return 0
+    fi
+  done
+  printf '%s' ""
 }
 
 flow_handshake() {
@@ -280,6 +306,63 @@ print('\n'.join(g3[:n]))
   return 0
 }
 
+flow_teleport() {
+  step "5) teleport — route live, ffmpeg + fpcalc resolvable by the service"
+
+  # Route liveness: a form POST that omits the audio part is the cheapest
+  # request the route answers without upstream work — validation rejects it
+  # before anything reaches a provider. A route disabled by configuration
+  # (CS_UK_TELEPORT_ENABLED=0) answers its own explicit 503, and is a skip.
+  # The SILENT 503 this flow exists for is the aligner's "tools missing",
+  # reachable only deep inside a real alignment — the host check below
+  # catches it before any client hits it.
+  local code message
+  code=$(curl -s -m "$TIMEOUT" "${AUTH[@]}" \
+    -F item_id=smoke:probe -F candidate_id=smoke:probe -F position_ticks=0 \
+    -o "$TMP/teleport.json" -w '%{http_code}' "$API/api/teleport/align")
+  message=$(json_get "$TMP/teleport.json" '(d.get("detail") or {}).get("message","")')
+  case "$code" in
+    400)
+      ok "POST /api/teleport/align -> 400 $message (route mounted and enabled)"
+      ;;
+    503)
+      case "$message" in
+        *teleport*disabled*)
+          skip "teleport disabled by configuration (CS_UK_TELEPORT_ENABLED=0)"
+          return 0
+          ;;
+      esac
+      bad "POST /api/teleport/align -> 503${message:+ $message}"
+      return 1
+      ;;
+    *)
+      bad "POST /api/teleport/align -> $code${message:+ $message}"
+      return 1
+      ;;
+  esac
+
+  # Tool readiness, from the environment the aligner itself resolves in.
+  local probe how missing="" tool
+  if [ -n "${CS_UK_TELEPORT_PATH:-}" ]; then
+    probe="$CS_UK_TELEPORT_PATH"
+    how="CS_UK_TELEPORT_PATH"
+  elif probe=$(teleport_service_path) && [ -n "$probe" ]; then
+    how="the cs-uk-api service's own PATH"
+  else
+    probe="$PATH"
+    how="this shell's PATH (cs-uk-api main process not found — cannot prove a service-only fix)"
+  fi
+  for tool in ffmpeg fpcalc; do
+    (PATH="$probe"; command -v "$tool" >/dev/null 2>&1) || missing="$missing $tool"
+  done
+  if [ -n "$missing" ]; then
+    bad "teleport tools missing from $how:$missing — the align route would answer 503 (install per DEPLOY.md §0; root-free recipe §9.5)"
+    return 1
+  fi
+  ok "ffmpeg + fpcalc resolvable in $how"
+  return 0
+}
+
 echo "smoke: $API (engine $ENGINE)"
 # A token supplied up front lets the authed flows run even if the handshake
 # endpoint itself is the thing that broke.
@@ -289,10 +372,11 @@ if flow_handshake || [ "$TOKEN_READY" = "1" ]; then
   flow_views
   flow_browse
   flow_play
+  flow_teleport
 else
   echo
-  echo "handshake failed and no CS_UK_JF_TOKEN was supplied — skipping the authed flows"
-  SKIP=$((SKIP+3))
+  echo "handshake failed and no CS_UK_JF_TOKEN was supplied — skipping the remaining flows"
+  SKIP=$((SKIP+4))
 fi
 
 echo
