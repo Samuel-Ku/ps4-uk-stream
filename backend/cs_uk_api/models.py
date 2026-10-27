@@ -291,8 +291,10 @@ class ProviderInfo(BaseModel):
 #: client gave up BEFORE asking for bytes), ``stream`` = the facade's byte
 #: route, ``segment`` = one rewritten HLS reference, ``download`` = the
 #: original-quality download, ``native`` = the native ``/api/stream/{id}``
-#: route.
-PlaySurface = Literal["playbackinfo", "stream", "segment", "download", "native"]
+#: route, ``teleport`` = the native alignment route's candidate stream.
+PlaySurface = Literal[
+    "playbackinfo", "stream", "segment", "download", "native", "teleport"
+]
 
 #: The two ways a playback request produces no video.
 PlayOutcome = Literal["refused", "no-progress"]

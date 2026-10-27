@@ -200,7 +200,8 @@ refuse to play used to look exactly like a healthy server: the refusal
 existed only as a log line. Each request is now recorded as served, as
 refused (with the verdict that refused it — `gated`, `not_found`, a dead
 upstream — and the surface that asked: `playbackinfo`, `stream`,
-`download`, `segment`, the native route), or as `no-progress`: the client
+`download`, `segment`, the native route, the teleport route), or as
+`no-progress`: the client
 reported stopping before the position advanced, i.e. bytes were served
 and did not play (the resume store discards those reports by design,
 #214, which is why this state had no owner).
