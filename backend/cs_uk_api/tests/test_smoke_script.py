@@ -11,7 +11,9 @@ whole run after the candidate loop instead of trying
 This test executes the real shell script with a fake ``curl`` on PATH, so
 it pins the decision in the script itself: candidate 1 stalls, candidate
 2 serves the 64 KiB and seek reads, and the gate exits 0 with exactly one
-skip.
+skip.  A second case pins the opposite outcome: with every candidate
+stalling, each is skipped, the gate reports one failure, and it exits 1 —
+the shape a dead lane or a misconfigured engine must produce.
 """
 
 from __future__ import annotations
@@ -27,7 +29,8 @@ FAKE_CURL = r'''#!/usr/bin/env python3
 
 Only the flags smoke.sh uses are implemented.  Responses are chosen from
 the request path; the dead candidate's engine read returns curl's
-connection-timeout shape (http_code 000, zero bytes).
+connection-timeout shape (http_code 000, zero bytes).  FAKE_STALL_ALL=1
+gives every candidate's engine read that same shape.
 """
 
 import json
@@ -82,6 +85,9 @@ state = Path(os.environ["FAKE_CURL_STATE"])
 with (state / "calls.log").open("a", encoding="utf-8") as log:
     log.write(f"{method} {url} range={range_header or '-'}\n")
 
+# FAKE_STALL_ALL=1 models a dead lane: every candidate's swarm times out.
+stall_all = os.environ.get("FAKE_STALL_ALL") == "1"
+
 path = urlsplit(url).path
 engine = os.environ["FAKE_ENGINE"]
 status = "200"
@@ -119,7 +125,9 @@ elif path == "/Videos/g3:live/stream":
 elif path == "/api/v1/torrent/dead/stream/0":
     status = "000"  # what curl reports when the dead swarm never answers
 elif path == "/api/v1/torrent/live/stream/0":
-    if range_header == "0-65535":
+    if stall_all:
+        status = "000"  # every candidate is dead in the all-stall case
+    elif range_header == "0-65535":
         status = "206"
         size = 65536
     elif range_header == "1048576-2097151":
@@ -146,7 +154,12 @@ if rendered:
 '''
 
 
-def test_dead_swarm_candidate_is_skipped_and_next_candidate_plays(tmp_path):
+def _run_smoke(tmp_path, **env_overrides):
+    """Run the real smoke.sh with the fake curl first on PATH.
+
+    Returns the completed process and the fake's state directory (its
+    ``calls.log`` records every request the script made).
+    """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake_curl = bin_dir / "curl"
@@ -161,11 +174,13 @@ def test_dead_swarm_candidate_is_skipped_and_next_candidate_plays(tmp_path):
             "PATH": f"{bin_dir}:{env['PATH']}",
             "FAKE_CURL_STATE": str(state),
             "FAKE_ENGINE": "http://engine.test",
+            "FAKE_STALL_ALL": "0",
             "CS_UK_API_URL": "http://api.test",
             "CS_UK_ENGINE_URL": "http://engine.test",
             "CS_UK_TIMEOUT": "5",
             "CS_UK_PLAY_TIMEOUT": "5",
             "CS_UK_TEST_TITLE": "Dune",
+            **env_overrides,
         }
     )
 
@@ -177,6 +192,11 @@ def test_dead_swarm_candidate_is_skipped_and_next_candidate_plays(tmp_path):
         timeout=30,
         check=False,
     )
+    return result, state
+
+
+def test_dead_swarm_candidate_is_skipped_and_next_candidate_plays(tmp_path):
+    result, state = _run_smoke(tmp_path)
     output = result.stdout + result.stderr
 
     assert result.returncode == 0, output
@@ -194,3 +214,26 @@ def test_dead_swarm_candidate_is_skipped_and_next_candidate_plays(tmp_path):
         "GET http://engine.test/api/v1/torrent/live/stream/0 range=1048576-2097151"
         in calls
     )
+
+
+def test_every_candidate_stalling_fails_the_gate(tmp_path):
+    result, state = _run_smoke(tmp_path, FAKE_STALL_ALL="1")
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert (
+        "SKIP  g3:dead: bounded read failed (000 0; want 206/200 with 65536 bytes)"
+        in output
+    )
+    assert (
+        "SKIP  g3:live: bounded read failed (000 0; want 206/200 with 65536 bytes)"
+        in output
+    )
+    assert "FAIL  no candidate played 'Dune' — lane or engine is down" in output
+    assert "=== 5 passed, 1 failed, 2 skipped ===" in output
+
+    calls = (state / "calls.log").read_text(encoding="utf-8")
+    assert "GET http://engine.test/api/v1/torrent/dead/stream/0 range=0-65535" in calls
+    assert "GET http://engine.test/api/v1/torrent/live/stream/0 range=0-65535" in calls
+    # Both candidates died at the bounded read, so no seek was ever attempted.
+    assert "range=1048576-2097151" not in calls
