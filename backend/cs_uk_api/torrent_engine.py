@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import urllib.parse
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -214,7 +215,9 @@ ADD_TIMEOUT_S = 30.0
 #: bounds that server-side: healthy swarms measured the gate's 64 KiB in
 #: 0.038 s, so this window is two orders of magnitude of headroom, and a
 #: silent swarm costs one bounded rejection that advances the lane's
-#: fallback instead of a stalled player.
+#: fallback instead of a stalled player. Every probe logs its measured
+#: ``first_byte_s`` (#461 follow-up), so this window can be re-derived
+#: from live plays instead of the gate's single 0.038 s reading.
 STREAM_PROBE_TIMEOUT_S = 5.0
 
 #: Containers BitPlay serves byte-native (extension → reported container).
@@ -409,7 +412,28 @@ class BitPlayClient:
         is abandoned after that first chunk — the player opens its own,
         and asking the engine to stream a whole file (or a whole remux)
         twice would be the probe's own version of the stalled read.
+
+        Every probe logs one ``first-bytes probe`` line carrying the
+        measured seconds (``first_byte_s=``) and the window it ran under
+        (``budget_s=``) — #461's follow-up. The window's only reading so
+        far is the gate's 0.038 s; live plays are what turn it into a
+        distribution an operator can re-derive the window from
+        (``journalctl -u cs-uk-api | grep 'first-bytes probe'``).
         """
+        start = time.monotonic()
+
+        def _sample(outcome: str, extra: str = "") -> bool:
+            """Log one probe sample; True only when bytes actually came."""
+            log.info(
+                "first-bytes probe outcome=%s first_byte_s=%.3f budget_s=%.1f%s url=%s",
+                outcome,
+                time.monotonic() - start,
+                STREAM_PROBE_TIMEOUT_S,
+                extra,
+                url,
+            )
+            return outcome == "ok"
+
         try:
             async with http.stream(
                 "GET",
@@ -420,13 +444,15 @@ class BitPlayClient:
                 ),
             ) as resp:
                 if resp.status_code not in (200, 206):
-                    return False
+                    return _sample("status", f" status={resp.status_code}")
                 async for chunk in resp.aiter_bytes():
                     if chunk:
-                        return True
-                return False
-        except (httpx.HTTPError, OSError):
-            return False
+                        return _sample("ok")
+                return _sample("empty")
+        except httpx.TimeoutException as e:
+            return _sample("timeout", f" error={type(e).__name__}")
+        except (httpx.HTTPError, OSError) as e:
+            return _sample("transport", f" error={type(e).__name__}")
 
     @staticmethod
     def _ensure_ok(resp: httpx.Response, what: str) -> None:

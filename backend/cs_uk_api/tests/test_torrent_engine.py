@@ -9,12 +9,15 @@ BitPlay HTTP adapter against respx-mocked endpoints, and the settings
 builder (unset url ⇒ None ⇒ lane disabled). The adapter's #461
 first-bytes probe — a created session's stream must speak before it is
 handed over — is pinned here too, including its consequence at the
-seam: a silent candidate advances the lane's bounded fallback.
+seam: a silent candidate advances the lane's bounded fallback, and
+every probe logs its measured timing (#461 follow-up) so the 5 s window
+is re-derivable from live samples.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import replace
 
@@ -72,6 +75,22 @@ def _mock_stream(body: bytes = b"\x00" * 65536, status: int = 206) -> respx.Rout
     return respx.get(url=_STREAM_URL_RE).mock(
         return_value=httpx.Response(status, content=body)
     )
+
+
+def _probe_samples(caplog: pytest.LogCaptureFixture) -> list[dict[str, str]]:
+    """The probe's logged samples, parsed ``key=value`` → dict.
+
+    Doubles as the line-shape pin (#461 follow-up): one line per probe,
+    prefix ``first-bytes probe``, every field space-separated and
+    ``=``-joined.
+    """
+    samples: list[dict[str, str]] = []
+    for record in caplog.records:
+        parts = record.getMessage().split()
+        if parts[:2] != ["first-bytes", "probe"]:
+            continue
+        samples.append(dict(part.split("=", 1) for part in parts[2:]))
+    return samples
 
 
 # --------------------------------------------------------- exceptions
@@ -345,6 +364,105 @@ async def test_bitplay_probe_reads_one_bounded_range() -> None:
     assert result.url == f"{_FILES}/stream/0"
     assert probe.calls.last.request.method == "GET"
     assert probe.calls.last.request.headers["range"] == "bytes=0-65535"
+
+
+# ------------------- #461 follow-up: the probe's own timing samples
+
+
+async def test_probe_logs_the_measured_first_byte_time(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The probe's timing IS the data the 5 s window gets re-derived
+    from: a healthy read logs one sample carrying the measured seconds,
+    the window it ran under, and the URL it read."""
+    with respx.mock:
+        _mock_add()
+        _mock_files([{"index": 0, "name": "Movie.mp4", "size": 100}])
+        _mock_stream()
+        caplog.set_level(logging.INFO, logger="cs_uk_api.torrent_engine")
+        result = await _client().ensure_session(_MAGNET)
+    assert result.url == f"{_FILES}/stream/0"
+    (sample,) = _probe_samples(caplog)
+    assert sample["outcome"] == "ok"
+    assert sample["budget_s"] == "5.0"  # self-describing: window in force
+    assert sample["url"] == result.url
+    assert 0.0 <= float(sample["first_byte_s"]) < 5.0
+
+
+async def test_probe_logs_a_stalled_read_as_a_timeout(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The sample that would argue for a WIDER window: the read died on
+    the budget itself. Named ``timeout`` so it stays distinguishable
+    from a byte-less answer and from a transport fault."""
+    with respx.mock:
+        _mock_add()
+        _mock_files([{"index": 0, "name": "Movie.mp4", "size": 100}])
+        respx.get(url=_STREAM_URL_RE).mock(
+            side_effect=httpx.ReadTimeout("stream stalled")
+        )
+        caplog.set_level(logging.INFO, logger="cs_uk_api.torrent_engine")
+        with pytest.raises(EngineRejected):
+            await _client().ensure_session(_MAGNET)
+    (sample,) = _probe_samples(caplog)
+    assert sample["outcome"] == "timeout"
+    assert sample["error"] == "ReadTimeout"
+    assert sample["budget_s"] == "5.0"
+
+
+async def test_probe_logs_a_status_refusal_with_its_status(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A non-200/206 answer is not a timing sample at all — the line
+    says ``status``, so an engine refusal is never read as a
+    slow-but-alive swarm when the distribution is reviewed."""
+    with respx.mock:
+        _mock_add()
+        _mock_files([{"index": 0, "name": "Movie.mp4", "size": 100}])
+        _mock_stream(status=500, body=b"boom")
+        caplog.set_level(logging.INFO, logger="cs_uk_api.torrent_engine")
+        with pytest.raises(EngineRejected):
+            await _client().ensure_session(_MAGNET)
+    (sample,) = _probe_samples(caplog)
+    assert sample["outcome"] == "status"
+    assert sample["status"] == "500"
+
+
+async def test_probe_logs_a_byte_less_200_as_empty(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The live ``g3:tt35969257`` shape: a 200/206 whose body ends
+    without a byte. Distinct from ``timeout`` (the window never bound)
+    and from ``transport`` (the engine itself never answered)."""
+    with respx.mock:
+        _mock_add()
+        _mock_files([{"index": 0, "name": "Movie.mp4", "size": 100}])
+        _mock_stream(body=b"", status=200)
+        caplog.set_level(logging.INFO, logger="cs_uk_api.torrent_engine")
+        with pytest.raises(EngineRejected):
+            await _client().ensure_session(_MAGNET)
+    (sample,) = _probe_samples(caplog)
+    assert sample["outcome"] == "empty"
+
+
+async def test_probe_logs_a_transport_fault_as_such(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A refused connection is engine-path trouble, never a swarm
+    verdict — the sample says ``transport`` so it is not counted as a
+    dead candidate when the samples are reviewed."""
+    with respx.mock:
+        _mock_add()
+        _mock_files([{"index": 0, "name": "Movie.mp4", "size": 100}])
+        respx.get(url=_STREAM_URL_RE).mock(
+            side_effect=httpx.ConnectError("connection refused")
+        )
+        caplog.set_level(logging.INFO, logger="cs_uk_api.torrent_engine")
+        with pytest.raises(EngineRejected):
+            await _client().ensure_session(_MAGNET)
+    (sample,) = _probe_samples(caplog)
+    assert sample["outcome"] == "transport"
+    assert sample["error"] == "ConnectError"
 
 
 async def test_no_bytes_session_advances_to_the_next_candidate() -> None:

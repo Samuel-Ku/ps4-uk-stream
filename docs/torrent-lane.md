@@ -184,7 +184,7 @@ order when playback breaks:
 | --- | --- | --- |
 | Catalog API down | `/api/providers` slides `yts` to `degraded` → `down` (with `last_error_at`); English titles vanish from search/browse while Ukrainian ones still work; drift sweep flags it | Listing calls fail through the usual upstream guard |
 | Engine down | `yts:engine` slides `degraded` → `down` on its own row (spec #394); catalog and search keep working; pressing play fails fast with the typed error `unreachable` (a typed 404 through the facade) | The engine's liveness has its own tracked entry — see «The `yts:engine` entry» below |
-| Zero seeders / dead torrent | Play fails with an item-level rejection (`not_found` class), bounded server-side: the engine gives up fetching metadata (`ADD_TIMEOUT_S` per candidate) or — since #461 — a created session's stream never sends first bytes (a 5 s first-bytes probe per candidate); other titles unaffected; **`yts:engine` stays healthy** | Swarm-level failure of THIS torrent, deliberately distinct from a dead lane AND from a dead engine |
+| Zero seeders / dead torrent | Play fails with an item-level rejection (`not_found` class), bounded server-side: the engine gives up fetching metadata (`ADD_TIMEOUT_S` per candidate) or — since #461 — a created session's stream never sends first bytes (a 5 s first-bytes probe per candidate, each sample logged — see «First-byte samples» in §3); other titles unaffected; **`yts:engine` stays healthy** | Swarm-level failure of THIS torrent, deliberately distinct from a dead lane AND from a dead engine |
 
 ### The `yts:engine` entry
 
@@ -270,6 +270,23 @@ this title's swarm.
 - **Remux cap semantics** — `BITPLAY_MAX_REMUX` (default 3) caps
   concurrent ffmpeg remux passes. Full ⇒ new remux requests get 503
   until a slot frees; native mp4/webm streams are NOT affected.
+- **First-byte samples (#461)** — every probe logs one line per
+  candidate with its measured timing, so the 5 s window is re-derived
+  from live plays instead of the gate's single 0.038 s reading. The
+  outcome names the shape — only `ok` samples answer the window
+  question:
+
+  ```bash
+  journalctl -u cs-uk-api --since '7 days ago' | grep 'first-bytes probe'
+  # illustrative shapes:
+  # first-bytes probe outcome=ok first_byte_s=0.041 budget_s=5.0 url=…  spoke — the distribution to watch
+  # first-bytes probe outcome=empty first_byte_s=0.006 budget_s=5.0 url=…  stream ended without a byte
+  # first-bytes probe outcome=timeout first_byte_s=5.001 budget_s=5.0 url=…  the window itself bound — argues for a wider one
+  # first-bytes probe outcome=status first_byte_s=0.002 budget_s=5.0 status=500 url=…  the engine refused the stream
+  # first-bytes probe outcome=transport first_byte_s=0.001 budget_s=5.0 error=ConnectError url=…  the engine never answered
+  # Healthy samples only, as a plain list:
+  journalctl -u cs-uk-api --since '7 days ago' | grep -o 'outcome=ok first_byte_s=[0-9.]*'
+  ```
 - **Logs without digging** — `curl -s http://localhost:3347/api/v1/logs`
   (ring buffer, last 500 lines) or `docker logs bitplay`.
 
@@ -280,7 +297,7 @@ this title's swarm.
 | Play fails instantly with `unreachable` | Engine down, wrong `CS_UK_TORRENT_ENGINE_URL`, container crash-looping | Check `yts:engine` in `/api/providers` (§2); `docker compose -f backend/deploy/docker-compose.bitplay.yml ps`; `curl -s localhost:3347/api/v1/capabilities`; fix address/compose, restart backend |
 | `yts:engine` down at startup, never played | Half-configured engine: auth pair split (one env var set) or schemeless URL | Set BOTH `CS_UK_TORRENT_ENGINE_USER`/`PASSWORD` or neither; give the URL an `http(s)://` scheme; restart backend |
 | Play hangs ~minutes, then item-level `not_found` | Dead torrent: zero seeders / metadata timeout (engine blames this magnet: 400/504) | Try another title or quality; check the peers column in the BitPlay UI. Not a lane fault |
-| Playback stalls after `PlaybackInfo` → `200`, then the player times out | Dead swarm behind a CREATED session — metadata arrived but no bytes ever flow (the `g3:tt35969257` class, `000 0` in the smoke gate) | Since #461 the adapter probes first bytes per candidate (5 s) and the lane falls back server-side; if a stall still reaches a player, the swarm died between probe and read — try another quality |
+| Playback stalls after `PlaybackInfo` → `200`, then the player times out | Dead swarm behind a CREATED session — metadata arrived but no bytes ever flow (the `g3:tt35969257` class, `000 0` in the smoke gate) | Since #461 the adapter probes first bytes per candidate (5 s) and the lane falls back server-side — the probe's samples (§3) say whether the window bound or the stream was byte-less; if a stall still reaches a player, the swarm died between probe and read — try another quality |
 | 401 from the engine in backend logs | Auth enabled on one side only | Both sides need complete pairs: `BITPLAY_AUTH_USERNAME`+`PASSWORD` AND `CS_UK_TORRENT_ENGINE_USER`+`PASSWORD`, identical values |
 | Remuxed MKV plays but will not seek | Current engine limit: the remux path serves chunked progressive fMP4 with `Accept-Ranges: none` — no HTTP Range support | Expected behaviour, not a bug. Native-container files (`/stream/`) seek normally; restarting playback is the workaround for MKV sources |
 | No subtitles on an MKV | Current engine limit: remux strips embedded subtitle tracks; ONLY `.srt` files present as separate torrent files convert to VTT | Pick releases carrying external `.srt` files if subtitles matter; nothing else will render for MKV sources today. When a separate srt IS present, PlaybackInfo surfaces it automatically (#378) as a Subtitle track via `/Stream/{item}/vtt` |
