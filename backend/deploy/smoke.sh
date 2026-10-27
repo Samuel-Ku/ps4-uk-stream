@@ -173,7 +173,7 @@ PLAY_SEEK=""    # seek read result for the candidate
 PLAY_REASON=""  # why the last candidate was skipped
 
 candidate_play() { # group key -> 0 when its stream bytes and seek work
-  local gk="$1" code name loc first seek want=65536 path
+  local gk="$1" code name loc first seek status want=65536 path
   PLAY_PATH=""; PLAY_LOC=""; PLAY_FIRST=""; PLAY_SEEK=""; PLAY_REASON=""
 
   # The client opens the item before playing; this also registers the group
@@ -200,11 +200,19 @@ candidate_play() { # group key -> 0 when its stream bytes and seek work
     return 1
   fi
 
-  # The facade never proxies the media: it hands the player the engine URL.
-  loc=$(curl -s -m "$TIMEOUT" "${AUTH[@]}" -o /dev/null -w '%{redirect_url}' "$API$path")
+  # The facade never proxies the media: it hands the player the engine URL
+  # with a 302 (delivery.py). Verify the status, not just the target — the
+  # PASS line below claims "302 to the engine", and another 3xx (a bare
+  # RedirectResponse defaults to 307) must not read as the same contract.
+  read -r status loc < <(curl -s -m "$TIMEOUT" "${AUTH[@]}" -o /dev/null \
+    -w '%{http_code} %{redirect_url}' "$API$path")
+  if [ "$status" != "302" ]; then
+    PLAY_REASON="stream -> $status (want a 302 to the engine)"
+    return 1
+  fi
   case "$loc" in
     "$ENGINE"/*) ;;
-    "")          PLAY_REASON="stream returned no redirect (expected $ENGINE/...)"; return 1 ;;
+    "")          PLAY_REASON="stream 302 carried no redirect (expected $ENGINE/...)"; return 1 ;;
     *)           PLAY_REASON="stream redirected somewhere unexpected: $loc"; return 1 ;;
   esac
 

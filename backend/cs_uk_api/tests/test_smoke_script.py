@@ -15,7 +15,9 @@ skip.  A second case pins the opposite outcome: with every candidate
 stalling, each is skipped, the gate reports one failure, and it exits 1 —
 the shape a dead lane or a misconfigured engine must produce.  A third
 case covers the stale resolution map (#415): the first hit 404s at detail,
-is skipped, and the next candidate still passes the gate.
+is skipped, and the next candidate still passes the gate.  A fourth case
+pins the redirect check itself: a stream that answers a different 3xx is
+skipped instead of read as a working redirect.
 """
 
 from __future__ import annotations
@@ -34,7 +36,8 @@ the request path; the dead candidate's engine read returns curl's
 connection-timeout shape (http_code 000, zero bytes).  FAKE_STALL_ALL=1
 gives every candidate's engine read that same shape; FAKE_DETAIL_404=1
 makes the first search hit answer 404 at detail, the stale resolution-map
-case (#415).
+case (#415); FAKE_STREAM_STATUS overrides the status the facade's stream
+endpoint answers with.
 """
 
 import json
@@ -96,6 +99,9 @@ stall_all = os.environ.get("FAKE_STALL_ALL") == "1"
 # by search but has no resolution to open (#415).
 detail_404 = os.environ.get("FAKE_DETAIL_404") == "1"
 
+# FAKE_STREAM_STATUS overrides the facade's stream redirect status (302).
+stream_status = os.environ.get("FAKE_STREAM_STATUS") or "302"
+
 path = urlsplit(url).path
 engine = os.environ["FAKE_ENGINE"]
 status = "200"
@@ -128,10 +134,11 @@ elif path in ("/Items/g3:dead/PlaybackInfo", "/Items/g3:live/PlaybackInfo"):
         {"MediaSources": [{"Path": f"/Videos/{path.split('/')[2]}/stream"}]}
     ).encode()
 elif path == "/Videos/g3:dead/stream":
-    status = "302"  # the facade redirects the player; it never proxies media
+    # The facade redirects the player; it never proxies media.
+    status = stream_status
     redirect = f"{engine}/api/v1/torrent/dead/stream/0"
 elif path == "/Videos/g3:live/stream":
-    status = "302"
+    status = stream_status
     redirect = f"{engine}/api/v1/torrent/live/stream/0"
 elif path == "/api/v1/torrent/dead/stream/0":
     status = "000"  # what curl reports when the dead swarm never answers
@@ -187,6 +194,7 @@ def _run_smoke(tmp_path, **env_overrides):
             "FAKE_ENGINE": "http://engine.test",
             "FAKE_STALL_ALL": "0",
             "FAKE_DETAIL_404": "0",
+            "FAKE_STREAM_STATUS": "302",
             "CS_UK_API_URL": "http://api.test",
             "CS_UK_ENGINE_URL": "http://engine.test",
             "CS_UK_TIMEOUT": "5",
@@ -269,3 +277,21 @@ def test_detail_404_skips_to_the_next_candidate(tmp_path):
     # both ran before the detail read that 404s.
     searches_before = [ln for ln in lines[:first_detail] if "/api/search" in ln]
     assert len(searches_before) == 2
+
+
+def test_non_302_stream_redirect_is_skipped(tmp_path):
+    """The gate's PASS line claims a 302 to the engine; another 3xx (a bare
+    RedirectResponse defaults to 307) must be an item-level skip, not read
+    as the same contract."""
+    result, state = _run_smoke(tmp_path, FAKE_STREAM_STATUS="307")
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "SKIP  g3:dead: stream -> 307 (want a 302 to the engine)" in output
+    assert "SKIP  g3:live: stream -> 307 (want a 302 to the engine)" in output
+    assert "FAIL  no candidate played 'Dune' — lane or engine is down" in output
+    assert "=== 5 passed, 1 failed, 2 skipped ===" in output
+
+    calls = (state / "calls.log").read_text(encoding="utf-8")
+    # Both candidates stopped at the redirect check, before any engine read.
+    assert "engine.test" not in calls
