@@ -41,9 +41,9 @@ python3 -m venv .venv
 ```
 
 `requirements.txt` is the runtime dependency set (fastapi, uvicorn,
-httpx, bs4, lxml, pydantic, cachetools, pycryptodome, playwright,
-pillow). The dev extras (`pytest`, `ruff`, `mypy`, `respx`) are optional
-— only needed to run the release gate on the host.
+httpx, bs4, lxml, pydantic, python-multipart, cachetools, pycryptodome,
+playwright, pillow). The dev extras (`pytest`, `ruff`, `mypy`, `respx`)
+are optional — only needed to run the release gate on the host.
 
 ## 2. Host-specific values to edit (do this BEFORE enabling)
 
@@ -195,6 +195,28 @@ journalctl -u cs-uk-api.service -f         # follow logs
 rm ~/.cache/cs-uk-api/playback.json        # wipe continue-watching (single command)
 rm ~/.cache/cs-uk-api/user-state.json      # wipe favorites/played
 ```
+
+### Updating a deployment (fast-forward + dependency re-sync)
+
+A pull does not re-install anything: the host venv is runtime-only and
+nothing re-syncs it, so a fast-forward that adds a runtime import makes
+the next start crash-loop until the venv is updated. That is what the
+teleport release did to `openclaw-home` on 2026-10-27 — `python-multipart`
+was new, the merge landed before any restart, and the first restart after
+the pull exited with `RuntimeError: Form data requires "python-multipart"
+to be installed`. Re-run the install step from §1 after every update; it
+is a no-op when nothing changed:
+
+```bash
+cd /home/<user>/<repo>/backend
+git fetch origin && git merge --ff-only origin/master
+.venv/bin/pip install -r requirements.txt   # no-op when deps are unchanged
+sudo systemctl restart cs-uk-api.service    # systemctl --user on no-root hosts
+deploy/smoke.sh                             # confirm, then record the run
+```
+
+Leave the runtime directories (`deploy/config/`, `deploy/torrent-data/`,
+`*.bak-*`) in place; they are not commit candidates.
 
 The README's deploy section (§Deploy) is the abbreviated version of this
 runbook; this file is the durable reference for standing up a fresh host.
