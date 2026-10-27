@@ -379,10 +379,15 @@ If any of these start biting in production, each can be added as a **non-breakin
 
 The English-content pipeline: YTS/Popcorn catalog → torrent candidate
 policy (quality tier, seeds, bounded dead-swarm fallback) → the
-BitPlay engine's streamable session. Owned by `cs_uk_api/torrent_lane.py`
-(policy) over the `TorrentEngine` seam (`torrent_engine.py`, adapter:
-BitPlayClient); the yts provider keeps only its popcorn catalog
-dialect. Operations: `docs/torrent-lane.md`.
+BitPlay engine's streamable session. The fallback has two dead-swarm
+forms since #461: a rejected `add` (metadata never arrived) and a
+created session whose stream never sends first bytes — the adapter
+reads that URL's first bytes (5 s budget) and raises the same
+`EngineRejected` verdict, so the lane advances server-side instead of
+the player stalling until its own timeout. Owned by
+`cs_uk_api/torrent_lane.py` (policy) over the `TorrentEngine` seam
+(`torrent_engine.py`, adapter: BitPlayClient); the yts provider keeps
+only its popcorn catalog dialect. Operations: `docs/torrent-lane.md`.
 
 ## Provider lifecycle (decided on Q34–Q40)
 

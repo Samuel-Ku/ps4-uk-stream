@@ -69,6 +69,16 @@ engine session and hands the player BitPlay's LAN URL directly:
 http://<engine-host>:3347/api/v1/torrent/{sessionId}/stream/{fileIndex}
 ```
 
+**A session is proved before it is handed over (#461).** BitPlay answers
+`add` once the metadata is known, so a swarm with no live seeders still
+yields a URL — one that accepts the connection and then sends nothing.
+The adapter therefore reads that URL's first bytes once (ranged read,
+5 s budget, abandoned at the first non-empty chunk, `206` or `200`) and
+treats silence as this torrent's dead-swarm verdict, so the lane's
+bounded fallback advances server-side instead of the player stalling
+until its own timeout. A healthy swarm measured the gate's 64 KiB in
+0.038 s (2026-09-12 artifact), so the common path pays one LAN read.
+
 For testing by hand you can paste any magnet into BitPlay's web UI at
 `:3347`, or drive it with curl (recipe in §5).
 
