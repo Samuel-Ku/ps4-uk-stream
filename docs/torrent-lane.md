@@ -69,16 +69,6 @@ engine session and hands the player BitPlay's LAN URL directly:
 http://<engine-host>:3347/api/v1/torrent/{sessionId}/stream/{fileIndex}
 ```
 
-**A session is proved before it is handed over (#461).** BitPlay answers
-`add` once the metadata is known, so a swarm with no live seeders still
-yields a URL — one that accepts the connection and then sends nothing.
-The adapter therefore reads that URL's first bytes once (ranged read,
-5 s budget, abandoned at the first non-empty chunk, `206` or `200`) and
-treats silence as this torrent's dead-swarm verdict, so the lane's
-bounded fallback advances server-side instead of the player stalling
-until its own timeout. A healthy swarm measured the gate's 64 KiB in
-0.038 s (2026-09-12 artifact), so the common path pays one LAN read.
-
 For testing by hand you can paste any magnet into BitPlay's web UI at
 `:3347`, or drive it with curl (recipe in §5).
 
@@ -194,7 +184,7 @@ order when playback breaks:
 | --- | --- | --- |
 | Catalog API down | `/api/providers` slides `yts` to `degraded` → `down` (with `last_error_at`); English titles vanish from search/browse while Ukrainian ones still work; drift sweep flags it | Listing calls fail through the usual upstream guard |
 | Engine down | `yts:engine` slides `degraded` → `down` on its own row (spec #394); catalog and search keep working; pressing play fails fast with the typed error `unreachable` (a typed 404 through the facade) | The engine's liveness has its own tracked entry — see «The `yts:engine` entry» below |
-| Zero seeders / dead torrent | Play fails with an item-level rejection (`not_found` class), bounded server-side: the engine gives up fetching metadata (`ADD_TIMEOUT_S` per candidate) or — since #461 — a created session's stream never sends first bytes (a 5 s first-bytes probe per candidate, each sample logged — see «First-byte samples» in §3); other titles unaffected; **`yts:engine` stays healthy** | Swarm-level failure of THIS torrent, deliberately distinct from a dead lane AND from a dead engine |
+| Zero seeders / dead torrent | Play fails with an item-level rejection (`not_found` class), bounded server-side: the engine gives up fetching metadata (`ADD_TIMEOUT_S` per candidate); other titles unaffected; **`yts:engine` stays healthy** | Swarm-level failure of THIS torrent, deliberately distinct from a dead lane AND from a dead engine |
 
 ### The `yts:engine` entry
 
