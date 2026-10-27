@@ -36,6 +36,7 @@ from cs_uk_api.models import (
     Translation,
 )
 from cs_uk_api.native import teleport as teleport_route
+from cs_uk_api.play_attestation import PLAY_ATTESTATION
 from cs_uk_api.providers import PROVIDERS
 from cs_uk_api.providers.base import BaseProvider, ProviderError
 from cs_uk_api.teleport import (
@@ -478,6 +479,36 @@ def test_candidate_provider_failure_is_502(
     assert response.json()["detail"]["error"] == "candidate_unavailable"
 
 
+def test_candidate_refusals_are_attested_under_the_teleport_surface(
+    seeded, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The route crosses the shared seam, so its refusals reach the axis.
+
+    A lane fault is the 502 the client is handed, an item verdict this
+    route's 404 — and the axis records the code the client saw under the
+    surface that asked (``play_request.attest_refusal``).
+    """
+    _p1, p2 = seeded
+    monkeypatch.setattr(teleport_route, "ALIGNER", _FakeAligner())
+    cases = (
+        (
+            ProviderError("upstream_unreachable", "candidate down"),
+            502,
+            "candidate_unavailable",
+        ),
+        (ProviderError("gated", "subscription"), 404, "not_found"),
+    )
+    for error, status, code in cases:
+        PLAY_ATTESTATION.reset()
+        p2.error = error
+        response = _post(TestClient(app))
+        assert response.status_code == status
+        axis = PLAY_ATTESTATION.snapshot()
+        assert axis.providers["p2"].refused == 1
+        assert [fault.surface for fault in axis.recent] == ["teleport"]
+        assert [fault.code for fault in axis.recent] == [code]
+
+
 def test_missing_tools_is_503(seeded, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(teleport_route, "ALIGNER", _UnavailableAligner())
     response = _post(TestClient(app))
@@ -562,11 +593,22 @@ def test_missing_audio_is_invalid_request(
 
 
 def test_facade_and_teleport_share_one_resolution_seam() -> None:
-    from cs_uk_api import playback
+    """Both surfaces cross ONE play-request seam — no second provider call.
+
+    The facade's resolver and this route hand their attempt to the same
+    ``play_request.attempt_play``, and the facade's PlaybackInfo probe
+    reads the facade's one resolver. The duplicate top-level seam module
+    (``cs_uk_api/playback.py``) is retired, and this pins that.
+    """
+    import importlib.util
+
+    from cs_uk_api import play_request
     from cs_uk_api.jellyfin import delivery, playback_info
 
-    assert delivery.resolve_stream is playback.resolve_stream
-    assert playback_info._resolve_stream is playback.resolve_stream
+    assert delivery.attempt_play is play_request.attempt_play
+    assert teleport_route.attempt_play is play_request.attempt_play
+    assert playback_info._resolve_stream is delivery.resolve_stream
+    assert importlib.util.find_spec("cs_uk_api.playback") is None
 
 
 def test_logs_do_not_carry_stream_urls(

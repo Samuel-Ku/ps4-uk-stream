@@ -2,8 +2,8 @@
 
 The client uploads the last seconds of decoded audio and two playable
 ids. This module is the HTTP/orchestration layer only: validate the
-candidate, resolve it through the shared playback seam, hand the clip to
-the aligner, and map the verdict to the native error vocabulary.
+candidate, resolve it through the shared play-request seam, hand the clip
+to the aligner, and map the verdict to the native error vocabulary.
 
 No Jellyfin facade route and no session registry: the request is
 self-contained, and the clip lives only for the duration of the request.
@@ -23,8 +23,14 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from .. import catalog
 from .. import config as _config
 from ..health import ITEM_VERDICT_CODES
+from ..http_client import get_client
 from ..models import ContentResponse, ErrorResponse
-from ..playback import resolve_playable_target, resolve_stream
+from ..play_request import (
+    PlayAttempt,
+    attempt_play,
+    attest_refusal,
+    playable_target,
+)
 from ..providers import PROVIDERS
 from ..providers.base import ProviderError
 from ..teleport import (
@@ -221,6 +227,33 @@ def _provider_label(provider_id: str) -> str:
     return str(name or provider_id)
 
 
+def _refusal_code(code: str | None) -> str:
+    """This route's refusal code for a provider verdict ``code``.
+
+    The play attestation records the code the client was actually handed
+    (``play_request.attest_refusal``): an item verdict renders this
+    route's 404 ``not_found`` envelope, anything else — a lane fault, a
+    codeless crash — its 502 ``candidate_unavailable``.
+    """
+    return "not_found" if code in ITEM_VERDICT_CODES else "candidate_unavailable"
+
+
+def _candidate_refusal(attempt: PlayAttempt) -> HTTPException:
+    """This route's envelope for a refused candidate attempt.
+
+    An item verdict keeps the 404 the route has always answered with
+    (carrying the provider's own message); a lane fault or a codeless
+    crash is the candidate's 502.
+    """
+    if isinstance(attempt.error, ProviderError):
+        message = attempt.error.message
+    else:
+        message = "candidate stream failed"
+    if attempt.code in ITEM_VERDICT_CODES:
+        return _error(404, "not_found", message)
+    return _error(502, "candidate_unavailable", message)
+
+
 def register(app: FastAPI) -> None:
     """Attach the native teleport conversation to the app."""
 
@@ -253,10 +286,17 @@ def register(app: FastAPI) -> None:
             )
 
         # An id the playable seam cannot resolve is a 404, not a mismatch:
-        # that is the same posture /api/stream and the facade already keep.
-        item_target = await resolve_playable_target(item_id)
-        candidate_target = await resolve_playable_target(candidate_id)
+        # that is the same posture /api/stream and the facade already keep,
+        # and the same refusal they attest. This is the id grammar only
+        # (``play_request.playable_target``, no upstream call): a dead
+        # source is still a candidate the client may name. The
+        # conversation aligns EPISODES, so a ``g2:`` group key — playable
+        # for the facade — is not a teleportable id and 404s here.
+        item_target = playable_target(item_id)
+        candidate_target = playable_target(candidate_id)
         if item_target is None or candidate_target is None:
+            missing = item_id if item_target is None else candidate_id
+            attest_refusal(None, missing, "not_found", "teleport")
             raise _error(404, "not_found", "playable item not found")
 
         current_group = catalog.episode_group_key(item_id)
@@ -314,26 +354,30 @@ def register(app: FastAPI) -> None:
         clip = _trim_clip(await audio.read(MAX_CLIP_BYTES + 1), window_seconds)
         position_seconds = position_ticks / 10_000_000
 
-        try:
-            candidate_stream = await resolve_stream(candidate_id, raise_errors=True)
-        except ProviderError as exc:
-            if exc.code in ITEM_VERDICT_CODES:
-                raise _error(404, "not_found", exc.message) from exc
-            log.warning(
-                "teleport candidate resolution failed candidate=%s code=%s",
-                candidate_id,
-                exc.code,
-            )
-            raise _error(502, "candidate_unavailable", exc.message) from exc
-        except Exception as exc:
-            log.warning(
-                "teleport candidate resolution failed candidate=%s error=%s",
-                candidate_id,
-                type(exc).__name__,
-            )
-            raise _error(502, "candidate_unavailable", "candidate stream failed") from exc
-        if candidate_stream is None:
-            raise _error(404, "not_found", "candidate has no playable stream")
+        # The candidate's stream is ONE provider attempt through the
+        # shared play-request seam: the translation gate, the lane
+        # recording and the play attestation live there, not here.
+        # ``surface`` names this route family on the playback axis, and
+        # the refusal code mirrors the envelope below, so the axis records
+        # what the client was handed.
+        attempt = await attempt_play(
+            candidate_target[0],
+            candidate_target[1],
+            None,
+            get_client(),
+            item_id=candidate_id,
+            surface="teleport",
+            refusal_code=_refusal_code,
+        )
+        if attempt.stream is None:
+            if attempt.code not in ITEM_VERDICT_CODES:
+                log.warning(
+                    "teleport candidate resolution failed candidate=%s code=%s",
+                    candidate_id,
+                    attempt.code,
+                )
+            raise _candidate_refusal(attempt)
+        candidate_stream = attempt.stream
 
         started = time.monotonic()
         try:
@@ -375,8 +419,8 @@ def register(app: FastAPI) -> None:
 
         candidate = TeleportCandidate(
             id=candidate_id,
-            provider=candidate_target.provider_id,
-            label=_provider_label(candidate_target.provider_id),
+            provider=candidate_target[0],
+            label=_provider_label(candidate_target[0]),
             confidence=result.confidence or 0.0,
         )
         response = TeleportResponse(
