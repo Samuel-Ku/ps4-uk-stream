@@ -64,7 +64,9 @@ _QUALITY_PREFERENCE: tuple[str, ...] = ("1080p", "720p")
 
 #: Dead-on-arrival candidates tried per stream before item-level
 #: ``not_found``; each attempt costs one engine add window
-#: (``ADD_TIMEOUT_S``), so this bounds the slow path (~90 s worst case).
+#: (``ADD_TIMEOUT_S``) plus, on a session that gets that far, the
+#: adapter's first-bytes probe (``STREAM_PROBE_TIMEOUT_S``, #461), so
+#: this bounds the slow path (~105 s worst case).
 _MAX_SESSION_ATTEMPTS = 3
 
 #: Tracker list convention of the fork, appended to every built magnet:
@@ -124,10 +126,12 @@ async def play_torrent(
     after the provider has selected candidates:
 
       - a dead-on-arrival verdict (:class:`EngineRejected` — metadata
-        never arrived in the add window) advances to the next candidate,
-        bounded by ``_MAX_SESSION_ATTEMPTS``; each attempt costs the
-        add's metadata window (:data:`ADD_TIMEOUT_S`), so the bound keeps
-        the worst case fast;
+        never arrived in the add window, or the session's stream never
+        sent first bytes, the adapter's #461 probe) advances to the
+        next candidate, bounded by ``_MAX_SESSION_ATTEMPTS``; each
+        attempt costs the add's metadata window (:data:`ADD_TIMEOUT_S`)
+        plus, for a created session, that first-bytes probe, so the
+        bound keeps the slow path fast;
       - an engine-path fault (:class:`EnginePathError`) aborts
         immediately and becomes the tagged ``unreachable``
         :class:`ProviderError` the recording surfaces retarget to the

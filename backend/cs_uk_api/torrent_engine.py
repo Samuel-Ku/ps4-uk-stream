@@ -107,7 +107,8 @@ class EngineUnavailable(EnginePathError):
 
 class EngineRejected(TorrentEngineError):
     """The engine refused THIS torrent (malformed magnet, dead-on-
-    arrival: metadata timeout / zero seeders).
+    arrival: metadata timeout / zero seeders / a session whose stream
+    never spoke first bytes — the #461 probe).
 
     Deliberately distinct from :class:`EngineUnavailable` — a bad item
     must not read as a dead lane (spec #374 error-surface note).
@@ -206,6 +207,16 @@ ENGINE_CONNECT_TIMEOUT_S = 5.0
 #: short window keeps the dead-swarm verdict fast.
 ADD_TIMEOUT_S = 30.0
 
+#: First-bytes budget for a CREATED session's stream URL (#461): metadata
+#: arriving and files listing do not guarantee the swarm has anything to
+#: send — the live ``g3:tt35969257`` case, where a created session sat
+#: silent until the reader's own timeout (60 s) expired. The probe below
+#: bounds that server-side: healthy swarms measured the gate's 64 KiB in
+#: 0.038 s, so this window is two orders of magnitude of headroom, and a
+#: silent swarm costs one bounded rejection that advances the lane's
+#: fallback instead of a stalled player.
+STREAM_PROBE_TIMEOUT_S = 5.0
+
 #: Containers BitPlay serves byte-native (extension → reported container).
 DIRECT_CONTAINER_BY_EXT: dict[str, str] = {
     ".mp4": "mp4",
@@ -265,10 +276,13 @@ class BitPlayClient:
     Owns exactly one concern — turning (magnet-or-infohash, optional
     file hint) into the LAN URL the player should open, choosing the
     native-stream endpoint for already-playable containers and the
-    remux endpoint (→ mp4) for the rest. Transport failures raise
-    :class:`EngineUnavailable`; torrent-level refusals raise
-    :class:`EngineRejected`. Short timeouts throughout: the caller's
-    request path must never hang on a dead engine.
+    remux endpoint (→ mp4) for the rest — and proving that URL actually
+    speaks before handing it over (#461): one bounded first-bytes read,
+    because a created session can still sit on a swarm that never sends
+    a byte, and that verdict belongs to the candidate, not the player.
+    Transport failures raise :class:`EngineUnavailable`; torrent-level
+    refusals raise :class:`EngineRejected`. Short timeouts throughout:
+    the caller's request path must never hang on a dead engine.
     """
 
     def __init__(
@@ -319,12 +333,23 @@ class BitPlayClient:
                     f"{STREAM_PATH_TEMPLATE.format(session_id=quoted_id, file_index=srt_index)}"
                     "?format=vtt"
                 )
-            return EngineStream(
+            stream = EngineStream(
                 url=url,
                 container=direct if direct is not None else "mp4",
                 seekable=seekable,
                 subtitle_url=subtitle_url,
             )
+            # #461 — a created session is not yet a playable one: probe
+            # the exact URL the player will open for its first bytes
+            # before handing it over. A silent swarm is THIS torrent's
+            # verdict (EngineRejected), so the lane's bounded fallback
+            # advances; a truly dead engine surfaces loudly on the next
+            # candidate's add (EngineUnavailable), never as silence.
+            if not await self._stream_speaks(http, url):
+                raise EngineRejected(
+                    f"stream sent no first bytes within {STREAM_PROBE_TIMEOUT_S:.0f}s"
+                )
+            return stream
         finally:
             if own:
                 await http.aclose()
@@ -371,6 +396,37 @@ class BitPlayClient:
                 raise EngineUnavailable(f"malformed file name: {name!r}")
             files.append((index, name))
         return files
+
+    @staticmethod
+    async def _stream_speaks(http: httpx.AsyncClient, url: str) -> bool:
+        """One bounded first-bytes read at the URL the player will open.
+
+        Mirrors the smoke gate's own liveness measurement (a ranged GET
+        for the first 64 KiB, ``deploy/smoke.sh``'s ``-r 0-65535``): the
+        first non-empty chunk is the signal. Any transport fault, a
+        non-200/206 answer, or no bytes inside
+        :data:`STREAM_PROBE_TIMEOUT_S` reads as silence. The connection
+        is abandoned after that first chunk — the player opens its own,
+        and asking the engine to stream a whole file (or a whole remux)
+        twice would be the probe's own version of the stalled read.
+        """
+        try:
+            async with http.stream(
+                "GET",
+                url,
+                headers={"Range": "bytes=0-65535"},
+                timeout=httpx.Timeout(
+                    STREAM_PROBE_TIMEOUT_S, connect=ENGINE_CONNECT_TIMEOUT_S
+                ),
+            ) as resp:
+                if resp.status_code not in (200, 206):
+                    return False
+                async for chunk in resp.aiter_bytes():
+                    if chunk:
+                        return True
+                return False
+        except (httpx.HTTPError, OSError):
+            return False
 
     @staticmethod
     def _ensure_ok(resp: httpx.Response, what: str) -> None:

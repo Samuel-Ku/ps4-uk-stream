@@ -6,12 +6,16 @@ URL plus its container. Tests cover the contract pieces this module
 owns: the exception vocabulary, the deterministic in-memory fake (call
 recording for later route-level orchestration assertions), the real
 BitPlay HTTP adapter against respx-mocked endpoints, and the settings
-builder (unset url ⇒ None ⇒ lane disabled).
+builder (unset url ⇒ None ⇒ lane disabled). The adapter's #461
+first-bytes probe — a created session's stream must speak before it is
+handed over — is pinned here too, including its consequence at the
+seam: a silent candidate advances the lane's bounded fallback.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import replace
 
 import httpx
@@ -31,6 +35,7 @@ from cs_uk_api.torrent_engine import (
     get_engine,
     reset_engine,
 )
+from cs_uk_api.torrent_lane import TorrentCandidate, play_torrent
 
 _MAGNET = "magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Sintel"
 
@@ -51,6 +56,22 @@ def _mock_add(session_id: str | None = _SESSION, status: int = 200) -> respx.Rou
 
 def _mock_files(entries: list[dict[str, object]], status: int = 200) -> respx.Route:
     return respx.get(_FILES).mock(return_value=httpx.Response(status, json=entries))
+
+
+#: #461 — every stream/remux URL the first-bytes probe may read (either
+#: endpoint, any file index). One family route keeps the tests asserting
+#: the probe's REQUEST, not which file the adapter resolved.
+_STREAM_URL_RE = re.compile(
+    rf"{re.escape(_BASE)}/api/v1/torrent/[^/]+/(?:stream|remux)/\d+"
+)
+
+
+def _mock_stream(body: bytes = b"\x00" * 65536, status: int = 206) -> respx.Route:
+    """The probe's healthy answer, in the gate's own shape: a 206 with
+    the requested 64 KiB (``deploy/smoke.sh`` ``-r 0-65535``)."""
+    return respx.get(url=_STREAM_URL_RE).mock(
+        return_value=httpx.Response(status, content=body)
+    )
 
 
 # --------------------------------------------------------- exceptions
@@ -120,6 +141,7 @@ async def test_bitplay_native_mp4_served_direct() -> None:
     with respx.mock:
         add = _mock_add()
         _mock_files([{"index": 0, "name": "Movie.mp4", "size": 100}])
+        _mock_stream()
         stream = await _client().ensure_session(_MAGNET)
     # Native byte-serving is Go http.ServeContent → full Range support
     # (research #367 §1): seekable defaults True and stays True here.
@@ -136,6 +158,7 @@ async def test_bitplay_mkv_remuxed_to_mp4() -> None:
     with respx.mock:
         _mock_add()
         _mock_files([{"index": 0, "name": "Movie.mkv", "size": 100}])
+        _mock_stream()
         stream = await _client().ensure_session(_MAGNET)
     # The remux endpoint is chunked fMP4 with `Accept-Ranges: none`
     # (research #367 §1) — playable forward but NOT seekable; the flag
@@ -165,6 +188,7 @@ async def test_bitplay_file_hint_selects_matching_file() -> None:
     with respx.mock:
         _mock_add()
         _mock_files(entries)
+        _mock_stream()
         hinted_mkv = await _client().ensure_session(_MAGNET, file_hint="MOVIE")
         hinted_trailer = await _client().ensure_session(_MAGNET, file_hint="trailer")
     assert hinted_mkv.url == f"{_FILES}/remux/1"
@@ -234,6 +258,7 @@ async def test_bitplay_sends_basic_auth_when_pair_configured() -> None:
     with respx.mock:
         add = _mock_add()
         _mock_files([{"index": 0, "name": "Movie.mp4"}])
+        _mock_stream()
         await _client(username="admin", password="secret").ensure_session(_MAGNET)
     request = add.calls.last.request
     assert request.headers["Authorization"].startswith("Basic ")
@@ -243,6 +268,7 @@ async def test_bitplay_no_auth_header_without_credentials() -> None:
     with respx.mock:
         add = _mock_add()
         _mock_files([{"index": 0, "name": "Movie.mp4"}])
+        _mock_stream()
         await _client().ensure_session(_MAGNET)
     assert "authorization" not in add.calls.last.request.headers
 
@@ -262,6 +288,103 @@ async def test_bitplay_files_error_is_unavailable() -> None:
         _mock_files([], status=404)
         with pytest.raises(EngineUnavailable):
             await _client().ensure_session(_MAGNET)
+
+
+# --------------------------------------------- #461: the first-bytes
+# --------------------------------------- probe (no-bytes swarm verdict)
+
+
+async def test_bitplay_stream_that_never_speaks_is_torrent_rejected() -> None:
+    """A created session (metadata arrived, files listed) can still sit
+    on a swarm that sends nothing. Live form (``g3:tt35969257``,
+    2026-10-26/27): PlaybackInfo handed a MediaSource, then the reader
+    timed out with ``000 0``. The probe turns that into THIS torrent's
+    verdict, so the lane's bounded fallback advances instead of the
+    player stalling."""
+    with respx.mock:
+        _mock_add()
+        _mock_files([{"index": 0, "name": "Movie.mp4", "size": 100}])
+        _mock_stream(body=b"", status=200)
+        with pytest.raises(EngineRejected):
+            await _client().ensure_session(_MAGNET)
+
+
+async def test_bitplay_probe_timeout_is_torrent_rejected() -> None:
+    """The stall shape itself: the engine accepts the request and never
+    sends any response bytes inside the probe window."""
+    with respx.mock:
+        _mock_add()
+        _mock_files([{"index": 0, "name": "Movie.mp4", "size": 100}])
+        respx.get(url=_STREAM_URL_RE).mock(
+            side_effect=httpx.ReadTimeout("stream stalled")
+        )
+        with pytest.raises(EngineRejected):
+            await _client().ensure_session(_MAGNET)
+
+
+async def test_bitplay_probe_refuses_a_non_200_206_stream() -> None:
+    """Anything but the gate's 206/200 answer is silence, even when a
+    body rides along."""
+    with respx.mock:
+        _mock_add()
+        _mock_files([{"index": 0, "name": "Movie.mp4", "size": 100}])
+        _mock_stream(status=500, body=b"boom")
+        with pytest.raises(EngineRejected):
+            await _client().ensure_session(_MAGNET)
+
+
+async def test_bitplay_probe_reads_one_bounded_range() -> None:
+    """The probe measures the gate's own first bytes: a ranged GET for
+    ``bytes=0-65535``, abandoned after the first chunk — never a
+    whole-file read against the engine."""
+    with respx.mock:
+        _mock_add()
+        _mock_files([{"index": 0, "name": "Movie.mp4", "size": 100}])
+        probe = _mock_stream()
+        result = await _client().ensure_session(_MAGNET)
+    assert result.url == f"{_FILES}/stream/0"
+    assert probe.calls.last.request.method == "GET"
+    assert probe.calls.last.request.headers["range"] == "bytes=0-65535"
+
+
+async def test_no_bytes_session_advances_to_the_next_candidate() -> None:
+    """#461's acceptance, end to end at the seam: the REAL adapter
+    rejects the first candidate's silent session and the lane's bounded
+    fallback plays the second — what the smoke gate has been doing by
+    hand for ``g3:tt35969257`` since 2026-10-26."""
+    silent, live = "a" * 40, "b" * 40
+    silent_files = f"{_BASE}/api/v1/torrent/{silent}"
+    live_files = f"{_BASE}/api/v1/torrent/{live}"
+    with respx.mock:
+        add = respx.post(_ADD).mock(
+            side_effect=[
+                httpx.Response(200, json={"sessionId": silent}),
+                httpx.Response(200, json={"sessionId": live}),
+            ]
+        )
+        entries = [{"index": 0, "name": "Movie.mp4", "size": 100}]
+        respx.get(silent_files).mock(
+            return_value=httpx.Response(200, json=entries)
+        )
+        respx.get(live_files).mock(
+            return_value=httpx.Response(200, json=entries)
+        )
+        respx.get(f"{silent_files}/stream/0").mock(
+            return_value=httpx.Response(200, content=b"")
+        )
+        respx.get(f"{live_files}/stream/0").mock(
+            return_value=httpx.Response(206, content=b"\x00" * 65536)
+        )
+        result = await play_torrent(
+            _client(),
+            [
+                TorrentCandidate(quality="1080p", info_hash="AAAA", seeds=5),
+                TorrentCandidate(quality="720p", info_hash="BBBB", seeds=50),
+            ],
+            file_hint=None,
+        )
+    assert result.url == f"{live_files}/stream/0"
+    assert add.call_count == 2
 
 
 # ------------------------------------------------------------- builder
@@ -317,6 +440,7 @@ async def test_builder_wires_url_and_auth_pair(
         respx.get(_FILES).mock(
             return_value=httpx.Response(200, json=[{"index": 0, "name": "M.mkv"}])
         )
+        _mock_stream()
         stream = await engine.ensure_session(_MAGNET)
     assert stream.url == f"{_FILES}/remux/0"
     assert add.calls.last.request.headers["Authorization"].startswith("Basic ")
@@ -405,6 +529,7 @@ async def test_bitplay_srt_companion_yields_vtt_url() -> None:
                 {"index": 7, "name": "Sintel.en.srt", "size": 1499},
             ]
         )
+        _mock_stream()
         stream = await _client().ensure_session(_MAGNET)
     assert stream.subtitle_url == f"{_FILES}/stream/7?format=vtt"
 
@@ -418,6 +543,7 @@ async def test_bitplay_single_srt_surfaces_it() -> None:
                 {"index": 6, "name": "Sintel.srt", "size": 1514},
             ]
         )
+        _mock_stream()
         stream = await _client().ensure_session(_MAGNET)
     assert stream.subtitle_url == f"{_FILES}/stream/6?format=vtt"
 
@@ -429,6 +555,7 @@ async def test_bitplay_no_srt_means_no_subtitle_url() -> None:
     with respx.mock:
         _mock_add()
         _mock_files([{"index": 5, "name": "Sintel.mp4", "size": 129241752}])
+        _mock_stream()
         stream = await _client().ensure_session(_MAGNET)
     assert stream.subtitle_url is None
 
@@ -444,6 +571,7 @@ async def test_bitplay_remux_path_keeps_subtitle() -> None:
                 {"index": 1, "name": "Movie.en.srt", "size": 20},
             ]
         )
+        _mock_stream()
         stream = await _client().ensure_session(_MAGNET)
     assert stream.url == f"{_FILES}/remux/0"
     assert stream.container == "mp4"
