@@ -53,3 +53,27 @@ git merge --ff-only origin/master
   `systemctl --user list-timers cs-uk-api-drift.timer`.
 - Drift issue filing needs an authenticated `gh` on the host; see
   `DEPLOY.md` §0 and §5.
+
+### Tooling
+
+- `ffmpeg` is installed from apt (`/usr/bin/ffmpeg`).
+- `fpcalc` (Chromaprint tools) is installed **user-locally**, without root:
+  the Ubuntu 24.04 `libchromaprint-tools` 1.5.1-5 `.deb` is extracted under
+  `~/.local/opt/chromaprint/` (binary `usr/bin/fpcalc`, the `.deb` kept
+  beside it) and symlinked as `~/.local/bin/fpcalc`. The host already had
+  `libchromaprint1` 1.5.1-5 and the FFmpeg 6 shared libraries, so the
+  extracted binary runs against the system libraries (`ldd` reports no
+  missing objects).
+- The service finds it through the drop-in
+  `~/.config/systemd/user/cs-uk-api.service.d/fpcalc-path.conf`, which
+  prepends `~/.local/bin` to `PATH`: systemd's default service `PATH`
+  excludes that directory and the teleport aligner resolves `fpcalc` with
+  `shutil.which()`. After changing the drop-in run
+  `systemctl --user daemon-reload && systemctl --user restart
+  cs-uk-api.service`.
+- A host with root can instead `apt install ffmpeg libchromaprint-tools`
+  (README §Deploy); this host uses the root-free variant.
+- Verified 2026-10-27: `fpcalc version 1.5.1` (`Lavc60.31.102`); a cold
+  `POST /api/teleport/align` for `serialno:28-gra-prestoliv:s1e1` →
+  `uaserialspro:274-gra-prestoliv-s2011:s1e1` at 600 s returned
+  `200 matched` (offset `+0.019 s`, confidence `0.9881`, 15.1 s).

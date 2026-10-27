@@ -179,6 +179,11 @@ ALLOWLIST: dict[str, str] = {
     "mongoimport": (
         "external CLI tool in torrent-lane.md's ops notes, not a repo symbol"
     ),
+    "libchromaprint1": (
+        "Debian/Ubuntu library package named in DEPLOY.md's teleport "
+        "prerequisites as the package that does NOT carry `fpcalc` — a "
+        "distro package on the host, not a repo symbol"
+    ),
     "kRows": (
         "the PS4 client's C++ symbol (separate repo) — v1-deviations.md "
         "records client-side build deviations"

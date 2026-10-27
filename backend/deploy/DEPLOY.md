@@ -30,6 +30,14 @@ The three systemd units shipped beside this file are the whole deployment:
     it the sweep still runs; issue filing is skipped (see §5).
   - `mpv`, `ffprobe`, `curl`, `timeout` — only for the per-provider live
     gate (`cs_uk_api/scripts/gate.sh <provider>`), not for serving.
+- `ffmpeg` and Chromaprint's `fpcalc` — only needed by the Semantic Source
+  Teleport aligner (`POST /api/teleport/align`, spec #443). The aligner
+  resolves both with `shutil.which()`, so a missing binary leaves that
+  route answering `503 teleport_unavailable` (the rest of the API is
+  unaffected). Debian/Ubuntu ships `fpcalc` in `libchromaprint-tools` —
+  not in `libchromaprint1`: `sudo apt install ffmpeg libchromaprint-tools`
+  (Arch: `sudo pacman -S ffmpeg chromaprint`). No-root hosts: the
+  root-free recipe is in §9's no-root subsection.
 
 ## 1. Clone, venv, install
 
@@ -319,3 +327,43 @@ systemctl --user enable --now cs-uk-engine.service cs-uk-api.service
 Caveat: user units keep working only while the repo/venv/chromium paths
 the units reference exist; `journalctl --user -u cs-uk-api` replaces the
 system journal handle.
+
+#### Teleport tools without root (`ffmpeg` + `fpcalc`)
+
+`POST /api/teleport/align` needs `ffmpeg` and `fpcalc` on the service's
+`PATH`, and systemd's default service `PATH` excludes `~/.local/bin`. The
+root-free install extracts the `libchromaprint-tools` `.deb` under
+`~/.local/opt/` and links the binary into `~/.local/bin`:
+
+```bash
+mkdir -p ~/.local/opt/chromaprint ~/.local/bin
+# root-free ways to get the .deb: `apt-get download libchromaprint-tools`
+# (drops it in the current directory), or fetch the
+# libchromaprint-tools_<version>_<arch>.deb for your suite from
+# https://packages.ubuntu.com (Ubuntu 24.04/noble: 1.5.1-5).
+curl -fsSL -o /tmp/libchromaprint-tools.deb <the .deb URL>
+dpkg-deb -x /tmp/libchromaprint-tools.deb ~/.local/opt/chromaprint
+ln -sf ~/.local/opt/chromaprint/usr/bin/fpcalc ~/.local/bin/fpcalc
+# fpcalc links against the system libchromaprint1; ffmpeg needs a system
+# install of its own (a host that satisfies both needs no extra library
+# work — `ldd` on the extracted binary confirms it).
+```
+
+Then extend the unit's `PATH` with a drop-in and restart:
+
+```bash
+mkdir -p ~/.config/systemd/user/cs-uk-api.service.d
+cat > ~/.config/systemd/user/cs-uk-api.service.d/fpcalc-path.conf <<'EOF'
+[Service]
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+EOF
+systemctl --user daemon-reload
+systemctl --user restart cs-uk-api
+```
+
+Verify with a real align request against the running API — it must answer
+`200`, not `503` (`docs/test-artifacts/` carries the last acceptance run
+and how to re-run it). The worked example, with the exact install and a
+dated verification, is the `openclaw-home` host contract in
+[`docs/agents/remote-hosts.md`](../../docs/agents/remote-hosts.md)
+§Tooling.
