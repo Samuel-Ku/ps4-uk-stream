@@ -377,3 +377,57 @@ the gate.
 - **Retired:** `/tmp/smoke-29499b3.sh` removed (verified gone). The
   command block in the section above is historical; the fast-forward
   recipe is the live one again.
+
+## Re-run 2026-10-27 — the #461 first-bytes probe bounds the no-bytes verdict at `882f749`
+
+**Commit:** `882f749` (`feat(torrent): reject a created session whose
+stream never sends first bytes`) · **Status:** bounded verdict **PROVEN
+LIVE** — the same tally 82 s of wall time cheaper, exit `0`.
+
+`882f749` closes the dead end every run since 10-26 hit (issue #461):
+`g3:tt35969257` («À l'école de l'universel…») creates a session — metadata
+arrives, files list, `PlaybackInfo` hands out a MediaSource — but its swarm
+never sends a byte, and the reader used to wait out its whole read timeout
+(`000 0`) before the gate's failover advanced. The adapter now probes the
+exact stream URL for first bytes (a ranged GET for `0-65535`, 5 s,
+`STREAM_PROBE_TIMEOUT_S`) and raises `EngineRejected` on silence, so the
+lane's bounded fallback (three attempts) decides before any path reaches a
+client.
+
+- **Pushed:** `c6d40ac..882f749`; CI run
+  [40521852675](https://github.com/Samuel-Ku/ps4-uk-stream/actions/runs/40521852675)
+  finished green on both interpreters (`gates (py3.11)` 2m19s,
+  `gates (py3.13)` 2m25s).
+- **Fast-forwarded:** `c6d40ac → 882f749` (4 files, no runtime dependency
+  change); tracked files stayed clean apart from the known untracked
+  runtime/backup paths.
+- **Restarted:** server code, so `cs-uk-api` was restarted — `MainPID`
+  3578661, `ActiveEnterTimestamp` 2026-10-27 14:31:19 UTC — and
+  `/api/health` answered `200` two seconds later.
+
+**Before/after, same candidate, same host, same command:**
+
+| Run | Candidate 1 — `g3:tt35969257` | Totals | Wall time |
+|---|---|---|---|
+| `e0f48e5` 13:29 UTC | `SKIP … bounded read failed (000 0; want 206/200 with 65536 bytes)` — the 60 s read timeout | `11 passed, 0 failed, 1 skipped` | 126 s |
+| `882f749` 14:32 UTC | `SKIP g3:tt35969257: PlaybackInfo -> 404 item_unavailable` | `11 passed, 0 failed, 1 skipped` | **44 s** |
+
+The skip stays a skip — the title still has no bytes to give — but it is
+now a fast typed refusal: `PlaybackInfo` answers `404 item_unavailable`
+after the adapter's per-torrent probes (5 s each, bounded by the lane's
+three attempts), so no MediaSource is handed out and no reader stalls.
+Candidate 2 was untouched: «Dune: Part Two» played end to end (`302` →
+`206 65536` → seek `206 1048576` with `Content-Range` honoured), and the
+teleport flow stayed green (`400` + tools in the service's own `PATH`).
+
+Environment note: this run's `UserViews` listed **9 views** (earlier runs:
+17). The gate only asserts a non-empty listing; the service had restarted
+61 s before the run and `/api/health` afterwards reports
+`catalog_warm.status=done`, `content_warmed=35/36`, `failed=0`, 19/21
+providers `ok` — recorded for the counts' history, not a deployment fault.
+
+```bash
+ssh openclaw-home
+cd ~/ps4-uk-stream
+CS_UK_ENGINE_URL=http://192.168.2.223:3347 backend/deploy/smoke.sh; echo $?
+```
