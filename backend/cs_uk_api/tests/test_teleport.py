@@ -9,6 +9,7 @@ ffmpeg/fpcalc wiring stays an opt-in integration check.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import random
 import shutil
@@ -40,6 +41,7 @@ from cs_uk_api.play_attestation import PLAY_ATTESTATION
 from cs_uk_api.providers import PROVIDERS
 from cs_uk_api.providers.base import BaseProvider, ProviderError
 from cs_uk_api.teleport import (
+    ALIGNER_TOOLS,
     AlignmentResult,
     ChromaprintAligner,
     TeleportUnavailable,
@@ -558,6 +560,67 @@ def test_disabled_teleport_is_503(
     response = _post(TestClient(app))
     assert response.status_code == 503
     assert response.json()["detail"]["error"] == "teleport_unavailable"
+
+
+def test_health_reports_the_resolved_teleport_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """/api/health answers the tool half of teleport readiness.
+
+    ``tools`` is the aligner's own ``shutil.which`` resolution in THIS
+    process, so a host whose service PATH misses ``~/.local/bin`` (the
+    drop-in trap DEPLOY.md §9.5 documents) is readable without running
+    ``deploy/smoke.sh``.
+    """
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda tool: f"/stub/{tool}" if tool in ALIGNER_TOOLS else None,
+    )
+    body = TestClient(app).get("/api/health").json()
+    assert body["teleport"] == {
+        "enabled": True,
+        "ready": True,
+        "tools": {"ffmpeg": "/stub/ffmpeg", "fpcalc": "/stub/fpcalc"},
+    }
+
+
+def test_health_shows_a_missing_tool_before_any_alignment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing fpcalc is visible up front, not only as a silent 503.
+
+    The live counterpart is the smoke gate's teleport flow (proved on
+    openclaw-home 2026-10-27); this reads the same fact from the
+    service's own process.
+    """
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda tool: "/usr/bin/ffmpeg" if tool == "ffmpeg" else None,
+    )
+    body = TestClient(app).get("/api/health").json()
+    assert body["teleport"]["ready"] is False
+    assert body["teleport"]["tools"] == {"ffmpeg": "/usr/bin/ffmpeg", "fpcalc": None}
+
+
+def test_health_teleport_not_ready_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        _config, "SETTINGS", replace(_config.SETTINGS, teleport_enabled=False)
+    )
+    body = TestClient(app).get("/api/health").json()
+    assert body["teleport"]["enabled"] is False
+    assert body["teleport"]["ready"] is False
+    assert set(body["teleport"]["tools"]) == set(ALIGNER_TOOLS)
+
+
+def test_aligner_tools_pin_the_constructor_defaults() -> None:
+    """``ALIGNER_TOOLS`` must name the binaries the aligner actually runs."""
+    parameters = inspect.signature(ChromaprintAligner.__init__).parameters
+    defaults = tuple(parameters[tool].default for tool in ALIGNER_TOOLS)
+    assert defaults == ALIGNER_TOOLS
 
 
 def test_unplayable_id_is_404(seeded, monkeypatch: pytest.MonkeyPatch) -> None:

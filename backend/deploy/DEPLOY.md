@@ -194,6 +194,10 @@ gap that otherwise surfaces only as a silent `503` at align time fails
 the smoke instead; `CS_UK_TELEPORT_PATH` overrides the probed `PATH`, and
 the report says when the shell fallback was used.
 
+The same readiness is readable without the gate: `/api/health` carries a
+`teleport` block — the `enabled` knob, the `tools` paths as the service's
+own process resolves them, and `ready` (enabled with both tools present).
+
 The last runs against the operator host, with their numbers, are recorded
 in `docs/test-artifacts/openclaw-home-smoke-2026-09-12.md` (re-runs
 2026-10-26, 2026-10-27); re-running this command on a fresh host is what a

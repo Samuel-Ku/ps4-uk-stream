@@ -286,6 +286,24 @@ async def _run_command(args: list[str], *, timeout: float) -> tuple[int, bytes, 
     return proc.returncode or 0, stdout or b"", stderr or b""
 
 
+#: The external binaries :class:`ChromaprintAligner` shells out to, in
+#: report order. Pinned against the constructor defaults by the suite.
+ALIGNER_TOOLS: tuple[str, ...] = ("ffmpeg", "fpcalc")
+
+
+def tool_paths() -> dict[str, str | None]:
+    """Resolve the aligner's external tools the way ``align`` does.
+
+    ``shutil.which`` against THIS process's own PATH — the answer the
+    service itself will get, not the operator's shell. systemd's default
+    service PATH excludes ``~/.local/bin``, which is how a user-local
+    ``fpcalc`` that works interactively stays invisible to the aligner
+    (the drop-in fix is DEPLOY.md §9.5). ``/api/health`` reports this so
+    an operator sees the state without running ``deploy/smoke.sh``.
+    """
+    return {tool: shutil.which(tool) for tool in ALIGNER_TOOLS}
+
+
 class ChromaprintAligner:
     """The production aligner: ffmpeg decode + Chromaprint fingerprints."""
 

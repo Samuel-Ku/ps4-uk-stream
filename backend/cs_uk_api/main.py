@@ -37,6 +37,7 @@ from .play_attestation import PLAY_ATTESTATION
 from .poster_proxy import fetch as fetch_poster
 from .providers import PROVIDERS
 from .providers.base import BaseProvider
+from .teleport import tool_paths
 from .torrent_engine import ENGINE_TRACKER_ID, engine_configured
 from .uakino_browser import get_session
 
@@ -111,6 +112,14 @@ async def health() -> dict[str, object]:
     requests it was sent — served, refused (with the verdict that refused
     it) or reported by the client as never having played. Item-level
     refusals appear there and only there (ADR-0002).
+
+    ``teleport`` is the align conversation's readiness: the
+    ``CS_UK_TELEPORT_ENABLED`` knob, where ``ffmpeg`` and ``fpcalc``
+    resolve in THIS process (the aligner's own ``shutil.which``), and
+    ``ready`` — enabled with both tools present, i.e. whether an align
+    request would get past the tool gate instead of answering the align
+    route's ``503``. The tool half is otherwise invisible until someone
+    actually requests an alignment.
     """
     statuses = {
         p.id: _provider_status(p.id)
@@ -120,9 +129,23 @@ async def health() -> dict[str, object]:
     # as /api/providers: present only when the engine is configured.
     if engine_configured(_config.SETTINGS):
         statuses[ENGINE_TRACKER_ID] = _provider_status(ENGINE_TRACKER_ID)
+    # Teleport readiness (spec #443): the route answers its own 503 when
+    # disabled, and the aligner adds the same 503 when ffmpeg/fpcalc are
+    # missing — a state that otherwise only shows up at the first real
+    # alignment. Report the knob plus the aligner's own resolution, so a
+    # host whose service PATH misses ~/.local/bin (DEPLOY.md §9.5) is
+    # readable without running deploy/smoke.sh.
+    teleport_tools = tool_paths()
     return {
         "providers": statuses,
         "playback": PLAY_ATTESTATION.snapshot().model_dump(),
+        "teleport": {
+            "enabled": _config.SETTINGS.teleport_enabled,
+            "ready": (
+                _config.SETTINGS.teleport_enabled and all(teleport_tools.values())
+            ),
+            "tools": teleport_tools,
+        },
         "all_down": watchdog_mod.WATCHDOG.all_relevant_down(),
         "watchdog": {
             "reset_count": watchdog_mod.WATCHDOG.reset_count,
