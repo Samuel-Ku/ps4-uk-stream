@@ -349,3 +349,31 @@ the fifth flow's failure modes — tools missing from the probed `PATH`, a
 stale process that does not serve the route — are pinned offline by the
 new tests (`test_smoke_script.py`), with the live run here proving the
 passing half, as the section above did for its status check.
+
+## Follow-through 2026-10-27 — the host stands on the gate at `e0f48e5`
+
+The five-flow section above ran before the push landed, from a delivered
+copy with the host still at `f9a74f7`. This closes that loop; it is a
+follow-through rather than another re-run because the re-run itself
+revealed nothing new — the point is that the *standing* host now passes
+the gate.
+
+- **Pushed:** `3ebe517..e0f48e5`; CI
+  [run 40511378322](https://github.com/Samuel-Ku/ps4-uk-stream/actions/runs/40511378322)
+  finished green on both interpreters (`gates (py3.11)` 2m36s,
+  `gates (py3.13)` 2m29s), so `29499b3` and this record are CI-covered —
+  superseding the section above's "CI has not seen `29499b3` yet".
+- **Fast-forwarded:** `f9a74f7 → e0f48e5` (7 files, no runtime dependency
+  change, so no venv re-sync and no restart); tracked files stayed clean,
+  and the host script's SHA-256 matched the committed copy again
+  (`37ecc46f`). The service was untouched: `MainPID` 3445439, running
+  since 2026-10-27 12:00:47 UTC.
+- **Standard-path re-run:**
+  `CS_UK_ENGINE_URL=http://192.168.2.223:3347 backend/deploy/smoke.sh`
+  → the same five flows, `11 passed, 0 failed, 1 skipped`, exit `0`,
+  **126 s** (13:29:37 → 13:31:43 UTC): the same `g3:tt35969257` skip,
+  "Dune: Part Two" end to end, and teleport `400` plus tools resolved in
+  the service's own `PATH`.
+- **Retired:** `/tmp/smoke-29499b3.sh` removed (verified gone). The
+  command block in the section above is historical; the fast-forward
+  recipe is the live one again.
