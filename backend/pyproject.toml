@@ -9,6 +9,8 @@ dependencies = [
   "beautifulsoup4>=4.12",
   "lxml>=5.0",
   "pydantic>=2.6",
+  # Multipart form parsing for the teleport audio upload (spec #443).
+  "python-multipart>=0.0.9",
   "cachetools>=5.3",
   "pycryptodome>=3.20",
   "playwright>=1.40",

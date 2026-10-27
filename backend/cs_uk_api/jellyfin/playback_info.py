@@ -34,8 +34,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from ..catalog import ordered_translation_candidates, playback_translations
 from ..models import StreamResponse, Translation
+from ..playback import resolve_stream as _resolve_stream
 from .auth import require_token
-from .delivery import resolve_stream as _resolve_stream
 from .models import (
     MediaSourceInfo,
     MediaStreamInfo,

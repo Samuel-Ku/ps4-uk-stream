@@ -141,6 +141,12 @@ class Settings:
     #: the provider's allowlist at construction, so the central SSRF
     #: check admits it (ADR-0005).
     popcorn_base_url: str | None = None
+    #: Semantic Source Teleport (spec #443): the native alignment route
+    #: is enabled by default; the worker still answers 503 when ffmpeg
+    #: or fpcalc is absent, so the capability is never advertised as
+    #: working when its tools are missing. Operators can turn the route
+    #: off explicitly with ``CS_UK_TELEPORT_ENABLED=0``.
+    teleport_enabled: bool = True
 
 
 def _load_resume_path() -> str | None:
@@ -262,6 +268,8 @@ def load_settings() -> Settings:
         torrent_engine_password=os.environ.get("CS_UK_TORRENT_ENGINE_PASSWORD") or None,
         # Torrent lane, series pass (#379): the Popcorn-API series host.
         popcorn_base_url=os.environ.get("CS_UK_POPCORN_BASE_URL") or None,
+        teleport_enabled=os.environ.get("CS_UK_TELEPORT_ENABLED", "1").strip().lower()
+        not in ("0", "false", "no", "off"),
     )
 
 
