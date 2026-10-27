@@ -106,8 +106,11 @@ curl -sS -X POST http://127.0.0.1:8003/api/teleport/align \
 - The clip was extracted server-side from A, so this does **not** prove
   client decoded-audio capture. It also does not prove that the returned B
   stream plays or seeks on the PS4; those remain the #441 client gate.
-- #443 and #441 stay open until the on-device capture/switch acceptance
-  passes.
+- Tracker state, settled 2026-10-27 after the backend closure: #443 — this
+  spec's backend contract — is delivered and closed; #441 stays open until
+  the on-device capture/switch acceptance passes, with the client half
+  tracked there and by the spike chain #450–#455. The closure records the
+  backend as delivered, not the feature as done end to end.
 
 ## Re-run 2026-10-27 — merged HEAD, cold path, repo-local tools
 

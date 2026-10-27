@@ -421,7 +421,7 @@ Any failure is reported as a failure; a green desktop harness is not an on-devic
 2. `docs/test-artifacts/teleport-client-2026-10-26.md` with the device evidence and the GO/NO-GO.
 3. A short decision note on #441:
    - GO: link the fork ticket(s) for the tap/package, candidate list, and production UI; keep #441 open until the on-device success criterion is demonstrated.
-   - NO-GO: name the exact blocker (libmpv rebuild, audio quality, or anchor error); do not close #441 or mark #443 done.
+   - NO-GO: name the exact blocker (libmpv rebuild, audio quality, or anchor error); do not represent the feature as done, and keep #441 open.
 4. No backend changes. If the spike discovers a contract problem (for example, raw provider URLs are not playable on PS4), document it and open a separate backend ticket; do not hand-edit the deployed endpoint in this spike.
 
 ## Open questions to answer during the spike
@@ -435,4 +435,4 @@ Any failure is reported as a failure; a green desktop harness is not an on-devic
 
 ## Tracker state
 
-#441 stays open. #443 remains the backend contract and is not complete until this client gate passes. The spike does not close either issue; it produces the evidence needed to decide whether the client half is feasible.
+**Settled 2026-10-27, after the backend closure.** #441 — the feature idea — stays open until the on-device success criterion is demonstrated. #443, the backend contract, is delivered and closed: #443's own Delivery split scopes that ticket to the agent-ready backend half, and the client half is tracked by #441 with this spike chain (#450–#455). The spike itself closes neither issue; it produces the evidence needed to decide whether the client half is feasible.
