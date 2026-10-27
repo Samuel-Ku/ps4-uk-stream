@@ -13,7 +13,9 @@ it pins the decision in the script itself: candidate 1 stalls, candidate
 2 serves the 64 KiB and seek reads, and the gate exits 0 with exactly one
 skip.  A second case pins the opposite outcome: with every candidate
 stalling, each is skipped, the gate reports one failure, and it exits 1 —
-the shape a dead lane or a misconfigured engine must produce.
+the shape a dead lane or a misconfigured engine must produce.  A third
+case covers the stale resolution map (#415): the first hit 404s at detail,
+is skipped, and the next candidate still passes the gate.
 """
 
 from __future__ import annotations
@@ -30,7 +32,9 @@ FAKE_CURL = r'''#!/usr/bin/env python3
 Only the flags smoke.sh uses are implemented.  Responses are chosen from
 the request path; the dead candidate's engine read returns curl's
 connection-timeout shape (http_code 000, zero bytes).  FAKE_STALL_ALL=1
-gives every candidate's engine read that same shape.
+gives every candidate's engine read that same shape; FAKE_DETAIL_404=1
+makes the first search hit answer 404 at detail, the stale resolution-map
+case (#415).
 """
 
 import json
@@ -88,6 +92,10 @@ with (state / "calls.log").open("a", encoding="utf-8") as log:
 # FAKE_STALL_ALL=1 models a dead lane: every candidate's swarm times out.
 stall_all = os.environ.get("FAKE_STALL_ALL") == "1"
 
+# FAKE_DETAIL_404=1 models a stale resolution map: the first hit is listed
+# by search but has no resolution to open (#415).
+detail_404 = os.environ.get("FAKE_DETAIL_404") == "1"
+
 path = urlsplit(url).path
 engine = os.environ["FAKE_ENGINE"]
 status = "200"
@@ -110,6 +118,9 @@ elif path == "/api/search":
     body = json.dumps(
         {"groups": [{"group_key": "g3:dead"}, {"group_key": "g3:live"}]}
     ).encode()
+elif path == "/Items/g3:dead" and detail_404:
+    status = "404"  # the facade's shape for a key it cannot resolve
+    body = json.dumps({"detail": "item_unavailable"}).encode()
 elif path in ("/Items/g3:dead", "/Items/g3:live"):
     body = json.dumps({"Name": path.rsplit(":", 1)[1]}).encode()
 elif path in ("/Items/g3:dead/PlaybackInfo", "/Items/g3:live/PlaybackInfo"):
@@ -175,6 +186,7 @@ def _run_smoke(tmp_path, **env_overrides):
             "FAKE_CURL_STATE": str(state),
             "FAKE_ENGINE": "http://engine.test",
             "FAKE_STALL_ALL": "0",
+            "FAKE_DETAIL_404": "0",
             "CS_UK_API_URL": "http://api.test",
             "CS_UK_ENGINE_URL": "http://engine.test",
             "CS_UK_TIMEOUT": "5",
@@ -237,3 +249,23 @@ def test_every_candidate_stalling_fails_the_gate(tmp_path):
     assert "GET http://engine.test/api/v1/torrent/live/stream/0 range=0-65535" in calls
     # Both candidates died at the bounded read, so no seek was ever attempted.
     assert "range=1048576-2097151" not in calls
+
+
+def test_detail_404_skips_to_the_next_candidate(tmp_path):
+    """The #415 race: a search hit dropped from the resolution map 404s at
+    detail.  The gate must skip that hit — not fail the run — and still
+    pass on the next candidate."""
+    result, state = _run_smoke(tmp_path, FAKE_DETAIL_404="1")
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 0, output
+    assert "SKIP  g3:dead: detail -> 404 item_unavailable" in output
+    assert "PASS  playable group g3:live -> /Videos/g3:live/stream" in output
+    assert "=== 9 passed, 0 failed, 1 skipped ===" in output
+
+    lines = (state / "calls.log").read_text(encoding="utf-8").splitlines()
+    first_detail = lines.index("GET http://api.test/Items/g3:dead range=-")
+    # The #415 mitigation: the initial search plus the pre-attempt re-issue
+    # both ran before the detail read that 404s.
+    searches_before = [ln for ln in lines[:first_detail] if "/api/search" in ln]
+    assert len(searches_before) == 2
