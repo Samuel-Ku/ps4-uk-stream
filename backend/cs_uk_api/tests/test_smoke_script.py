@@ -111,8 +111,10 @@ elif path in ("/Items/g3:dead/PlaybackInfo", "/Items/g3:live/PlaybackInfo"):
         {"MediaSources": [{"Path": f"/Videos/{path.split('/')[2]}/stream"}]}
     ).encode()
 elif path == "/Videos/g3:dead/stream":
+    status = "302"  # the facade redirects the player; it never proxies media
     redirect = f"{engine}/api/v1/torrent/dead/stream/0"
 elif path == "/Videos/g3:live/stream":
+    status = "302"
     redirect = f"{engine}/api/v1/torrent/live/stream/0"
 elif path == "/api/v1/torrent/dead/stream/0":
     status = "000"  # what curl reports when the dead swarm never answers
