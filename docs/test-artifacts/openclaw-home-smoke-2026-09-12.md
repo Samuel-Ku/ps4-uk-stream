@@ -288,3 +288,64 @@ live run here proving the passing half.
 CI for the same commit also passed:
 [run 40493199199](https://github.com/Samuel-Ku/ps4-uk-stream/actions/runs/40493199199)
 (`gates (py3.11)` and `gates (py3.13)`, both green).
+
+## Re-run 2026-10-27 — the five-flow gate proves teleport readiness at `29499b3`
+
+**Commit:** `29499b3` (`feat(deploy): add the teleport readiness flow to the
+smoke gate`) · **Status:** fifth flow **PROVEN LIVE**, exit `0`.
+
+`29499b3` closes the gap that let a host pass every flow and still answer
+a silent `503` at the first real alignment: a form POST with no audio
+proves `/api/teleport/align` is mounted and enabled (`400`), a route
+switched off by configuration would answer its own `503` and is a skip,
+and a stale process that does not serve the route fails loudly. It then
+resolves `ffmpeg` and `fpcalc` in the **running unit's own `PATH`** — via
+systemctl's `MainPID` and `/proc/<pid>/environ`, the same `shutil.which()`
+the aligner sees — so the `~/.local/bin` drop-in gap can no longer pass.
+
+The commit is not on `origin` yet (push pending), so the host checkout
+stays at `f9a74f7` and the standard fast-forward recipe could not run. The
+committed script was delivered over stdin to `/tmp/smoke-29499b3.sh`; its
+SHA-256 matched the workstation copy exactly
+(`37ecc46fbc211ad4355701fd0f48fc59d5d56b2a445906762f8431c05106581a`) and
+`bash -n` passed before the run. The service was **not restarted** for this
+run — the commit changes the gate, its tests and `DEPLOY.md` — it had been
+running since 2026-10-27 12:00:47 UTC (`MainPID` 3445439). CI has not seen
+`29499b3` yet; this run is its first live evidence.
+
+The engine advertises its **LAN** URL, so the run set `CS_UK_ENGINE_URL` to
+`http://192.168.2.223:3347`, as the 10-26 and earlier 10-27 re-runs
+recorded. The service's own `PATH` (`/proc/<pid>/environ`) begins with
+`/home/semen/.local/bin`, where `fpcalc` resolves to the extracted-binary
+symlink — while the ssh shell used for this run had no `fpcalc` in `PATH`
+at all, which is exactly the gap the new flow exists to catch: the check
+answered through the service-`PATH` probe, not the `CS_UK_TELEPORT_PATH`
+override and not the shell fallback.
+
+```bash
+ssh openclaw-home
+cd ~/ps4-uk-stream
+CS_UK_ENGINE_URL=http://192.168.2.223:3347 /tmp/smoke-29499b3.sh; echo $?
+# once the push lands, the standard path resumes:
+#   git fetch origin && git merge --ff-only origin/master
+#   CS_UK_ENGINE_URL=http://192.168.2.223:3347 backend/deploy/smoke.sh; echo $?
+```
+
+| Flow | Observation |
+|---|---|
+| handshake | `200`, token issued (`ServerId=8e825b6f9a93a6ec`) |
+| views | `200`, **17 views** |
+| browse | `GET /api/browse?provider=uakino&section=filmy` → `200`, **39 cards** |
+| search `Dune` | 3 candidates: `g3:tt35969257`, `g3:tt15239678`, `g3:tt0287839` |
+| candidate 1 — `g3:tt35969257` | skipped: `bounded read failed (000 0; want 206/200 with 65536 bytes)` (the failover case, unchanged) |
+| candidate 2 — `g3:tt15239678` ("Dune: Part Two") | detail `200`; PlaybackInfo `200`; stream **`302`** to `http://192.168.2.223:3347/api/v1/torrent/c2f364ba7f59b22a1845b16fd8a1fc1783568f8b/stream/0`; first 64 KiB `206 65536`; seek `206 1048576` with `Content-Range` honoured |
+| teleport route | `POST /api/teleport/align` with no audio → **`400`** `audio is required` (mounted and enabled) |
+| teleport tools | **`PASS`** `ffmpeg + fpcalc resolvable in the cs-uk-api service's own PATH` |
+
+The run finished `11 passed, 0 failed, 1 skipped`, exit `0`, in **132 s**
+(2026-10-27 13:15:14 → 13:17:26 UTC). The skip is the same
+metadata-resolves-but-no-bytes candidate the 10-26 re-run characterised;
+the fifth flow's failure modes — tools missing from the probed `PATH`, a
+stale process that does not serve the route — are pinned offline by the
+new tests (`test_smoke_script.py`), with the live run here proving the
+passing half, as the section above did for its status check.
