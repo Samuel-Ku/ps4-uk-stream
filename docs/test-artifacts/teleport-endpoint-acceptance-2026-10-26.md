@@ -108,3 +108,70 @@ curl -sS -X POST http://127.0.0.1:8003/api/teleport/align \
   stream plays or seeks on the PS4; those remain the #441 client gate.
 - #443 and #441 stay open until the on-device capture/switch acceptance
   passes.
+
+## Re-run 2026-10-27 — merged HEAD, cold path, repo-local tools
+
+**What changed:** the endpoint work was merged (PR #459, plus the seam refactor
+in PR #460), the runbook gained the teleport packages/knob, and the opt-in
+integration check was driven for the first time. This re-run asks whether the
+**merged** route still answers the calibrated pair the same way; it is not a
+new acceptance and not the device gate.
+
+### Environment
+
+| Input | Value |
+| --- | --- |
+| Backend | loopback `127.0.0.1:8015`, run on the tree at the merge of PR #459 (`2cb20ff`, endpoint + refactor #460) |
+| Cold start | `CS_UK_CATALOG_WARM=0`, absent snapshot path, isolated resume/user-state paths, no `/api/search` issued |
+| Tools | `ffmpeg` 9.0.1; `fpcalc` 1.6.1 from the gitignored `backend/tools/fpcalc/` on `PATH`/`LD_LIBRARY_PATH` |
+| Reference / candidate | `serialno:28-gra-prestoliv:s1e1` → `uaserialspro:274-gra-prestoliv-s2011:s1e1` (*Game of Thrones* S1E1, `ТЕТ`) |
+| Position | 600 s; clip captured server-side by the script (2,813 KiB posted) |
+| Driver | `scripts/teleport_calibrate.py --position 600 --base-url http://127.0.0.1:8015` (cold path, the default) |
+
+### Result
+
+| Metric | Value |
+| --- | --- |
+| `status` | `matched` |
+| `offset_seconds` | **+0.018572** |
+| `confidence` | **0.9881** |
+| `margin` | **0.3520** |
+| `seek_ticks` | 6,000,185,720 (600.0186 s) |
+| Server alignment (`latency_ms`) | **13,517 ms** |
+| Total request | **14.37 s** |
+
+Backend evidence line (route's own log):
+
+```text
+teleport status=matched item=serialno:28-gra-prestoliv:s1e1
+candidate=uaserialspro:274-gra-prestoliv-s2011:s1e1
+offset_s=0.018572018159375148 confidence=0.9880514705882353
+margin=0.35202205882352944 latency_ms=13517 reason=None
+```
+
+The playback axis recorded the candidate resolution under the teleport surface
+(`/api/health`: `serialno served 1`, `uaserialspro served 2`, no refusals), so
+the request that produced this verdict is attributed, not anonymous.
+
+### Checks run alongside
+
+- Opt-in integration, driven for the first time in this tree: with both tools
+  present, `test_aligner_recovers_generated_delay_with_real_tools` **runs
+  instead of skipping** and recovers the generated 20 s insertion (inside 1 s,
+  confidence ≥ 0.80). The check is `skipif`-guarded on `shutil.which`, so a
+  host without the tools skips it rather than failing the default suite.
+- Gate with both tools on `PATH` at `c6d40ac` (which adds the `/api/health`
+  readiness block; the align path is unchanged): pytest **1962 passed,
+  1 skipped**, `ruff check cs_uk_api` clean, `mypy cs_uk_api` strict clean
+  (103 files), doc-drift guard clean over 10 living docs.
+
+### Limits
+
+- One position on one same-dub pair, cold path, loopback. The verdict matches
+  the 2026-10-26 measurements for this pair exactly (0.9881 / 0.3520 /
+  +0.0186 s); the pairs differ from the earlier acceptance (kinotron →
+  eneyida), so the numbers are comparable, not identical.
+- The clip was extracted server-side with `ffmpeg`, not captured from PS4
+  decoded audio. No console was attached; the `/Videos/…` facade hop was not
+  exercised and no client switch or seek happened. This remains route
+  evidence, **not** the #441/#450–#455 device gate.
