@@ -216,3 +216,41 @@ def test_missing_living_doc_is_a_finding(checker_repo: Path) -> None:
 
     assert result.returncode == 1, output
     assert "listed as a living doc but is missing" in output
+
+
+def test_missing_origin_master_is_environment_failure(checker_repo: Path) -> None:
+    _git(checker_repo, "update-ref", "-d", "refs/remotes/origin/master")
+
+    result = _run(checker_repo, "--docs-only")
+
+    assert result.returncode == 2
+    assert "origin/master is missing (fetch first)" in result.stderr
+
+
+def test_shallow_clone_is_environment_failure(
+    checker_repo: Path, tmp_path: Path
+) -> None:
+    shallow = tmp_path / "shallow"
+    subprocess.run(
+        [
+            "git",
+            "clone",
+            "--quiet",
+            "--depth",
+            "1",
+            checker_repo.as_uri(),
+            str(shallow),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    head = _git(shallow, "rev-parse", "HEAD").strip()
+    _git(shallow, "update-ref", "refs/remotes/origin/master", head)
+    assert _git(shallow, "rev-parse", "--is-shallow-repository").strip() == "true"
+
+    result = _run(shallow, "--docs-only")
+
+    assert result.returncode == 2
+    assert "shallow clone" in result.stderr
