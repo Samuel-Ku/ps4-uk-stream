@@ -12,8 +12,16 @@ design and `CONTEXT.md` for the domain model.
 
 ## Network addresses (home LAN)
 
-- Backend host `openclaw-home`: `http://192.168.2.166:8003` (LAN IP, `wlan0` — wireless, DHCP/dynamic).
+- Backend host `openclaw-home`: `http://192.168.2.223:8003` — **static** LAN
+  address (set on the host 2026-10-28, `/etc/netplan/50-cloud-init.yaml`,
+  `dhcp4: false`), so the PS4's saved server URL survives reboots and lease
+  churn. Before that it was DHCP and the lease moved (`.166` → `.223`), which
+  silently broke the console's saved server URL.
+- Authoring workstation `omarchy`: `192.168.2.166` (Wi-Fi, DHCP; its dev
+  backend binds loopback only, so the console cannot use this address).
 - PS4 FTP (GoldHEN): `192.168.2.105:2121` (for PKG install / payload transfer).
+- If `openclaw-home`'s address ever changes, the PS4's saved Jellyfin server
+  URL must be updated too (`/data/Switchfin/config.json` on the console).
 
 ## Quick start
 

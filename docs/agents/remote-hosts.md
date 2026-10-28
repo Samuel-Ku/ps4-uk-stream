@@ -14,6 +14,16 @@ Install and operations runbook: [`backend/deploy/DEPLOY.md`](../../backend/deplo
   and `cs-uk-api-drift.timer`; manage them with `systemctl --user`.
 - Runtime state: `~/.cache/cs-uk-api/` (posters, playback, user state, drift
   report/state).
+- LAN address: `192.168.2.223` — **static** since 2026-10-28
+  (`/etc/netplan/50-cloud-init.yaml`, `dhcp4: false`; the previous DHCP
+  config is kept at `/root/netplan-50-cloud-init.yaml.bak-20261028`). It was
+  DHCP before and the lease moved (`.166` once, `.223` now), which silently
+  broke the PS4 client's saved server URL — check this file before blaming
+  the console when the facade becomes unreachable.
+- Router: Cudy with OpenWrt/LuCI at `http://192.168.2.1:8080` (SSH: dropbear
+  on `:22`), DHCP server `192.168.2.1`. The pool still contains `.223`; the
+  host answers ARP, so dnsmasq skips it, but a LuCI static lease/exclusion is
+  the durable fix if the pool ever fills up.
 
 The host path differs from the workstation clone. Do not assume
 `~/Projects/ps4-uk-stream` exists on the host.
