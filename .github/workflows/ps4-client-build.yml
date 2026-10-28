@@ -149,7 +149,11 @@ jobs:
       - name: Build APK
         run: |
           cd switchfin
-          ./library/borealis/build_libromfs_generator.sh
+          # Absolute path on purpose: the script derives the generator source
+          # path from "$0" and then cd's into it, so a relative invocation
+          # resolves to library/borealis/library/borealis/... and configures
+          # the wrong tree (no PLATFORM_* → toolchain fatal).
+          "$PWD/library/borealis/build_libromfs_generator.sh"
           cd app/platform/android && ./gradlew assembleRelease -PversionCode=${{ github.run_number }}
 
       - name: Upload APK
