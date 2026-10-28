@@ -126,6 +126,20 @@ ALLOWLIST: dict[str, str] = {
         "docs/agents/remote-hosts.md's host contract) — the units ship the "
         "old operator's paths and say so, so nothing tracked carries it"
     ),
+    "/etc/netplan/50-cloud-init.yaml": (
+        "operator environment (the deployment host's netplan file, quoted "
+        "in README's network map as the place its static address lives) — "
+        "a host path, not a repo file"
+    ),
+    "omarchy": (
+        "operator environment (the authoring workstation's hostname in "
+        "README's network map) — not a repo symbol"
+    ),
+    "/data/Switchfin/config.json": (
+        "operator environment (the PS4 client's saved server/token file on "
+        "the console, quoted in README's network map because a changed host "
+        "address must be mirrored into it) — a device path, not a repo file"
+    ),
     "_STYLE_BY_TYPE": (
         "documented removal (contract step #319): the legacy type→styles "
         "table was replaced by typed constructors"
