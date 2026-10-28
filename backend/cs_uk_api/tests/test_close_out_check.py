@@ -10,7 +10,9 @@ relies on:
   itself lives;
 - a closed-issue state claim in an agent doc fails the full run, while a
   placeholder example does not;
-- a SHA that resolves but is not on ``origin/master`` is a finding.
+- a SHA that resolves but is not on ``origin/master`` is a finding;
+- a failing ``gh`` in the full run is an environment failure (exit 2), not
+  a finding.
 """
 
 from __future__ import annotations
@@ -56,12 +58,22 @@ def _run(
 
 
 def _stub_gh(
-    directory: Path, *, closed: tuple[int, ...] = (), marker: Path | None = None
+    directory: Path,
+    *,
+    closed: tuple[int, ...] = (),
+    marker: Path | None = None,
+    fail_with: str | None = None,
 ) -> Path:
-    """A ``gh`` that serves the two issue-list calls, or records a call."""
+    """A ``gh`` that serves the two issue-list calls, records, or fails."""
     directory.mkdir()
     gh = directory / "gh"
-    if marker is not None:
+    if fail_with is not None:
+        body = (
+            "#!/usr/bin/env bash\n"
+            f"printf '%s\\n' {shlex.quote(fail_with)} >&2\n"
+            "exit 1\n"
+        )
+    elif marker is not None:
         body = (
             "#!/usr/bin/env bash\n"
             f"touch {shlex.quote(str(marker))}\n"
@@ -216,6 +228,21 @@ def test_missing_living_doc_is_a_finding(checker_repo: Path) -> None:
 
     assert result.returncode == 1, output
     assert "listed as a living doc but is missing" in output
+
+
+def test_full_mode_gh_failure_is_environment_failure(
+    checker_repo: Path, tmp_path: Path
+) -> None:
+    stub = _stub_gh(tmp_path / "bin", fail_with="HTTP 401: Bad credentials")
+
+    result = _run(checker_repo, path=stub)
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 2, output
+    assert "close-out: gh failed" in result.stderr
+    assert "HTTP 401: Bad credentials" in result.stderr
+    assert "close-out: clean" not in result.stdout
+    assert "FAIL" not in result.stdout
 
 
 def test_missing_origin_master_is_environment_failure(checker_repo: Path) -> None:
