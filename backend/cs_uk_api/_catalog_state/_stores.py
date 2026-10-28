@@ -69,13 +69,15 @@ blocklist_cache: TtlCache[bool] = TtlCache(default_ttl_s=_config.SETTINGS.cache_
 #: Deep-row extension caches (spec #305): the merged pool BEYOND a
 #: home row's snapshot (``row_deep_cache``, keyed per row kind) and the
 #: underlying provider browse pages 2..N (``deep_page_cache``, keyed per
-#: provider/section/page). Both use the browse-cache TTL so repeated
-#: scroll passes are instant and upstream load stays bounded — the same
-#: TtlCache machinery as the per-page browse cache, no new layer.
-#: Cleared with the home snapshot on rebuild (the pools are
-#: snapshot-anchored).
-row_deep_cache: TtlCache[list[HomeItem]] = TtlCache(default_ttl_s=_config.SETTINGS.cache_search_s)
-deep_page_cache: TtlCache[list[SearchResult]] = TtlCache(default_ttl_s=_config.SETTINGS.cache_search_s)
+#: provider/section/page). The TTL matches the CONTENT cache, not the
+#: browse cache: a cold extension is a 60-call provider fan-out (≈10 s,
+#: observed 2026-10-28), and expiring it after five minutes made the
+#: first scroll after a short pause re-pay that fan-out — while a client
+#: request timeout kills the load and the viewer sees the shelf stop at
+#: the snapshot (the "only 20 films" symptom). Pools stay warm for the
+#: snapshot's own lifetime; the snapshot rebuild clears them anyway.
+row_deep_cache: TtlCache[list[HomeItem]] = TtlCache(default_ttl_s=_config.SETTINGS.cache_content_s)
+deep_page_cache: TtlCache[list[SearchResult]] = TtlCache(default_ttl_s=_config.SETTINGS.cache_content_s)
 
 #: Subscription-gate verdict store: ``content:{provider}:{external}`` →
 #: True (gated) / False (known-good). Written by the catalog sweep and
