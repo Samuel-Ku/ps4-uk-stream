@@ -83,3 +83,14 @@ jobs:
       # against real upstreams in README.md §Release gate stays a manual step.
       - name: pytest
         run: .venv/bin/pytest cs_uk_api/tests -q
+
+  # The mission tooling promises exit codes that docs/agents/* rely on, and
+  # the Python gates never execute it. Stubs keep this hermetic: no gh auth,
+  # no console, no docker socket — just the contract.
+  shell:
+    name: shell contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Mission tooling exit contracts
+        run: scripts/tests/shell_contracts.sh
