@@ -237,6 +237,7 @@ def build_home_rows(
     newest_limit: int = 20,
     watched_series: AbstractSet[str] | None = None,
     history_groups: Sequence[str] | None = None,
+    excluded_kinds: AbstractSet[str] = frozenset(),
 ) -> list[HomeRow]:
     """Assemble the HomeResponse rows from pre-collected per-provider data.
 
@@ -272,6 +273,13 @@ def build_home_rows(
     ``newest_limit`` (the spec's «Новинки» ceiling, reused for the
     split rows). The five type rows and the split rows all use the same
     cap.
+
+    ``excluded_kinds`` is the operator-level hiding seam (e.g.
+    ``CS_UK_HIDDEN_ROW_KINDS=dorama``): the builder still walks the
+    data, then drops rows whose ``type`` is listed. The row-kind table
+    keeps the entry — the same table drives the wire mappings and the
+    deep-row extension — so hiding is presentational, not a schema
+    change.
     """
     rows: list[HomeRow] = []
 
@@ -417,6 +425,8 @@ def build_home_rows(
             )
         )
 
+    if excluded_kinds:
+        rows = [row for row in rows if row.type not in excluded_kinds]
     return rows
 
 

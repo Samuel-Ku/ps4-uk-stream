@@ -55,8 +55,11 @@ The service is LAN-only by design (ADR-0003: one host, one uvicorn
 process, no auth). Tunable knobs: `CS_UK_CACHE_SEARCH`,
 `CS_UK_CACHE_CONTENT`, `CS_UK_CACHE_POSTER`,
 `CS_UK_POSTER_DISK_TTL`, `CS_UK_RESUME_PATH`, `CS_UK_USER_STATE_PATH`,
-`UAKINO_CHROMIUM`, `CS_UK_ROW_MAX_PAGES` — see `CONTEXT.md` §Cache
-contract.
+`UAKINO_CHROMIUM`, `CS_UK_ROW_MAX_PAGES`,
+`CS_UK_HIDDEN_ROW_KINDS` (comma-separated home-row kinds to hide from
+the home shelves and the facade's view/library list — e.g.
+`CS_UK_HIDDEN_ROW_KINDS=dorama`; search and the providers' catalogs are
+unaffected) — see `CONTEXT.md` §Cache contract.
 
 **Semantic Source Teleport (spec #443, native route)** — `POST
 /api/teleport/align` needs `ffmpeg` and Chromaprint's `fpcalc` on the

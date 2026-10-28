@@ -323,6 +323,7 @@ def _cache_home(
             newest_limit=_config.SETTINGS.home_row_limit,
             watched_series=_watched_group_keys(),
             history_groups=_history_group_keys(),
+            excluded_kinds=_config.SETTINGS.hidden_row_kinds,
         )
     )
     resp = HomeResponse(rows=rows)

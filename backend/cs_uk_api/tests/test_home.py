@@ -438,6 +438,35 @@ def test_build_home_rows_omits_recent_rows_when_no_matching_form() -> None:
     assert [r.type for r in rows] == ["recent_series"]
 
 
+def test_build_home_rows_drops_hidden_row_kinds() -> None:
+    """Operator hiding (``CS_UK_HIDDEN_ROW_KINDS``): the builder still
+    collects the row, then drops it, so the native home and the facade
+    view list agree on one snapshot. The row-kind table keeps the entry
+    — hiding is presentational, not a schema change."""
+    by_type = {"dorama": {"p1": [item("p1", "Дорама", media_type="dorama")]}}
+    visible = build_home_rows(newest={}, popular={}, by_type=by_type, newest_limit=20)
+    assert [r.type for r in visible] == ["dorama"]
+    hidden = build_home_rows(
+        newest={},
+        popular={},
+        by_type=by_type,
+        newest_limit=20,
+        excluded_kinds={"dorama"},
+    )
+    assert hidden == []
+
+
+def test_hidden_row_kinds_env_cut_is_lowercased_and_trimmed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The operator spells the knob casually (spaces, case); the parsed
+    set is still the row-kind vocabulary the builder compares against."""
+    from cs_uk_api.config import load_settings
+
+    monkeypatch.setenv("CS_UK_HIDDEN_ROW_KINDS", " Dorama , llm_idea_1 ,")
+    assert load_settings().hidden_row_kinds == frozenset({"dorama", "llm_idea_1"})
+
+
 def test_build_home_rows_recent_row_topped_up_from_type_section() -> None:
     """#263 T1: a recent row under the cap is topped up from the
     form-section page-1 items (the same data the type rows use) —

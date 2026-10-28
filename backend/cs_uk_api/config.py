@@ -67,6 +67,13 @@ class Settings:
     providers: tuple[str, ...]
     block_russian: bool
     home_row_limit: int
+    #: Home-row kinds the operator hides from every surface — the row
+    #: itself AND the facade view/library it becomes (Switchfin renders
+    #: both the home shelves and the media-folder tab from the views).
+    #: Comma-separated kinds, e.g. ``CS_UK_HIDDEN_ROW_KINDS=dorama``;
+    #: empty (the default) emits every row. Presentational only: the
+    #: providers' catalogs and search stay untouched.
+    hidden_row_kinds: frozenset[str] = frozenset()
     #: Path of the persisted playback resume state (spec #247 / ticket
     #: #248). Default: next to the poster disk cache (``playback.json``
     #: in the parent of ``CS_UK_POSTER_CACHE_DIR``). Override via
@@ -213,6 +220,19 @@ def _load_snapshot_path() -> str | None:
     return raw
 
 
+def _load_hidden_row_kinds() -> frozenset[str]:
+    """Row kinds excluded from the home rows and the facade views.
+
+    ``CS_UK_HIDDEN_ROW_KINDS`` — comma-separated row kinds as spelled in
+    :mod:`cs_uk_api.row_kinds` (e.g. ``dorama`` or
+    ``dorama,llm_idea_1``). Unset/empty → nothing hidden (the shipped
+    catalogue). The filter is presentational: provider sections, search
+    and the deep-row pools are unaffected.
+    """
+    raw = os.environ.get("CS_UK_HIDDEN_ROW_KINDS", "")
+    return frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
+
+
 def load_settings() -> Settings:
     raw = os.environ.get("CS_UK_PROVIDERS", "uakino")
     providers = tuple(p.strip() for p in raw.split(",") if p.strip())
@@ -251,6 +271,7 @@ def load_settings() -> Settings:
         block_russian=os.environ.get("CS_UK_BLOCK_RUSSIAN", "1") == "1",
         # v3 (issue #70): per-row cap for «Новинки» + type rows.
         home_row_limit=int(os.environ.get("CS_UK_HOME_ROW_LIMIT", "20")),
+        hidden_row_kinds=_load_hidden_row_kinds(),
         catalog_warm_enabled=warm,
         catalog_warm_per_row=max(1, int(os.environ.get("CS_UK_CATALOG_WARM_PER_ROW", "3"))),
         # v3 (Jellyfin facade, spec D4/D10): the fixed opaque Jellyfin
