@@ -13,6 +13,10 @@ Issues and PRDs for this repo live as GitHub issues. Use the `gh` CLI for all op
 
 Infer the repo from `git remote -v` — `gh` does this automatically when run inside a clone.
 
+## Selecting the next ticket
+
+The mission loop takes the lowest-numbered available ticket. Availability (open, unblocked, agent-actionable), the label families it is built from, and the one-snapshot `gh` query live in `docs/agents/triage-labels.md`.
+
 ## Pull requests as a triage surface
 
 **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_

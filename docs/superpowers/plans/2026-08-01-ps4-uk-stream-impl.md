@@ -58,10 +58,10 @@ sections themselves are still the source of truth.
 | 19 | PS4 PKG build via OpenOrbis Docker | PARTIAL — scripts/Dockerfile verified (`bash -n`); final Docker build blocked on user hardware |
 | 20 | On-console test and report | PARTIAL — `docs/switchfin-test-report.md` checklist updated; on-console run blocked on user hardware |
 
-GitHub tracking is the live source of truth — see
-[`docs/superpowers/specs/2026-08-01-ps4-uk-stream-design.md` § Tracking]
-and the open issues labelled `status:needs-toolchain` /
-`status:needs-hardware`.
+GitHub tracking is the live source of truth — see `docs/agents/issue-tracker.md`
+for tracker operations and `docs/agents/triage-labels.md` for the label
+families and the mission-loop availability rule; the open issues labelled
+`status:needs-toolchain` / `status:needs-hardware` are the blocked set.
 
 ---
 

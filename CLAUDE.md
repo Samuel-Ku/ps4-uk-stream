@@ -12,7 +12,7 @@ Issues live in GitHub Issues (via the `gh` CLI). External PRs are not a triage s
 
 ### Triage labels
 
-Uses the canonical vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+Roles are the canonical five (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`); the blocking, scope, area and priority families and the mission-loop availability rule are in `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
