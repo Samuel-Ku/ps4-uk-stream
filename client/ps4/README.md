@@ -41,7 +41,11 @@ rollback.
   cache. The stock client therefore shows "Timeout was reached" toasts and
   leaves home rows as empty skeletons for viewers who never set an explicit
   timeout (a fresh PS4 config.json has none). The patch raises the default
-  to 10 s — an existing dropdown option, so the setting stays consistent.
-  Reproduced and fixed on the Android build with the same source: with the
-  default 3 s the home screen stayed empty, with `request_timeout` raised the
-  rows and posters loaded.
+  to 30 s — an existing dropdown option, so the setting stays consistent.
+  Reproduced on the Android build with the same source: with the default 3 s
+  the home screen stayed empty, with `request_timeout` raised the rows and
+  posters loaded. 30 s, not 10: the facade's FIRST scroll past a shelf's 20
+  cards is a ~60-call provider fan-out measured at 10–13 s on the LAN host
+  (2026-10-28), so a 10 s timeout still aborts the very page that reveals
+  the rest of the library — matching the "only 20 films" report. The same
+  patch keeps the home row from timing out.
