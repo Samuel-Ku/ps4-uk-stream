@@ -38,18 +38,4 @@ The mission takes the **lowest-numbered available ticket**, closes it, then take
 
 The rule is a filter, not a licence to start the lowest number: a `ready-for-agent` ticket with an open blocker is an inconsistent record. Fix the record first — the labels and the `Blocked by` text must agree, each naming the concrete probe — and do not start it until they do.
 
-One snapshot of the open set; prints the lowest available number, or `none`:
-
-```bash
-gh issue list --state open --limit 200 \
-  --json number,labels,assignees,blockedBy \
-  --jq '[.[]
-        | select((.labels | map(.name) | index("ready-for-agent")) != null)
-        | select((.blockedBy.nodes | map(select(.state == "OPEN"))) | length == 0)
-        | select(([.labels[].name | select(startswith("status:"))]) | length == 0)
-        | select((.assignees | length) == 0)
-        | .number]
-       | sort | first // "none"'
-```
-
-An assigned ticket is already claimed; the queue is unassigned tickets only.
+One snapshot of the open set is `scripts/next-ticket.sh`: it prints the lowest available number, or `none`, and exits `0` found, `1` none available, `2` usage or `gh` failure. An assigned ticket is already claimed; the queue is unassigned tickets only.

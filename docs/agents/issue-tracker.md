@@ -15,7 +15,7 @@ Infer the repo from `git remote -v` — `gh` does this automatically when run in
 
 ## Selecting the next ticket
 
-The mission loop takes the lowest-numbered available ticket. Availability (open, unblocked, agent-actionable), the label families it is built from, and the one-snapshot `gh` query live in `docs/agents/triage-labels.md`.
+The mission loop takes the lowest-numbered available ticket. Availability (open, unblocked, agent-actionable), the label families it is built from, and the one-snapshot selection (`scripts/next-ticket.sh`) live in `docs/agents/triage-labels.md`.
 
 ## Close-out: recording an outcome
 
