@@ -30,8 +30,8 @@ reads only, no fetch.
 Usage:
     python3 scripts/close_out_check.py [--docs-only]
 
-Exit: 0 clean, 1 findings, 2 environment failure (git, shallow clone, or a
-failing ``gh`` in the default mode).
+Exit: 0 clean, 1 findings, 2 environment failure (git, shallow clone, a
+failing ``gh``, or unparsable ``gh`` output in the default mode).
 """
 
 from __future__ import annotations
@@ -98,7 +98,22 @@ def gh_json(*args: str) -> list[dict[str, object]]:
             file=sys.stderr,
         )
         raise SystemExit(2)
-    return json.loads(result.stdout)
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        print(
+            f"close-out: gh returned unparsable JSON ({' '.join(args)}): {exc}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from exc
+    if not isinstance(payload, list):
+        print(
+            f"close-out: gh returned {type(payload).__name__} JSON, expected a list "
+            f"({' '.join(args)})",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    return payload
 
 
 def sha_problem(sha: str, cache: dict[str, str | None]) -> str | None:

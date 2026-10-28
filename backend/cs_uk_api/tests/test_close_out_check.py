@@ -12,7 +12,7 @@ relies on:
   placeholder example does not;
 - a SHA that resolves but is not on ``origin/master`` is a finding;
 - a failing ``gh`` in the full run is an environment failure (exit 2), not
-  a finding;
+  a finding, and so is unparsable or non-list JSON from a succeeding one;
 - the full run scans open ticket bodies and comments, not just docs.
 """
 
@@ -76,8 +76,9 @@ def _stub_gh(
     open_issues: list[dict[str, object]] | None = None,
     marker: Path | None = None,
     fail_with: str | None = None,
+    respond_with: str | None = None,
 ) -> Path:
-    """A ``gh`` that serves the two issue-list calls, records, or fails."""
+    """A ``gh`` that serves the two issue-list calls, records, fails, or lies."""
     directory.mkdir()
     gh = directory / "gh"
     if fail_with is not None:
@@ -85,6 +86,12 @@ def _stub_gh(
             "#!/usr/bin/env bash\n"
             f"printf '%s\\n' {shlex.quote(fail_with)} >&2\n"
             "exit 1\n"
+        )
+    elif respond_with is not None:
+        body = (
+            "#!/usr/bin/env bash\n"
+            f"printf '%s\\n' {shlex.quote(respond_with)}\n"
+            "exit 0\n"
         )
     elif marker is not None:
         body = (
@@ -333,6 +340,36 @@ def test_full_mode_leaves_an_open_ticket_clean(
 
     assert result.returncode == 0, output
     assert "close-out: clean" in output
+
+
+def test_full_mode_unparsable_gh_json_is_environment_failure(
+    checker_repo: Path, tmp_path: Path
+) -> None:
+    stub = _stub_gh(tmp_path / "bin", respond_with="<html>login required</html>")
+
+    result = _run(checker_repo, path=stub)
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 2, output
+    assert "close-out: gh returned unparsable JSON" in result.stderr
+    assert "login required" not in result.stderr
+    assert "close-out: clean" not in result.stdout
+    assert "FAIL" not in result.stdout
+    assert "Traceback" not in output
+
+
+def test_full_mode_non_list_gh_json_is_environment_failure(
+    checker_repo: Path, tmp_path: Path
+) -> None:
+    stub = _stub_gh(tmp_path / "bin", respond_with='{"message": "rate limited"}')
+
+    result = _run(checker_repo, path=stub)
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 2, output
+    assert "close-out: gh returned dict JSON, expected a list" in result.stderr
+    assert "close-out: clean" not in result.stdout
+    assert "Traceback" not in output
 
 
 def test_missing_origin_master_is_environment_failure(checker_repo: Path) -> None:
