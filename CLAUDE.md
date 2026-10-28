@@ -6,6 +6,10 @@
 
 `openclaw-home` is a deployment mirror, not an authoring workspace. Checkout path, git identity and verification contract: `docs/agents/remote-hosts.md`.
 
+### PS4 console
+
+GoldHEN access (FTP/KLog), filesystem map, custom-PKG install and rollback, and the client's timeout/config coupling: `docs/agents/ps4-console.md`.
+
 ### Issue tracker
 
 Issues live in GitHub Issues (via the `gh` CLI). External PRs are not a triage surface. See `docs/agents/issue-tracker.md`.

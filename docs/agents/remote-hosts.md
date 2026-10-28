@@ -87,3 +87,9 @@ git merge --ff-only origin/master
   `POST /api/teleport/align` for `serialno:28-gra-prestoliv:s1e1` →
   `uaserialspro:274-gra-prestoliv-s2011:s1e1` at 600 s returned
   `200 matched` (offset `+0.019 s`, confidence `0.9881`, 15.1 s).
+
+## PS4 console
+
+The living-room client and its GoldHEN access (FTP `:2121`, KLog `:3232`),
+the filesystem map, custom-PKG install/rollback and the FTP quirks that bite:
+[`ps4-console.md`](ps4-console.md).
