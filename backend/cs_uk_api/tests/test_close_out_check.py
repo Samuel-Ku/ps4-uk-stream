@@ -12,7 +12,8 @@ relies on:
   placeholder example does not;
 - a SHA that resolves but is not on ``origin/master`` is a finding;
 - a failing ``gh`` in the full run is an environment failure (exit 2), not
-  a finding.
+  a finding;
+- the full run scans open ticket bodies and comments, not just docs.
 """
 
 from __future__ import annotations
@@ -57,10 +58,22 @@ def _run(
     )
 
 
+def _open_issue(
+    number: int, body: str, comments: tuple[str, ...] = ()
+) -> dict[str, object]:
+    """One ``gh issue list`` entry as the checker consumes it."""
+    return {
+        "number": number,
+        "body": body,
+        "comments": [{"body": comment} for comment in comments],
+    }
+
+
 def _stub_gh(
     directory: Path,
     *,
     closed: tuple[int, ...] = (),
+    open_issues: list[dict[str, object]] | None = None,
     marker: Path | None = None,
     fail_with: str | None = None,
 ) -> Path:
@@ -80,13 +93,14 @@ def _stub_gh(
             "exit 99\n"
         )
     else:
+        open_json = json.dumps(open_issues or [])
         closed_json = json.dumps([{"number": number} for number in closed])
         body = (
             "#!/usr/bin/env bash\n"
             "set -e\n"
             'case "$*" in\n'
-            '  *"--state open"*) echo "[]" ;;\n'
-            f'  *"--state closed"*) echo \'{closed_json}\' ;;\n'
+            f'  *"--state open"*) echo {shlex.quote(open_json)} ;;\n'
+            f'  *"--state closed"*) echo {shlex.quote(closed_json)} ;;\n'
             "  *) exit 2 ;;\n"
             "esac\n"
         )
@@ -243,6 +257,82 @@ def test_full_mode_gh_failure_is_environment_failure(
     assert "HTTP 401: Bad credentials" in result.stderr
     assert "close-out: clean" not in result.stdout
     assert "FAIL" not in result.stdout
+
+
+def test_full_mode_flags_closed_claim_in_open_ticket_body(
+    checker_repo: Path, tmp_path: Path
+) -> None:
+    stub = _stub_gh(
+        tmp_path / "bin",
+        closed=(443,),
+        open_issues=[
+            _open_issue(512, "Finish the lane.\n\n#443 must stay open until the spec lands.\n")
+        ],
+    )
+
+    result = _run(checker_repo, path=stub)
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "1 open tickets" in output
+    assert "#512 body" in output
+    assert "calls closed #443" in output
+
+
+def test_full_mode_scans_open_ticket_comments(
+    checker_repo: Path, tmp_path: Path
+) -> None:
+    stub = _stub_gh(
+        tmp_path / "bin",
+        closed=(443,),
+        open_issues=[
+            _open_issue(
+                512,
+                "No state claims in the body.\n",
+                ("Provenance only.\n", "Blocked on #443 until the spec lands.\n"),
+            )
+        ],
+    )
+
+    result = _run(checker_repo, path=stub)
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "#512 comment 2" in output
+    assert "calls closed #443" in output
+    assert "#512 body" not in output
+
+
+def test_full_mode_checks_shas_in_ticket_text(
+    checker_repo: Path, tmp_path: Path
+) -> None:
+    missing = "0123456789abcdef0123456789abcdef01234567"
+    stub = _stub_gh(
+        tmp_path / "bin",
+        open_issues=[_open_issue(512, f"Landed in {missing}.\n")],
+    )
+
+    result = _run(checker_repo, path=stub)
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert f"#512 body:1 quotes {missing}, which does not resolve" in output
+
+
+def test_full_mode_leaves_an_open_ticket_clean(
+    checker_repo: Path, tmp_path: Path
+) -> None:
+    stub = _stub_gh(
+        tmp_path / "bin",
+        closed=(443,),
+        open_issues=[_open_issue(512, "#512 must stay open for now.\n")],
+    )
+
+    result = _run(checker_repo, path=stub)
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 0, output
+    assert "close-out: clean" in output
 
 
 def test_missing_origin_master_is_environment_failure(checker_repo: Path) -> None:
