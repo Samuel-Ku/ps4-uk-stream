@@ -11,13 +11,18 @@ Checks the two mechanical parts of the close-out checklist in
    cites a closed ticket as provenance ("#443 is the backend spec")
    next to an open ticket's "stays open" claim is not a finding.
 
+The doc set is the doc-drift guard's ``LIVING_DOCS`` plus
+``docs/agents/*.md``: the guard deliberately skips the agent docs because
+it resolves code references, while this check also carries issue state and
+SHA claims.
+
 The checklist's third part (one home per fact) is a judgement call and is
 not checked.
 
-``--docs-only`` runs the living-doc half without GitHub: SHA reachability
-and living-doc existence are verified, while closed-issue state claims are
-skipped because the closed set is tracker state. That mode is what CI can
-run without a token.
+``--docs-only`` runs the doc half without GitHub: SHA reachability and
+doc existence are verified, while closed-issue state claims are skipped
+because the closed set is tracker state. That mode is what CI can run
+without a token.
 
 Read-only: GitHub reads via ``gh issue list`` in the default mode, git
 reads only, no fetch.
@@ -170,8 +175,8 @@ def main() -> int:
     parser.add_argument(
         "--docs-only",
         action="store_true",
-        help="check the living docs only; no GitHub access, so closed-issue "
-        "state claims are not checked",
+        help="check the living docs and agent docs only; no GitHub access, "
+        "so closed-issue state claims are not checked",
     )
     args = parser.parse_args()
 
@@ -192,6 +197,18 @@ def main() -> int:
     except ImportError as exc:  # pragma: no cover - environment failure
         print(f"close-out: cannot import the living-doc list: {exc}", file=sys.stderr)
         return 2
+
+    # The drift guard's list is the product-doc set; state claims also live in
+    # the agent steering docs it deliberately excludes (their backticked spans
+    # are commands and examples, not code references). Scan the union here.
+    agent_docs = tuple(
+        sorted(
+            path.relative_to(REPO).as_posix()
+            for path in (REPO / "docs" / "agents").glob("*.md")
+            if path.is_file()
+        )
+    )
+    docs = tuple(dict.fromkeys((*LIVING_DOCS, *agent_docs)))
 
     # The closed set is tracker state. ``--docs-only`` leaves both empty on
     # purpose: without the tracker there is nothing honest to compare a state
@@ -223,7 +240,7 @@ def main() -> int:
             scan(f"#{number} comment {index}", str(comment.get("body") or ""),
                  closed, ALLOWLIST, sha_cache, findings, shas)
 
-    for doc in LIVING_DOCS:
+    for doc in docs:
         path = REPO / doc
         if not path.is_file():
             findings.append(f"{doc} is listed as a living doc but is missing")
@@ -232,9 +249,10 @@ def main() -> int:
              findings, shas)
 
     scope = (
-        f"{len(LIVING_DOCS)} living docs"
+        f"{len(LIVING_DOCS)} living docs + {len(agent_docs)} agent docs"
         if args.docs_only
-        else f"{len(open_issues)} open tickets, {len(LIVING_DOCS)} living docs"
+        else f"{len(open_issues)} open tickets, {len(LIVING_DOCS)} living docs, "
+        f"{len(agent_docs)} agent docs"
     )
     print(f"close-out: {scope}, {len(shas)} distinct SHA-like tokens")
     if args.docs_only:
