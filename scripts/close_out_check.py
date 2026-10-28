@@ -14,12 +14,19 @@ Checks the two mechanical parts of the close-out checklist in
 The checklist's third part (one home per fact) is a judgement call and is
 not checked.
 
-Read-only: GitHub reads via ``gh issue list``, git reads only, no fetch.
+``--docs-only`` runs the living-doc half without GitHub: SHA reachability
+and living-doc existence are verified, while closed-issue state claims are
+skipped because the closed set is tracker state. That mode is what CI can
+run without a token.
+
+Read-only: GitHub reads via ``gh issue list`` in the default mode, git
+reads only, no fetch.
 
 Usage:
-    python3 scripts/close_out_check.py
+    python3 scripts/close_out_check.py [--docs-only]
 
-Exit: 0 clean, 1 findings, 2 environment failure (gh, git, shallow clone).
+Exit: 0 clean, 1 findings, 2 environment failure (git, shallow clone, or a
+failing ``gh`` in the default mode).
 """
 
 from __future__ import annotations
@@ -160,7 +167,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Read-only close-out check for open tickets and living docs."
     )
-    parser.parse_args()
+    parser.add_argument(
+        "--docs-only",
+        action="store_true",
+        help="check the living docs only; no GitHub access, so closed-issue "
+        "state claims are not checked",
+    )
+    args = parser.parse_args()
 
     if git("rev-parse", "--verify", "--quiet", "origin/master").returncode != 0:
         print("close-out: origin/master is missing (fetch first)", file=sys.stderr)
@@ -180,17 +193,23 @@ def main() -> int:
         print(f"close-out: cannot import the living-doc list: {exc}", file=sys.stderr)
         return 2
 
-    open_issues = gh_json(
-        "issue", "list", "--state", "open", "--limit", "200",
-        "--json", "number,body,comments",
-    )
-    closed = {
-        str(issue["number"])
-        for issue in gh_json(
-            "issue", "list", "--state", "closed", "--limit", "1000",
-            "--json", "number",
+    # The closed set is tracker state. ``--docs-only`` leaves both empty on
+    # purpose: without the tracker there is nothing honest to compare a state
+    # sentence against, and a cached list would verify a stale fact.
+    open_issues: list[dict[str, object]] = []
+    closed: set[str] = set()
+    if not args.docs_only:
+        open_issues = gh_json(
+            "issue", "list", "--state", "open", "--limit", "200",
+            "--json", "number,body,comments",
         )
-    }
+        closed = {
+            str(issue["number"])
+            for issue in gh_json(
+                "issue", "list", "--state", "closed", "--limit", "1000",
+                "--json", "number",
+            )
+        }
 
     findings: list[str] = []
     shas: set[str] = set()
@@ -212,10 +231,17 @@ def main() -> int:
         scan(doc, path.read_text(encoding="utf-8"), closed, ALLOWLIST, sha_cache,
              findings, shas)
 
-    print(
-        f"close-out: {len(open_issues)} open tickets, {len(LIVING_DOCS)} living docs, "
-        f"{len(shas)} distinct SHA-like tokens"
+    scope = (
+        f"{len(LIVING_DOCS)} living docs"
+        if args.docs_only
+        else f"{len(open_issues)} open tickets, {len(LIVING_DOCS)} living docs"
     )
+    print(f"close-out: {scope}, {len(shas)} distinct SHA-like tokens")
+    if args.docs_only:
+        print(
+            "close-out: closed-issue state claims skipped "
+            "(--docs-only has no tracker access)"
+        )
     for finding in findings:
         print(f"  FAIL  {finding}")
     if findings:
