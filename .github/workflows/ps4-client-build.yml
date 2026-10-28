@@ -75,3 +75,83 @@ jobs:
           name: Switchfin-PS4-custom-${{ github.run_number }}
           path: switchfin/build/*.pkg
           if-no-files-found: error
+
+  # The PS4 console can be busy/unavailable while the patches still need a
+  # device check; the same source also builds to an Android APK, which can be
+  # installed on a spare phone (same signing key as the release APKs, so it
+  # upgrades in place). Dependencies are compiled for arm64 only to keep the
+  # cold build inside the job timeout; the release variant signs with the
+  # bundled borealis.jks, matching the published 0.9.4 APK.
+  build-android:
+    name: build custom app APK (phone validation)
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - name: Checkout this branch (patches + workflow)
+        uses: actions/checkout@v7
+        with:
+          path: build-repo
+
+      - name: Checkout Switchfin at the pinned revision
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.SWITCHFIN_REPOSITORY }}
+          ref: ${{ env.SWITCHFIN_REF }}
+          path: switchfin
+          submodules: recursive
+
+      - name: Apply local patches
+        run: |
+          cd switchfin
+          for patch in ../build-repo/client/ps4/patches/*.patch; do
+            echo "::group::$(basename "$patch")"
+            git apply --verbose "$patch"
+            echo "::endgroup::"
+          done
+
+      - name: Set up Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1.6.0
+        with:
+          ndk-version: r27d
+          link-to-sdk: true
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config nasm gperf
+          sudo pip install meson --break-system-packages
+
+      - name: Cache Android dependency tree
+        id: cache-deps
+        uses: actions/cache@v4
+        with:
+          path: switchfin/jniLibs
+          key: switchfin-android-jniLibs-arm64-${{ hashFiles('switchfin/scripts/android/Makefile') }}
+
+      - name: Build Android dependencies (arm64 only)
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          cd switchfin
+          make -C scripts/android TMPDIR=${{ runner.temp }} download
+          make -C scripts/android TMPDIR=${{ runner.temp }} ABI=arm64-v8a \
+            ANDROID_NDK=${{ steps.setup-ndk.outputs.ndk-path }} build
+
+      - name: Trim the gradle ABI list to the built one
+        run: |
+          cd switchfin
+          sed -i "s/abiFilters 'armeabi-v7a', 'arm64-v8a'/abiFilters 'arm64-v8a'/" app/platform/android/app/build.gradle
+          sed -i "s/include 'armeabi-v7a', 'arm64-v8a'/include 'arm64-v8a'/" app/platform/android/app/build.gradle
+
+      - name: Build APK
+        run: |
+          cd switchfin
+          ./library/borealis/build_libromfs_generator.sh
+          cd app/platform/android && ./gradlew assembleRelease -PversionCode=${{ github.run_number }}
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: Switchfin-android-custom-${{ github.run_number }}
+          path: switchfin/app/platform/android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
