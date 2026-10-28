@@ -31,7 +31,8 @@ Usage:
     python3 scripts/close_out_check.py [--docs-only]
 
 Exit: 0 clean, 1 findings, 2 environment failure (git, shallow clone, a
-failing ``gh``, or unparsable ``gh`` output in the default mode).
+failing ``gh``, unparsable ``gh`` output, or an issue entry that does not
+match the requested fields in the default mode).
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 REPO = Path(__file__).resolve().parents[1]
 SHA_RE = re.compile(r"\b[0-9a-f]{7,40}\b")
@@ -88,7 +90,50 @@ def git(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def gh_json(*args: str) -> list[dict[str, object]]:
+def check_issue_shape(
+    issues: list[object], args: tuple[str, ...], *, with_comments: bool
+) -> None:
+    """Exit 2 on an entry the scanner would crash on or misread."""
+    where = " ".join(args)
+
+    def bad(detail: str) -> NoReturn:
+        print(
+            f"close-out: gh returned a malformed issue list ({where}): {detail}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    for index, entry in enumerate(issues, 1):
+        if not isinstance(entry, dict):
+            bad(f"entry {index} is {type(entry).__name__}, expected an object")
+        number = entry.get("number")
+        if not isinstance(number, int):
+            bad(f"entry {index} has number {number!r}, expected an integer")
+        if not with_comments:
+            continue
+        body = entry.get("body")
+        if body is not None and not isinstance(body, str):
+            bad(f"#{number} body is {type(body).__name__}, expected a string or null")
+        comments = entry.get("comments")
+        if comments is None:
+            continue
+        if not isinstance(comments, list):
+            bad(f"#{number} comments is {type(comments).__name__}, expected a list")
+        for comment_index, comment in enumerate(comments, 1):
+            if not isinstance(comment, dict):
+                bad(
+                    f"#{number} comment {comment_index} is "
+                    f"{type(comment).__name__}, expected an object"
+                )
+            comment_body = comment.get("body")
+            if comment_body is not None and not isinstance(comment_body, str):
+                bad(
+                    f"#{number} comment {comment_index} body is "
+                    f"{type(comment_body).__name__}, expected a string or null"
+                )
+
+
+def gh_json(*args: str, with_comments: bool = False) -> list[dict[str, object]]:
     result = subprocess.run(
         ["gh", *args], capture_output=True, check=False, cwd=REPO, text=True
     )
@@ -113,6 +158,7 @@ def gh_json(*args: str) -> list[dict[str, object]]:
             file=sys.stderr,
         )
         raise SystemExit(2)
+    check_issue_shape(payload, args, with_comments=with_comments)
     return payload
 
 
@@ -234,6 +280,7 @@ def main() -> int:
         open_issues = gh_json(
             "issue", "list", "--state", "open", "--limit", "200",
             "--json", "number,body,comments",
+            with_comments=True,
         )
         closed = {
             str(issue["number"])

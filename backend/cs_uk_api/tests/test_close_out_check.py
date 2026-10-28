@@ -12,7 +12,8 @@ relies on:
   placeholder example does not;
 - a SHA that resolves but is not on ``origin/master`` is a finding;
 - a failing ``gh`` in the full run is an environment failure (exit 2), not
-  a finding, and so is unparsable or non-list JSON from a succeeding one;
+  a finding, and so is unparsable or non-list JSON from a succeeding one,
+  or an issue entry whose fields do not match the request;
 - the full run scans open ticket bodies and comments, not just docs.
 """
 
@@ -368,6 +369,41 @@ def test_full_mode_non_list_gh_json_is_environment_failure(
 
     assert result.returncode == 2, output
     assert "close-out: gh returned dict JSON, expected a list" in result.stderr
+    assert "close-out: clean" not in result.stdout
+    assert "Traceback" not in output
+
+
+@pytest.mark.parametrize(
+    ("payload", "detail"),
+    [
+        ("[1, 2]", "entry 1 is int, expected an object"),
+        ('[{"body": "no number"}]', "entry 1 has number None, expected an integer"),
+        ('[{"number": 512, "body": 7}]', "#512 body is int, expected a string or null"),
+        (
+            '[{"number": 512, "comments": "nope"}]',
+            "#512 comments is str, expected a list",
+        ),
+        (
+            '[{"number": 512, "comments": [7]}]',
+            "#512 comment 1 is int, expected an object",
+        ),
+        (
+            '[{"number": 512, "comments": [{"body": 7}]}]',
+            "#512 comment 1 body is int, expected a string or null",
+        ),
+    ],
+)
+def test_full_mode_malformed_issue_entry_is_environment_failure(
+    checker_repo: Path, tmp_path: Path, payload: str, detail: str
+) -> None:
+    stub = _stub_gh(tmp_path / "bin", respond_with=payload)
+
+    result = _run(checker_repo, path=stub)
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 2, output
+    assert "close-out: gh returned a malformed issue list" in result.stderr
+    assert detail in result.stderr
     assert "close-out: clean" not in result.stdout
     assert "Traceback" not in output
 
