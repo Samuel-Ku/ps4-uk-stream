@@ -1,0 +1,72 @@
+diff --git i/app/src/view/h_recycling.cpp w/app/src/view/h_recycling.cpp
+index 7f198c0..d154616 100644
+--- i/app/src/view/h_recycling.cpp
++++ w/app/src/view/h_recycling.cpp
+@@ -96,6 +96,20 @@ void HRecyclerFrame::clearData() {
+ void HRecyclerFrame::reloadData() {
+     if (!layouted) return;
+ 
++    // Custom: same focus preservation as RecyclingGrid::reloadData (home
++    // rows): a reload must not re-anchor a horizontally scrolled row at the
++    // first card.
++    size_t preservedFocus = (size_t)-1;
++    for (brls::View* focus = brls::Application::getCurrentFocus(); focus != nullptr;
++         focus = focus->getParent()) {
++        if (focus == this) break;
++        auto* cell = dynamic_cast<RecyclingGridItem*>(focus);
++        if (cell != nullptr) {
++            preservedFocus = cell->getIndex();
++            break;
++        }
++    }
++
+     auto children = this->contentBox->getChildren();
+     for (auto const& child : children) {
+         queueReusableCell((RecyclingGridItem*)child);
+@@ -119,7 +133,9 @@ void HRecyclerFrame::reloadData() {
+             addCellAt(row, true);
+             if (renderedFrame.getMaxX() > frame.getMaxX()) break;
+         }
+-        this->selectRowAt(this->defaultCellFocus, false);
++        size_t cellFocusIndex = preservedFocus != (size_t)-1 ? preservedFocus : this->defaultCellFocus;
++        if (cellFocusIndex >= dataSource->getItemCount()) cellFocusIndex = dataSource->getItemCount() - 1;
++        this->selectRowAt(cellFocusIndex, false);
+     }
+ }
+ 
+diff --git i/app/src/view/recycling_grid.cpp w/app/src/view/recycling_grid.cpp
+index 1a4d716..2fc0510 100644
+--- i/app/src/view/recycling_grid.cpp
++++ w/app/src/view/recycling_grid.cpp
+@@ -301,6 +301,22 @@ void RecyclingGrid::setDataSource(RecyclingGridDataSource* source) {
+ void RecyclingGrid::reloadData() {
+     if (!layouted) return;
+ 
++    // Custom: preserve the viewer's place across a reload (data arrival,
++    // next page, padding or width change). The stock reload re-anchored the
++    // grid at cell 0 — every asynchronous data refresh made the search
++    // suggestions, home rows and season lists jump back to the start while
++    // they were being scrolled.
++    size_t preservedFocus = (size_t)-1;
++    for (brls::View* focus = brls::Application::getCurrentFocus(); focus != nullptr;
++         focus = focus->getParent()) {
++        if (focus == this) break;
++        auto* cell = dynamic_cast<RecyclingGridItem*>(focus);
++        if (cell != nullptr) {
++            preservedFocus = cell->getIndex();
++            break;
++        }
++    }
++
+     // 将所有节点从屏幕上移除放入重复利用的列表中
+     auto& children = this->contentBox->getChildren();
+     for (auto const& child : children) {
+@@ -332,7 +348,7 @@ void RecyclingGrid::reloadData() {
+         contentBox->setLastFocusedView(nullptr);
+         return;
+     }
+-    size_t cellFocusIndex = this->defaultCellFocus;
++    size_t cellFocusIndex = preservedFocus != (size_t)-1 ? preservedFocus : this->defaultCellFocus;
+     if (cellFocusIndex >= dataSource->getItemCount()) cellFocusIndex = dataSource->getItemCount() - 1;
+ 
+     // 设置列表的高度（真实高度，非显示的高度）

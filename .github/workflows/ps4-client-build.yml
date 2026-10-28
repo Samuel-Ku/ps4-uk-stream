@@ -1,0 +1,77 @@
+# Custom PS4 Switchfin build (client-side fixes that no backend change can make).
+#
+# Why a separate workflow in this repo: the PS4 client is a C++/borealis
+# project (dragonflylee/switchfin) that needs the OpenOrbis/pacbrew
+# toolchain. This workstation has no docker/sudo to run the upstream
+# pacbrew container, so the build runs on GitHub Actions and publishes a
+# PKG artifact that is installed on the console over FTP.
+#
+# The patches under client/ps4/patches/ are applied to the pinned upstream
+# commit, so a build is reproducible. Push to any client-build/** branch to
+# trigger it.
+name: PS4 client build (custom Switchfin)
+
+on:
+  push:
+    branches:
+      - client-build/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-ps4:
+    name: build custom Switchfin PKG
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    container:
+      image: xfangfang/pacbrew:250221
+    env:
+      SWITCHFIN_REPOSITORY: dragonflylee/switchfin
+      SWITCHFIN_REF: c4036dab766e294f4905af1ee74cd749f27172db
+      PACBREW_URL: https://github.com/dragonflylee/switchfin/releases/download/pacbrew
+    steps:
+      - name: Checkout this branch (patches + workflow)
+        uses: actions/checkout@v7
+        with:
+          path: build-repo
+
+      - name: Checkout Switchfin at the pinned revision
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.SWITCHFIN_REPOSITORY }}
+          ref: ${{ env.SWITCHFIN_REF }}
+          path: switchfin
+          submodules: recursive
+
+      - name: Apply local patches
+        run: |
+          cd switchfin
+          for patch in ../build-repo/client/ps4/patches/*.patch; do
+            echo "::group::$(basename "$patch")"
+            git apply --verbose "$patch"
+            echo "::endgroup::"
+          done
+
+      - name: Install pacbrew dependencies
+        run: |
+          for pkg in musl-1.5-3 mbedtls-2.28.10-2 sdl2-2.0.18-19 libcurl-8.4.0-1 dav1d-1.5.4-1 ffmpeg-7.1.5-4 libmpv-0.36.0-3; do
+            pacman --noconfirm -U "$PACBREW_URL/ps4-openorbis-$pkg-any.pkg.tar.gz"
+          done
+          git config --system --add safe.directory '*'
+
+      - name: Build
+        env:
+          OPENORBIS: /opt/pacbrew/ps4/openorbis
+        run: |
+          cd switchfin
+          cmake -B build -DPLATFORM_PS4=ON -DVERSION_BUILD=${{ github.run_number }}
+          make -C build -j"$(nproc)"
+
+      - name: Upload PKG
+        uses: actions/upload-artifact@v7
+        with:
+          name: Switchfin-PS4-custom-${{ github.run_number }}
+          path: switchfin/build/*.pkg
+          if-no-files-found: error

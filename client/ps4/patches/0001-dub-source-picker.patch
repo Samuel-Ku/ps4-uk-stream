@@ -1,0 +1,222 @@
+diff --git i/app/include/activity/player_view.hpp w/app/include/activity/player_view.hpp
+index 1015145..d8b1852 100644
+--- i/app/include/activity/player_view.hpp
++++ w/app/include/activity/player_view.hpp
+@@ -36,6 +36,11 @@ private:
+     /// @brief get video url
+     void playMedia(const uint64_t seekTicks);
+     bool playIndex(int index);
++    /// @brief play one PlaybackInfo MediaSource (the dub the viewer picked)
++    bool playSource(const jellyfin::Source& source, const uint64_t seekTicks, const std::string& playSessionId);
++    /// @brief let the viewer pick the dub when PlaybackInfo lists several sources
++    void chooseSource(const std::vector<jellyfin::Source>& sources, const uint64_t seekTicks,
++        const std::string& playSessionId);
+     void reportStart();
+     void reportStop();
+     void reportPlay(bool isPaused = false);
+@@ -49,6 +54,8 @@ private:
+     std::string playMethod;
+     std::string playSessionId;
+     jellyfin::Source stream;
++    /// @brief the dub label picked this session; later episodes reuse it
++    std::string preferredDub;
+     std::vector<jellyfin::Episode> episodes;
+ 
+     MPVEvent::Subscription eventSubscribeID;
+diff --git i/app/include/api/jellyfin/media.hpp w/app/include/api/jellyfin/media.hpp
+index 92bd7c9..0190b32 100644
+--- i/app/include/api/jellyfin/media.hpp
++++ w/app/include/api/jellyfin/media.hpp
+@@ -156,6 +156,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
+ struct Source {
+     std::string Id;
+     std::string Name;
++    // Spec #276: the facade labels each dub MediaSource with DisplayTitle
++    // (and Name); without the field the picker renders empty rows.
++    std::string DisplayTitle;
+     std::string Path;
+     int DefaultAudioStreamIndex;
+     int DefaultSubtitleStreamIndex;
+@@ -170,7 +173,7 @@ struct Source {
+     std::vector<Attachment> MediaAttachments;
+     int64_t Bitrate;
+ };
+-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Source, Id, Name, Path, DefaultAudioStreamIndex,
++NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Source, Id, Name, DisplayTitle, Path, DefaultAudioStreamIndex,
+     DefaultSubtitleStreamIndex, SupportsDirectPlay, SupportsTranscoding, IsRemote, IsInfiniteStream, ETag,
+     DirectStreamUrl, TranscodingUrl, MediaStreams, MediaAttachments, Bitrate);
+ 
+diff --git i/app/src/activity/player_view.cpp w/app/src/activity/player_view.cpp
+index 62bb4db..37e1020 100644
+--- i/app/src/activity/player_view.cpp
++++ w/app/src/activity/player_view.cpp
+@@ -319,52 +319,22 @@ void PlayerView::playMedia(const uint64_t seekTicks) {
+                 return;
+             }
+ 
+-            auto& mpv = MPVCore::instance();
+-            auto& svr = AppConfig::instance().getUrl();
+             this->playSessionId = r.PlaySessionId;
+ 
+-            for (auto& item : r.MediaSources) {
+-                std::stringstream ssextra;
+-#ifdef _DEBUG
+-                for (auto& s : item.MediaStreams) {
+-                    brls::Logger::info("Track {} type {} => {}", s.Index, s.Type, s.DisplayTitle);
+-                }
+-#endif
+-                ssextra << fmt::format("network-timeout={}", HTTP::TIMEOUT / 100);
+-                if (seekTicks > 0) ssextra << ",start=" << misc::sec2Time(seekTicks / jellyfin::PLAYTICKS);
+-                if (item.IsInfiniteStream) view->hideVideoProgressSlider();
+-
+-                if (item.IsRemote && MPVCore::FORCE_DIRECTPLAY) {
+-                    mpv.setUrl(item.Path, ssextra.str());
+-                    this->stream = std::move(item);
+-                    return;
+-                }
+-
+-                if (HTTP::PROXY_STATUS) ssextra << ",http-proxy=\"" << HTTP::PROXY << "\"";
+-
+-                if (item.SupportsDirectPlay || MPVCore::FORCE_DIRECTPLAY) {
+-                    std::string url = fmt::format(fmt::runtime(jellyfin::apiStream), this->itemId,
+-                        HTTP::encode_form({
+-                            {"static", "true"},
+-                            {"mediaSourceId", item.Id},
+-                            {"playSessionId", r.PlaySessionId},
+-                            {"tag", item.ETag},
+-                        }));
+-                    this->playMethod = jellyfin::methodDirectPlay;
+-                    mpv.setUrl(svr + url, ssextra.str());
+-                    this->stream = std::move(item);
+-                    return;
+-                }
+-
+-                if (item.SupportsTranscoding) {
+-                    this->playMethod = jellyfin::methodTranscode;
+-                    mpv.setUrl(svr + item.TranscodingUrl, ssextra.str());
+-                    this->stream = std::move(item);
+-                    return;
+-                }
++            // Custom (Ukrainian dub picker): the facade lists one MediaSource
++            // per translation (spec #276). The stock code silently played
++            // MediaSources[0], so a viewer never got to choose the dub — on
++            // the PS4 there is no other surface for it (the detail-screen
++            // «Версія» picker exists for movies only). Ask when there is a
++            // real choice; single-source items behave exactly as before.
++            if (r.MediaSources.size() > 1) {
++                this->chooseSource(r.MediaSources, seekTicks, r.PlaySessionId);
++                return;
+             }
+ 
+-            VideoView::close();
++            if (!this->playSource(r.MediaSources.front(), seekTicks, r.PlaySessionId)) {
++                VideoView::close();
++            }
+         },
+         [ASYNC_TOKEN](const std::string& ex) {
+             ASYNC_RELEASE
+@@ -373,6 +343,104 @@ void PlayerView::playMedia(const uint64_t seekTicks) {
+         jellyfin::apiPlayback, this->itemId);
+ }
+ 
++/// @brief the label the dub picker shows for one MediaSource (spec #276).
++static std::string dubLabel(const jellyfin::Source& source, size_t index) {
++    for (auto& stream : source.MediaStreams) {
++        if (stream.Type == jellyfin::streamTypeAudio && !stream.DisplayTitle.empty())
++            return stream.DisplayTitle;
++    }
++    if (!source.DisplayTitle.empty()) return source.DisplayTitle;
++    if (!source.Name.empty()) return source.Name;
++    return fmt::format("{} {}", "Озвучка", index + 1);
++}
++
++bool PlayerView::playSource(
++    const jellyfin::Source& source, const uint64_t seekTicks, const std::string& playSessionId) {
++    auto& mpv = MPVCore::instance();
++    auto& svr = AppConfig::instance().getUrl();
++
++    std::stringstream ssextra;
++#ifdef _DEBUG
++    for (auto& s : source.MediaStreams) {
++        brls::Logger::info("Track {} type {} => {}", s.Index, s.Type, s.DisplayTitle);
++    }
++#endif
++    ssextra << fmt::format("network-timeout={}", HTTP::TIMEOUT / 100);
++    if (seekTicks > 0) ssextra << ",start=" << misc::sec2Time(seekTicks / jellyfin::PLAYTICKS);
++    if (source.IsInfiniteStream) view->hideVideoProgressSlider();
++
++    if (source.IsRemote && MPVCore::FORCE_DIRECTPLAY) {
++        mpv.setUrl(source.Path, ssextra.str());
++        this->stream = source;
++        return true;
++    }
++
++    if (HTTP::PROXY_STATUS) ssextra << ",http-proxy=\"" << HTTP::PROXY << "\"";
++
++    if (source.SupportsDirectPlay || MPVCore::FORCE_DIRECTPLAY) {
++        std::string url = fmt::format(fmt::runtime(jellyfin::apiStream), this->itemId,
++            HTTP::encode_form({
++                {"static", "true"},
++                {"mediaSourceId", source.Id},
++                {"playSessionId", playSessionId},
++                {"tag", source.ETag},
++            }));
++        this->playMethod = jellyfin::methodDirectPlay;
++        mpv.setUrl(svr + url, ssextra.str());
++        this->stream = source;
++        return true;
++    }
++
++    if (source.SupportsTranscoding) {
++        this->playMethod = jellyfin::methodTranscode;
++        mpv.setUrl(svr + source.TranscodingUrl, ssextra.str());
++        this->stream = source;
++        return true;
++    }
++
++    return false;
++}
++
++void PlayerView::chooseSource(
++    const std::vector<jellyfin::Source>& sources, const uint64_t seekTicks, const std::string& playSessionId) {
++    // Picking a dub once keeps the rest of the binge on it: the player's
++    // next-episode path calls playMedia() again, and re-asking for every
++    // episode would be hostile.
++    if (!this->preferredDub.empty()) {
++        for (size_t i = 0; i < sources.size(); i++) {
++            if (dubLabel(sources[i], i) == this->preferredDub) {
++                this->playSource(sources[i], seekTicks, playSessionId);
++                return;
++            }
++        }
++    }
++
++    std::vector<std::string> labels;
++    labels.reserve(sources.size());
++    for (size_t i = 0; i < sources.size(); i++) labels.push_back(dubLabel(sources[i], i));
++
++    auto* dropdown = new brls::Dropdown(
++        "Озвучка", labels,
++        [this, sources, seekTicks, playSessionId](int selected) {
++            if (selected < 0 || selected >= (int)sources.size()) {
++                VideoView::close();
++                return;
++            }
++            this->preferredDub = dubLabel(sources[selected], selected);
++            this->playSource(sources[selected], seekTicks, playSessionId);
++        },
++        0, [](int selected) {
++            if (selected < 0) VideoView::close();
++        });
++    // B (cancel) would otherwise pop the picker and leave a black player:
++    // make it exit playback instead, so there is always a way out.
++    dropdown->registerAction("hints/cancel"_i18n, brls::BUTTON_B, [](brls::View*) {
++        brls::Application::popActivity(brls::TransitionAnimation::FADE, []() { VideoView::close(); });
++        return true;
++    });
++    brls::Application::pushActivity(new brls::Activity(dropdown), brls::TransitionAnimation::FADE);
++}
++
+ void PlayerView::reportStart() {
+     uint64_t ticks = MPVCore::instance().playback_time * jellyfin::PLAYTICKS;
+     jellyfin::postJSON(

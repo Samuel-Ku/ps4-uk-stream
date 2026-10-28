@@ -1,0 +1,138 @@
+diff --git i/app/include/tab/search_tab.hpp w/app/include/tab/search_tab.hpp
+index 649fb1f..23db874 100644
+--- i/app/include/tab/search_tab.hpp
++++ w/app/include/tab/search_tab.hpp
+@@ -34,6 +34,10 @@ private:
+     void updateInput();
+ 
+     std::string currentSearch;
++    /// @brief true once the current query has results on screen (their grid
++    /// is kept while the next suggestion page loads instead of flashing a
++    /// skeleton, which also preserves the viewer's scroll position)
++    bool hasResults = false;
+     size_t searchIndex = 0;
+     size_t pageSize = 20;
+ };
+diff --git i/app/src/tab/search_tab.cpp w/app/src/tab/search_tab.cpp
+index 490422c..2c88598 100644
+--- i/app/src/tab/search_tab.cpp
++++ w/app/src/tab/search_tab.cpp
+@@ -15,7 +15,7 @@
+ 
+ using namespace brls::literals;  // for _i18n
+ 
+-typedef brls::Event<char> KeyboardEvent;
++typedef brls::Event<std::string> KeyboardEvent;
+ 
+ class KeyboardButton : public RecyclingGridItem {
+ public:
+@@ -41,16 +41,27 @@ private:
+ class DataSourceKeyboard : public RecyclingGridDataSource {
+ public:
+     explicit DataSourceKeyboard(KeyboardEvent::Callback cb) {
+-        for (int i = 'A'; i <= 'Z'; i++) list.push_back(i);
+-        for (int i = '1'; i <= '9'; i++) list.push_back(i);
+-        list.push_back('0');
++        // Custom (Ukrainian search): the PS4 system IME has no Ukrainian
++        // layout (OpenOrbis exposes Russian only — і/ї/є/ґ are missing), and
++        // this grid used to be A-Z only, so Ukrainian could not be typed at
++        // all. Ukrainian first (the catalogue is Ukrainian), then a space,
++        // Latin and digits for English titles.
++        static const char* ukrainian[] = {"А", "Б", "В", "Г", "Ґ", "Д", "Е", "Є", "Ж", "З", "И",
++            "І", "Ї", "Й", "К", "Л", "М", "Н", "О", "П", "Р", "С", "Т", "У", "Ф", "Х", "Ц", "Ч",
++            "Ш", "Щ", "Ь", "Ю", "Я"};
++        for (auto* letter : ukrainian) list.push_back(letter);
++        list.push_back(" ");
++        list.push_back("'");
++        for (int i = 'A'; i <= 'Z'; i++) list.push_back(std::string(1, (char)i));
++        for (int i = '1'; i <= '9'; i++) list.push_back(std::string(1, (char)i));
++        list.push_back("0");
+ 
+         this->event.subscribe(cb);
+     }
+ 
+     RecyclingGridItem* cellForRow(RecyclingView* recycler, size_t index) override {
+         auto* cell = dynamic_cast<KeyboardButton*>(recycler->dequeueReusableCell("Cell"));
+-        cell->setValue(std::string{this->list[index]});
++        cell->setValue(this->list[index]);
+         return cell;
+     }
+ 
+@@ -61,7 +72,7 @@ public:
+     void clearData() override { this->list.clear(); }
+ 
+ private:
+-    std::vector<char> list;
++    std::vector<std::string> list;
+     KeyboardEvent event;
+ };
+ 
+@@ -141,6 +152,17 @@ private:
+     std::vector<std::string> list;
+ };
+ 
++/// @brief erase the last UTF-8 code point.
++/// The stock Delete used ``pop_back()`` — one byte — which left half a
++/// Cyrillic letter behind (a Ukrainian letter is two bytes) and sent invalid
++/// UTF-8 to the server.
++static void eraseLastUtf8(std::string& text) {
++    if (text.empty()) return;
++    size_t pos = text.size() - 1;
++    while (pos > 0 && (static_cast<unsigned char>(text[pos]) & 0xC0) == 0x80) pos--;
++    text.erase(pos);
++}
++
+ SearchTab::SearchTab() {
+     // Inflate the tab from the XML file
+     this->inflateFromXMLRes("xml/tabs/search_tv.xml");
+@@ -163,7 +185,7 @@ SearchTab::SearchTab() {
+     });
+     this->searchBox->addGestureRecognizer(new brls::TapGestureRecognizer(this->searchBox));
+     this->recyclingKeyboard->registerCell("Cell", KeyboardButton::create);
+-    this->recyclingKeyboard->setDataSource(new DataSourceKeyboard([this](char key) {
++    this->recyclingKeyboard->setDataSource(new DataSourceKeyboard([this](const std::string& key) {
+         this->currentSearch += key;
+         this->updateInput();
+     }));
+@@ -193,7 +215,7 @@ SearchTab::SearchTab() {
+ 
+     this->deleteLabel->registerClickAction([this](brls::View* view) {
+         if (!currentSearch.empty()) {
+-            this->currentSearch.pop_back();
++            eraseLastUtf8(this->currentSearch);
+             this->updateInput();
+         }
+         return true;
+@@ -266,8 +288,10 @@ void SearchTab::doSearch(const std::string& searchTerm) {
+             ASYNC_RELEASE
+             this->searchIndex = r.StartIndex + this->pageSize;
+             if (r.TotalRecordCount == 0) {
++                this->hasResults = false;
+                 this->searchSuggest->setEmpty( "main/search/no_results"_i18n, "icon/ico-search.svg");
+             } else if (r.StartIndex == 0) {
++                this->hasResults = true;
+                 this->searchSuggest->setDataSource(new VideoDataSource(r.Items));
+             } else if (r.Items.size() > 0) {
+                 auto dataSrc = dynamic_cast<VideoDataSource*>(this->searchSuggest->getDataSource());
+@@ -284,6 +308,7 @@ void SearchTab::doSearch(const std::string& searchTerm) {
+ 
+ void SearchTab::updateInput() {
+     if (this->currentSearch.empty()) {
++        this->hasResults = false;
+         this->inputLabel->setText("main/search/hint"_i18n);
+         this->inputLabel->setTextColor(brls::Application::getTheme().getColor("font/grey"));
+         if (this->historyBox->getVisibility() == brls::Visibility::GONE) {
+@@ -302,7 +327,11 @@ void SearchTab::updateInput() {
+         this->searchIndex = 0;
+         this->searchSuggest->spanCount = brls::getStyle().getMetric("app/grid/5");
+         this->searchSuggest->estimatedRowHeight = brls::getStyle().getMetric("app/album/height");
+-        this->searchSuggest->showSkeleton();
++        // Keep the results already on screen while the next page of
++        // suggestions loads: showSkeleton() empties the grid, and with it the
++        // viewer's scroll position, so the list jumped to the top on every
++        // keystroke.
++        if (!this->hasResults) this->searchSuggest->showSkeleton();
+         this->doSearch(this->currentSearch);
+     }
+ }
+\ No newline at end of file
