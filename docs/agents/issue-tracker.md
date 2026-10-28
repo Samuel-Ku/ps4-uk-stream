@@ -17,6 +17,14 @@ Infer the repo from `git remote -v` — `gh` does this automatically when run in
 
 The mission loop takes the lowest-numbered available ticket. Availability (open, unblocked, agent-actionable), the label families it is built from, and the one-snapshot `gh` query live in `docs/agents/triage-labels.md`.
 
+## Close-out: recording an outcome
+
+Landing the code is half a closure; the record has to stay true after it. Before `gh issue close`:
+
+1. **Quote only commits reachable from origin.** A SHA that exists only in the local clone resolves nowhere for anyone else — reviewer, CI, or the next agent. Fetch, then check: `git fetch origin && git merge-base --is-ancestor <sha> origin/master`. If it fails, push first, or quote the pushed commit that contains it.
+2. **Retire every surviving claim that the ticket is still open.** Sweep the living docs for the number in a state sentence, not just in links — the failure class is `#443 must stay open` surviving its closure. `grep -rn '#<n>[^0-9]' --include='*.md' .`, then repair each hit the closure invalidated. Dated records (`docs/adr/`, `status-*.md`, `*-2026-*.md`, `research/`, `superpowers/`) are point-in-time history: touch them only when a reader would act on the stale claim.
+3. **Leave each fact in one home.** Write the outcome where a reader acts on it — the living doc that states the contract, or the issue comment for what happened — and point at that home from anywhere else. If a second copy exists, collapse it in the same change; two copies are one edit away from disagreeing.
+
 ## Pull requests as a triage surface
 
 **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
