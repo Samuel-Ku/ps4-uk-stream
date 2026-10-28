@@ -1,6 +1,6 @@
 # Custom PS4 Switchfin build
 
-The PS4 client is `dragonflylee/switchfin` (C++ / borealis). Three of the
+The PS4 client is `dragonflylee/switchfin` (C++ / borealis). Four of the
 viewer-facing problems can only be fixed in the client, so this directory
 carries the patches and the CI workflow that builds a PKG on GitHub Actions
 (the workstation has no docker/sudo for the pacbrew/OpenOrbis container).
@@ -35,3 +35,13 @@ rollback.
   while they were being scrolled. The patch restores the focused cell index
   when the reloaded data still covers it; the search tab also stops blanking
   the results grid with a skeleton on every keystroke.
+- `0004-raise-request-timeout.patch` — the client's default HTTP timeout is
+  **3 s**, while the facade's first home load fetches the "latest" shelf of
+  every library in parallel (19 rows) and takes 6–8 s on a cold provider
+  cache. The stock client therefore shows "Timeout was reached" toasts and
+  leaves home rows as empty skeletons for viewers who never set an explicit
+  timeout (a fresh PS4 config.json has none). The patch raises the default
+  to 10 s — an existing dropdown option, so the setting stays consistent.
+  Reproduced and fixed on the Android build with the same source: with the
+  default 3 s the home screen stayed empty, with `request_timeout` raised the
+  rows and posters loaded.

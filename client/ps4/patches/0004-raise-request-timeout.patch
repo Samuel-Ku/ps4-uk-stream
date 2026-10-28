@@ -1,0 +1,13 @@
+diff --git i/app/src/utils/config.cpp w/app/src/utils/config.cpp
+index bfd27fc..61cfac0 100644
+--- i/app/src/utils/config.cpp
++++ w/app/src/utils/config.cpp
+@@ -314,7 +314,7 @@ bool AppConfig::init() {
+ 
+     AppConfig::SYNC = this->getItem(SYNC_SETTING, true);
+ 
+-    HTTP::TIMEOUT = this->getItem(REQUEST_TIMEOUT, 3000L);
++    HTTP::TIMEOUT = this->getItem(REQUEST_TIMEOUT, 10000L);
+     HTTP::PROXY_STATUS = this->getItem(HTTP_PROXY_STATUS, false);
+     HTTP::PROXY = this->getItem(HTTP_PROXY, std::string("http://192.168.1.1:1080"));
+ 
