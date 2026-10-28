@@ -33,7 +33,7 @@ GitHub's default labels (`bug`, `enhancement`, `question`, …) are used as-is f
 The mission takes the **lowest-numbered available ticket**, closes it, then takes the next lowest available number. A ticket is **available** only when all three hold:
 
 1. **Open, with no open blocker** — every issue in GitHub's native dependency list (`blockedBy`) is closed, and every issue named in the body's `Blocked by` line is closed where native dependencies are unavailable.
-2. **No unsatisfied blocking label** — no `status:blocked`, and neither environment label while its probe still fails here.
+2. **No unsatisfied blocking label** — no `status:blocked`, and neither environment label while its probe still fails here. The six probes are one read-only command: `backend/deploy/env-probe.sh` (exit `0` = all pass, `1` = still blocked, `2` = usage); the ticket's `Blocked by` section names which ones block it.
 3. **Actionable by the agent** — `ready-for-agent`, and not `ready-for-human`, `needs-info` or `needs-triage`.
 
 The rule is a filter, not a licence to start the lowest number: a `ready-for-agent` ticket with an open blocker is an inconsistent record. Fix the record first — the labels and the `Blocked by` text must agree, each naming the concrete probe — and do not start it until they do.
