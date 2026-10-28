@@ -9,8 +9,11 @@ each hop re-validated.
 
 from __future__ import annotations
 
+import importlib
+import pkgutil
 import socket
 from dataclasses import replace
+from urllib.parse import urlparse
 
 import httpx
 import pytest
@@ -72,6 +75,7 @@ def test_default_allowlist_covers_provider_domains():
         "kinotron.tv",
         "kinovezha.tv",
         "klon.fun",
+        "klonua.com",
         "serialno.tv",
         "simpsonsua.tv",
         "uafix.net",
@@ -80,8 +84,40 @@ def test_default_allowlist_covers_provider_domains():
         "uaserials.com",
         "ufdub.com",
         "unimay.media",
+        "yts.gg",
     )
     assert set(provider_domains) <= set(DEFAULT_POSTER_ALLOWED_HOSTS)
+
+
+def test_default_allowlist_covers_every_provider_base_url():
+    """A provider whose crawl domain drifts must fail HERE, not on the device.
+
+    The hand-maintained tuple above drifted twice (klontv moved
+    klon.fun -> klonua.com; YTS posters live on yts.gg) while both
+    domains were absent from the allowlist — every poster from those
+    providers became a 404, and Switchfin retried a visible missing
+    poster once per frame (observed: 1590 requests for one card in
+    ~25 s). Deriving the domains from the provider modules keeps this
+    guard honest without a second list to update.
+    """
+    import cs_uk_api.providers as providers_pkg
+    from cs_uk_api.config import DEFAULT_POSTER_ALLOWED_HOSTS
+
+    def allowed(host: str) -> bool:
+        return any(host == e or host.endswith("." + e) for e in DEFAULT_POSTER_ALLOWED_HOSTS)
+
+    missing = []
+    for info in pkgutil.iter_modules(providers_pkg.__path__):
+        if info.name.startswith("_"):
+            continue
+        module = importlib.import_module(f"cs_uk_api.providers.{info.name}")
+        base = getattr(module, "BASE_URL", None)
+        if not base:
+            continue  # API-only provider: its poster host is data, not a constant
+        host = urlparse(base).hostname
+        if host is not None and not allowed(host):
+            missing.append(f"{info.name}:{host}")
+    assert missing == []
 
 
 # ---------- is_allowed: scheme + host allowlist ----------

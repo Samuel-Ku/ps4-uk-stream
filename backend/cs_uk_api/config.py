@@ -18,7 +18,11 @@ DEFAULT_POSTER_ALLOWED_HOSTS: tuple[str, ...] = (
     "hentaiukr.com",
     "kinotron.tv",
     "kinovezha.tv",
+    # klontv migrated klon.fun -> klonua.com (2026-08); klon.fun stays
+    # allowlisted for the 301 hop and for snapshots that still hold the
+    # old poster URLs.
     "klon.fun",
+    "klonua.com",
     "serialno.tv",
     "simpsonsua.tv",
     "uafix.net",
@@ -31,6 +35,10 @@ DEFAULT_POSTER_ALLOWED_HOSTS: tuple[str, ...] = (
     "mooncdn.net",
     "youtube.com",
     "srvd2204.com",
+    # YTS v2 API poster fields point at https://yts.gg/assets/... (which
+    # 301s to img.yts.gg); both resolve through the subdomain rule once
+    # the bare domain is here.
+    "yts.gg",
 )
 
 
