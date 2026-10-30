@@ -40,14 +40,17 @@ Cache-key construction is deliberately absent here — it stays inside
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
 import httpx
+from fastapi import HTTPException
 
-from . import _catalog_state
+from . import _catalog_state, catalog_index
+from . import config as _config
 from ._catalog_state import GroupOrigin as GroupOrigin  # noqa: PLC0414  (seam re-export)
 from ._catalog_state import (
     GroupResolution,
@@ -65,7 +68,10 @@ from .models import (
     SearchResult,
     Translation,
 )
+from .providers import PROVIDERS
 from .recommend import ItemProfile
+
+log = logging.getLogger("cs_uk_api.catalog")
 
 
 class ItemVerdict(str, Enum):
@@ -332,20 +338,86 @@ async def search(
     form: MediaForm | None = None,
     style_filter: frozenset[MediaStyle] | None = None,
 ) -> SearchResponse:
-    """Merged multi-provider search with group registration folded in.
+    """Local-first, then the merged multi-provider fan-out.
 
-    Runs the exact shared fan-out the native route uses (same
-    per-provider failure attribution, gated sweep, uakino skip, 5-min
-    cache — ADR-0003) and THEN registers the merged groups into the
+    The local catalog index answers alone once it holds
+    ``index_local_min`` merged groups; below that threshold (or when a
+    live fan-out fails completely) the live results are merged with the
+    local ones. Either way the groups are registered into the shared
     group-key resolution map, so a searched card opens in the detail
     surface without a separate manual ``register_search_groups`` call
-    (US3: a missed registration can never 404 a searched card).
+    (US3: a missed registration can never 404 a searched card), and the
+    live sources are indexed on the way out so normal use grows the
+    catalog too.
     """
-    resp = await _catalog_state.merged_search(
-        query, provider=provider, form=form, style_filter=style_filter
+    local_allowed = (
+        frozenset(PROVIDERS) if provider == "all" else frozenset({provider})
     )
+    local = catalog_index.search_groups(
+        query,
+        limit=60,
+        allowed=local_allowed,
+        form=form,
+        style_filter=style_filter,
+    )
+    if local is not None and len(local) >= _config.SETTINGS.index_local_min:
+        _catalog_state.record_search_query(query)
+        _catalog_state.register_search_groups(local)
+        log.debug("local index answered q=%r groups=%d", query, len(local))
+        return SearchResponse(query=query, groups=local)
+    try:
+        resp = await _catalog_state.merged_search(
+            query, provider=provider, form=form, style_filter=style_filter
+        )
+    except HTTPException as error:
+        if not local or not _is_total_search_timeout(error):
+            raise
+        # Every upstream timed out, but the index still knows this query:
+        # serving the local groups is strictly better than a 502.
+        _catalog_state.record_search_query(query)
+        _catalog_state.register_search_groups(local)
+        log.warning(
+            "live search failed; served %d local groups q=%r",
+            len(local),
+            query,
+        )
+        return SearchResponse(query=query, groups=local)
+    if local:
+        # Merge the two ranked source lists through the same merge core the
+        # live fan-out uses. Local first so its canonical fields win, and
+        # dedupe by wire id so a source present on both sides is not shown
+        # twice in the chip strip.
+        unique: dict[str, SearchResult] = {}
+        for source in (s for group in local for s in group.sources):
+            unique.setdefault(source.id, source)
+        for source in (s for group in resp.groups for s in group.sources):
+            unique.setdefault(source.id, source)
+        groups = catalog_index.groups_from_sources(list(unique.values()))
+        catalog_index.remember_groups(groups)
+        _catalog_state.register_search_groups(groups)
+        log.debug(
+            "hybrid search q=%r local=%d live=%d",
+            query,
+            len(local),
+            len(resp.groups),
+        )
+        if resp.failures:
+            return SearchResponse(query=query, groups=groups, failures=resp.failures)
+        return SearchResponse(query=query, groups=groups)
+    catalog_index.remember_groups(resp.groups)
     _catalog_state.register_search_groups(resp.groups)
     return resp
+
+
+def _is_total_search_timeout(error: HTTPException) -> bool:
+    """True only for the fan-out's own total-timeout 502.
+
+    A deterministic provider verdict (uakino's startup 502, its warming
+    503) must reach the client even when the index has local rows for the
+    query: those rows would not be playable while that lane is down.
+    """
+    detail = error.detail
+    return isinstance(detail, dict) and detail.get("error") == "search_timeout"
 
 
 # ---------------------------------------------------------------------------

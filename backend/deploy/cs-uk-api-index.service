@@ -1,0 +1,45 @@
+# cs-uk-api catalog index crawler service unit
+#
+# One-shot: walks the selected providers' browse sections into the SQLite
+# FTS5 catalog, then exits. The crawler is detached — it imports the
+# adapters and the index, never the API app — so a long crawl cannot slow
+# the running server.
+#
+# Install (with the timer):
+#   sudo cp deploy/cs-uk-api-index.service deploy/cs-uk-api-index.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now cs-uk-api-index.timer
+#
+# Edit User= and WorkingDirectory= to match the host before enabling.
+# The default DB is ~/.cache/cs-uk-api/catalog.sqlite3 (override with
+# CS_UK_CATALOG_DB). The unit sweeps EVERY registered provider with
+# --all-providers; 20 pages per section is the nightly incremental pass.
+# Run the CLI by hand with --all-providers --pages 100 for the first full
+# build.
+
+[Unit]
+Description=cs-uk-api - local catalog index crawler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=rorschach
+WorkingDirectory=/home/rorschach/UA flims/ps4-uk-stream/backend
+ExecStart="/home/rorschach/UA flims/ps4-uk-stream/backend/.venv/bin/python" -m cs_uk_api.scripts.index_catalog --all-providers --pages 20 --delay 0.3
+# A full first build of a large library can take a while; keep the unit
+# from being killed halfway through a section.
+TimeoutStartSec=5400
+# The crawler is polite by default (one page at a time, 0.3s pause).
+Nice=10
+# yts SERIES (#379): without a Popcorn-API host the yts series section
+# records the not-configured error and only its movies are indexed.
+# Live mirrors churn; these were probed 2026-10-28: fusme.link /
+# jfper.link / uxert.link / yrkde.link.
+Environment=CS_UK_POPCORN_BASE_URL=https://fusme.link
+# Environment=CS_UK_CATALOG_DB=/home/rorschach/.cache/cs-uk-api/catalog.sqlite3
+# --all-providers ignores CS_UK_INDEX_PROVIDERS; use --providers in ExecStart
+# instead when a host must crawl a narrower set.
+
+[Install]
+WantedBy=multi-user.target

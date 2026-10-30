@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 
 import cs_uk_api.providers._registry  # noqa: F401
 
-from . import catalog, lifecycle
+from . import catalog, catalog_index, lifecycle
 from . import config as _config
 from . import watchdog as watchdog_mod
 from .filters import parse_form_filter as _parse_form_filter
@@ -29,6 +29,7 @@ from .models import (
     MediaStyle,
     ProviderInfo,
     ProviderSections,
+    SearchHintsResponse,
     SearchResponse,
 )
 from .native import content as native_content
@@ -295,6 +296,26 @@ async def search(
     style_filter = _parse_style_filter(style)
     return await catalog.search(
         q, provider=provider, form=form_filter, style_filter=style_filter
+    )
+
+
+@app.get("/api/search/hints", response_model=SearchHintsResponse)
+async def search_hints(
+    q: str = Query(min_length=1, max_length=80),
+    limit: int = Query(10, ge=1, le=50),
+) -> SearchHintsResponse:
+    """Index-only typeahead hints (``GET /api/search/hints``).
+
+    Deliberately never triggers a provider fan-out: a client may call this
+    on every keystroke. The response is empty until the catalog has been
+    crawled (``python -m cs_uk_api.scripts.index_catalog``) or populated
+    by earlier live searches. ``id`` opens directly through
+    ``/api/content/{id}``; ``group_key`` is the merged identity for
+    clients already on the group surface.
+    """
+    return SearchHintsResponse(
+        query=q,
+        hints=catalog_index.hints(q, limit=limit, allowed=frozenset(PROVIDERS)),
     )
 
 

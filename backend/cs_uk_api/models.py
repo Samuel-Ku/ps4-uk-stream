@@ -132,6 +132,32 @@ class SearchGroup(BaseModel):
         return sorted(value)
 
 
+class SearchHint(BaseModel):
+    """One local-index typeahead row (``GET /api/search/hints``).
+
+    Hints come from the catalog index only — no upstream fan-out — so a
+    client can typeahead on every keystroke. ``id`` is the provider wire
+    id (``provider:external``) and opens directly through
+    ``/api/content/{id}``; ``group_key`` is the stateless merged key for
+    callers that already hold the group surface.
+    """
+
+    id: str
+    group_key: str
+    title: str
+    year: int | None = None
+    form: MediaForm
+    poster: str | None = None
+    provider: str
+
+
+class SearchHintsResponse(BaseModel):
+    """``GET /api/search/hints`` envelope: prefix matches from the index."""
+
+    query: str = Field(min_length=1, max_length=80)
+    hints: list[SearchHint]
+
+
 class SearchResponse(BaseModel):
     query: str = Field(min_length=1, max_length=80)
     #: Merged cross-provider groups (issue #71). One entry per

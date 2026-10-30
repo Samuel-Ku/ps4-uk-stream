@@ -1,0 +1,16 @@
+# cs-uk-api catalog index timer
+#
+# Runs the crawl nightly at 04:10 (after the drift monitor's 03:10 sweep,
+# so the two chores never compete for the providers). Persistent=true
+# catches a missed run at next boot.
+
+[Unit]
+Description=Run the cs-uk-api catalog index crawler nightly
+
+[Timer]
+OnCalendar=*-*-* 04:10:00
+Persistent=true
+Unit=cs-uk-api-index.service
+
+[Install]
+WantedBy=timers.target

@@ -29,9 +29,14 @@ os.environ.setdefault("CS_UK_USER_STATE_PATH", "")
 # paths.
 os.environ.setdefault("CS_UK_SNAPSHOT_PATH", "")
 
+# The local catalog index is disabled in the default suite: tests must
+# never create/read the operator's real ~/.cache/cs-uk-api/catalog.sqlite3.
+# Index-specific tests construct CatalogIndex over tmp_path explicitly.
+os.environ.setdefault("CS_UK_CATALOG_DB", "")
+
 import pytest
 
-from cs_uk_api import llm
+from cs_uk_api import catalog_index, llm
 from cs_uk_api._catalog_state import _stores
 from cs_uk_api.health import TRACKER
 from cs_uk_api.play_attestation import PLAY_ATTESTATION
@@ -79,6 +84,7 @@ def _reset_global_state() -> None:
     TRACKER.reset()
     PLAY_ATTESTATION.reset()
     WATCHDOG.reset()
+    catalog_index.reset_index()
     for store in _SHARED_STORES:
         store.clear()  # type: ignore[attr-defined]
     # The catalog snapshot owner (ADR-0010): reset the owned derived state

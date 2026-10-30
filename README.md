@@ -116,6 +116,43 @@ page skips that provider and a fully-failed extension degrades to the
 snapshot slice, so browsing never breaks. The personalized and genre
 rails stay snapshot-bounded by design (their pool IS the snapshot).
 
+**Local catalog index (local-first search)** — a rebuildable SQLite FTS5
+catalog beside the other runtime stores holds the providers' browse
+listings far beyond the home snapshot's first page. Search always asks
+the index first: with at least `CS_UK_INDEX_LOCAL_MIN` merged groups
+(default 5) the answer is local-only and needs no upstream; below that
+threshold the live fan-out runs and its results are merged with the
+local hits, and if every live provider times out the local hits are
+served alone. Live results are indexed on the way out. Matching
+covers Cyrillic prefixes and both Ukrainian transliterations — дюна,
+дю, duna and diuna all find «Дюна» — plus genre labels. The full
+design and operational notes are in
+[docs/catalog-index.md](docs/catalog-index.md).
+
+Build it once, then let the nightly timer keep it fresh:
+
+```bash
+cd backend && . .venv/bin/activate
+python -m cs_uk_api.scripts.index_catalog --all-providers --pages 100   # first build
+```
+
+```bash
+sudo cp backend/deploy/cs-uk-api-index.service \
+        backend/deploy/cs-uk-api-index.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now cs-uk-api-index.timer
+```
+
+The nightly timer uses `--all-providers`, so every registered provider is
+swept; a manual run without the flag uses `CS_UK_INDEX_PROVIDERS`.
+`yts` series use `CS_UK_POPCORN_BASE_URL`; the shipped units set it to the
+live mirror documented in [docs/torrent-lane.md](docs/torrent-lane.md).
+`GET /api/search/hints?q=дю` is the index-only typeahead surface (never
+fans out). Knobs: `CS_UK_CATALOG_DB` (empty disables the index),
+`CS_UK_INDEX_PROVIDERS`, `CS_UK_INDEX_PAGES`, `CS_UK_INDEX_LOCAL_MIN`,
+`CS_UK_INDEX_DELAY`. Delete `~/.cache/cs-uk-api/catalog.sqlite3*` to
+rebuild from scratch; it holds no viewer state.
+
 **LLM taste-profile layer (spec #290, OPTIONAL)** — an optional
 enrichment of the personalized rows against any OpenAI-compatible
 endpoint (OpenAI, OpenRouter, Groq, or a local llama.cpp/ollama

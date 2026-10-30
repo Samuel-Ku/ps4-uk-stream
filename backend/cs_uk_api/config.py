@@ -3,6 +3,21 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+#: Providers a manual catalog crawl uses by default: the five broadest
+#: section providers (movies, series, cartoons, anime, dorama, arthaus).
+#: Override with ``CS_UK_INDEX_PROVIDERS`` or the CLI ``--providers``;
+#: the nightly unit passes ``--all-providers`` and ignores this list.
+#: Deliberately separate from ``CS_UK_PROVIDERS`` (which the registry
+#: does not apply).
+DEFAULT_INDEX_PROVIDERS: tuple[str, ...] = (
+    "uakino",
+    "ufdub",
+    "kinotron",
+    "uaflix",
+    "cikavaideya",
+)
+
+
 #: Hosts the poster proxy may fetch from: provider domains (subdomain
 #: matching on dot boundaries) plus the image CDNs seen in provider
 #: fixtures. Override via CS_UK_POSTER_ALLOWED_HOSTS (comma-separated).
@@ -163,6 +178,26 @@ class Settings:
     #: working when its tools are missing. Operators can turn the route
     #: off explicitly with ``CS_UK_TELEPORT_ENABLED=0``.
     teleport_enabled: bool = True
+    #: Local catalog index (SQLite FTS5). ``None`` disables the index and
+    #: every search falls back to the live provider fan-out. Default:
+    #: ``catalog.sqlite3`` in the runtime directory next to the poster
+    #: cache (``~/.cache/cs-uk-api`` by default). A rebuildable cache, so
+    #: the cache directory is the right home for it. Override via
+    #: ``CS_UK_CATALOG_DB``; an explicit empty string disables it.
+    catalog_db_path: str | None = None
+    #: Providers the crawler walks by default (CLI ``--providers`` wins).
+    index_providers: tuple[str, ...] = DEFAULT_INDEX_PROVIDERS
+    #: Browse pages per section the crawler walks (``--pages`` wins). The
+    #: timer shipped with the repo asks for 20; the CLI default is 10.
+    index_pages: int = 10
+    #: Local-first switch: when the index returns at least this many
+    #: merged groups, ``/api/search`` answers from the index alone and
+    #: never touches upstreams. Below the threshold the live fan-out runs
+    #: and its results are merged with the local ones (and every live
+    #: result is indexed). 1 = always local when anything matches.
+    index_local_min: int = 5
+    #: Politeness pause between crawler page fetches, in seconds.
+    index_crawl_delay_s: float = 0.2
 
 
 def _load_resume_path() -> str | None:
@@ -234,6 +269,22 @@ def _load_hidden_row_kinds() -> frozenset[str]:
     return frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
 
 
+def _load_catalog_db_path() -> str | None:
+    """Resolve the local catalog index path.
+
+    ``CS_UK_CATALOG_DB`` unset → ``catalog.sqlite3`` next to the poster
+    disk cache; explicit empty string → index disabled (live-only
+    searches); otherwise the given path.
+    """
+    raw = os.environ.get("CS_UK_CATALOG_DB")
+    if raw is None:
+        base = os.environ.get("CS_UK_POSTER_CACHE_DIR", "") or os.path.expanduser("~/.cache/cs-uk-api/posters")
+        return os.path.join(os.path.dirname(base), "catalog.sqlite3")
+    if raw == "":
+        return None
+    return raw
+
+
 def load_settings() -> Settings:
     raw = os.environ.get("CS_UK_PROVIDERS", "uakino")
     providers = tuple(p.strip() for p in raw.split(",") if p.strip())
@@ -300,6 +351,17 @@ def load_settings() -> Settings:
         popcorn_base_url=os.environ.get("CS_UK_POPCORN_BASE_URL") or None,
         teleport_enabled=os.environ.get("CS_UK_TELEPORT_ENABLED", "1").strip().lower()
         not in ("0", "false", "no", "off"),
+        catalog_db_path=_load_catalog_db_path(),
+        index_providers=tuple(
+            p.strip()
+            for p in os.environ.get(
+                "CS_UK_INDEX_PROVIDERS", ",".join(DEFAULT_INDEX_PROVIDERS)
+            ).split(",")
+            if p.strip()
+        ),
+        index_pages=max(1, int(os.environ.get("CS_UK_INDEX_PAGES", "10"))),
+        index_local_min=max(1, int(os.environ.get("CS_UK_INDEX_LOCAL_MIN", "5"))),
+        index_crawl_delay_s=max(0.0, float(os.environ.get("CS_UK_INDEX_DELAY", "0.2"))),
     )
 
 
