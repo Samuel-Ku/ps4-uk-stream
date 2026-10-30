@@ -1,4 +1,8 @@
-# Release gate (README.md §Release gate) on every push and every PR.
+# Release gate (README.md §Release gate) on every push, every PR, and on
+# demand via workflow_dispatch. Each run is the whole gate:
+#   gh workflow run ci.yml --ref master
+# (`workflow_dispatch` must be declared explicitly; it is not implied by the
+# other triggers.)
 #
 # Why this exists: the suite, ruff and strict mypy were run by hand, so a
 # regression could sit on master until someone remembered to run them.
@@ -16,8 +20,10 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
-# A newer push to the same branch supersedes an in-flight run for it.
+# A newer run on the same ref (push, PR update or manual dispatch) supersedes
+# an in-flight one for it.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
