@@ -65,9 +65,19 @@ _QUALITY_PREFERENCE: tuple[str, ...] = ("1080p", "720p")
 #: Dead-on-arrival candidates tried per stream before item-level
 #: ``not_found``; each attempt costs one engine add window
 #: (``ADD_TIMEOUT_S``) plus, on a session that gets that far, the
-#: adapter's first-bytes probe (``STREAM_PROBE_TIMEOUT_S``, #461), so
-#: this bounds the slow path (~105 s worst case).
+#: adapter's first-bytes probe (``STREAM_PROBE_TIMEOUT_S``, #461). With
+#: the retry below the pathological all-timeout path is ~180 s; the
+#: common cold start recovers on the second probe.
 _MAX_SESSION_ATTEMPTS = 3
+
+#: Per-candidate tries for a RETRYABLE rejection (metadata timeout or a
+#: just-created session that had not spoken yet). The cold s1e2 case spent
+#: its first candidate on a 5 s silence and then walked into a transient
+#: engine 500 on the next one; retrying the SAME magnet recovers the
+#: session the engine was already building, without spending that
+#: candidate. Final verdicts (400, zero seeders) still advance on the
+#: first try.
+_SAME_CANDIDATE_ATTEMPTS = 2
 
 #: Tracker list convention of the fork, appended to every built magnet:
 #: YTS hashes alone carry no announce URLs, so the engine's peer
@@ -125,13 +135,14 @@ async def play_torrent(
     The lane's engine-facing interface. It owns the whole conversation
     after the provider has selected candidates:
 
-      - a dead-on-arrival verdict (:class:`EngineRejected` — metadata
-        never arrived in the add window, or the session's stream never
-        sent first bytes, the adapter's #461 probe) advances to the
-        next candidate, bounded by ``_MAX_SESSION_ATTEMPTS``; each
-        attempt costs the add's metadata window (:data:`ADD_TIMEOUT_S`)
-        plus, for a created session, that first-bytes probe, so the
-        bound keeps the slow path fast;
+      - a retryable dead-on-arrival verdict (:class:`EngineRejected` —
+        metadata still arriving when the add window closed, or a
+        just-created session that had not spoken inside the #461 probe)
+        retries the SAME magnet once before advancing; a final verdict
+        advances immediately. Candidates are bounded by
+        ``_MAX_SESSION_ATTEMPTS``; each attempt costs the add's metadata
+        window (:data:`ADD_TIMEOUT_S`) plus, for a created session, that
+        first-bytes probe, so the bound keeps the slow path fast;
       - an engine-path fault (:class:`EnginePathError`) aborts
         immediately and becomes the tagged ``unreachable``
         :class:`ProviderError` the recording surfaces retarget to the
@@ -149,20 +160,29 @@ async def play_torrent(
             if candidate.info_hash.startswith("magnet:")
             else build_magnet(candidate.info_hash)
         )
-        try:
-            result = await engine.ensure_session(identifier, file_hint=file_hint)
-        except EngineRejected as e:
-            log.warning(
-                "swarm %s rejected (%s); falling back to the next candidate",
-                candidate.info_hash[:8],
-                e,
-            )
-        except EnginePathError as e:
-            raise ProviderError(
-                "unreachable", f"torrent engine unreachable: {e}"
-            ).with_engine_path() from e
-        else:
-            return torrent_stream_response(result)
+        for attempt in range(1, _SAME_CANDIDATE_ATTEMPTS + 1):
+            try:
+                result = await engine.ensure_session(identifier, file_hint=file_hint)
+            except EngineRejected as e:
+                if e.retryable and attempt < _SAME_CANDIDATE_ATTEMPTS:
+                    log.warning(
+                        "swarm %s rejected (%s); retrying the same candidate",
+                        candidate.info_hash[:8],
+                        e,
+                    )
+                    continue
+                log.warning(
+                    "swarm %s rejected (%s); falling back to the next candidate",
+                    candidate.info_hash[:8],
+                    e,
+                )
+                break
+            except EnginePathError as e:
+                raise ProviderError(
+                    "unreachable", f"torrent engine unreachable: {e}"
+                ).with_engine_path() from e
+            else:
+                return torrent_stream_response(result)
     raise ProviderError("not_found", "no seeders or dead torrent")
 
 
@@ -175,14 +195,14 @@ def build_magnet(info_hash: str) -> str:
 def torrent_stream_response(result: EngineStream) -> StreamResponse:
     """``EngineStream`` → wire ``StreamResponse`` (#378).
 
-    The engine is the TRUTH about what the file carries: its VTT
-    subtitle endpoint rides along verbatim; an empty session (no srt)
-    maps to the omitted (None) field — the wire stays byte-identical
-    to the pre-#378 shape.
+    The engine is the TRUTH about what the file carries: its native
+    container (``mkv``, ``mp4`` or ``webm``) and VTT subtitle endpoint
+    ride along verbatim; an empty session (no srt) maps to the omitted
+    (None) field — the wire stays byte-identical to the pre-#378 shape.
     """
     return StreamResponse(
         url=result.url,
-        type="mp4",
+        type=result.container,
         headers={},
         seekable=result.seekable,
         subtitle_url=result.subtitle_url,

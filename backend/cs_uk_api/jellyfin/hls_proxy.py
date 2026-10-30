@@ -30,6 +30,8 @@ log = logging.getLogger("cs_uk_api.jellyfin")
 #: ``StreamResponse.type`` → the ``Content-Type`` the client expects (D7).
 _STREAM_CTYPE = {
     "mp4": "video/mp4",
+    "mkv": "video/x-matroska",
+    "webm": "video/webm",
     "m3u8": "application/vnd.apple.mpegurl",
     "hls": "application/vnd.apple.mpegurl",
 }

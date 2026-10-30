@@ -33,6 +33,9 @@ RestartSec=5
 # Environment=UAKINO_CHROMIUM=/usr/bin/chromium
 # Torrent lane: engine address (BitPlay compose stack, docs/torrent-lane.md).
 # Environment=CS_UK_TORRENT_ENGINE_URL=http://127.0.0.1:3347
+# yts SERIES (#379): Popcorn-API shows host. Live mirrors churn; these were
+# probed 2026-10-28: fusme.link / jfper.link / uxert.link / yrkde.link.
+Environment=CS_UK_POPCORN_BASE_URL=https://fusme.link
 
 [Install]
 WantedBy=multi-user.target

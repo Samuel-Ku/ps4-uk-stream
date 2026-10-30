@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, field_serializer
 # exactly ``form`` + ``styles``.
 MediaForm = Literal["movie", "series"]
 MediaStyle = Literal["anime", "cartoon", "dorama"]
-StreamType = Literal["mp4", "m3u8", "hls", "dash"]
+StreamType = Literal["mp4", "mkv", "webm", "m3u8", "hls", "dash"]
 TranslationLevel = Literal["content", "episode"]
 
 

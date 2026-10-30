@@ -117,9 +117,10 @@ status: [`docs/provider-triage.md`](../docs/provider-triage.md).
   carry per-quality magnet hashes; `stream()` picks the best-seeded
   suitable quality and plays through the BitPlay engine (#377).
   **Series** (#379) — the Popcorn-API shows host (`CS_UK_POPCORN_BASE_URL`;
-  every known public host is dead, research #366 — point it at a
-  self-hosted popcorn-api or live mirror) supplies shows/seasons/
-  episodes with per-episode quality maps; one season resolves to the
+  public mirrors churn — live aliases probed 2026-10-28 are
+  fusme.link / jfper.link / uxert.link / yrkde.link, see
+  docs/torrent-lane.md; a self-hosted popcorn-api also works) supplies
+  shows/seasons/episodes with per-episode quality maps; one season resolves to the
   canonical `:sNeM` episode ids and episode playback reuses the same
   engine policy + season-torrent file selection. Unconfigured popcorn
   base ⇒ series surfaces the loud typed `unreachable` verdict; movies

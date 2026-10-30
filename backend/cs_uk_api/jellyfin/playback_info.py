@@ -28,6 +28,9 @@ see that docstring), so the wire surface (paths, methods, the
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import time
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -35,12 +38,24 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from ..catalog import ordered_translation_candidates, playback_translations
 from ..models import StreamResponse, Translation
 from .auth import require_token
+from .delivery import provider_for_item
 from .delivery import resolve_stream as _resolve_stream
 from .models import (
     MediaSourceInfo,
     MediaStreamInfo,
     PlaybackInfoResponse,
 )
+
+log = logging.getLogger(__name__)
+
+#: Total wall-clock budget for the torrent lane's optional PlaybackInfo
+#: probe. Switchfin abandons PlaybackInfo at ~3 s; a cold BitPlay add can
+#: spend 30 s waiting for torrent metadata, so a probe that misses this
+#: budget is abandoned and the response is optimistic (a thin mp4 source;
+#: ``/Videos`` does the real resolution). Warm probes finish in ~0.1 s and
+#: keep the truthful container/subtitle enrichment. Other lanes keep the
+#: unbounded probe because their container (HLS/DASH) must be truthful.
+PLAYBACKINFO_TORRENT_BUDGET_S = 2.5
 
 
 def _container_from_type(stream_type: str) -> str:
@@ -131,7 +146,11 @@ async def playback_info(
     declares GET; both spellings serve the identical envelope. The
     container is learned from the provider's actual ``StreamResponse`` —
     one upstream ``stream()`` call, the same cost a native client pays
-    for ``/api/stream``. ``Path`` is fictitious (bytes always come from
+    for ``/api/stream``. The torrent lane's probe is bounded by
+    :data:`PLAYBACKINFO_TORRENT_BUDGET_S`: a cold engine add falls back
+    to an optimistic thin mp4 source instead of blowing the client's
+    ~3 s PlaybackInfo timeout (``/Videos`` still owns the real resolve).
+    ``Path`` is fictitious (bytes always come from
     ``/Videos/{id}/stream``); ``PlaySessionId`` is a fresh UUID. Unplayed
     ids 404 (D2); a series/season card is not playable and 404s too.
 
@@ -146,6 +165,7 @@ async def playback_info(
     Single-translation items stay exactly as before: one source, no
     picker.
     """
+    started_at = time.monotonic()
     # The body carries AudioStreamIndex (and MediaSourceId) on the
     # source-switch path; the query spelling covers GET.
     picked_index = audio_stream_index
@@ -165,14 +185,47 @@ async def playback_info(
         # probe resolves the stream to decide whether there IS one, so its
         # refusal is a play request that got nothing — attested as
         # ``playbackinfo``, before any byte route is asked.
-        stream = await _resolve_stream(item_id, surface="playbackinfo")
-        if stream is None:
+        #
+        # Torrent-lane exception: a cold BitPlay add may block far past
+        # the client's 3 s PlaybackInfo timeout. The probe gets a bounded
+        # share of the request budget; a timeout is NOT an unavailable
+        # item (the byte route has not been asked yet), so answer an
+        # optimistic thin source and let ``/Videos`` resolve for real.
+        optimistic = False
+        if provider_for_item(item_id) == "yts":
+            remaining = PLAYBACKINFO_TORRENT_BUDGET_S - (time.monotonic() - started_at)
+            if remaining <= 0:
+                optimistic = True
+                stream = None
+            else:
+                try:
+                    stream = await asyncio.wait_for(
+                        _resolve_stream(item_id, surface="playbackinfo"),
+                        timeout=remaining,
+                    )
+                except TimeoutError:
+                    optimistic = True
+                    stream = None
+            if optimistic:
+                log.warning(
+                    "playbackinfo torrent probe budget %.1fs exhausted id=%s; "
+                    "returning optimistic source",
+                    PLAYBACKINFO_TORRENT_BUDGET_S,
+                    item_id,
+                )
+        else:
+            stream = await _resolve_stream(item_id, surface="playbackinfo")
+        if stream is None and not optimistic:
             raise HTTPException(status_code=404, detail="item_unavailable")
         play_session_id = str(uuid.uuid4())
         source = MediaSourceInfo(
             Id=item_id,
-            Container=_container_from_type(stream.type),
-            MediaStreams=_engine_media_streams(item_id, stream),
+            Container=_container_from_type(stream.type) if stream is not None else "mp4",
+            MediaStreams=(
+                _engine_media_streams(item_id, stream)
+                if stream is not None
+                else [MediaStreamInfo()]
+            ),
             Path=f"/Videos/{item_id}/stream",
             PlaySessionId=play_session_id,
         )

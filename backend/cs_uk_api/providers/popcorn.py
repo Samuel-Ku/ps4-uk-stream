@@ -46,10 +46,11 @@ composing provider; this module hands back raw entries inside
 :class:`PopcornMovie`.
 
 ``popcorn_base_url`` settings knob (default ``CS_UK_POPCORN_BASE_URL``)
-is read by the composing provider and handed in; every known public
-host is dead (research #366) — the knob points at a self-hosted
-popcorn-api or live mirror, and an empty base means the client answers
-``None``/loud-typed-verdict exactly as the extracted code did.
+is read by the composing provider and handed in; public mirrors churn
+(research #366 — live aliases probed 2026-10-28: fusme.link /
+jfper.link / uxert.link / yrkde.link) — the knob points at a live
+mirror or a self-hosted popcorn-api, and an empty base means the client
+answers ``None``/loud-typed-verdict exactly as the extracted code did.
 """
 
 from __future__ import annotations

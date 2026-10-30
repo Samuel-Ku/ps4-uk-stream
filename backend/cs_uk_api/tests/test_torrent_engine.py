@@ -171,17 +171,32 @@ async def test_bitplay_native_mp4_served_direct() -> None:
     assert sent == {"Magnet": _MAGNET}
 
 
-async def test_bitplay_mkv_remuxed_to_mp4() -> None:
-    """MKV is not served byte-native — the engine remuxes on the fly and
-    the player receives a progressive mp4 URL (spec user story 8)."""
+async def test_bitplay_mkv_served_natively() -> None:
+    """MKV takes BitPlay's native byte endpoint, not the broken remux.
+
+    The engine's fMP4 remux is not playable in Switchfin (it delivers an
+    init/header and stalls), while ``/stream/`` serves the original
+    Matroska bytes through Go ``http.ServeContent``: seekable, and
+    demuxed by the player's own MKV support.
+    """
     with respx.mock:
         _mock_add()
         _mock_files([{"index": 0, "name": "Movie.mkv", "size": 100}])
         _mock_stream()
         stream = await _client().ensure_session(_MAGNET)
-    # The remux endpoint is chunked fMP4 with `Accept-Ranges: none`
-    # (research #367 §1) — playable forward but NOT seekable; the flag
-    # records that verdict on the seam value itself.
+    assert stream == EngineStream(
+        url=f"{_FILES}/stream/0", container="mkv", seekable=True
+    )
+
+
+async def test_bitplay_avi_still_remuxed_to_mp4() -> None:
+    """Only native-capable containers bypass the remuxer: an AVI has no
+    byte-native endpoint and keeps the historical mp4 remux."""
+    with respx.mock:
+        _mock_add()
+        _mock_files([{"index": 0, "name": "Movie.avi", "size": 100}])
+        _mock_stream()
+        stream = await _client().ensure_session(_MAGNET)
     assert stream == EngineStream(
         url=f"{_FILES}/remux/0", container="mp4", seekable=False
     )
@@ -210,7 +225,9 @@ async def test_bitplay_file_hint_selects_matching_file() -> None:
         _mock_stream()
         hinted_mkv = await _client().ensure_session(_MAGNET, file_hint="MOVIE")
         hinted_trailer = await _client().ensure_session(_MAGNET, file_hint="trailer")
-    assert hinted_mkv.url == f"{_FILES}/remux/1"
+    assert hinted_mkv == EngineStream(
+        url=f"{_FILES}/stream/1", container="mkv", seekable=True
+    )
     assert hinted_trailer == EngineStream(url=f"{_FILES}/stream/0", container="mp4")
 
 
@@ -228,8 +245,9 @@ async def test_bitplay_invalid_magnet_rejected() -> None:
         respx.post(_ADD).mock(
             return_value=httpx.Response(400, json={"error": "Invalid magnet link"})
         )
-        with pytest.raises(EngineRejected):
+        with pytest.raises(EngineRejected) as exc:
             await _client().ensure_session("not-a-magnet")
+    assert exc.value.retryable is False  # malformed magnet is final
 
 
 async def test_bitplay_metadata_timeout_dead_torrent_rejected() -> None:
@@ -242,20 +260,22 @@ async def test_bitplay_metadata_timeout_dead_torrent_rejected() -> None:
                 json={"error": "Timeout getting info - proxy might be blocking BitTorrent traffic"},
             )
         )
-        with pytest.raises(EngineRejected):
+        with pytest.raises(EngineRejected) as exc:
             await _client().ensure_session(_MAGNET)
+    assert exc.value.retryable is True  # 504 = metadata timeout, retry same magnet
 
 
-async def test_bitplay_add_read_timeout_is_dead_torrent_rejected() -> None:
+async def test_bitplay_add_read_timeout_is_retryable_torrent_rejection() -> None:
     """A read timeout ON THE ADD CALL itself means the engine accepted
     the connection and blocked waiting for metadata that never arrived
-    (upstream cap 3 min > our ADD_TIMEOUT_S): a dead swarm, not a dead
-    lane — observed live in the #373 acceptance (fork-mirror pick with
-    zero real seeders)."""
+    inside our window (upstream cap 3 min > ADD_TIMEOUT_S). The engine
+    may still be resolving that magnet, so the lane gets the retryable
+    flag and adds the SAME torrent once more before walking away."""
     with respx.mock:
         respx.post(_ADD).mock(side_effect=httpx.ReadTimeout("timed out"))
-        with pytest.raises(EngineRejected):
+        with pytest.raises(EngineRejected) as exc:
             await _client().ensure_session(_MAGNET)
+    assert exc.value.retryable is True
 
 
 async def test_bitplay_connection_error_is_unavailable() -> None:
@@ -324,8 +344,9 @@ async def test_bitplay_stream_that_never_speaks_is_torrent_rejected() -> None:
         _mock_add()
         _mock_files([{"index": 0, "name": "Movie.mp4", "size": 100}])
         _mock_stream(body=b"", status=200)
-        with pytest.raises(EngineRejected):
+        with pytest.raises(EngineRejected) as exc:
             await _client().ensure_session(_MAGNET)
+    assert exc.value.retryable is True  # just-created session may still connect
 
 
 async def test_bitplay_probe_timeout_is_torrent_rejected() -> None:
@@ -560,7 +581,7 @@ async def test_builder_wires_url_and_auth_pair(
         )
         _mock_stream()
         stream = await engine.ensure_session(_MAGNET)
-    assert stream.url == f"{_FILES}/remux/0"
+    assert stream.url == f"{_FILES}/stream/0"
     assert add.calls.last.request.headers["Authorization"].startswith("Basic ")
 
 
@@ -667,9 +688,9 @@ async def test_bitplay_single_srt_surfaces_it() -> None:
 
 
 async def test_bitplay_no_srt_means_no_subtitle_url() -> None:
-    """The honest 'no subtitles' verdict: embedded tracks are stripped by
-    the remux path, so only a separate .srt can ever play (research #367
-    limit 6) — its absence must be OMITTED, not faked."""
+    """The honest 'no subtitles' verdict: the facade advertises only
+    external .srt tracks (research #367 limit 6), so its absence must be
+    OMITTED, not faked."""
     with respx.mock:
         _mock_add()
         _mock_files([{"index": 5, "name": "Sintel.mp4", "size": 129241752}])
@@ -678,9 +699,9 @@ async def test_bitplay_no_srt_means_no_subtitle_url() -> None:
     assert stream.subtitle_url is None
 
 
-async def test_bitplay_remux_path_keeps_subtitle() -> None:
-    """The VTT endpoint is INDEPENDENT of the video container choice: an
-    mkv (remuxed) still exposes its srt companion."""
+async def test_bitplay_native_mkv_keeps_subtitle() -> None:
+    """The VTT endpoint is INDEPENDENT of the video container choice: a
+    native mkv still exposes its external srt companion."""
     with respx.mock:
         _mock_add()
         _mock_files(
@@ -691,9 +712,9 @@ async def test_bitplay_remux_path_keeps_subtitle() -> None:
         )
         _mock_stream()
         stream = await _client().ensure_session(_MAGNET)
-    assert stream.url == f"{_FILES}/remux/0"
-    assert stream.container == "mp4"
-    assert stream.seekable is False
+    assert stream.url == f"{_FILES}/stream/0"
+    assert stream.container == "mkv"
+    assert stream.seekable is True
     assert stream.subtitle_url == f"{_FILES}/stream/1?format=vtt"
 
 

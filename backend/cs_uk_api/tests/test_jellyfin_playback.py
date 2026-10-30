@@ -837,7 +837,7 @@ def test_g3_torrent_card_playback_info_plays_the_engine(
         body = _post(client, "/Items/g3%3Att1160419/PlaybackInfo", userId="u")
     source = _source(body)
     assert source["Id"] == "g3:tt1160419"
-    assert source["Container"] == "mp4"  # the engine's remux container
+    assert source["Container"] == "mp4"  # the engine session's native container
     assert source["Path"] == "/Videos/g3:tt1160419/stream"
     # The lane received the BARE external (D6) and ensured THE policy magnet.
     assert provider._torrent_entries  # details were parsed into candidates

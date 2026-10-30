@@ -28,10 +28,13 @@ items are mapped as listed.
 Envelope duality on one external id (the wire grammar is unambiguous):
   - ``yts:<imdb>:__movie__`` → :meth:`YtsProvider.stream` plays the
     best-seeded 1080p/720p movie torrent (policy in ticket #377).
-  - ``yts:<imdb>:s<N>e<M>`` → episode file selection: the same policy
-    picks one torrent for the season, then the engine's ``file_hint``
-    picks the right FILE inside a multi-file season pack (name-match,
-    BitPlayClient._select_file). The parsed season is the season
+  - ``yts:<imdb>:s<N>e<M>`` → episode file selection: the policy
+    picks the REQUESTED episode's torrents when upstream carries them
+    (the per-episode quality map), and the engine's ``file_hint``
+    (``s<N>e<M>``) pins the right FILE inside a multi-file season pack
+    (name-match, BitPlayClient._select_file). Only an episode with no
+    torrents of its own falls back to the season's merged table with
+    the season-level ``s<N>e`` hint. The parsed season is the season
     number — no second season discriminator on the wire.
 
 Torrent candidates are threaded onto the provider instance (LRU-
@@ -71,6 +74,8 @@ from ..wire_identity import (
     IMDB_RE,
     MOVIE_SUFFIX,
     episode_wire_id,
+    parse_episode_tail,
+    split_episode_tail,
 )
 from .base import BaseProvider, ProviderError
 from .popcorn import (
@@ -112,8 +117,10 @@ log = logging.getLogger(__name__)
 _LIST_LIMIT = 50
 
 #: Season-pack file naming (release convention): ``s01e01``-style zero-
-#: padded season token, the substring the season file-hint matches
-#: inside a multi-file torrent.
+#: padded token. An episode with its own torrents gets the exact
+#: ``s01e01`` hint; only a season-pack fallback uses the shorter
+#: season-level ``s01e`` prefix.
+_EPISODE_HINT_FMT = "s{:02d}e{:02d}"
 _SEASON_HINT_FMT = "s{:02d}e"
 
 # (The magnet→session policy — candidate parsing, quality ordering,
@@ -419,20 +426,22 @@ class YtsProvider(BaseProvider):
     ) -> StreamResponse:
         """Magnet→engine handoff (spec #374 Stream contract): pick ONE
         torrent server-side, ensure an engine session for its magnet,
-        return the engine's LAN URL as a post-remux progressive mp4 with
-        empty headers (the facade's direct-302 posture stays intact).
+        return the engine's LAN URL with the container it actually serves
+        (native mp4/mkv, or remuxed mp4 for other formats) and empty
+        headers (the facade's direct-302 posture stays intact).
 
         ``translation`` is deliberately ignored — English originals
         carry no dubs axis; the session IS the original audio.
 
-        Episode ids (``yts:<imdb>:s<N>e<M>``) ride the SAME policy pick
-        for their season (the show's per-episode quality maps collapse
-        onto one torrent per season — the poptime mirror serves
-        monolithic season packs), then the season number is the
-        engine's ``file_hint`` seed: the adapter's deterministic file
-        selection locates the right file inside the multi-file torrent
-        (#379). The season discriminator (``@S<N>``) never reaches the
-        engine — the hint is the SEASON, not the wire id.
+        Episode ids (``yts:<imdb>:s<N>e<M>``) use the requested
+        episode's own quality map when upstream carries one — never the
+        whole season's union, where a stronger torrent from another
+        episode used to win and play the wrong file. The episode number
+        becomes the engine's ``file_hint`` seed (``s<N>e<M>``), so the
+        adapter's deterministic file selection locates the right file
+        inside a multi-file torrent (#379). Only an episode with no
+        torrents of its own falls back to the season pack and the
+        season-level hint.
         """
         del translation  # original audio only
         imdb, season = parse_stream_content_id(content_id)
@@ -441,7 +450,10 @@ class YtsProvider(BaseProvider):
         engine = self._require_engine()
         if season is None:
             return await self._stream_movie(imdb, engine, http)
-        return await self._stream_episode(imdb, season, engine, http)
+        split = split_episode_tail(content_id)
+        parsed = parse_episode_tail(split[1]) if split is not None else None
+        episode = parsed[1] if parsed is not None else None
+        return await self._stream_episode(imdb, season, episode, engine, http)
 
     async def _stream_movie(
         self, imdb: str, engine: TorrentEngine, http: httpx.AsyncClient
@@ -460,23 +472,37 @@ class YtsProvider(BaseProvider):
         return await play_torrent(engine, entries, file_hint=None)
 
     async def _stream_episode(
-        self, imdb: str, season: int, engine: TorrentEngine, http: httpx.AsyncClient
+        self,
+        imdb: str,
+        season: int,
+        episode: int | None,
+        engine: TorrentEngine,
+        http: httpx.AsyncClient,
     ) -> StreamResponse:
-        """The #379 episode path: the season's torrents, the season
-        number as the file-selection hint; dead picks fall back to the
-        next season candidate (bounded)."""
+        """The #379 episode path: the requested episode's own torrents
+        first (with the exact ``s<N>e<M>`` file hint); only a torrentless
+        episode falls back to the season's merged pack and the season
+        hint. Dead picks fall back to the next candidate in that pool
+        (bounded)."""
         show = await self._show(imdb, http)
         if show is None:
             self._require_popcorn()
             raise AssertionError("unreachable: _require_popcorn raises")
-        torrents = self._season_torrents(show, season)
+        torrents = (
+            self._torrents_of_episode(show, season, episode)
+            if episode is not None
+            else []
+        )
+        if torrents:
+            hint = _EPISODE_HINT_FMT.format(season, episode)
+        else:
+            torrents = self._season_torrents(show, season)
+            hint = _SEASON_HINT_FMT.format(season)
         if not torrents:
             raise ProviderError(
                 "not_found", f"no torrents recorded for {imdb} season {season}"
             )
-        return await play_torrent(
-            engine, torrents, file_hint=_SEASON_HINT_FMT.format(season)
-        )
+        return await play_torrent(engine, torrents, file_hint=hint)
 
     async def _show(self, imdb: str, http: httpx.AsyncClient) -> dict[str, Any] | None:
         """Compat delegation: the Popcorn show conversation (fetch,
@@ -571,14 +597,31 @@ class YtsProvider(BaseProvider):
             )
         return out
 
+    def _torrents_of_episode(
+        self, show: dict[str, Any], season: int, episode: int
+    ) -> list[TorrentCandidate]:
+        """The requested episode's OWN torrent candidates.
+
+        Popcorn's per-episode quality maps are the authoritative pick:
+        using the whole season's union lets a better-seeded torrent from
+        another episode win, which is exactly how ``s1e1`` used to play
+        ``S01E06``. Empty when upstream lists the episode without
+        torrents (the season-pack fallback case).
+        """
+        merged: list[TorrentCandidate] = []
+        for raw in _episodes_of_show(show):
+            if raw.get("season") != season or raw.get("episode") != episode:
+                continue
+            merged.extend(self._episode_torrents(raw))
+        return merged
+
     def _season_torrents(self, show: dict[str, Any], season: int) -> list[TorrentCandidate]:
         """Every torrent candidate across the season's episodes.
 
-        The poptime mirror serves monolithic season packs (the same
-        magnet on every episode of the season), so the union across
-        episodes IS the season's torrent table — the policy picks once
-        for the season, the engine's file selection finds the episode
-        file inside the pack.
+        Fallback only: for an episode whose own quality map is empty,
+        the union across the season is the season-pack table — the
+        policy picks once and the season-level ``s<N>e`` hint lets the
+        engine find the episode file inside the pack.
         """
         merged: list[TorrentCandidate] = []
         for raw in _episodes_of_show(show):

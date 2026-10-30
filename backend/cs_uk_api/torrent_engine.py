@@ -3,7 +3,8 @@ the English-content lane.
 
 A narrow in-process interface: ensure a playable session for an opaque
 identifier (the BitPlay adapter treats it as magnet-or-infohash) and
-receive back a plain LAN URL plus its container ("mp4" post-remux).
+receive back a plain LAN URL plus the container the player receives
+(native "mkv" or "mp4", or the remuxer's "mp4" for other formats).
 Two adapters justify it: the real BitPlay HTTP client and a
 deterministic in-memory fake that lets route-level tests verify
 orchestration without Docker or network. Remuxing, subtitle conversion
@@ -29,6 +30,7 @@ import httpx
 
 from . import config as _config
 from .health import TRACKER
+from .models import StreamType
 
 log = logging.getLogger(__name__)
 
@@ -50,11 +52,12 @@ ENGINE_PROBE_PATH = "/api/v1/capabilities"
 
 @dataclass(frozen=True)
 class EngineStream:
-    """A playable session: LAN URL + container (post-remux).
+    """A playable session: LAN URL + the container the player receives.
 
-    ``container`` is what the PLAYER receives (e.g. "mp4" after the
-    engine's on-the-fly MKV→MP4 remux), not the torrent's original
-    container.
+    ``container`` is what the PLAYER receives: ``"mkv"`` for a native
+    Matroska stream (BitPlay serves the original bytes), ``"mp4"`` for
+    a native MP4, or ``"mp4"`` after the engine's on-the-fly remux of a
+    container it cannot serve natively.
 
     ``seekable`` records whether the player can Range-seek into
     ``url``. Native byte-serving is seekable (BitPlay fronts each file
@@ -68,12 +71,13 @@ class EngineStream:
       - ``subtitle_url`` — the VTT conversion endpoint of an external
         ``.srt`` file in the SAME torrent (BitPlay converts on request:
         ``stream/{i}?format=vtt``). None when the torrent carries no
-        separate srt — the remux path strips embedded tracks, so only
-        external srt can ever play (research #367 limit 6).
+        separate srt — the facade only advertises external tracks, so
+        embedded Matroska subtitles are never surfaced (research #367
+        limit 6).
     """
 
     url: str
-    container: str
+    container: StreamType
     seekable: bool = True
     subtitle_url: str | None = None
 
@@ -113,7 +117,18 @@ class EngineRejected(TorrentEngineError):
 
     Deliberately distinct from :class:`EngineUnavailable` — a bad item
     must not read as a dead lane (spec #374 error-surface note).
+
+    ``retryable`` marks the timeout class — metadata that was still
+    arriving when the add window closed, or a just-created session that
+    had not produced its first byte inside the probe window. Those are
+    cold-start races, not verdicts: the lane retries the SAME magnet
+    once before spending a different candidate. A malformed magnet or
+    an explicit 400 is final and stays ``False``.
     """
+
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 # --------------------------------------------------------- interface
@@ -148,7 +163,7 @@ class FakeTorrentEngine:
         self,
         *,
         streams: dict[str, EngineStream] | None = None,
-        container: str = "mp4",
+        container: StreamType = "mp4",
     ) -> None:
         self._streams = dict(streams) if streams else {}
         self._container = container
@@ -221,14 +236,19 @@ ADD_TIMEOUT_S = 30.0
 STREAM_PROBE_TIMEOUT_S = 5.0
 
 #: Containers BitPlay serves byte-native (extension → reported container).
-DIRECT_CONTAINER_BY_EXT: dict[str, str] = {
+#: MKV belongs here: the engine's fMP4 remux is not playable in Switchfin
+#: (it delivers only an init/header before stalling), while BitPlay's
+#: native ``/stream/`` endpoint serves the original Matroska bytes with
+#: full Range support — the player's own demuxer handles MKV natively.
+DIRECT_CONTAINER_BY_EXT: dict[str, StreamType] = {
     ".mp4": "mp4",
     ".m4v": "mp4",
+    ".mkv": "mkv",
     ".webm": "webm",
 }
 #: Video-ish extensions that must go through the remuxer instead.
 VIDEO_EXTENSIONS: frozenset[str] = frozenset(
-    {*DIRECT_CONTAINER_BY_EXT, ".mkv", ".avi", ".mov", ".mpg", ".mpeg", ".ts", ".wmv", ".flv"}
+    {*DIRECT_CONTAINER_BY_EXT, ".avi", ".mov", ".mpg", ".mpeg", ".ts", ".wmv", ".flv"}
 )
 
 #: Statuses where the ENGINE blames THE TORRENT (malformed / dead-on-
@@ -278,8 +298,8 @@ class BitPlayClient:
 
     Owns exactly one concern — turning (magnet-or-infohash, optional
     file hint) into the LAN URL the player should open, choosing the
-    native-stream endpoint for already-playable containers and the
-    remux endpoint (→ mp4) for the rest — and proving that URL actually
+    native-stream endpoint for already-playable containers (MP4, MKV,
+    WebM) and the remux endpoint (→ mp4) for the rest — and proving that URL actually
     speaks before handing it over (#461): one bounded first-bytes read,
     because a created session can still sit on a swarm that never sends
     a byte, and that verdict belongs to the candidate, not the player.
@@ -349,8 +369,12 @@ class BitPlayClient:
             # advances; a truly dead engine surfaces loudly on the next
             # candidate's add (EngineUnavailable), never as silence.
             if not await self._stream_speaks(http, url):
+                # A freshly created session can still be connecting to the
+                # swarm; one same-candidate retry recovers the cold start
+                # without spending the next torrent.
                 raise EngineRejected(
-                    f"stream sent no first bytes within {STREAM_PROBE_TIMEOUT_S:.0f}s"
+                    f"stream sent no first bytes within {STREAM_PROBE_TIMEOUT_S:.0f}s",
+                    retryable=True,
                 )
             return stream
         finally:
@@ -367,7 +391,8 @@ class BitPlayClient:
             # swarm, not a dead lane. Observed live in the #373 acceptance
             # (fork-mirror pick, zero real seeders).
             raise EngineRejected(
-                f"torrent metadata did not arrive within {ADD_TIMEOUT_S:.0f}s (dead swarm?)"
+                f"torrent metadata did not arrive within {ADD_TIMEOUT_S:.0f}s (dead swarm?)",
+                retryable=True,
             ) from e
         except httpx.HTTPError as e:
             raise EngineUnavailable(f"engine unreachable: {e}") from e
@@ -467,7 +492,14 @@ class BitPlayClient:
         except ValueError:
             detail = resp.text[:120]
         if resp.status_code in TORRENT_BLAME_STATUSES:
-            raise EngineRejected(f"engine rejected torrent ({what}): {resp.status_code} {detail}".strip())
+            # 504 is the engine's own metadata-timeout verdict: the add may
+            # still be resolving in the background, so one retry of the
+            # same magnet can find the now-ready session. 400 (malformed
+            # magnet) is final.
+            raise EngineRejected(
+                f"engine rejected torrent ({what}): {resp.status_code} {detail}".strip(),
+                retryable=resp.status_code == 504,
+            )
         raise EngineUnavailable(
             f"engine failed {what}: {resp.status_code} {detail}".strip()
         )

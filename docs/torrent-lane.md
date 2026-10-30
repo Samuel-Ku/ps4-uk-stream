@@ -3,9 +3,12 @@
 The English-content lane adds two moving parts beside the Ukrainian
 providers: the `yts` catalog provider (plain HTTPS against the YTS v2
 API — no local service) and **BitPlay**, a self-hosted Go engine on the
-LAN host that takes a magnet, progressively downloads, remuxes
-MKV→MP4 on the fly (ffmpeg stream-copy), converts external `.srt`
-subtitles to VTT, and serves a Range-capable LAN URL to the player.
+LAN host that takes a magnet and progressively downloads it. BitPlay
+serves MP4/MKV/WebM byte-natively with Range support and remuxes other
+containers to MP4 on the fly (ffmpeg stream-copy); it also converts
+external `.srt` subtitles to VTT. The backend always prefers the native
+endpoint — the MKV remux stalls in Switchfin after its init segment,
+while native Matroska plays and seeks.
 
 This runbook covers first-run setup, health interpretation,
 maintenance, troubleshooting, and the on-device verification recipe.
@@ -23,13 +26,19 @@ cd backend/deploy
 mkdir -p config torrent-data   # config MUST exist before the first up
 docker compose -f docker-compose.bitplay.yml up -d
 curl -s http://localhost:3347/api/v1/capabilities
-# {"ffmpeg":true,"version":"6.1.2"}   ← remux works out of the box
+# {"ffmpeg":true,"version":"6.1.2"}   ← remux available for non-native containers
 ```
 
 Settings persist in `./config/settings.json`; active downloads land in
 `./torrent-data`. The default stanza uses bridge networking; if starts
 feel slow (few peers), switch to the host-networking variant documented
 at the bottom of the compose file.
+
+A cold add can outlive the backend's 30 s metadata window even though
+the engine keeps resolving it. The lane therefore retries the same
+magnet once when the rejection is a timeout (add window or first-bytes
+probe) before spending the next candidate; a malformed magnet or an
+explicit 400 still advances immediately.
 
 ### Wire the backend
 
@@ -46,11 +55,11 @@ Environment=CS_UK_TORRENT_ENGINE_URL=http://192.168.2.166:3347
 # Engine liveness probe cadence (§2): seconds between ticks, default 300,
 # 0 disables. A split auth pair above pins yts:engine down at startup.
 # Environment=CS_UK_ENGINE_PROBE_INTERVAL=300
-# English SERIES (#379): the Popcorn shows host. Every known public
-# host is dead (research #366) — self-host popcorn-api or point at a
-# live mirror. Unset ⇒ movies work, series say `unreachable` loudly.
+# English SERIES (#379): the Popcorn shows host. Public mirrors churn;
+# live aliases probed 2026-10-28 are fusme.link / jfper.link / uxert.link /
+# yrkde.link. Unset ⇒ movies work, series say `unreachable` loudly.
 # Recipe: §1 «Self-host the series host (popcorn-api)» below.
-# Environment=CS_UK_POPCORN_BASE_URL=http://popcorn.lan:9000
+# Environment=CS_UK_POPCORN_BASE_URL=https://fusme.link
 ```
 
 ```bash
@@ -76,10 +85,20 @@ For testing by hand you can paste any magnet into BitPlay's web UI at
 opened from search/home resolves its season through the Popcorn shows
 host (`CS_UK_POPCORN_BASE_URL`, unset ⇒ series browsing answers the
 loud `unreachable` verdict while movies stay live), episodes carry the
-canonical `:sNeM` ids, and an episode's `stream()` picks the season
-torrent (best-seeded suitable quality) and selects the episode's file
-index inside it — the player still receives nothing but the engine's
-LAN URL. Resume/NextUp work per episode via the canonical ids.
+canonical `:sNeM` ids, and an episode's `stream()` picks the torrents
+from that episode's OWN quality map (best-seeded suitable quality) and
+selects the episode's file index with an `s<N>e<M>` hint — never the
+whole season's union, where another episode's better-seeded torrent
+could win and play the wrong file. Only an episode whose own map is
+empty falls back to the season pack with the shorter `s<N>e` hint. The
+player still receives nothing but the engine's LAN URL. Resume/NextUp
+work per episode via the canonical ids.
+
+PlaybackInfo's torrent-lane probe is bounded at **2.5 s**: a cold BitPlay
+add (metadata can take 30 s) that misses the budget returns an optimistic
+thin mp4 source instead of blowing Switchfin's ~3 s PlaybackInfo timeout;
+`/Videos/{id}/stream` then performs the real resolve. A warm probe
+finishes in ~0.1 s and keeps the truthful container/subtitle enrichment.
 
 **Subtitles and audio (#378)** ride the same session automatically: when
 the torrent carries an external `.srt` (BitPlay converts it to VTT on
@@ -93,11 +112,15 @@ never changes.
 
 ### Self-host the series host (popcorn-api)
 
-Series discovery is the one dependency of the lane with **no live
-public host** (research #366, probed 2026-08-25: `api.popcorntime.app`
-is a marketing site, `*.api-fetch.sh` is DNS-dead, `popcorn-ru.tk` sits
-behind an anti-bot wall). The backend's knob (`CS_UK_POPCORN_BASE_URL`)
-points at whatever host speaks the contract — self-hosted or a mirror.
+Series discovery is the one dependency of the lane with **no stable
+public host**. The 2026-08-25 probe found the then-known hosts dead
+(`api.popcorntime.app` is a marketing site, `*.api-fetch.sh` is
+DNS-dead, `popcorn-ru.tk` sits behind an anti-bot wall), but the
+2026-10-28 probe found four live aliases — `fusme.link`, `jfper.link`,
+`uxert.link`, `yrkde.link` — all serving the contract below. They may
+churn like every predecessor; verify before relying on them. The
+backend's knob (`CS_UK_POPCORN_BASE_URL`) points at whatever host
+speaks the contract — a live mirror or a self-hosted popcorn-api.
 Unset ⇒ movies keep working and series answer the loud typed verdict;
 nothing breaks silently.
 
@@ -140,15 +163,18 @@ npm start   # or the built entry point; keep it on a LAN port, e.g. 9000
 > source catalog data (community scrapes of that era exist but none is
 > maintained or clearnet-listed as of research #366).
 
-**Option B — point at a live mirror.** Any host — a community deployment
-or a friend's LAN box — that passes the acceptance table above works:
-set the knob, verify with the curls below, done. This is the cheap path
-while it lasts; mirrors churn (§5 of research #366).
+**Option B — point at a live mirror.** The 2026-10-28 aliases
+`fusme.link`, `jfper.link`, `uxert.link`, `yrkde.link` all pass the
+acceptance table above. Any host — a community deployment or a
+friend's LAN box — that passes it works: set the knob, verify with the
+curls below, done. This is the cheap path while it lasts; mirrors churn
+(§5 of research #366).
 
 **Wire it** (same unit as the other knobs):
 
 ```ini
-Environment=CS_UK_POPCORN_BASE_URL=http://<host>:9000
+Environment=CS_UK_POPCORN_BASE_URL=https://fusme.link
+# LAN self-host alternative: http://<host>:9000
 ```
 
 ```bash
@@ -162,10 +188,10 @@ declaration change needed.
 **Verify:**
 
 ```bash
-curl -s "http://<host>:9000/shows/1?sort=updated&order=-1" | head -c 300
-curl -s "http://<host>:9000/show/tt8740758" | python3 -m json.tool | head -20
+curl -s "https://fusme.link/shows/1?sort=updated&order=-1" | head -c 300
+curl -s "https://fusme.link/show/tt0944947" | python3 -m json.tool | head -20
 # then through the backend — the show must appear in search:
-curl -s "http://127.0.0.1:8003/api/search?q=chernobyl" | grep -c chernobyl
+curl -s "http://127.0.0.1:8003/api/search?q=thrones" | grep -c thrones
 ```
 
 **Failure signatures:** a dead or wrong series host does NOT take the
@@ -269,7 +295,7 @@ this title's swarm.
   cadence, not a quota — purge manually after heavy viewing weeks.
 - **Remux cap semantics** — `BITPLAY_MAX_REMUX` (default 3) caps
   concurrent ffmpeg remux passes. Full ⇒ new remux requests get 503
-  until a slot frees; native mp4/webm streams are NOT affected.
+  until a slot frees; native mp4/mkv/webm streams are NOT affected.
 - **First-byte samples (#461)** — the outcome names the shape — only
   `ok` samples answer the window question:
 
@@ -294,11 +320,13 @@ this title's swarm.
 | Play fails instantly with `unreachable` | Engine down, wrong `CS_UK_TORRENT_ENGINE_URL`, container crash-looping | Check `yts:engine` in `/api/providers` (§2); `docker compose -f backend/deploy/docker-compose.bitplay.yml ps`; `curl -s localhost:3347/api/v1/capabilities`; fix address/compose, restart backend |
 | `yts:engine` down at startup, never played | Half-configured engine: auth pair split (one env var set) or schemeless URL | Set BOTH `CS_UK_TORRENT_ENGINE_USER`/`PASSWORD` or neither; give the URL an `http(s)://` scheme; restart backend |
 | Play hangs ~minutes, then item-level `not_found` | Dead torrent: zero seeders / metadata timeout (engine blames this magnet: 400/504) | Try another title or quality; check the peers column in the BitPlay UI. Not a lane fault |
-| Playback stalls after `PlaybackInfo` → `200`, then the player times out | Dead swarm behind a CREATED session — metadata arrived but no bytes ever flow (the `g3:tt35969257` class, `000 0` in the smoke gate) | Since #461 the adapter probes first bytes per candidate (5 s) and the lane falls back server-side — the probe's samples (§3) say whether the window bound or the stream was byte-less; if a stall still reaches a player, the swarm died between probe and read — try another quality |
+| Playback stalls after `PlaybackInfo` → `200`, then the player times out | Dead swarm behind a CREATED session — metadata arrived but no bytes ever flow (the `g3:tt35969257` class, `000 0` in the smoke gate) | Since #461 the adapter probes first bytes per candidate (5 s); a timeout-class rejection now retries the SAME magnet once, then the lane falls back server-side. The probe's samples (§3) say whether the window bound or the stream was byte-less; if a stall still reaches a player, the swarm died between probe and read — try another quality |
+| First play returns 502 (native) or 404 (facade), the second works | Cold metadata or a just-created session that had not sent its first byte inside the 5 s probe; the lane used to walk to the next torrent, whose add could hit a transient engine 500 | The lane now retries the same magnet once for retryable timeouts. If BOTH tries fail, check `first-bytes probe` and `retrying the same candidate` in the log (§3); a persistent 500 on `add` is an engine fault, not an item verdict |
 | 401 from the engine in backend logs | Auth enabled on one side only | Both sides need complete pairs: `BITPLAY_AUTH_USERNAME`+`PASSWORD` AND `CS_UK_TORRENT_ENGINE_USER`+`PASSWORD`, identical values |
-| Remuxed MKV plays but will not seek | Current engine limit: the remux path serves chunked progressive fMP4 with `Accept-Ranges: none` — no HTTP Range support | Expected behaviour, not a bug. Native-container files (`/stream/`) seek normally; restarting playback is the workaround for MKV sources |
-| No subtitles on an MKV | Current engine limit: remux strips embedded subtitle tracks; ONLY `.srt` files present as separate torrent files convert to VTT | Pick releases carrying external `.srt` files if subtitles matter; nothing else will render for MKV sources today. When a separate srt IS present, PlaybackInfo surfaces it automatically (#378) as a Subtitle track via `/Stream/{item}/vtt` |
-| New MKV refuses with 503 mid-evening | All remux slots busy (`BITPLAY_MAX_REMUX`) | Wait and retry; raise the cap in the compose file if several MKVs play concurrently |
+| MKV stalls after the first frame | The API is still handing MKV to the engine's fMP4 remux (the pre-fix behaviour) | Restart the backend from this tree; the lane now resolves MKV through native `/stream/`, not `/remux/`. Verify the 302 `Location` in the backend log |
+| MKV plays but will not seek | Not expected: native `/stream/` is served by Go `http.ServeContent` and answers Range requests | Check that the resolved URL ends in `/stream/`, not `/remux/`; if it is native, inspect the engine's `Accept-Ranges` response |
+| No subtitles on an MKV | The facade advertises ONLY external `.srt` files that BitPlay converts to VTT; embedded Matroska tracks are not surfaced in `MediaStreams` | Pick releases carrying separate `.srt` files. When one is present, PlaybackInfo surfaces it automatically (#378) as a Subtitle track via `/Stream/{item}/vtt` |
+| AVI/MOV refuses with 503 mid-evening | All remux slots busy (`BITPLAY_MAX_REMUX`); MKV no longer consumes them | Wait and retry; raise the cap in the compose file if several remuxed formats play concurrently |
 | Starts slow, peers ≈ 0–1 | Per-torrent random listen ports blocked behind docker NAT | Switch to the host-networking variant at the bottom of the compose file; verify tracker reachability in the UI |
 | English titles gone from search entirely | Catalog API down, engine irrelevant | Check `yts` in `/api/providers` (§2); restart backend if stuck down |
 
@@ -354,8 +382,8 @@ Then on the PS4:
 2. Press play — the facade route ensures the engine session and hands
    the player the engine URL from step 4. Video must START
    progressively within seconds, no full-download wait.
-3. Seek forward and backward — jumps land near-instantly (Range works;
-   if the source had been MKV, seeking would be unavailable per §4).
+3. Seek forward and backward — jumps land near-instantly (Range works
+   for native MP4, MKV and WebM; only remuxed formats are progressive).
 4. Subtitles — Sintel's separate `.srt` track appears and renders as
    VTT.
 5. Clean up: `curl -X POST $BASE/api/v1/cache/purge` — or let the

@@ -219,6 +219,78 @@ async def test_play_torrent_returns_wire_shape_and_file_hint() -> None:
 
 
 @pytest.mark.asyncio
+async def test_play_torrent_preserves_native_mkv_container() -> None:
+    """A native Matroska session reports ``mkv`` on the wire, not a fake
+    ``mp4``: the facade's Container and the player's demuxer must agree
+    with the bytes BitPlay actually serves."""
+    session = EngineStream(
+        url="http://bitplay.lan:3347/api/v1/torrent/abc/stream/7",
+        container="mkv",
+        seekable=True,
+    )
+
+    result = await play_torrent(
+        _OutcomeEngine([session]), [_cand("1080p", "H1080", 5)], file_hint=None
+    )
+
+    assert result == StreamResponse(
+        url=session.url, type="mkv", headers={}, seekable=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_play_torrent_retries_the_same_candidate_after_metadata_timeout() -> None:
+    """The cold s1e2 shape: the first add timed out / its session had not
+    spoken yet, so retry the SAME magnet before spending the next
+    candidate. The second call is what recovers the session the engine
+    was already building."""
+    session = EngineStream(url="http://lan/recovered", container="mkv")
+    engine = _OutcomeEngine(
+        [EngineRejected("metadata timeout", retryable=True), session]
+    )
+
+    result = await play_torrent(
+        engine,
+        [_cand("1080p", "H1080", 5), _cand("720p", "H720", 50)],
+        file_hint="s01e02",
+    )
+
+    assert result.url == session.url
+    assert engine.calls == [
+        (build_magnet("H1080"), "s01e02"),
+        (build_magnet("H1080"), "s01e02"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_play_torrent_retry_is_bounded_then_advances() -> None:
+    """Only ONE same-candidate retry: a second timeout on that magnet
+    advances to the next candidate, so a genuinely dead swarm cannot
+    double every candidate's window."""
+    session = EngineStream(url="http://lan/next", container="mkv")
+    engine = _OutcomeEngine(
+        [
+            EngineRejected("metadata timeout", retryable=True),
+            EngineRejected("metadata timeout", retryable=True),
+            session,
+        ]
+    )
+
+    result = await play_torrent(
+        engine,
+        [_cand("1080p", "H1080", 5), _cand("720p", "H720", 50)],
+        file_hint="s01e02",
+    )
+
+    assert result.url == session.url
+    assert engine.calls == [
+        (build_magnet("H1080"), "s01e02"),
+        (build_magnet("H1080"), "s01e02"),
+        (build_magnet("H720"), "s01e02"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_play_torrent_falls_back_after_rejection_and_keeps_file_hint() -> None:
     """A dead swarm advances to the next policy candidate with the same
     season file hint; the second candidate serves the stream."""

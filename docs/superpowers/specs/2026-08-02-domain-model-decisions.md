@@ -80,9 +80,11 @@ The current shape is the floor, not the ceiling. Each rejected alternative can b
   URL; the PS4 still retries by user action, no ranked URL list is exposed.
   What the #373 live acceptance added is an INTERNAL bounded retry: when the
   policy pick's engine session is dead-on-arrival (EngineRejected — metadata
-  never arrived in the add window), the provider advances to the next
-  policy-ordered candidate, capped at ``_MAX_SESSION_ATTEMPTS = 3``, before
-  reporting item-level ``not_found``. Lane-level failures (engine
+  never arrived in the add window), the provider retries the SAME magnet once
+  for timeout-class verdicts (metadata window or the first-bytes probe), then
+  advances to the next policy-ordered candidate, capped at
+  ``_MAX_SESSION_ATTEMPTS = 3``, before reporting item-level ``not_found``.
+  A malformed magnet / explicit 400 has no retry. Lane-level failures (engine
   unreachable) never advance. The StreamResponse wire contract is unchanged.
 
 ### Translation contract (Q16–Q20, minimum surface)

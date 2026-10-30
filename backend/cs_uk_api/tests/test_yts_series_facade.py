@@ -22,9 +22,11 @@ is a stub EXCEPT yts, whose upstream calls are respx-mocked fixtures.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import pathlib
 import re
+import time
 from collections.abc import Iterator
 from typing import Any, cast
 from urllib.parse import quote
@@ -54,6 +56,7 @@ _POPCORN = "http://popcorn.lan:9000"
 _SHOW_URL = re.compile(rf"{re.escape(_POPCORN)}/show/tt8740758")
 _LIST_URL = re.compile(r"https://yts\.gg/api/v2/list_movies\.json\?.*")
 _MAGNET_720 = "magnet:?xt=urn:btih:2233445566778899AABBCCDDEEFF001122334455&dn=chernobyl.s01e01.720p&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce"
+_MAGNET_720_E2 = "magnet:?xt=urn:btih:2233445566778899AABBCCDDEEFF001122334455&dn=chernobyl.s01e02.720p&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce"
 _LAN_URL = "http://bitplay.lan:3347/api/v1/torrent/s01/stream/2"
 _S1E1 = episode_wire_id("yts", "tt8740758", 1, 1)
 _S1E2 = episode_wire_id("yts", "tt8740758", 1, 2)
@@ -115,12 +118,17 @@ def client() -> TestClient:
     return TestClient(main_mod.app)
 
 
-def _seed(monkeypatch: pytest.MonkeyPatch) -> FakeTorrentEngine:
+def _seed(
+    monkeypatch: pytest.MonkeyPatch, *, container: str = "mp4"
+) -> FakeTorrentEngine:
     """Registry = the silent stub + the real YTS provider; the engine is
     the deterministic fake."""
     PROVIDERS["p1"] = _EmptyStub()
     engine = FakeTorrentEngine(
-        streams={_MAGNET_720: EngineStream(url=_LAN_URL, container="mp4")}
+        streams={
+            _MAGNET_720: EngineStream(url=_LAN_URL, container=container),
+            _MAGNET_720_E2: EngineStream(url=_LAN_URL, container=container),
+        }
     )
     # The popcorn base is snapshotted at construction — configure FIRST.
     _configure(monkeypatch)
@@ -190,7 +198,25 @@ def test_episode_playback_info_thin_source(client: TestClient, monkeypatch) -> N
     """PlaybackInfo on the EPISODE wire id: one thin mp4 MediaSource whose
     Id is the episode id — the same single-source shape a Ukrainian
     episode gets."""
-    _seed(monkeypatch)
+    engine = _seed(monkeypatch)
+    with respx.mock(assert_all_called=False) as router:
+        router.get(url=_SHOW_URL).respond(
+            200, text=(FIX / "series_show_tt8740758.json").read_text(encoding="utf-8")
+        )
+        body = _post(client, f"/Items/{quote(_S1E1, safe='')}/PlaybackInfo", userId="u")
+    source = body["MediaSources"][0]
+    assert engine.ensure_count == 1  # fast probe, not the optimistic fallback
+    assert source["Id"] == _S1E1
+    assert source["Container"] == "mp4"
+    assert source["IsDirectStream"] is True
+
+
+def test_episode_playback_info_reports_native_mkv(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A native Matroska session surfaces Container=mkv — truthful for
+    both the client's direct-play decision and the stream it opens."""
+    _seed(monkeypatch, container="mkv")
     with respx.mock(assert_all_called=False) as router:
         router.get(url=_SHOW_URL).respond(
             200, text=(FIX / "series_show_tt8740758.json").read_text(encoding="utf-8")
@@ -198,7 +224,40 @@ def test_episode_playback_info_thin_source(client: TestClient, monkeypatch) -> N
         body = _post(client, f"/Items/{quote(_S1E1, safe='')}/PlaybackInfo", userId="u")
     source = body["MediaSources"][0]
     assert source["Id"] == _S1E1
+    assert source["Container"] == "mkv"
+    assert source["IsDirectStream"] is True
+
+
+class _SlowTorrentEngine:
+    """A cold engine add that never gets metadata inside the test."""
+
+    async def ensure_session(self, identifier: str, *, file_hint: str | None = None) -> Any:
+        await asyncio.sleep(30)
+        raise AssertionError("the bounded PlaybackInfo probe must have timed out")
+
+
+def test_playback_info_returns_optimistic_source_when_torrent_probe_is_slow(
+    client: TestClient, monkeypatch
+) -> None:
+    """Switchfin gives PlaybackInfo ~3 s; a cold BitPlay add must not
+    consume it. The probe is abandoned at the budget and the client gets
+    a valid thin mp4 source, while ``/Videos`` remains the real resolve."""
+    _seed(monkeypatch)
+    monkeypatch.setattr(
+        "cs_uk_api.jellyfin.playback_info.PLAYBACKINFO_TORRENT_BUDGET_S", 0.05
+    )
+    PROVIDERS["yts"] = YtsProvider(engine=_SlowTorrentEngine())
+    with respx.mock(assert_all_called=False) as router:
+        router.get(url=_SHOW_URL).respond(
+            200, text=(FIX / "series_show_tt8740758.json").read_text(encoding="utf-8")
+        )
+        started = time.monotonic()
+        body = _post(client, f"/Items/{quote(_S1E1, safe='')}/PlaybackInfo", userId="u")
+    source = body["MediaSources"][0]
+    assert time.monotonic() - started < 1.0
+    assert source["Id"] == _S1E1
     assert source["Container"] == "mp4"
+    assert source["MediaStreams"] == [{"Type": "Video"}]
     assert source["IsDirectStream"] is True
 
 
@@ -218,7 +277,7 @@ def test_episode_stream_302s_to_engine_url(client: TestClient, monkeypatch) -> N
     assert r.headers["location"] == _LAN_URL
     assert engine.ensure_count == 1
     assert engine.last_identifier == _MAGNET_720
-    assert engine.last_file_hint == "s01e"
+    assert engine.last_file_hint == "s01e01"
 
 
 def test_episode_resume_round_trip(client: TestClient, monkeypatch) -> None:
@@ -283,7 +342,8 @@ def test_resume_positions_survive_listing_churn(client: TestClient, monkeypatch)
         r = client.get(f"/Videos/{quote(_S1E2, safe='')}/stream", follow_redirects=False)
     assert r.status_code == 302
     assert r.headers["location"] == _LAN_URL
-    assert engine.last_identifier == _MAGNET_720
+    assert engine.last_identifier == _MAGNET_720_E2
+    assert engine.last_file_hint == "s01e02"
 
 
 def test_nextup_includes_english_series(client: TestClient, monkeypatch) -> None:

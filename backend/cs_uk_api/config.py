@@ -149,9 +149,10 @@ class Settings:
     torrent_engine_password: str | None = None
     #: Torrent lane, series pass (#379): the Popcorn-API series host the
     #: YTS adapter asks for shows/seasons/episodes (research #366: YTS
-    #: itself ships no series catalogue; every historic public host is
-    #: dead — point this at a self-hosted popcorn-api or a live
-    #: mirror). Unset or empty ⇒ the series pass answers a LOUD typed
+    #: itself ships no series catalogue; public mirrors churn — the
+    #: 2026-10-28 probe found live aliases fusme.link / jfper.link /
+    #: uxert.link / yrkde.link, see docs/torrent-lane.md; a self-hosted
+    #: popcorn-api also works). Unset or empty ⇒ the series pass answers a LOUD typed
     #: verdict while the YTS movies lane stays fully live. Declared to
     #: the provider's allowlist at construction, so the central SSRF
     #: check admits it (ADR-0005).

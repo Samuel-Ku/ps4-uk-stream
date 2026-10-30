@@ -1,15 +1,16 @@
 """YTS series pass — seasons to episode playback (#379, spec #374).
 
 The English lane's serial path: the Popcorn-API series host (configured
-via ``CS_UK_POPCORN_BASE_URL`` — every known public host is dead,
-research #366; the knob points at a self-hosted popcorn-api or a live
-mirror) supplies shows/seasons/episodes with per-episode quality maps;
+via ``CS_UK_POPCORN_BASE_URL`` — public mirrors churn; live aliases
+probed 2026-10-28 are fusme.link / jfper.link / uxert.link / yrkde.link,
+research #366; a self-hosted popcorn-api also works) supplies
+shows/seasons/episodes with per-episode quality maps;
 the provider turns ONE season into the v2 ContentResponse whose episode
 ids ride the canonical ``:sNeM`` wire grammar, and ``stream()`` resolves
-an episode id through the SAME engine handoff as a movie — one policy
-pick for the season's torrent, the season number as the engine's
-``file_hint`` so the adapter's deterministic file selection lands on the
-right file inside a multi-file season pack.
+an episode id through the SAME engine handoff as a movie — the requested
+episode's own torrents first, with an ``s<N>e<M>`` file hint so the
+adapter's deterministic file selection lands on the right file; only a
+torrentless episode falls back to the season pack.
 
 Covered at this layer (fixture provenance: payloads synthesized in the
 research #366 grammar with real IMDb codes — no live calls in CI):
@@ -56,6 +57,7 @@ FIX = pathlib.Path(__file__).parent / "fixtures" / "yts"
 _POPCORN = "http://popcorn.lan:9000"
 _MAGNET_720 = "magnet:?xt=urn:btih:2233445566778899AABBCCDDEEFF001122334455&dn=chernobyl.s01e01.720p&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce"
 _MAGNET_480 = "magnet:?xt=urn:btih:00112233445566778899AABBCCDDEEFF00112233&dn=chernobyl.s01e01.480p&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce"
+_MAGNET_1080_E2 = "magnet:?xt=urn:btih:5544332211009988776655443322110099887766&dn=chernobyl.s01e02.1080p&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce"
 
 _SHOWS_URL = re.compile(rf"{re.escape(_POPCORN)}/shows/\d+\?.*")
 _SHOW_URL = re.compile(rf"{re.escape(_POPCORN)}/show/tt\d+")
@@ -312,15 +314,15 @@ async def test_popcorn_host_joins_allowlist_when_configured(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# stream(): episode wire id → season torrent → engine session
+# stream(): episode wire id → episode torrent → engine session
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_stream_episode_picks_policy_winner_and_passes_season_hint(monkeypatch):
-    """Two quality variants across the season's episodes: the policy
-    lands on 720p/610-seeds; the engine receives the VERBATIM magnet
-    (never hash-rebuilt) and the season file hint."""
+async def test_stream_episode_picks_policy_winner_and_passes_episode_hint(monkeypatch):
+    """The requested episode's two quality variants: the policy lands on
+    720p/640-seeds; the engine receives the VERBATIM magnet (never
+    hash-rebuilt) and the exact episode file hint."""
     _configured(monkeypatch)
     lan = EngineStream(url="http://bitplay.lan:3347/api/v1/torrent/s01/stream/2", container="mp4")
     engine = FakeTorrentEngine(streams={_MAGNET_720: lan})
@@ -333,31 +335,53 @@ async def test_stream_episode_picks_policy_winner_and_passes_season_hint(monkeyp
     assert resp.headers == {}
     assert engine.ensure_count == 1
     assert engine.last_identifier == _MAGNET_720
-    assert engine.last_file_hint == "s01e"
+    assert engine.last_file_hint == "s01e01"
 
 
 @pytest.mark.asyncio
-async def test_stream_episode2_rides_same_season_torrent(monkeypatch):
-    """Both episodes of the pack share the season's torrent table: the
-    SAME policy winner (same magnet), the same season hint — the file
-    discrimination happens inside the engine."""
+async def test_stream_episode1_ignores_stronger_torrent_from_another_episode(monkeypatch):
+    """Regression for the live s1e1 → S01E06 bug: episode 2 carries a
+    better-seeded 1080p torrent, but s1e1 must still pick its OWN 720p
+    torrent and hint the exact episode."""
     _configured(monkeypatch)
-    lan = EngineStream(url="http://bitplay.lan:3347/api/v1/torrent/s01/stream/3", container="mp4")
+    show = json.loads(_fixture("series_show_tt8740758.json"))
+    episode2 = next(e for e in show["episodes"] if e["season"] == 1 and e["episode"] == 2)
+    episode2["torrents"]["1080p"] = {"url": _MAGNET_1080_E2, "seeds": 9_999}
+    lan = EngineStream(url="http://bitplay.lan:3347/api/v1/torrent/s01/stream/2", container="mp4")
     engine = FakeTorrentEngine(streams={_MAGNET_720: lan})
     with respx.mock(assert_all_called=True) as router:
-        router.get(url=_SHOW_URL).respond(200, text=_fixture("series_show_tt8740758.json"))
+        router.get(url=_SHOW_URL).respond(200, text=json.dumps(show))
+        async with httpx.AsyncClient() as http:
+            resp = await YtsProvider(engine=engine).stream(_S1E1, None, http)
+    assert resp.url == lan.url
+    assert engine.ensure_count == 1
+    assert engine.last_identifier == _MAGNET_720
+    assert engine.last_file_hint == "s01e01"
+
+
+@pytest.mark.asyncio
+async def test_stream_episode2_uses_its_own_torrents(monkeypatch):
+    """Episode 2's own magnet (not episode 1's) reaches the engine with
+    episode 2's exact file hint."""
+    _configured(monkeypatch)
+    show = json.loads(_fixture("series_show_tt8740758.json"))
+    episode2 = next(e for e in show["episodes"] if e["season"] == 1 and e["episode"] == 2)
+    episode2["torrents"]["720p"]["url"] = _MAGNET_1080_E2
+    lan = EngineStream(url="http://bitplay.lan:3347/api/v1/torrent/s01/stream/3", container="mp4")
+    engine = FakeTorrentEngine(streams={_MAGNET_1080_E2: lan})
+    with respx.mock(assert_all_called=True) as router:
+        router.get(url=_SHOW_URL).respond(200, text=json.dumps(show))
         async with httpx.AsyncClient() as http:
             await YtsProvider(engine=engine).stream(_S1E2, None, http)
-    assert engine.last_identifier == _MAGNET_720
-    assert engine.last_file_hint == "s01e"
+    assert engine.last_identifier == _MAGNET_1080_E2
+    assert engine.last_file_hint == "s01e02"
 
 
 @pytest.mark.asyncio
 async def test_stream_torrentless_episode_rides_season_pack(monkeypatch):
     """Episode 3 itself carries an EMPTY torrent map, but the SEASON's
-    merged table has the pack — the pack semantics mean the episode
-    streams like its siblings (the engine's file selection finds its
-    file inside the pack)."""
+    merged table has the pack — the episode streams from the pack with
+    the season-level hint (the engine finds its file inside)."""
     _configured(monkeypatch)
     lan = EngineStream(url="http://bitplay.lan:3347/api/v1/torrent/s01/stream/4", container="mp4")
     engine = FakeTorrentEngine(streams={_MAGNET_720: lan})
@@ -367,6 +391,7 @@ async def test_stream_torrentless_episode_rides_season_pack(monkeypatch):
             resp = await YtsProvider(engine=engine).stream(_S1E3, None, http)
     assert resp.url == lan.url
     assert engine.last_identifier == _MAGNET_720
+    assert engine.last_file_hint == "s01e"
 
 
 @pytest.mark.asyncio
@@ -438,10 +463,10 @@ async def test_stream_episode_engine_rejected_maps_to_not_found(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_stream_episode_dead_pick_falls_back_with_season_hint(monkeypatch):
-    """The season's policy pick is dead ⇒ the next candidate is tried
-    with the SAME season file hint — the episode lane rides the bounded
-    fallback the #373 finding motivated."""
+async def test_stream_episode_dead_pick_falls_back_with_episode_hint(monkeypatch):
+    """The episode's policy pick is dead ⇒ the next candidate from the
+    SAME episode is tried with the SAME episode file hint — the episode
+    lane rides the bounded fallback the #373 finding motivated."""
     _configured(monkeypatch)
 
     class _RejectFirst:
@@ -468,7 +493,7 @@ async def test_stream_episode_dead_pick_falls_back_with_season_hint(monkeypatch)
             resp = await YtsProvider(engine=engine).stream(_S1E1, None, http)
     assert resp.url == _LAN.url
     assert engine.ensure_count == 2
-    assert engine.last_file_hint == "s01e"
+    assert engine.last_file_hint == "s01e01"
 
 
 # ---------------------------------------------------------------------------
