@@ -87,13 +87,16 @@ weekly full build (100 pages per section, Sunday 00:10). The two never run
 on the same night: Sunday belongs to the full pass.
 
 On `openclaw-home` this runs as **user** units for `semen`, not system
-units: the four files in `backend/deploy/` (`cs-uk-api-index.{service,timer}`
-and `cs-uk-api-index-full.{service,timer}`) are system-unit templates
+units: the five unit files in `backend/deploy/`
+(`cs-uk-api-index.{service,timer}`, `cs-uk-api-index-full.{service,timer}`
+and `cs-uk-api-crawl-alert.service`) are system-unit templates
 (`User=rorschach`, a working directory with spaces,
 `WantedBy=multi-user.target`), so the installed copies are adapted rather
-than copied verbatim. The live files are
-`~/.config/systemd/user/cs-uk-api-index.{service,timer}` and
-`~/.config/systemd/user/cs-uk-api-index-full.{service,timer}`:
+than copied verbatim; the alert unit calls
+`backend/deploy/cs-uk-api-crawl-alert.sh` directly. The live files are
+`~/.config/systemd/user/cs-uk-api-index.{service,timer}`,
+`~/.config/systemd/user/cs-uk-api-index-full.{service,timer}` and
+`~/.config/systemd/user/cs-uk-api-crawl-alert.service`:
 
 ```ini
 # ~/.config/systemd/user/cs-uk-api-index.service
@@ -161,6 +164,33 @@ Unit=cs-uk-api-index-full.service
 WantedBy=timers.target
 ```
 
+The failure alert is the fifth unit, `cs-uk-api-crawl-alert.service`; the
+host copy is:
+
+```ini
+# ~/.config/systemd/user/cs-uk-api-crawl-alert.service
+[Unit]
+Description=cs-uk-api - catalog crawl failure alert (user unit, openclaw-home)
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/semen
+Environment=PATH=/home/semen/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=CS_UK_ALERT_JOURNAL=user
+EnvironmentFile=-/home/semen/.config/cs-uk-api/alert.env
+ExecStart=/home/semen/ps4-uk-stream/backend/deploy/cs-uk-api-crawl-alert.sh cs-uk-api-index.service cs-uk-api-index-full.service
+```
+
+`OnFailure=cs-uk-api-crawl-alert.service` reaches the two crawler services
+through drop-ins, so the installed `[Unit]` sections stay untouched:
+
+```ini
+# ~/.config/systemd/user/cs-uk-api-index.service.d/onfailure.conf
+# and the same file under cs-uk-api-index-full.service.d/
+[Unit]
+OnFailure=cs-uk-api-crawl-alert.service
+```
+
 ```bash
 systemctl --user daemon-reload
 systemctl --user enable --now cs-uk-api-index.timer cs-uk-api-index-full.timer
@@ -186,6 +216,54 @@ breaker, and the wall-clock duration of the walk (`duration=29m35s`). An
 provider answered no page. A failed section is recorded and
 skipped; one bad upstream does not abort the run. uakino's Chromium session
 is closed at the end of the crawl.
+
+### Failure and timeout alerts
+
+Both crawler units declare `OnFailure=cs-uk-api-crawl-alert.service`, so a
+crawl that exits non-zero (at least one walked provider answered no page)
+or is killed at `TimeoutStartSec` starts the alert unit once. systemd
+reports the timeout as `Result=timeout`; an ordinary non-zero exit is
+`Result=exit-code`. The alert script always writes an `ALERT` block to the
+journal — unit, `result`, exit status, the time it entered the failed
+state, and the last 15 journal lines — so the verdict survives even when no
+channel is configured:
+
+```
+ALERT cs-uk-api crawl failed on openclaw-home
+[cs-uk-api] crawl failed on openclaw-home at 2026-10-31T04:12:07Z
+
+unit: cs-uk-api-index-full.service
+result: timeout (exit status 15)
+since: Sat 2026-10-31 02:10:00 UTC
+last log:
+Starting cs-uk-api - local catalog index crawler (weekly full build)...
+...
+```
+
+Delivery is configured in `~/.config/cs-uk-api/alert.env` (mode 600), read
+by the alert unit:
+
+- `CS_UK_ALERT_URL` — the message is POSTed as a plain-text body, with
+  `Title` / `Priority` / `Tags` headers for ntfy. An ntfy topic URL is the
+  zero-signup option: subscribe on the phone, then set
+  `CS_UK_ALERT_URL=https://ntfy.sh/<long-random-topic>`.
+- `CS_UK_ALERT_CMD` — the message arrives on stdin, for Telegram, mail or a
+  local script.
+
+Both may be set. If neither is, the script says so in the journal instead
+of failing silently. The alert script never fails the alert unit over a
+delivery error; the failure is logged and the exit status stays 0, so a
+broken webhook cannot mask the next crawl's alert.
+
+`CS_UK_ALERT_JOURNAL` selects the journal scope (`user` on this host,
+`system` for the system-unit templates). The alert unit can be started by
+hand; it only reports units that are currently in the `failed` state, so a
+successful crawl is never announced:
+
+```bash
+systemctl --user start cs-uk-api-crawl-alert.service
+journalctl --user -u cs-uk-api-crawl-alert -n 40 --no-pager
+```
 
 A provider that answered **no page at all** is re-walked after the main
 pass — two retry passes, 20 s and 40 s apart, one provider at a time — so a

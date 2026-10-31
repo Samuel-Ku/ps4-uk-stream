@@ -169,6 +169,12 @@ and costs one small request instead of a download; the validators live in
 A provider that answers 403 on three nights in a row is skipped for a week
 (then probed once), so a host that blocks the crawler is not hammered every
 night; the state is in `crawl-guard.json` beside the catalog DB.
+A crawl that exits non-zero or hits its timeout starts
+`cs-uk-api-crawl-alert.service`, which writes an `ALERT` block to the journal
+and, when `CS_UK_ALERT_URL` (plain-text POST, e.g. an ntfy topic) or
+`CS_UK_ALERT_CMD` is set in `~/.config/cs-uk-api/alert.env`, delivers the same
+text there (see
+[docs/catalog-index.md](docs/catalog-index.md#failure-and-timeout-alerts)).
 `GET /api/search/hints?q=дю` is the index-only typeahead surface (never
 fans out). Knobs: `CS_UK_CATALOG_DB` (empty disables the index),
 `CS_UK_INDEX_PROVIDERS`, `CS_UK_INDEX_PAGES`, `CS_UK_INDEX_LOCAL_MIN`,

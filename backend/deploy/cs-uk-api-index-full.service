@@ -17,6 +17,8 @@
 Description=cs-uk-api - local catalog index crawler (weekly full build)
 After=network-online.target
 Wants=network-online.target
+# Exit non-zero or a TimeoutStartSec kill starts cs-uk-api-crawl-alert.service.
+OnFailure=cs-uk-api-crawl-alert.service
 
 [Service]
 Type=oneshot

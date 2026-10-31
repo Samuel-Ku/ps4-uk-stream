@@ -1,0 +1,26 @@
+# cs-uk-api catalog crawl alert unit
+#
+# systemd starts this through OnFailure= from cs-uk-api-index.service and
+# cs-uk-api-index-full.service: once when a crawl exits non-zero (a provider
+# answered no page) and once when TimeoutStartSec kills it, which systemd
+# reports as Result=timeout. There is no timer of its own.
+#
+# Install beside the crawler units:
+#   sudo cp deploy/cs-uk-api-crawl-alert.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#
+# Delivery is configured in ~/.config/cs-uk-api/alert.env (see the script's
+# header: CS_UK_ALERT_URL for a plain-text POST such as an ntfy topic,
+# CS_UK_ALERT_CMD for anything else). Without either knob the alert is still
+# written to the journal as an ALERT block. Edit User= and the paths to match
+# the host, as for the crawler units themselves.
+
+[Unit]
+Description=cs-uk-api - catalog crawl failure alert
+
+[Service]
+Type=oneshot
+User=rorschach
+Environment=CS_UK_ALERT_JOURNAL=system
+EnvironmentFile=-/home/rorschach/.config/cs-uk-api/alert.env
+ExecStart="/home/rorschach/UA flims/ps4-uk-stream/backend/deploy/cs-uk-api-crawl-alert.sh" cs-uk-api-index.service cs-uk-api-index-full.service
