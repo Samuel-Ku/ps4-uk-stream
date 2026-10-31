@@ -31,7 +31,7 @@ import os
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
@@ -50,7 +50,9 @@ FORBIDDEN = re.compile(r"\b403\b")
 
 
 def _today(today: date | None) -> date:
-    return today if today is not None else date.today()
+    # Local calendar day, matching the nightly schedule and the drift
+    # monitor's convention; ``astimezone`` makes the clock explicit (DTZ011).
+    return today if today is not None else datetime.now().astimezone().date()
 
 
 @dataclass(frozen=True)
