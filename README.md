@@ -129,24 +129,46 @@ covers Cyrillic prefixes and both Ukrainian transliterations — дюна,
 design and operational notes are in
 [docs/catalog-index.md](docs/catalog-index.md).
 
-Build it once, then let the nightly timer keep it fresh:
+Build it once, then let the timers keep it fresh:
 
 ```bash
 cd backend && . .venv/bin/activate
 python -m cs_uk_api.scripts.index_catalog --all-providers --pages 100   # first build
 ```
 
+On `openclaw-home` the crawler is a **user** unit for `semen`, not a system
+one; the `backend/deploy/cs-uk-api-index.*` files are templates for a system
+unit under the `rorschach` user, so the installed copy is adapted (path,
+Chromium, `WantedBy=timers.target`) rather than copied verbatim. The
+installed units live in `~/.config/systemd/user/`:
+
 ```bash
-sudo cp backend/deploy/cs-uk-api-index.service \
-        backend/deploy/cs-uk-api-index.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now cs-uk-api-index.timer
+systemctl --user daemon-reload
+systemctl --user enable --now cs-uk-api-index.timer cs-uk-api-index-full.timer
+systemctl --user list-timers 'cs-uk-api-index*'
+journalctl --user -u cs-uk-api-index -u cs-uk-api-index-full -f
 ```
 
-The nightly timer uses `--all-providers`, so every registered provider is
-swept; a manual run without the flag uses `CS_UK_INDEX_PROVIDERS`.
-`yts` series use `CS_UK_POPCORN_BASE_URL`; the shipped units set it to the
-live mirror documented in [docs/torrent-lane.md](docs/torrent-lane.md).
+The nightly incremental timer fires Mon–Sat at 04:10 host-local time —
+after the drift monitor's 03:10 sweep — and the weekly full build runs
+Sunday 00:10, so the two never overlap. Both need lingering to run while
+nobody is logged in (`loginctl enable-linger semen`, already on for this
+host). The exact unit contents are in
+[docs/catalog-index.md](docs/catalog-index.md).
+
+Both units use `--all-providers`, so every registered provider is swept
+(10 pages per section nightly, 100 in the Sunday full build); a manual run
+without the flag uses `CS_UK_INDEX_PROVIDERS`.
+`yts` series use `CS_UK_POPCORN_BASE_URL`; the installed host unit sets it
+to the live mirror documented in [docs/torrent-lane.md](docs/torrent-lane.md).
+Pages a provider gave an `ETag` or `Last-Modified` for are revalidated with
+`If-None-Match` / `If-Modified-Since`, so an unchanged listing answers `304`
+and costs one small request instead of a download; the validators live in
+`http-cache.sqlite3` beside the catalog DB (see
+[docs/catalog-index.md](docs/catalog-index.md#conditional-requests-etag--last-modified)).
+A provider that answers 403 on three nights in a row is skipped for a week
+(then probed once), so a host that blocks the crawler is not hammered every
+night; the state is in `crawl-guard.json` beside the catalog DB.
 `GET /api/search/hints?q=дю` is the index-only typeahead surface (never
 fans out). Knobs: `CS_UK_CATALOG_DB` (empty disables the index),
 `CS_UK_INDEX_PROVIDERS`, `CS_UK_INDEX_PAGES`, `CS_UK_INDEX_LOCAL_MIN`,

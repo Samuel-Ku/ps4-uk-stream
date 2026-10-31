@@ -779,6 +779,9 @@ class ProviderCrawlStats:
     seen: int
     indexed: int
     errors: tuple[str, ...]
+    #: Crawl passes that walked this provider. 1 = answered first time;
+    #: >1 = the run re-asked it after it had answered no page at all.
+    attempts: int = 1
 
     @property
     def ok(self) -> bool:
@@ -798,6 +801,82 @@ class CrawlStats:
         return tuple(provider.provider for provider in self.providers if not provider.ok)
 
 
+#: Extra passes for providers that answered NOTHING (every section failed).
+#: A whole-provider failure is usually a transient upstream or Cloudflare
+#: outage, so the re-ask runs after the rest of the crawl: by the time the
+#: provider is walked again the other providers have bought a few minutes.
+#: A provider that lost only one section mid-crawl keeps its recorded error
+#: and is NOT re-walked — re-reading sections that already answered would
+#: spend upstream calls without adding cards.
+PROVIDER_RETRY_PASSES = 2
+#: Pause before a retry pass, multiplied by the pass number (20 s, 40 s).
+#: Off in tests; on in the nightly unit so a short wobble has time to settle.
+PROVIDER_RETRY_DELAY_S = 20.0
+
+
+async def _crawl_provider(
+    provider_id: str,
+    *,
+    page_limit: int,
+    index: CatalogIndex,
+    client: httpx.AsyncClient,
+    stamp: float,
+    delay_s: float,
+    attempts: int = 1,
+) -> ProviderCrawlStats:
+    """Walk ONE provider's sections into ``index``; never raises upstream.
+
+    A failed section is recorded and skipped, so one bad page never aborts
+    the provider or the run. ``attempts`` only labels the walk in the run's
+    stats; the retry loop in :func:`crawl_index` decides when to call again.
+    """
+    provider: BaseProvider | None = PROVIDERS.get(provider_id)
+    if provider is None:
+        return ProviderCrawlStats(
+            provider_id, 0, 0, 0, 0, ("unknown provider",), attempts
+        )
+    sections: tuple[Section, ...] = provider.sections
+    if not sections:
+        return ProviderCrawlStats(
+            provider_id, 0, 0, 0, 0, ("no browsable sections",), attempts
+        )
+    fetched_pages = 0
+    seen = 0
+    indexed = 0
+    errors: list[str] = []
+    for section in sections:
+        for page in range(1, page_limit + 1):
+            try:
+                items, has_next = await provider.browse(section.id, page, client)
+            except Exception as error:  # noqa: BLE001 - one bad page must not abort
+                errors.append(f"{section.id} p{page}: {error}")
+                break
+            fetched_pages += 1
+            if not items:
+                break
+            items = [item for item in items if section_matches(item, section)]
+            seen += len(items)
+            if items:
+                try:
+                    indexed += index.upsert(items, now=stamp)
+                except sqlite3.Error as error:
+                    errors.append(f"{section.id} p{page} index: {error}")
+                    break
+            if not has_next:
+                break
+            if delay_s > 0:
+                await asyncio.sleep(delay_s)
+    return ProviderCrawlStats(
+        provider=provider_id,
+        sections=len(sections),
+        pages=fetched_pages,
+        seen=seen,
+        indexed=indexed,
+        errors=tuple(errors),
+        attempts=attempts,
+    )
+
+
 async def crawl_index(
     provider_ids: Sequence[str],
     *,
@@ -805,6 +884,8 @@ async def crawl_index(
     index: CatalogIndex,
     http: httpx.AsyncClient | None = None,
     delay_s: float = 0.0,
+    retry_passes: int = PROVIDER_RETRY_PASSES,
+    retry_delay_s: float = PROVIDER_RETRY_DELAY_S,
 ) -> CrawlStats:
     """Walk each provider's sections, page by page, into ``index``.
 
@@ -813,64 +894,62 @@ async def crawl_index(
     filter). A failed section is recorded and skipped; one bad upstream
     never aborts the whole run. Sequential by design — the crawl is a
     background chore, not a latency path.
+
+    A provider that answered no page at all is retried AFTER the main
+    walk, one provider at a time, for up to ``retry_passes`` passes with a
+    growing ``retry_delay_s`` pause before each. The retry's stats replace
+    the failed pass wholesale (including its error list, so the report
+    shows the verdict that stands); the earlier errors stay in the log.
     """
     client = http if http is not None else get_client()
     page_limit = max(1, pages)
     # One timestamp for the whole run: a row's freshness must not depend
     # on which page it happened to land on.
     stamp = time.time()
-    provider_stats: list[ProviderCrawlStats] = []
-    for provider_id in provider_ids:
-        provider: BaseProvider | None = PROVIDERS.get(provider_id)
-        if provider is None:
-            provider_stats.append(
-                ProviderCrawlStats(provider_id, 0, 0, 0, 0, ("unknown provider",))
-            )
-            continue
-        sections: tuple[Section, ...] = provider.sections
-        if not sections:
-            provider_stats.append(
-                ProviderCrawlStats(provider_id, 0, 0, 0, 0, ("no browsable sections",))
-            )
-            continue
-        fetched_pages = 0
-        seen = 0
-        indexed = 0
-        errors: list[str] = []
-        for section in sections:
-            for page in range(1, page_limit + 1):
-                try:
-                    items, has_next = await provider.browse(section.id, page, client)
-                except Exception as error:  # noqa: BLE001 - one bad page must not abort
-                    errors.append(f"{section.id} p{page}: {error}")
-                    break
-                fetched_pages += 1
-                if not items:
-                    break
-                items = [item for item in items if section_matches(item, section)]
-                seen += len(items)
-                if items:
-                    try:
-                        indexed += index.upsert(items, now=stamp)
-                    except sqlite3.Error as error:
-                        errors.append(f"{section.id} p{page} index: {error}")
-                        break
-                if not has_next:
-                    break
-                if delay_s > 0:
-                    await asyncio.sleep(delay_s)
-        provider_stats.append(
-            ProviderCrawlStats(
-                provider=provider_id,
-                sections=len(sections),
-                pages=fetched_pages,
-                seen=seen,
-                indexed=indexed,
-                errors=tuple(errors),
-            )
+    stats = [
+        await _crawl_provider(
+            provider_id,
+            page_limit=page_limit,
+            index=index,
+            client=client,
+            stamp=stamp,
+            delay_s=delay_s,
         )
+        for provider_id in provider_ids
+    ]
+    for pass_no in range(1, retry_passes + 1):
+        # Only a provider with sections can be re-asked: "unknown provider"
+        # and "no browsable sections" are permanent verdicts, not outages.
+        retry_ids = [
+            stat.provider for stat in stats if not stat.ok and stat.sections > 0
+        ]
+        if not retry_ids:
+            break
+        pause = max(0.0, retry_delay_s) * pass_no
+        log.warning(
+            "providers answered nothing; retry pass %d/%d in %.0fs: %s",
+            pass_no,
+            retry_passes,
+            pause,
+            ", ".join(retry_ids),
+        )
+        if pause > 0:
+            await asyncio.sleep(pause)
+        retried = {
+            provider_id: await _crawl_provider(
+                provider_id,
+                page_limit=page_limit,
+                index=index,
+                client=client,
+                stamp=stamp,
+                delay_s=delay_s,
+                attempts=pass_no + 1,
+            )
+            for provider_id in retry_ids
+        }
+        stats = [retried.get(stat.provider, stat) for stat in stats]
     return CrawlStats(
-        providers=tuple(provider_stats),
-        total_seen=sum(provider.seen for provider in provider_stats),
-        total_indexed=sum(provider.indexed for provider in provider_stats),
+        providers=tuple(stats),
+        total_seen=sum(provider.seen for provider in stats),
+        total_indexed=sum(provider.indexed for provider in stats),
     )

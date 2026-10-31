@@ -382,3 +382,87 @@ def test_crawler_reports_unknown_provider(index: CatalogIndex) -> None:
 
     assert stats.failed_providers == ("ghost",)
     assert stats.providers[0].errors == ("unknown provider",)
+    # A permanent verdict is never retried, even with retry passes enabled.
+    assert stats.providers[0].attempts == 1
+
+
+class _FlakyBrowseStub(BaseProvider):
+    """Fails every page of its first ``fail_passes`` walks, then answers."""
+
+    id = "flaky-stub"
+    name = "Flaky Stub"
+    types = ("movie",)
+    sections = (Section(id="films", title="Фільми", form="movie"),)
+
+    def __init__(self, fail_passes: int) -> None:
+        self.fail_passes = fail_passes
+        self.walks = 0
+        self.page_calls: list[tuple[int, int]] = []
+
+    async def search(self, query, http):  # type: ignore[no-untyped-def]
+        return []
+
+    async def content(self, external_id, http):  # type: ignore[no-untyped-def]
+        raise NotImplementedError
+
+    async def stream(self, content_id, translation, http):  # type: ignore[no-untyped-def]
+        raise NotImplementedError
+
+    async def browse(self, section, page, http):  # type: ignore[no-untyped-def]
+        if page == 1:
+            self.walks += 1
+        self.page_calls.append((self.walks, page))
+        if self.walks <= self.fail_passes:
+            raise RuntimeError("upstream down")
+        return [_item(self.id, f"{page}-0", f"Фільм {page}")], False
+
+
+def test_crawler_retries_a_provider_that_answered_nothing(
+    index: CatalogIndex,
+) -> None:
+    stub = _FlakyBrowseStub(fail_passes=1)
+    PROVIDERS[stub.id] = stub
+
+    async def _run():
+        async with httpx.AsyncClient() as http:
+            return await crawl_index(
+                [stub.id], pages=2, index=index, http=http, retry_delay_s=0
+            )
+
+    stats = asyncio.run(_run())
+
+    # First walk died on its first page; the retry pass answered.
+    assert stub.page_calls == [(1, 1), (2, 1)]
+    assert stats.providers[0].attempts == 2
+    assert stats.providers[0].ok
+    assert stats.providers[0].indexed == 1
+    assert stats.providers[0].errors == ()
+    assert stats.failed_providers == ()
+    assert index.count() == 1
+
+
+def test_crawler_stops_retrying_after_the_configured_passes(
+    index: CatalogIndex,
+) -> None:
+    stub = _FlakyBrowseStub(fail_passes=99)
+    PROVIDERS[stub.id] = stub
+
+    async def _run():
+        async with httpx.AsyncClient() as http:
+            return await crawl_index(
+                [stub.id],
+                pages=2,
+                index=index,
+                http=http,
+                retry_passes=2,
+                retry_delay_s=0,
+            )
+
+    stats = asyncio.run(_run())
+
+    # One main pass + two retry passes, then the verdict stands.
+    assert stub.page_calls == [(1, 1), (2, 1), (3, 1)]
+    assert stats.providers[0].attempts == 3
+    assert stats.providers[0].pages == 0
+    assert stats.providers[0].errors == ("films p1: upstream down",)
+    assert stats.failed_providers == ("flaky-stub",)

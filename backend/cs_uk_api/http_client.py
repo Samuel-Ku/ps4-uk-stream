@@ -7,6 +7,10 @@ import httpx
 from . import config as _config
 from .providers.base import BaseProvider, ProviderError
 
+#: One honest UA for every upstream call. Shared with the conditional
+#: crawler client so a cached entry is revalidated under the same identity.
+USER_AGENT = "cs-uk-api/1.0 (+https://github.com/)"
+
 _client: httpx.AsyncClient | None = None
 
 
@@ -15,7 +19,7 @@ def get_client() -> httpx.AsyncClient:
     if _client is None:
         _client = httpx.AsyncClient(
             timeout=httpx.Timeout(_config.SETTINGS.upstream_timeout_s),
-            headers={"User-Agent": "cs-uk-api/1.0 (+https://github.com/)"},
+            headers={"User-Agent": USER_AGENT},
             follow_redirects=False,
         )
     return _client

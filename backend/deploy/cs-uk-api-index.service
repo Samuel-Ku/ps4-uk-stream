@@ -13,7 +13,11 @@
 # Edit User= and WorkingDirectory= to match the host before enabling.
 # The default DB is ~/.cache/cs-uk-api/catalog.sqlite3 (override with
 # CS_UK_CATALOG_DB). The unit sweeps EVERY registered provider with
-# --all-providers; 20 pages per section is the nightly incremental pass.
+# --all-providers; 10 pages per section is the nightly incremental pass
+# (Mon-Sat). cs-uk-api-index-full.timer runs the 100-page full build on
+# Sunday instead, so the two passes never overlap.
+# Pages whose origin sent an ETag/Last-Modified are revalidated on the next
+# run; the validators and bodies live in http-cache.sqlite3 beside the DB.
 # Run the CLI by hand with --all-providers --pages 100 for the first full
 # build.
 
@@ -26,9 +30,9 @@ Wants=network-online.target
 Type=oneshot
 User=rorschach
 WorkingDirectory=/home/rorschach/UA flims/ps4-uk-stream/backend
-ExecStart="/home/rorschach/UA flims/ps4-uk-stream/backend/.venv/bin/python" -m cs_uk_api.scripts.index_catalog --all-providers --pages 20 --delay 0.3
-# A full first build of a large library can take a while; keep the unit
-# from being killed halfway through a section.
+ExecStart="/home/rorschach/UA flims/ps4-uk-stream/backend/.venv/bin/python" -m cs_uk_api.scripts.index_catalog --all-providers --pages 10 --delay 0.3
+# A section can be slow; keep the unit from being killed halfway through
+# one. The weekly full build uses its own, longer timeout.
 TimeoutStartSec=5400
 # The crawler is polite by default (one page at a time, 0.3s pause).
 Nice=10

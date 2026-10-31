@@ -1,14 +1,15 @@
 # cs-uk-api catalog index timer
 #
-# Runs the crawl nightly at 04:10 (after the drift monitor's 03:10 sweep,
-# so the two chores never compete for the providers). Persistent=true
-# catches a missed run at next boot.
+# Incremental crawl Mon-Sat at 04:10 (after the drift monitor's 03:10
+# sweep, so the two chores never compete for the providers). Sunday is the
+# weekly full build in cs-uk-api-index-full.timer, not a second nightly
+# pass. Persistent=true catches a missed run at next boot.
 
 [Unit]
-Description=Run the cs-uk-api catalog index crawler nightly
+Description=Run the cs-uk-api catalog index crawler nightly (Mon-Sat)
 
 [Timer]
-OnCalendar=*-*-* 04:10:00
+OnCalendar=Mon..Sat *-*-* 04:10:00
 Persistent=true
 Unit=cs-uk-api-index.service
 

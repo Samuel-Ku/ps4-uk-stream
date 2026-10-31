@@ -1,0 +1,20 @@
+# cs-uk-api catalog index full-build timer
+#
+# Sunday 00:10 — the nightly incremental timer runs Mon-Sat, so the two
+# never walk the same providers on the same night. The early hour leaves
+# the drift monitor's 03:10 sweep free.
+#
+# Persistent=false on purpose: a catch-up full build at boot could start
+# alongside the persistent nightly unit (both write the same SQLite DB);
+# a missed week simply waits for the next Sunday.
+
+[Unit]
+Description=Run the cs-uk-api catalog index full build weekly
+
+[Timer]
+OnCalendar=Sun *-*-* 00:10:00
+Persistent=false
+Unit=cs-uk-api-index-full.service
+
+[Install]
+WantedBy=timers.target

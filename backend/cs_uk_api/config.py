@@ -198,6 +198,11 @@ class Settings:
     index_local_min: int = 5
     #: Politeness pause between crawler page fetches, in seconds.
     index_crawl_delay_s: float = 0.2
+    #: Circuit breaker: consecutive nightly runs in which EVERY section of
+    #: a provider answered 403 before it is skipped (0 disables the breaker).
+    index_block_after_nights: int = 3
+    #: How many days a tripped provider is left alone before one probe run.
+    index_block_cooldown_days: int = 7
 
 
 def _load_resume_path() -> str | None:
@@ -362,6 +367,12 @@ def load_settings() -> Settings:
         index_pages=max(1, int(os.environ.get("CS_UK_INDEX_PAGES", "10"))),
         index_local_min=max(1, int(os.environ.get("CS_UK_INDEX_LOCAL_MIN", "5"))),
         index_crawl_delay_s=max(0.0, float(os.environ.get("CS_UK_INDEX_DELAY", "0.2"))),
+        index_block_after_nights=max(
+            0, int(os.environ.get("CS_UK_INDEX_BLOCK_AFTER_NIGHTS", "3"))
+        ),
+        index_block_cooldown_days=max(
+            1, int(os.environ.get("CS_UK_INDEX_BLOCK_COOLDOWN_DAYS", "7"))
+        ),
     )
 
 

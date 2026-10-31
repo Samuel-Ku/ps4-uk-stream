@@ -1,0 +1,36 @@
+# cs-uk-api catalog index full build service unit
+#
+# One-shot: the same crawl as cs-uk-api-index.service, but 100 pages per
+# section instead of the nightly 10. The weekly timer (Sunday) replaces
+# that day's incremental pass, so the two never overlap.
+#
+# Install (with the timer):
+#   sudo cp deploy/cs-uk-api-index-full.service deploy/cs-uk-api-index-full.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now cs-uk-api-index-full.timer
+#
+# Edit User= and WorkingDirectory= to match the host before enabling.
+# The default DB is ~/.cache/cs-uk-api/catalog.sqlite3 (override with
+# CS_UK_CATALOG_DB); the HTTP revalidation cache sits beside it.
+
+[Unit]
+Description=cs-uk-api - local catalog index crawler (weekly full build)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=rorschach
+WorkingDirectory=/home/rorschach/UA flims/ps4-uk-stream/backend
+ExecStart="/home/rorschach/UA flims/ps4-uk-stream/backend/.venv/bin/python" -m cs_uk_api.scripts.index_catalog --all-providers --pages 100 --delay 0.3
+# A full build of every section can run well past an hour.
+TimeoutStartSec=7200
+Nice=10
+# yts SERIES (#379): without a Popcorn-API host the yts series section
+# records the not-configured error and only its movies are indexed.
+# Live mirrors churn; these were probed 2026-10-28: fusme.link /
+# jfper.link / uxert.link / yrkde.link.
+Environment=CS_UK_POPCORN_BASE_URL=https://fusme.link
+
+[Install]
+WantedBy=multi-user.target
